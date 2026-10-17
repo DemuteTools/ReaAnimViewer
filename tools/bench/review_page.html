@@ -1,0 +1,607 @@
+<title>Trigger Reference Review</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a clip rail on the left, the clip's stage (stick figure + lanes + heights) on the right; stacks on a phone. */
+:root {
+  --bg: #f3f5f9; --panel: #ffffff; --line: #d9dee8; --fg: #1b2230; --muted: #5d6779;
+  --accent: #3d6fe0; --accent-soft: rgba(61,111,224,.14);
+  --draft: #b7791f; --confirmed: #2f8f5b; --deleted: #c2463d; --found: #7a8496;
+  --lane-a: #eef1f6; --lane-b: #f7f8fb;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #12151c; --panel: #1a1f29; --line: #2b3240; --fg: #dfe5f0; --muted: #8f99ab;
+  --accent: #5b8cff; --accent-soft: rgba(91,140,255,.16);
+  --draft: #e0a43a; --confirmed: #4cc285; --deleted: #f0605a; --found: #8b95a8;
+  --lane-a: #1e2430; --lane-b: #191e27; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #12151c; --panel: #1a1f29; --line: #2b3240; --fg: #dfe5f0; --muted: #8f99ab;
+  --accent: #5b8cff; --accent-soft: rgba(91,140,255,.16);
+  --draft: #e0a43a; --confirmed: #4cc285; --deleted: #f0605a; --found: #8b95a8;
+  --lane-a: #1e2430; --lane-b: #191e27; color-scheme: dark }
+* { box-sizing: border-box }
+body { background: var(--bg); color: var(--fg); font-family: var(--sans); font-size: 14px; line-height: 1.4;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 14px 24px }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 20px; margin-bottom: 12px }
+h1 { font-size: 18px; font-weight: 600; margin: 0; text-wrap: balance }
+.sub { color: var(--muted); font-size: 13px }
+.stat { font-family: var(--mono); font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums }
+.wrap { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 14px; align-items: start }
+@media (max-width: 760px) { .wrap { grid-template-columns: minmax(0, 1fr) } }
+.rail { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden }
+.rail .tools { display: flex; gap: 6px; padding: 8px; border-bottom: 1px solid var(--line) }
+.rail input { flex: 1; min-width: 0; font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg) }
+.clips { max-height: 78vh; overflow-y: auto }
+@media (max-width: 760px) { .clips { max-height: 220px } }
+.clip { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; padding: 7px 10px; border-bottom: 1px solid var(--line); cursor: pointer; width: 100%; text-align: left; background: none; border-left: 3px solid transparent; color: inherit; font: inherit }
+.clip:hover { background: var(--accent-soft) }
+.clip.on { border-left-color: var(--accent); background: var(--accent-soft) }
+.clip .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.clip .c { font-family: var(--mono); font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; grid-column: 1 / -1 }
+.pill { font-size: 11px; padding: 0 6px; border-radius: 9px; border: 1px solid var(--line); color: var(--muted); align-self: center }
+.pill.todo { color: var(--draft); border-color: var(--draft) }
+.pill.done { color: var(--confirmed); border-color: var(--confirmed) }
+.stage { display: flex; flex-direction: column; gap: 10px; min-width: 0 }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; min-width: 0 }
+.top { display: grid; grid-template-columns: minmax(0, 560px) minmax(0, 1fr); gap: 12px }
+@media (max-width: 900px) { .top { grid-template-columns: minmax(0, 1fr) } }
+#fig { cursor: grab; touch-action: none; aspect-ratio: 1 / 1 }
+#lanes, #curves { cursor: ew-resize; touch-action: none }
+@media (max-width: 900px) { .top { grid-template-columns: minmax(0, 1fr) } }
+canvas { display: block; width: 100%; max-width: 100% }
+#fig { aspect-ratio: 1 / 1; background: var(--lane-b); border-radius: 6px; touch-action: none }
+.ctrl { display: flex; flex-wrap: wrap; gap: 6px; align-items: center }
+button.b, select { font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); cursor: pointer }
+button.b:hover { border-color: var(--accent) }
+button.b:focus-visible, select:focus-visible, .clip:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
+button.b.primary { background: var(--accent); border-color: var(--accent); color: #fff }
+button.b:disabled { opacity: .45; cursor: default }
+label.l { font-size: 12px; color: var(--muted); display: flex; gap: 4px; align-items: center }
+.sel { font-family: var(--mono); font-size: 12px; min-height: 20px; color: var(--muted) }
+.sel b { color: var(--fg); font-weight: 500 }
+.legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--muted) }
+.legend i { display: inline-block; width: 10px; height: 10px; margin-right: 4px; vertical-align: -1px }
+.help { font-size: 12px; color: var(--muted); max-width: 70ch }
+.note { font-size: 12px; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--draft); color: var(--draft) }
+#lanes { touch-action: none; cursor: crosshair }
+.time { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 12px }
+input[type=range] { width: 100%; accent-color: var(--accent) }
+.queue { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 2px solid var(--accent); border-radius: 8px; margin-bottom: 6px }
+.qitem { font-size: 15px; line-height: 1.4 }
+.qitem b { font-weight: 600 }
+.queue button.b { font-size: 14px; padding: 6px 12px }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important } }
+</style>
+
+<header>
+  <h1>Trigger Reference Review</h1>
+  <span class="sub">Story 10-8o: the expected events of every fixture clip, drafted from the motion. Confirm, move, delete or add; each click is saved at once.</span>
+  <span class="stat" id="tot">loading the clips…</span>
+</header>
+<div id="dbnote" class="note" hidden></div>
+<div class="wrap">
+  <nav class="rail" aria-label="Clips">
+    <div class="tools">
+      <input id="q" type="search" placeholder="Filter clips" aria-label="Filter clips">
+      <select id="show" aria-label="Which clips">
+        <option value="all">All</option>
+        <option value="todo">With drafts</option>
+      </select>
+    </div>
+    <div class="clips" id="clips"></div>
+  </nav>
+  <main class="stage">
+    <div class="top">
+      <div class="card">
+        <canvas id="fig" width="1100" height="1100" aria-label="Stick figure of the clip: drag to turn, wheel to zoom"></canvas>
+        <div class="ctrl" style="margin-top:8px">
+          <button class="b" id="play">Play</button>
+          <select id="speed" aria-label="Speed"><option value="1">1x</option><option value="0.5">0.5x</option><option value="0.25">0.25x</option><option value="0.1">0.1x</option><option value="0.05">0.05x</option></select>
+          <button class="b" id="stepB" title="One frame back (Shift: 4 ms)">&#9664;</button>
+          <button class="b" id="stepF" title="One frame forward (Shift: 4 ms)">&#9654;</button>
+          <button class="b" id="viewReset" title="Reset the view">Reset view</button>
+          <label class="l"><input type="checkbox" id="follow" checked> follow hips</label>
+          <span class="time" id="tnow">0.000 s</span>
+        </div>
+        <p class="help" style="margin:6px 0 0">Figure: drag to turn (left / right and up / down), wheel to zoom.</p>
+      </div>
+      <div class="card" style="display:flex;flex-direction:column;gap:8px">
+        <div class="queue" id="queue">
+          <div style="display:flex;flex-wrap:wrap;gap:6px 14px;align-items:baseline;justify-content:space-between">
+            <strong>Disagreements to decide</strong>
+            <span class="stat" id="qcount"></span>
+          </div>
+          <p class="help" style="margin:0">Where the draft and RAV agree (within 60 ms) the event is accepted already. Only the places where they disagree come here, jumps and runs first. The figure loops slowly around the moment.</p>
+          <div class="qitem" id="qtext">loading…</div>
+          <div class="ctrl" id="qbtns"></div>
+          <div class="ctrl">
+            <button class="b" id="qprev" title="Previous">&#8592; Previous</button>
+            <button class="b" id="qskip" title="Skip for now">Skip &#8594;</button>
+            <label class="l"><input type="checkbox" id="qloop" checked> loop slowly around it</label>
+          </div>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px 14px;align-items:baseline">
+          <strong id="cname" style="font-size:15px;overflow-wrap:anywhere"></strong>
+          <span class="stat" id="cstat"></span>
+        </div>
+        <div class="ctrl">
+          <button class="b primary" id="confirmAll">Confirm every draft of this clip</button>
+        </div>
+        <div class="sel" id="selinfo">Click an expected event to select it.</div>
+        <div class="ctrl">
+          <button class="b" id="bConfirm" disabled>Confirm</button>
+          <button class="b" id="bDelete" disabled>Delete</button>
+          <button class="b" id="bReset" disabled>Undo my change</button>
+          <label class="l">new event part <select id="newPart"><option>any</option><option>heel</option><option>toe</option><option>tip</option><option>hand</option></select></label>
+          <label class="l">jump / land side <select id="newSide"><option>L</option><option>R</option></select></label>
+        </div>
+        <div class="legend">
+          <span><i style="background:var(--found)"></i>found by the detector (default run)</span>
+          <span><i style="border:2px solid var(--draft)"></i>draft</span>
+          <span><i style="background:var(--confirmed)"></i>confirmed</span>
+          <span><i style="background:var(--deleted)"></i>deleted</span>
+        </div>
+        <p class="help">Each lane is one kind and side. Upper half: what the detector found. Lower half: what should be there. Drag an expected event to move it (it becomes confirmed). Double-click an empty spot in a lane to add one. Click or drag anywhere else in the lanes or the heights to scrub the playhead. Step events show their part: H heel, T toe, P tip, a dot for the whole foot. Keys: Space play, Left / Right one frame (Shift: 4 ms), C confirm, Delete delete.</p>
+      </div>
+    </div>
+    <div class="card"><canvas id="lanes" height="400" aria-label="Event lanes"></canvas></div>
+    <div class="card"><canvas id="curves" height="170" aria-label="Foot and hand heights"></canvas></div>
+  </main>
+</div>
+
+<script>
+(() => {
+"use strict";
+const LANES = [["step","L"],["step","R"],["lift","L"],["lift","R"],["slide","L"],["slide","R"],["pivot","L"],["pivot","R"],
+  ["jump","B"],["land","B"],["grab","L"],["grab","R"],["release","L"],["release","R"],["hand_pivot","L"],["hand_pivot","R"]];
+const LANE_NAME = {step:"Step",lift:"Lift",slide:"Slide",pivot:"Pivot",jump:"Jump",land:"Land",grab:"Grab",release:"Release",hand_pivot:"Hand pivot"};
+const CURVES = [["heel_L","heel L"],["toe_L","toe L"],["heel_R","heel R"],["toe_R","toe R"],["hand_L","hand L"],["hand_R","hand R"]];
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const $ = id => document.getElementById(id);
+
+let drag = null;
+let DATA = null, clip = null, t = 0, playing = false, last = 0, sel = null, db = null, canWrite = false;
+const corr = new Map();   // doc id -> correction
+
+function base(k, p) {
+  if (k === "heel" || k === "toe") return ["step", k];
+  const m = /^(slide|pivot)_(heel|toe)(_longest)?$/.exec(k); if (m) return [m[1], m[2]];
+  if (k === "hand_pivot_any") return ["hand_pivot", p];
+  return [k, p];
+}
+const laneOf = (k, s) => { const [b] = base(k, "any"); return LANES.findIndex(([lk, ls]) => lk === b && (ls === "B" || ls === s)); };
+function docId(clipId, key) {
+  let s = ""; for (const ch of clipId + "|" + key) s += /[A-Za-z0-9_\-.:@+]/.test(ch) ? ch : "~" + ch.codePointAt(0).toString(16) + "~";
+  return s.slice(0, 200);
+}
+function events(c) {
+  // The clip's expected events with the page's corrections laid over them.
+  const out = c.refs.map(r => ({...r, ref: r.id, docid: docId(c.id, r.id), mine: false}));
+  for (const [id, x] of corr) {
+    if (x.clip !== c.id || x.action === "dismiss") continue;
+    const e = out.find(e => e.ref === x.ref && x.ref);
+    const st = x.action === "delete" ? "deleted" : "confirmed";
+    if (e) { Object.assign(e, {k: x.kind, s: x.side, p: x.part, t: x.t, st, src: "antho", mine: true}); continue; }
+    const already = out.some(e => e.k === x.kind && e.s === x.side && e.p === x.part && Math.abs(e.t - x.t) < 0.0006 && e.st === st);
+    if (!already) out.push({id: x.ref || id, ref: x.ref, docid: id, k: x.kind, s: x.side, p: x.part, t: x.t, st, src: "antho", mine: true});
+  }
+  if (drag && drag.moved && drag.t != null) { const e = out.find(e => e.docid === drag.e.docid); if (e) e.t = drag.t; }
+  return out;
+}
+function counts(c) {
+  const e = events(c); return {d: e.filter(x => x.st === "draft").length, c: e.filter(x => x.st === "confirmed").length, x: e.filter(x => x.st === "deleted").length};
+}
+
+// ---- Clip list ----
+function renderList() {
+  const q = $("q").value.toLowerCase(), todo = $("show").value === "todo";
+  const box = $("clips"); box.textContent = "";
+  let D = 0, C = 0;
+  for (const c of DATA.clips) {
+    const n = counts(c); D += n.d; C += n.c;
+    if (q && !c.id.toLowerCase().includes(q)) continue;
+    if (todo && !n.d) continue;
+    const b = document.createElement("button"); b.className = "clip" + (c === clip ? " on" : ""); b.type = "button";
+    const nm = document.createElement("span"); nm.className = "n"; nm.textContent = c.id;
+    const pl = document.createElement("span"); pl.className = "pill " + (n.d ? "todo" : (n.c ? "done" : ""));
+    pl.textContent = n.d ? n.d + " to review" : (n.c ? "done" : (c.has_ref ? "empty" : "no reference"));
+    const ct = document.createElement("span"); ct.className = "c";
+    ct.textContent = (c.hi - c.lo).toFixed(2) + " s · " + n.c + " confirmed · " + c.found_default.length + " found";
+    b.append(nm, pl, ct); b.onclick = () => { qFollow = false; pick(c); }; box.append(b);
+  }
+  $("tot").textContent = DATA.clips.length + " clips · " + D + " drafts to review · " + C + " confirmed";
+}
+function pick(c) {
+  clip = c; t = c.lo; sel = null; playing = false; $("play").textContent = "Play";
+  try { localStorage.setItem("rav-review-clip", c.id); } catch (e) {}
+  renderList(); renderInfo(); draw();
+}
+function renderInfo() {
+  const n = counts(clip);
+  $("cname").textContent = clip.id;
+  $("cstat").textContent = n.d + " drafts · " + n.c + " confirmed · " + n.x + " deleted · " + clip.found_default.length + " found";
+  const e = sel && events(clip).find(e => e.docid === sel);
+  $("selinfo").innerHTML = "";
+  if (e) {
+    const s = document.createElement("span");
+    s.innerHTML = "<b></b>"; s.firstChild.textContent = e.k + " " + e.s + " " + e.p + " at " + e.t.toFixed(3) + " s";
+    s.append(" · " + e.st + " (" + e.src + ")"); $("selinfo").append(s);
+  } else $("selinfo").textContent = "Click an expected event to select it.";
+  const w = canWrite && !!e;
+  $("bConfirm").disabled = !w || e.st === "confirmed"; $("bDelete").disabled = !w || e.st === "deleted";
+  $("bReset").disabled = !w || !corr.has(e.docid);
+  $("confirmAll").disabled = !canWrite || !n.d;
+  renderQueue();
+}
+
+// ---- Writes ----
+async function write(e, action, nt) {
+  if (!db || !canWrite) return;
+  const x = {clip: clip.id, ref: e.ref || "", action, kind: e.k, side: e.s, part: e.p, t: +(+nt).toFixed(4), at: new Date().toISOString()};
+  corr.set(e.docid, x); renderList(); renderInfo(); draw();
+  try { await db.collection("corrections").doc(e.docid).set(x); }
+  catch (err) { showNote("This change was not saved (" + (err && err.code || "error") + "). Reload the page and try again."); }
+}
+async function resetSel() {
+  const e = events(clip).find(e => e.docid === sel); if (!e || !db) return;
+  corr.delete(e.docid); if (!e.ref) sel = null; renderList(); renderInfo(); draw();
+  try { await db.collection("corrections").doc(e.docid).delete(); } catch (err) { showNote("The undo was not saved. Reload the page."); }
+}
+async function confirmAll() {
+  for (const e of events(clip)) if (e.st === "draft") await write(e, "confirm", e.t);
+}
+function showNote(s) { const n = $("dbnote"); n.textContent = s; n.hidden = false; }
+
+// ---- Figure ----
+function figure() {
+  const cv = $("fig"), g = cv.getContext("2d"), W = cv.width, H = cv.height;
+  g.fillStyle = css("--lane-b"); g.fillRect(0, 0, W, H);
+  if (!clip || !clip.frames.length) return;
+  const fx = Math.min(clip.frames.length - 1, Math.max(0, t * clip.fps)), f0 = Math.floor(fx);
+  const f1 = Math.min(clip.frames.length - 1, f0 + 1), fa = fx - f0, A = clip.frames[f0], Bf = clip.frames[f1];
+  const fr = fa > 0 ? A.map((v, i) => v + (Bf[i] - v) * fa) : A, nb = clip.bones.length;
+  const ca = Math.cos(view.yaw), sa = Math.sin(view.yaw), cp = Math.cos(view.pitch), sp = Math.sin(view.pitch);
+  const hips = Math.max(0, clip.bones.findIndex(b => /hips|pelvis/i.test(b)));
+  let cx = 0, cz = 0;
+  if ($("follow").checked) { cx = fr[hips * 3]; cz = fr[hips * 3 + 2]; }
+  else { cx = clip.frames[0][hips * 3]; cz = clip.frames[0][hips * 3 + 2]; }
+  let ymin = Infinity, ymax = -Infinity;
+  for (const F of clip.frames) for (let b = 0; b < nb; b++) { ymin = Math.min(ymin, F[b * 3 + 1]); ymax = Math.max(ymax, F[b * 3 + 1]); }
+  const span = Math.max(1.0, (ymax - ymin) * 1.25), s = H / span * view.zoom, ym = (ymin + ymax) / 2;
+  // Orbit: turn around the vertical axis (yaw), then tilt (pitch); screen y up.
+  const proj = (x, y, z) => {
+    const rx = x * ca - z * sa, rz = x * sa + z * ca, yy = y - ym;
+    return [W / 2 + rx * s, H / 2 - (yy * cp - rz * sp) * s];
+  };
+  const P = b => proj(fr[b * 3] - cx, fr[b * 3 + 1], fr[b * 3 + 2] - cz);
+  // Floor grid (0.5 m) at the clip's lowest point.
+  g.strokeStyle = css("--line"); g.lineWidth = 1;
+  for (let i = -4; i <= 4; i++) {
+    let a = proj(i * 0.5, ymin, -2), c = proj(i * 0.5, ymin, 2); g.beginPath(); g.moveTo(a[0], a[1]); g.lineTo(c[0], c[1]); g.stroke();
+    a = proj(-2, ymin, i * 0.5); c = proj(2, ymin, i * 0.5); g.beginPath(); g.moveTo(a[0], a[1]); g.lineTo(c[0], c[1]); g.stroke();
+  }
+  for (let b = 0; b < nb; b++) {
+    const p = clip.parent[b]; if (p < 0) continue;
+    const name = clip.bones[b];
+    g.strokeStyle = /left|_l$/i.test(name) ? css("--accent") : (/right|_r$/i.test(name) ? css("--draft") : css("--fg"));
+    g.lineWidth = 6; const a = P(p), c = P(b); g.beginPath(); g.moveTo(a[0], a[1]); g.lineTo(c[0], c[1]); g.stroke();
+  }
+  g.fillStyle = css("--muted"); g.font = "22px " + css("--mono");
+  g.fillText("left", 14, 30); g.fillStyle = css("--accent"); g.fillRect(70, 18, 26, 6);
+  g.fillStyle = css("--muted"); g.fillText("right", 110, 30); g.fillStyle = css("--draft"); g.fillRect(180, 18, 26, 6);
+}
+
+// ---- Lanes ----
+const LANE_H = 24, LEFT = 92;
+function lanesGeom() {
+  const cv = $("lanes"); const w = cv.clientWidth || 800;
+  cv.width = Math.round(w * devicePixelRatio); cv.height = Math.round((LANES.length * LANE_H + 26) * devicePixelRatio);
+  cv.style.height = (LANES.length * LANE_H + 26) + "px";
+  return {cv, w, X: tt => LEFT + (tt - clip.lo) / Math.max(1e-6, clip.hi - clip.lo) * (w - LEFT - 10), T: x => clip.lo + (x - LEFT) / (w - LEFT - 10) * (clip.hi - clip.lo)};
+}
+function drawLanes() {
+  const G = lanesGeom(), g = G.cv.getContext("2d"); g.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  g.clearRect(0, 0, G.w, G.cv.height); g.font = "12px " + css("--sans");
+  LANES.forEach(([k, s], i) => {
+    const y = i * LANE_H; g.fillStyle = i % 2 ? css("--lane-b") : css("--lane-a"); g.fillRect(0, y, G.w, LANE_H);
+    g.fillStyle = css("--muted"); g.fillText(LANE_NAME[k] + (s === "B" ? "" : " " + s), 6, y + 16);
+  });
+  // time ticks
+  const H = LANES.length * LANE_H; g.fillStyle = css("--muted"); g.font = "11px " + css("--mono");
+  const dur = clip.hi - clip.lo, step = dur > 4 ? 0.5 : dur > 1.5 ? 0.25 : 0.1;
+  for (let x = Math.ceil(clip.lo / step) * step; x <= clip.hi + 1e-9; x += step) {
+    const px = G.X(x); g.fillRect(px, H, 1, 4); g.fillText(x.toFixed(step < 0.25 ? 1 : 2), px - 10, H + 16);
+  }
+  for (const f of clip.found_default) {
+    const i = laneOf(f.k, f.s); if (i < 0) continue;
+    g.fillStyle = css("--found"); g.fillRect(G.X(f.t) - 1.5, i * LANE_H + 2, 3, LANE_H / 2 - 3);
+  }
+  for (const e of events(clip)) {
+    const i = laneOf(e.k, e.s); if (i < 0) continue;
+    const x = G.X(e.t), y = i * LANE_H + LANE_H * 0.72, r = 6;
+    const col = e.st === "draft" ? css("--draft") : e.st === "confirmed" ? css("--confirmed") : css("--deleted");
+    g.beginPath(); g.moveTo(x, y - r); g.lineTo(x + r, y); g.lineTo(x, y + r); g.lineTo(x - r, y); g.closePath();
+    if (e.st === "draft") { g.fillStyle = css("--panel"); g.fill(); g.lineWidth = 2; g.strokeStyle = col; g.stroke(); }
+    else { g.fillStyle = col; g.globalAlpha = e.st === "deleted" ? 0.45 : 1; g.fill(); g.globalAlpha = 1; }
+    if (e.docid === sel) { g.lineWidth = 2; g.strokeStyle = css("--accent"); g.strokeRect(x - r - 3, y - r - 3, 2 * r + 6, 2 * r + 6); }
+    const [b, p] = base(e.k, e.p);
+    if (b === "step" || b === "slide" || b === "pivot") {
+      g.fillStyle = css("--fg"); g.font = "10px " + css("--mono");
+      g.fillText(p === "heel" ? "H" : p === "toe" ? "T" : p === "tip" ? "P" : "·", x + r + 1, y + 4);
+    }
+    if (laneOf(e.k, e.s) >= 0 && LANES[i][1] === "B") { g.fillStyle = css("--muted"); g.font = "10px " + css("--mono"); g.fillText(e.s, x - r - 9, y + 4); }
+  }
+  g.fillStyle = css("--accent"); g.fillRect(G.X(t) - 1, 0, 2, H);
+}
+function drawCurves() {
+  const cv = $("curves"), w = cv.clientWidth || 800, h = 170;
+  cv.width = Math.round(w * devicePixelRatio); cv.height = Math.round(h * devicePixelRatio); cv.style.height = h + "px";
+  const g = cv.getContext("2d"); g.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0); g.clearRect(0, 0, w, h);
+  const X = tt => LEFT + (tt - clip.lo) / Math.max(1e-6, clip.hi - clip.lo) * (w - LEFT - 10);
+  let lo = Infinity, hi = -Infinity;
+  for (const [k] of CURVES) for (const v of clip.curves[k] || []) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+  if (!isFinite(lo)) return; hi = Math.max(hi, lo + 0.05);
+  const Y = v => h - 18 - (v - lo) / (hi - lo) * (h - 30);
+  g.strokeStyle = css("--line"); g.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) { const v = lo + (hi - lo) * i / 4, y = Y(v); g.beginPath(); g.moveTo(LEFT, y); g.lineTo(w - 10, y); g.stroke();
+    g.fillStyle = css("--muted"); g.font = "11px " + css("--mono"); g.fillText(v.toFixed(2) + " m", 6, y + 4); }
+  const cols = {heel_L: css("--accent"), toe_L: css("--accent"), heel_R: css("--draft"), toe_R: css("--draft"), hand_L: css("--confirmed"), hand_R: css("--deleted")};
+  for (const [k, name] of CURVES) {
+    const v = clip.curves[k]; if (!v) continue;
+    g.strokeStyle = cols[k]; g.lineWidth = 1.5; g.setLineDash(/toe/.test(k) ? [4, 3] : /hand/.test(k) ? [1, 2] : []);
+    g.beginPath(); v.forEach((y, i) => { const px = X(i / clip.curve_hz), py = Y(y); i ? g.lineTo(px, py) : g.moveTo(px, py); }); g.stroke();
+  }
+  g.setLineDash([]); g.font = "11px " + css("--sans"); let lx = LEFT;
+  for (const [k, name] of CURVES) { if (!clip.curves[k]) continue; g.fillStyle = cols[k]; g.fillText(name, lx, 12); lx += 54; }
+  g.fillStyle = css("--accent"); g.fillRect(X(t) - 1, 16, 2, h - 30);
+}
+function draw() { if (!clip) return; figure(); drawLanes(); drawCurves(); $("tnow").textContent = t.toFixed(3) + " s"; }
+
+// ---- Lane gestures ----
+function hit(px, py) {
+  const G = lanesGeom(); let best = null, bd = 9;
+  for (const e of events(clip)) {
+    const i = laneOf(e.k, e.s); if (i < 0) continue;
+    const d = Math.hypot(G.X(e.t) - px, i * LANE_H + LANE_H * 0.72 - py); if (d < bd) { bd = d; best = e; }
+  }
+  return best;
+}
+const lanes = $("lanes");
+lanes.addEventListener("pointerdown", ev => {
+  if (!clip) return; const r = lanes.getBoundingClientRect(), px = ev.clientX - r.left, py = ev.clientY - r.top;
+  const e = hit(px, py);
+  if (e) { sel = e.docid; drag = {e, x0: px, moved: false}; lanes.setPointerCapture(ev.pointerId); }
+  else if (px > LEFT) { scrubbing = lanes; lanes.setPointerCapture(ev.pointerId); scrubTo(ev, lanes); }
+  renderInfo(); draw();
+});
+// ---- Scrub, frame step, orbit ----
+let scrubbing = null;
+const view = {yaw: Math.PI / 2, pitch: 0.25, zoom: 1};
+function pause() { if (playing) { playing = false; $("play").textContent = "Play"; } }
+function scrubTo(ev, cv) {
+  const r = cv.getBoundingClientRect(), px = ev.clientX - r.left, w = cv.clientWidth || 800;
+  t = Math.min(clip.hi, Math.max(clip.lo, clip.lo + (px - LEFT) / (w - LEFT - 10) * (clip.hi - clip.lo)));
+  pause(); draw();
+}
+function stepBy(dt) { if (!clip) return; pause(); t = Math.min(clip.hi, Math.max(clip.lo, t + dt)); draw(); }
+const curvesCv = $("curves");
+curvesCv.addEventListener("pointerdown", ev => { if (!clip) return; scrubbing = curvesCv; curvesCv.setPointerCapture(ev.pointerId); scrubTo(ev, curvesCv); });
+curvesCv.addEventListener("pointermove", ev => { if (scrubbing === curvesCv) scrubTo(ev, curvesCv); });
+curvesCv.addEventListener("pointerup", () => { scrubbing = null; });
+const figCv = $("fig");
+let orbit = null;
+figCv.addEventListener("pointerdown", ev => { orbit = {x: ev.clientX, y: ev.clientY, yaw: view.yaw, pitch: view.pitch}; figCv.setPointerCapture(ev.pointerId); figCv.style.cursor = "grabbing"; });
+figCv.addEventListener("pointermove", ev => {
+  if (!orbit) return;
+  view.yaw = orbit.yaw + (ev.clientX - orbit.x) * 0.01;
+  view.pitch = Math.max(-1.5, Math.min(1.5, orbit.pitch + (ev.clientY - orbit.y) * 0.01));
+  if (!playing) draw();
+});
+figCv.addEventListener("pointerup", () => { orbit = null; figCv.style.cursor = ""; });
+figCv.addEventListener("wheel", ev => {
+  ev.preventDefault(); view.zoom = Math.max(0.3, Math.min(8, view.zoom * Math.exp(-ev.deltaY * 0.0015))); if (!playing) draw();
+}, {passive: false});
+lanes.addEventListener("pointermove", ev => {
+  if (scrubbing === lanes) { scrubTo(ev, lanes); return; }
+  if (!drag || !canWrite) return; const r = lanes.getBoundingClientRect(), px = ev.clientX - r.left;
+  if (Math.abs(px - drag.x0) > 3) drag.moved = true;
+  if (drag.moved) { drag.t = Math.min(clip.hi, Math.max(clip.lo, lanesGeom().T(px))); drawLanes(); }
+});
+lanes.addEventListener("pointerup", () => {
+  if (scrubbing === lanes) { scrubbing = null; return; }
+  const d = drag; drag = null;
+  if (d && d.moved && canWrite) write(d.e, "move", d.t);
+});
+lanes.addEventListener("dblclick", ev => {
+  if (!clip || !canWrite) return; const r = lanes.getBoundingClientRect(), px = ev.clientX - r.left, py = ev.clientY - r.top;
+  if (px <= LEFT || hit(px, py)) return;
+  const i = Math.floor(py / LANE_H); if (i < 0 || i >= LANES.length) return;
+  const [k, s0] = LANES[i]; const s = s0 === "B" ? $("newSide").value : s0;
+  let p = $("newPart").value; if (/grab|release|hand_pivot/.test(k)) p = "hand"; else if (p === "hand") p = "any";
+  const tt = +lanesGeom().T(px).toFixed(4);
+  const e = {k, s, p, t: tt, ref: "", docid: docId(clip.id, "add-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6))};
+  sel = e.docid; write(e, "add", tt);
+});
+
+// ---- Controls ----
+$("play").onclick = () => { playing = !playing; $("play").textContent = playing ? "Pause" : "Play"; last = performance.now(); if (playing) requestAnimationFrame(tick); };
+function tick(now) {
+  if (!playing || !clip) return;
+  t += (now - last) / 1000 * +$("speed").value; last = now;
+  if (loopRange) { if (t > loopRange[1] || t < loopRange[0]) t = loopRange[0]; }
+  else if (t > clip.hi) t = clip.lo;
+  draw(); requestAnimationFrame(tick);
+}
+$("follow").onchange = draw;
+$("stepB").onclick = ev => stepBy(-(ev.shiftKey ? 1 / 240 : 1 / clip.fps));
+$("stepF").onclick = ev => stepBy(ev.shiftKey ? 1 / 240 : 1 / clip.fps);
+$("viewReset").onclick = () => { view.yaw = Math.PI / 2; view.pitch = 0.25; view.zoom = 1; draw(); };
+$("q").oninput = renderList; $("show").onchange = renderList;
+$("bConfirm").onclick = () => { const e = events(clip).find(e => e.docid === sel); if (e) write(e, "confirm", e.t); };
+$("bDelete").onclick = () => { const e = events(clip).find(e => e.docid === sel); if (e) write(e, "delete", e.t); };
+$("bReset").onclick = resetSel;
+$("confirmAll").onclick = confirmAll;
+document.addEventListener("keydown", ev => {
+  if (ev.target.closest("input,select,textarea")) return;
+  if (ev.key === " ") { ev.preventDefault(); $("play").click(); }
+  else if ((ev.key === "ArrowLeft" || ev.key === "ArrowRight") && clip) { ev.preventDefault(); stepBy((ev.key === "ArrowLeft" ? -1 : 1) * (ev.shiftKey ? 1 / 240 : 1 / clip.fps)); }
+  else if ((ev.key === "c" || ev.key === "C") && !$("bConfirm").disabled) $("bConfirm").click();
+  else if ((ev.key === "Delete" || ev.key === "Backspace") && !$("bDelete").disabled) $("bDelete").click();
+});
+window.addEventListener("resize", draw);
+
+// ---- Disagreement queue ----
+// The bench's matching (tests/ref_file.h) redone here: per row, one-to-one, smallest |err| first,
+// within 150 ms. A disagreement: a draft no detection matches, a detection no expected event
+// matches, or a draft whose detection is more than 60 ms away. Close ones of a clip, side and
+// kind (a step any / heel / toe of one contact) are one decision.
+const PRIORITY = /jump|run|sprint|treadmill|exhausted/i;
+let loopRange = null, qIndex = 0, qKey = null, qFollow = true;
+const qSkipped = new Set(), qExpanded = new Set();
+function ident(k, p, s) {
+  let [b, pp] = base(k, p);
+  if (b === "step" || b === "slide" || b === "pivot") pp = pp === "tip" ? "toe" : pp; else pp = "";
+  return [b, pp, (b === "jump" || b === "land") ? "B" : s];
+}
+function emits(id, cfg) {
+  if (id[0] === "step" || id[0] === "slide" || id[0] === "pivot") return cfg === "default" ? id[1] === "any" : (id[1] === "heel" || id[1] === "toe");
+  return cfg === "default";   // other kinds: the default run decides (the parts run gives the same)
+}
+function dismissed(c, f) { return corr.has(docId(c.id, "dismiss|" + f.k + "|" + f.s + "|" + f.t.toFixed(4))); }
+function disagreements(c) {
+  const ev = events(c).filter(e => e.st !== "deleted"), out = [];
+  for (const cfg of ["default", "parts"]) {
+    const rows = new Map();
+    const row = id => { const k = id.join("|"); if (!rows.has(k)) rows.set(k, {id, refs: [], det: []}); return rows.get(k); };
+    for (const e of ev) { const id = ident(e.k, e.p, e.s); if (emits(id, cfg)) row(id).refs.push(e); }
+    for (const f of c["found_" + cfg] || []) { const id = ident(f.k, "any", f.s); if (emits(id, cfg)) row(id).det.push(f); }
+    for (const r of rows.values()) {
+      const pairs = [];
+      r.refs.forEach((e, i) => r.det.forEach((f, j) => { const d = Math.abs(f.t - e.t); if (d <= 0.150) pairs.push([d, i, j]); }));
+      pairs.sort((a, b) => a[0] - b[0]);
+      const ur = new Map(), ud = new Set();
+      for (const [d, i, j] of pairs) { if (ur.has(i) || ud.has(j)) continue; ur.set(i, j); ud.add(j); }
+      r.refs.forEach((e, i) => {
+        if (e.st !== "draft") return;
+        if (!ur.has(i)) out.push({type: "draft", e, id: r.id, t: e.t});
+        else { const f = r.det[ur.get(i)]; if (Math.abs(f.t - e.t) > 0.060) out.push({type: "far", e, f, id: r.id, t: e.t}); }
+      });
+      r.det.forEach((f, j) => { if (!ud.has(j) && !dismissed(c, f)) out.push({type: "rav", f, id: r.id, t: f.t}); });
+    }
+  }
+  // One decision per clip, side, kind family and moment.
+  out.sort((a, b) => a.t - b.t);
+  const groups = [];
+  for (const x of out) {
+    const g = groups.find(g => g.type === x.type && g.kind === x.id[0] && g.side === x.id[2] && Math.abs(g.t - x.t) <= 0.060);
+    if (g) g.items.push(x); else groups.push({clip: c, type: x.type, kind: x.id[0], side: x.id[2], t: x.t, items: [x]});
+  }
+  return groups;
+}
+function queueAll() {
+  const q = [];
+  const clips = [...DATA.clips].filter(c => c.has_ref).sort((a, b) => (PRIORITY.test(b.id) - PRIORITY.test(a.id)) || a.id.localeCompare(b.id));
+  for (const c of clips) {
+    const g = disagreements(c);
+    const drafts = events(c).filter(e => e.st === "draft");
+    if (!c.found_default.length && drafts.length > 1 && !qExpanded.has(c.id)) {
+      q.push({clip: c, type: "clip", kind: "", side: "", t: drafts[0].t, items: drafts.map(e => ({type: "draft", e})), n: drafts.length});
+      continue;
+    }
+    q.push(...g);
+  }
+  return q;
+}
+const KN = {step: "Step", lift: "Lift-off", slide: "Slide", pivot: "Pivot", jump: "Jump", land: "Land", grab: "Grab", release: "Release", hand_pivot: "Hand pivot"};
+const partTxt = it => { const p = it.id ? it.id[1] : ""; return p && p !== "any" ? " (" + p + ")" : ""; };
+function qKeyOf(g) { return g.clip.id + "|" + g.type + "|" + g.kind + "|" + g.side + "|" + g.t.toFixed(3); }
+function renderQueue() {
+  if (!DATA) return;
+  const q = queueAll().filter(g => !qSkipped.has(qKeyOf(g)));
+  const prio = q.filter(g => PRIORITY.test(g.clip.id)).length;
+  $("qcount").textContent = q.length ? q.length + " left (" + prio + " in jumps and runs)" : "";
+  let i = qKey ? q.findIndex(g => qKeyOf(g) === qKey) : -1;
+  if (i < 0) i = Math.min(qIndex, q.length - 1);
+  const box = $("qtext"), btns = $("qbtns"); btns.textContent = "";
+  if (!q.length) { box.textContent = qSkipped.size ? "Nothing left except the ones you skipped." : "Nothing left to decide. Thank you."; loopRange = null; return; }
+  qIndex = Math.max(0, i); const g = q[qIndex]; qKey = qKeyOf(g);
+  if (clip !== g.clip) {
+    if (!qFollow) {
+      box.innerHTML = ""; const m = document.createElement("div"); m.textContent = "Next one: " + g.clip.id + " at " + g.t.toFixed(3) + " s."; box.append(m);
+      const b = document.createElement("button"); b.className = "b primary"; b.textContent = "Go to it"; b.onclick = () => { qFollow = true; renderInfo(); draw(); }; btns.append(b);
+      loopRange = null; return;
+    }
+    clip = g.clip; sel = null; t = Math.max(clip.lo, g.t - 0.4); renderList(); setTimeout(() => { renderInfo(); draw(); }, 0);
+  }
+  const kind = KN[g.kind] || g.kind, side = g.side && g.side !== "B" ? " " + g.side : "";
+  const at = " at <b>" + g.t.toFixed(3) + " s</b>";
+  const name = "<b></b>"; box.innerHTML = "";
+  const head = document.createElement("div"); head.style.cssText = "font-size:12px;color:var(--muted)"; head.textContent = g.clip.id; box.append(head);
+  const msg = document.createElement("div"); box.append(msg);
+  const B = (label, fn, primary) => { const b = document.createElement("button"); b.className = "b" + (primary ? " primary" : ""); b.textContent = label; b.disabled = !canWrite; b.onclick = async () => { qFollow = true; await fn(); qKey = null; renderList(); renderInfo(); draw(); }; btns.append(b); };
+  if (g.type === "clip") {
+    msg.innerHTML = "RAV finds <b>nothing</b> on this clip. The draft has <b>" + g.n + "</b> events. Play the clip: are they right?";
+    B("Yes, all right", async () => { for (const it of g.items) await write(it.e, "confirm", it.e.t); }, true);
+    B("Check them one by one", async () => { qExpanded.add(g.clip.id); });
+    loopRange = null; t = Math.max(t, clip.lo);
+    if (canWrite && !playing) { $("speed").value = "0.5"; }
+  } else {
+    if (g.type === "draft") msg.innerHTML = "<b>" + kind + side + "</b>" + partTxt(g.items[0]) + at + ": only the <b>draft</b> has it. RAV finds nothing here.";
+    else if (g.type === "rav") msg.innerHTML = "<b>" + kind + side + "</b>" + partTxt(g.items[0]) + at + ": only <b>RAV</b> finds it. The draft has nothing here.";
+    else msg.innerHTML = "<b>" + kind + side + "</b>" + partTxt(g.items[0]) + ": the draft says <b>" + g.t.toFixed(3) + " s</b>, RAV says <b>" + g.items[0].f.t.toFixed(3) + " s</b>.";
+    if (g.type === "draft") {
+      B("Yes, an event here", async () => { for (const it of g.items) await write(it.e, "confirm", it.e.t); }, true);
+      B("No event here", async () => { for (const it of g.items) await write(it.e, "delete", it.e.t); });
+    } else if (g.type === "rav") {
+      B("RAV is right", async () => { for (const it of g.items) { const [b, p] = ident(it.f.k, "any", it.f.s); const e = {k: b, s: it.f.s === "B" ? $("newSide").value : it.f.s, p: p || (/grab|release|hand_pivot/.test(b) ? "hand" : "any"), t: it.f.t, ref: "", docid: docId(g.clip.id, "add-" + it.f.k + "-" + it.f.s + "-" + it.f.t.toFixed(4))}; await write(e, "add", it.f.t); } }, true);
+      B("No event here", async () => { for (const it of g.items) { const id = docId(g.clip.id, "dismiss|" + it.f.k + "|" + it.f.s + "|" + it.f.t.toFixed(4)); corr.set(id, {clip: g.clip.id, action: "dismiss", kind: it.f.k, side: it.f.s, t: it.f.t}); if (db) try { await db.collection("corrections").doc(id).set({clip: g.clip.id, ref: "", action: "dismiss", kind: it.f.k, side: it.f.s, part: "any", t: it.f.t, at: new Date().toISOString()}); } catch (err) { showNote("This choice was not saved. Reload the page."); } } });
+    } else {
+      B("The draft's time", async () => { for (const it of g.items) await write(it.e, "confirm", it.e.t); }, true);
+      B("RAV's time", async () => { for (const it of g.items) await write(it.e, "move", it.f.t); }, true);
+      B("No event here", async () => { for (const it of g.items) await write(it.e, "delete", it.e.t); });
+    }
+    const t0 = g.type === "far" ? Math.min(g.t, g.items[0].f.t) : g.t, t1 = g.type === "far" ? Math.max(g.t, g.items[0].f.t) : g.t;
+    loopRange = $("qloop").checked ? [Math.max(clip.lo, t0 - 0.4), Math.min(clip.hi, t1 + 0.4)] : null;
+  }
+  const hint = document.createElement("div"); hint.className = "help"; hint.style.marginTop = "4px";
+  hint.textContent = "Wrong place for both? Drag the diamond in the lanes below, or double-click to add one, then Skip.";
+  if (g.type !== "clip") box.append(hint);
+}
+function startLoop() {
+  if (!loopRange) return;
+  t = loopRange[0]; $("speed").value = "0.25";
+  if (!playing) $("play").click();
+}
+$("qskip").onclick = () => { qFollow = true; const q = queueAll(); const g = q.find(g => qKeyOf(g) === qKey); if (g) qSkipped.add(qKey); qKey = null; renderInfo(); startLoop(); draw(); };
+$("qprev").onclick = () => { qFollow = true; if (qSkipped.size) { const last = [...qSkipped].pop(); qSkipped.delete(last); qKey = last; } else { qIndex = Math.max(0, qIndex - 1); qKey = null; } renderInfo(); startLoop(); draw(); };
+$("qloop").onchange = () => { renderQueue(); if (loopRange) startLoop(); };
+let lastQ = null;
+const _renderQueue = renderQueue;
+renderQueue = function () { _renderQueue(); if (qKey !== lastQ) { lastQ = qKey; if (loopRange) startLoop(); } };
+
+// ---- Start ----
+fetch("review.json").then(r => r.json()).then(d => {
+  DATA = d; let first = d.clips.find(c => c.refs.length) || d.clips[0];
+  try { const k = localStorage.getItem("rav-review-clip"); const c = d.clips.find(c => c.id === k); if (c) first = c; } catch (e) {}
+  pick(first);
+}).catch(() => { $("tot").textContent = "The clip data did not load. Reload the page."; });
+
+(async () => {
+  const c = window.claude && await window.claude.use("db");
+  if (!c) { showNote("Saving is not available in this view: the page is read-only."); return; }
+  db = c; canWrite = true;
+  try {
+    const u = await window.claude.use("user");
+    if (u && typeof u.can === "function" && (await u.can("data.write")) === false) { canWrite = false; showNote("You can look but not change: your access to this page is read-only."); }
+  } catch (e) {}
+  db.collection("corrections").onSnapshot(snap => {
+    corr.clear(); for (const d of snap.docs) corr.set(d.id, d.data());
+    if (DATA) { renderList(); if (clip) { renderInfo(); draw(); } }
+  }, err => showNote("The saved corrections could not be read (" + (err && err.code) + ")."));
+  if (clip) renderInfo();
+})();
+})();
+</script>

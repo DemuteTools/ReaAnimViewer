@@ -13,7 +13,8 @@
 #   clip    the clip id (the reference file's name without .ref.tsv)
 #   ref     the line it corrects, "kind|side|part|time" as the page got it from review.json
 #           ("" for an added event)
-#   action  "confirm" | "move" | "delete" | "add"
+#   action  "confirm" | "move" | "delete" | "add" | "dismiss" (a detection only RAV found judged
+#           wrong on the disagreement queue: written nowhere, it stays an extra in the bench)
 #   kind, side, part, t   the event after the gesture (move: the new time; add: the new event)
 # The page keeps one document per event (its latest gesture). Each is written as:
 #   confirm / move / add   the line confirmed, source antho, at the given kind / side / part / t
@@ -89,6 +90,8 @@ def parse_ref(ref):
 def apply(lines, c):
     """Applies one correction; returns a short text of what it did."""
     action = c.get("action")
+    if action == "dismiss":  # "no event here" on a detection only RAV found: nothing to expect
+        return "dismissed %s %s %.4f (nothing written)" % (c.get("kind"), c.get("side"), float(c.get("t") or 0))
     new = {"kind": c.get("kind"), "side": c.get("side"), "part": c.get("part"), "t": c.get("t")}
     old = parse_ref(c.get("ref"))
     if old:

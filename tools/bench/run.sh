@@ -32,5 +32,8 @@ if [ "$DRAFT" = 1 ]; then
     python3 tools/ref_draft/merge_check.py >&2
     echo "== drafting references" >&2
     python3 tools/ref_draft/ref_draft.py --fixtures=fixtures --bench="$BUILD/tests/trigger_bench" >&2
+    "$BUILD/tests/trigger_bench" --fixtures=fixtures --fbx-dump="$BUILD/fbx_dump/fbx_dump" "$@" >/dev/null
+    echo "== accepting the drafts the detector agrees with (60 ms)" >&2
+    python3 tools/ref_draft/agree.py --fixtures=fixtures >&2
     "$BUILD/tests/trigger_bench" --fixtures=fixtures --fbx-dump="$BUILD/fbx_dump/fbx_dump" "$@"
 fi

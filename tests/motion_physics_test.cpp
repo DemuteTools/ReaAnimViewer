@@ -193,6 +193,30 @@ FootFn WalkFoot(double first_contact, double x)
     };
 }
 
+// Story 10-8t: a run. Each foot is planted for 0.3 s, then swings 0.5 s, 1.2 m forward (eased)
+// with a 15 cm lift; the feet 0.4 s apart, so a 0.1 s flight follows each contact. The left
+// contacts start at first_contact + 0.8 k. `stride`: the swing's length (m).
+FootFn RunFoot(double first_contact, double x, double stride = 1.2)
+{
+    return [first_contact, x, stride](double t) {
+        const double cycle = 0.8, contact = 0.3;
+        const double rel = t - first_contact;
+        const int    k = static_cast<int>(std::floor(rel / cycle));
+        const double in = rel - k * cycle;
+        FootPose     f;
+        f.ball.x = x;
+        if (in < contact) {
+            f.ball.z = stride * k;
+            f.ball.y = 0.02;
+        } else {
+            const double u = (in - contact) / (cycle - contact);
+            f.ball.z = stride * (k + Ease(u));
+            f.ball.y = 0.02 + 0.15 * std::sin(kPi * u);
+        }
+        return f;
+    };
+}
+
 // A foot planted at (x, 0, z), turned by yaw(t).
 FootFn Planted(double x, double z, const std::function<double(double)>& yaw = nullptr)
 {
@@ -529,11 +553,17 @@ int main()
     }
     {
         // In-place walk: the walk with its 0.6 m/s taken off (the planted foot slides back at
-        // 0.6 m/s). The ground frame reads it, and the steps are the moving walk's.
+        // 0.6 m/s). The ground frame reads it, and the steps are the moving walk's. Story 10-8t:
+        // the frame is per sample (0.6 m/s at every one) with a slack of 15 % of its speed on
+        // the thresholds, so a step crosses its threshold a little earlier and a lift-off a little
+        // later (about 2.5 ms here).
         Options o;
         o.ground = 0.6;
         const PhysicsAnalysis a = AnalyseMotion(Rig(walk_l, walk_r, o));
         CHECK(a.ok && std::fabs(a.ground_velocity.z + 0.6) < 1e-3 && std::fabs(a.ground_velocity.x) < 1e-3);
+        CHECK(a.ground_vel.size() == a.samples && a.ground_slack.size() == a.samples);
+        for (size_t i = 0; i < a.ground_vel.size(); ++i)
+            CHECK(std::fabs(a.ground_vel[i].z + 0.6) < 1e-3 && std::fabs(a.ground_slack[i] - 0.15 * 0.6 / a.leg_length) < 1e-3);
         const std::vector<PhysicsEvent> ev = FootEvents(a, SpeedTiming());
         const std::vector<PhysicsEvent> moving = FootEvents(AnalyseMotion(Rig(walk_l, walk_r, Options{})), SpeedTiming());
         CHECK(ev.size() == moving.size());
@@ -542,7 +572,12 @@ int main()
                 for (int q = -2; q < kFootPartCount; ++q) {  // -2: every part
                     const std::vector<PhysicsEvent> x = Of(ev, kind, side, q), y = Of(moving, kind, side, q);
                     CHECK(x.size() == y.size());
-                    for (size_t i = 0; i < x.size() && i < y.size(); ++i) CHECK(std::fabs(x[i].time_s - y[i].time_s) < 0.002);
+                    for (size_t i = 0; i < x.size() && i < y.size(); ++i) {
+                        const double d = x[i].time_s - y[i].time_s;
+                        CHECK(std::fabs(d) < 0.004);
+                        if (kind == PhysicsKind::Step) CHECK(d < -0.001);     // the slack: earlier
+                        if (kind == PhysicsKind::LiftOff) CHECK(d > 0.001);   // and later
+                    }
                 }
     }
     {
@@ -550,10 +585,17 @@ int main()
         // taken off (every planted part slides down at 0.57 leg/s, past the contact speed; the
         // lowest part is often the swinging foot). The ground frame reads it from the limbs that
         // move together, and the foot events are the moving walk's, at the default timing too.
+        // In place, the hips stay where they are, bobbing with the walk (story 10-8t: the climb
+        // frame needs the hips' travel over the clip below half the climbing speed).
         auto climbing = [&](double v) {
             Options o;
             o.climb = v;
             std::vector<BoneTrack> t = Rig(walk_l, walk_r, o);
+            BoneTrack& hips = t[static_cast<size_t>(Role::Hips)];
+            for (size_t i = 0; i < hips.pos.size(); ++i) {
+                hips.pos[i].y += v * static_cast<double>(i) / o.rate;
+                hips.pos[i].z = hips.pos[0].z;
+            }
             auto rung = [v](double x) { return [v, x](double tm) { return Vec3d{x, 1.6 - v * tm, 0.3}; }; };
             AddHands(t, rung(-0.3), rung(0.3), o);
             return AnalyseMotion(t);
@@ -573,6 +615,174 @@ int main()
         Options o;
         o.climb = 0.5;
         CHECK(AnalyseMotion(Rig(walk_l, walk_r, o)).ground_velocity.y == 0.0);
+        // Story 10-8t: the climb frame is one constant frame, with no slack.
+        CHECK(a.ground_vel.size() == a.samples && a.ground_slack.size() == a.samples);
+        for (size_t i = 0; i < a.ground_vel.size(); ++i)
+            CHECK(a.ground_vel[i].y == a.ground_velocity.y && a.ground_vel[i].z == a.ground_velocity.z &&
+                  a.ground_slack[i] == 0.0);
+        // Story 10-8t, carried limbs (Run Strafing Jump): the same climb carried sideways at
+        // 3 m/s, the hips with it. The limbs still share a velocity, but the hips travel at half
+        // its speed or more: no climb frame, and the ground is the world.
+        {
+            Options c;
+            c.climb = 0.5;
+            std::vector<BoneTrack> t = Rig(walk_l, walk_r, c);
+            auto rung = [](double x) { return [x](double tm) { return Vec3d{x, 1.6 - 0.5 * tm, 0.3}; }; };
+            AddHands(t, rung(-0.3), rung(0.3), c);
+            BoneTrack& hips = t[static_cast<size_t>(Role::Hips)];
+            for (size_t i = 0; i < hips.pos.size(); ++i) {
+                hips.pos[i].y += 0.5 * static_cast<double>(i) / c.rate;
+                hips.pos[i].z = hips.pos[0].z;
+            }
+            Drift(t, Vec3d{3.0 * c.dur, 0.0, 0.0}, c.dur);
+            const PhysicsAnalysis s = AnalyseMotion(t);
+            CHECK(s.ok && s.ground_velocity.x == 0.0 && s.ground_velocity.y == 0.0 && s.ground_velocity.z == 0.0);
+            for (size_t i = 0; i < s.ground_vel.size(); ++i)
+                CHECK(s.ground_vel[i].x == 0.0 && s.ground_vel[i].z == 0.0 && s.ground_slack[i] == 0.0);
+        }
+    }
+    {
+        // Story 10-8t: the ground frame follows the clip, per stance.
+        auto world = [](const PhysicsAnalysis& a) {
+            bool ok = a.ok && a.ground_vel.size() == a.samples && a.ground_slack.size() == a.samples &&
+                      a.ground_velocity.x == 0.0 && a.ground_velocity.y == 0.0 && a.ground_velocity.z == 0.0;
+            for (size_t i = 0; ok && i < a.ground_vel.size(); ++i)
+                ok = a.ground_vel[i].x == 0.0 && a.ground_vel[i].y == 0.0 && a.ground_vel[i].z == 0.0 &&
+                     a.ground_slack[i] == 0.0;
+            return ok;
+        };
+        // A world-frame clip (the walk, root motion kept): ground 0 and slack 0 at every sample.
+        CHECK(world(AnalyseMotion(Rig(walk_l, walk_r, Options{}))));
+        // A treadmill that speeds up (Treadmill Running): a run in place on a belt at 1 m/s, then
+        // 2 m/s (eased over 1.8 - 2.2 s); the hips end where they started. One clip-wide value
+        // would be wrong on either half; the frame follows each stance, and the foot events are
+        // the moving run's (the slack moves a lift-off a few ms).
+        {
+            const Options          o;
+            const FootFn           run_l = RunFoot(-0.6, -0.1), run_r = RunFoot(-0.2, 0.1);
+            std::vector<BoneTrack> t = Rig(run_l, run_r, o);
+            auto belt = [](double tm) { return 1.0 + 1.0 * Ease((tm - 1.8) / 0.4); };
+            for (BoneTrack& b : t) {
+                double g = 0.0;  // the belt's travel at sample i
+                for (size_t i = 0; i < b.pos.size(); ++i) {
+                    if (i > 0) g += 0.5 * (belt((i - 1) / o.rate) + belt(i / o.rate)) / o.rate;
+                    b.pos[i].z -= g;
+                }
+            }
+            const PhysicsAnalysis a = AnalyseMotion(t);
+            CHECK(a.ok && a.ground_vel.size() == a.samples);
+            if (a.ok && a.ground_vel.size() == a.samples) {
+                CHECK(std::fabs(a.ground_vel[static_cast<size_t>(1.1 * o.rate)].z + 1.0) < 0.02);
+                CHECK(std::fabs(a.ground_vel[static_cast<size_t>(3.1 * o.rate)].z + 2.0) < 0.02);
+                CHECK(std::fabs(a.ground_slack[static_cast<size_t>(3.1 * o.rate)] - 0.15 * 2.0 / a.leg_length) < 0.01);
+            }
+            const std::vector<PhysicsEvent> ev = FootEvents(a, SpeedTiming());
+            const std::vector<PhysicsEvent> moving = FootEvents(AnalyseMotion(Rig(run_l, run_r, o)), SpeedTiming());
+            CHECK(Of(moving, PhysicsKind::FootStep).size() >= 8);
+            for (PhysicsKind kind : {PhysicsKind::Step, PhysicsKind::FootStep, PhysicsKind::LiftOff})
+                for (char side : {'L', 'R'}) {
+                    const std::vector<PhysicsEvent> x = Of(ev, kind, side), y = Of(moving, kind, side);
+                    CHECK(x.size() == y.size());
+                    for (size_t i = 0; i < x.size() && i < y.size(); ++i) CHECK(std::fabs(x[i].time_s - y[i].time_s) < 0.01);
+                }
+        }
+        // Feet dragged by a root motion (Crawling on hands and knees): both feet planted, the
+        // whole body carried forward at 0.6 m/s, the hips at 0.5 m/s. The feet hold a steady
+        // velocity, but the hips travel at half of it or more: the ground is the world.
+        {
+            Options o;
+            o.dur = 3.0;
+            std::vector<BoneTrack> t = Rig(Planted(-0.1, 0.0), Planted(0.1, 0.2), o);
+            Drift(t, Vec3d{0.0, 0.0, 0.6 * o.dur}, o.dur);
+            BoneTrack& hips = t[static_cast<size_t>(Role::Hips)];
+            for (size_t i = 0; i < hips.pos.size(); ++i) hips.pos[i].z -= 0.1 * static_cast<double>(i) / o.rate;
+            CHECK(world(AnalyseMotion(t)));
+            // No hips bone: no travel check, the stances are used as found (a 0.6 m/s ground).
+            hips.pos.clear();
+            const PhysicsAnalysis b = AnalyseMotion(t);
+            CHECK(b.ok && std::fabs(b.ground_velocity.z - 0.6) < 0.01 && !b.hips_missing.empty());
+        }
+        // A keyframed in-place sprint follows its belt only roughly (Two Cycle Sprint): a run at
+        // 4.5 m/s in place on a 4.5 m/s belt, the planted foot wobbling +-13 % of the belt's speed
+        // (0.67 leg/s, past the contact and slide speeds). The slack (15 % of the ground's speed)
+        // keeps the planted foot in contact and not sliding: the moving run's events, no Slide.
+        {
+            const Options          o;
+            const FootFn           run_l = RunFoot(-0.6, -0.1, 3.6), run_r = RunFoot(-0.2, 0.1, 3.6);
+            std::vector<BoneTrack> t = Rig(run_l, run_r, o);
+            // The wobble: during each 0.3 s contact the planted foot's speed on the belt swings
+            // by wob x sin (one period per contact, so each contact still averages the belt).
+            const double belt = 4.5, wob = 0.13 * belt, w = 2.0 * kPi / 0.3;
+            for (int s = 0; s < 2; ++s)
+                for (int q = 0; q < kFootPartCount; ++q) {
+                    BoneTrack& b = t[static_cast<size_t>(FootPartRole(s ? 'R' : 'L', q))];
+                    for (size_t i = 0; i < b.pos.size(); ++i) {
+                        const double rel = i / o.rate - (s ? -0.2 : -0.6);
+                        const double in = rel - 0.8 * std::floor(rel / 0.8);
+                        if (in < 0.3) b.pos[i].z += wob / w * (1.0 - std::cos(w * in));
+                    }
+                }
+            for (BoneTrack& b : t)
+                for (size_t i = 0; i < b.pos.size(); ++i) b.pos[i].z -= belt * i / o.rate;
+            const PhysicsAnalysis a = AnalyseMotion(t);
+            CHECK(a.ok && std::fabs(a.ground_velocity.z + belt) < 0.1);
+            const std::vector<PhysicsEvent> ev = FootEvents(a, SpeedTiming());
+            const std::vector<PhysicsEvent> moving = FootEvents(AnalyseMotion(Rig(run_l, run_r, o)), SpeedTiming());
+            CHECK(Of(moving, PhysicsKind::FootStep).size() >= 8);
+            CHECK(Of(ev, PhysicsKind::Slide).empty());
+            // From 0.3 s (the clip's first lift-off is under the smoothing's edge); the wobble
+            // moves a contact's ends by up to about 20 ms.
+            auto after = [](std::vector<PhysicsEvent> v) {
+                v.erase(std::remove_if(v.begin(), v.end(), [](const PhysicsEvent& e) { return e.time_s < 0.3; }), v.end());
+                return v;
+            };
+            for (PhysicsKind kind : {PhysicsKind::Step, PhysicsKind::FootStep, PhysicsKind::LiftOff})
+                for (char side : {'L', 'R'}) {
+                    const std::vector<PhysicsEvent> x = after(Of(ev, kind, side)), y = after(Of(moving, kind, side));
+                    CHECK(x.size() == y.size());
+                    for (size_t i = 0; i < x.size() && i < y.size(); ++i) CHECK(std::fabs(x[i].time_s - y[i].time_s) < 0.03);
+                }
+        }
+        // An isolated glide is not a treadmill (the median of 3 stances): feet stepping in place,
+        // root motion kept (the hips do not travel), contacts of 0.7 s with a 0.1 s flight
+        // between; in its second contact the left foot glides 0.4 s at 0.5 m/s. That stance reads
+        // 0.5 m/s, its neighbours 0: the ground stays 0 there and the glide is a Slide.
+        {
+            auto stepping = [](double first_contact, double x, bool glide) {
+                return [=](double tm) {
+                    const double cycle = 1.6, contact = 0.7;
+                    const double rel = tm - first_contact;
+                    const int    k = static_cast<int>(std::floor(rel / cycle));
+                    const double in = rel - k * cycle;
+                    FootPose     f;
+                    f.ball.x = x;
+                    f.ball.z = glide ? 0.5 * std::clamp(tm - 1.95, 0.0, 0.4) : 0.0;
+                    f.ball.y = in < contact ? 0.02 : 0.02 + 0.15 * std::sin(kPi * (in - contact) / (cycle - contact));
+                    return f;
+                };
+            };
+            Options o;
+            o.dur = 4.0;
+            const PhysicsAnalysis a = AnalyseMotion(Rig(stepping(-1.4, -0.1, true), stepping(-0.6, 0.1, false), o));
+            CHECK(a.ok && a.ground_vel.size() == a.samples);
+            for (size_t i = 0; i < a.ground_vel.size(); ++i) CHECK(a.ground_vel[i].z == 0.0 && a.ground_slack[i] == 0.0);
+            const std::vector<PhysicsEvent> sl = Of(FootEvents(a, SpeedTiming()), PhysicsKind::Slide, 'L');
+            CHECK(sl.size() == 1);
+            if (sl.size() == 1) CHECK(std::fabs(sl[0].start_s - 1.95) < 0.05 && std::fabs(sl[0].end_s - 2.35) < 0.05);
+        }
+        // Mostly airborne (Running Jump_Long): both feet always moving, round a 0.3 m circle
+        // every 0.6 s, out of phase; never 100 ms steady: no stance, the ground is the world.
+        {
+            auto circling = [](double x, double phase) {
+                return [=](double tm) {
+                    FootPose     f;
+                    const double w = 2.0 * kPi / 0.6 * tm + phase;
+                    f.ball = Vec3d{x, 0.35 + 0.3 * std::sin(w), 0.3 * std::cos(w)};
+                    return f;
+                };
+            };
+            CHECK(world(AnalyseMotion(Rig(circling(-0.1, 0.0), circling(0.1, kPi), Options{}))));
+        }
     }
     {
         // Raised support: the left foot steps up onto a 0.4 m block at t = 0.9 (a swing of 0.4 s

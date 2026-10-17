@@ -24,7 +24,8 @@
 #
 # Body units: L = leg length (thigh + shin, from the dump); speeds in L/s; heights reported in cm.
 # The ground: on an in-place clip (treadmill, in-place loop) the floor moves at the world velocity
-# w (ref_draft.world_velocity: the mode of the end parts' velocities); every speed below is taken
+# w (ref_draft.world_velocity: the mode of the end parts' velocities; horizontally over a sliding
+# 1.5 s window, so a belt that changes speed is followed); every speed below is taken
 # relative to w (a belt-carried foot is still). On a root-motion clip w = 0.
 #
 # Rules (S = |v - w|, Vy = vertical speed relative to w; smoothing 25 ms):
@@ -161,6 +162,16 @@ class Motion:
         # really rises has no moving ground; ref_draft looks only horizontally).
         rm = float(np.linalg.norm(self.P["hips"][-1] - self.P["hips"][0])) >= 0.5 * L
         self.w = np.zeros(3) if rm else world_velocity([self.V[k] for k in ends], L)
+        # A belt that changes speed (Treadmill Running: 3.5 -> 7 L/s): the horizontal world
+        # velocity per sample, the same mode over a sliding 1.5 s window (several strides), every
+        # 0.25 s, interpolated; the vertical one stays the clip's (heights use it).
+        self.wt = np.tile(self.w, (self.n, 1))
+        if not rm:
+            hw, step = int(0.75 * r), max(1, int(0.25 * r))
+            cs = list(range(0, self.n, step))
+            ws = [world_velocity([self.V[k][max(0, c - hw):c + hw + 1] for k in ends], L) for c in cs]
+            for a in (0, 2):
+                self.wt[:, a] = np.interp(np.arange(self.n), cs, [w[a] for w in ws])
         self.down, self.contact, self.hloc, self.still, self.imp = {}, {}, {}, {}, {}
         for s in "LR":
             for part in ("heel", "toe"):
@@ -188,7 +199,7 @@ class Motion:
         return i / self.rate
 
     def rel(self, k):
-        return self.V[k] - self.w
+        return self.V[k] - self.wt
 
     def yrel(self, k):
         """The part's height relative to the moving ground (a vertical belt: an in-place climb)."""

@@ -224,6 +224,9 @@ double PeakSpeed(const std::vector<double>& sp, int a, int b)
     return m;
 }
 
+// Story 10-8t: the part's per-sample slack (leg/s) on its contact / slide speeds.
+double Slack(const PartTrack& pt, int i) { return pt.slack.empty() ? 0.0 : pt.slack[static_cast<size_t>(i)]; }
+
 // Each timing definition's step time for the contact that starts at sample s (see
 // StepTiming): after `lo` (the previous contact's end, or the search window), up to s +
 // search_fwd_s (Speed) or up to where the contact comes to rest (`rest`, the others).
@@ -245,11 +248,13 @@ void StepCandidates(const PartTrack& pt, const PartContact& c, int lo, int rest,
     // Speed: the downward crossing of the contact speed nearest to the start.
     double speed_t = s / rate;
     {
-        const double th = p.contact_speed;
+        const double th = p.contact_speed;  // + the part's slack per sample (story 10-8t)
         int          best = -1;
         for (int j = lo; j <= hi_fwd; ++j)
-            if (sp[j - 1] >= th && sp[j] < th && (best < 0 || std::abs(j - s) < std::abs(best - s))) best = j;
-        if (best > 0) speed_t = CrossTime(best, sp[best - 1], sp[best], th, rate);
+            if (sp[j - 1] >= th + Slack(pt, j - 1) && sp[j] < th + Slack(pt, j) &&
+                (best < 0 || std::abs(j - s) < std::abs(best - s)))
+                best = j;
+        if (best > 0) speed_t = CrossTime(best, sp[best - 1], sp[best], th + Slack(pt, best), rate);
     }
     for (int k = 0; k < kStepTimingCount; ++k) out[k] = speed_t;
 
@@ -314,9 +319,11 @@ void SegmentPart(PartTrack& pt, double leg, double rate, const PhysicsParams& p)
     const double s0 = p.contact_speed > 0.0 ? p.contact_speed : 1e-9;
     const double scale = kEvidenceRateHz / rate;
     std::vector<double> e(static_cast<size_t>(n));
-    for (int i = 0; i < n; ++i)
+    for (int i = 0; i < n; ++i) {
+        const double si = s0 + Slack(pt, i);  // story 10-8t: widened on an in-place clip
         e[static_cast<size_t>(i)] =
-            scale * std::clamp((s0 - pt.speed[static_cast<size_t>(i)]) / s0, std::min(0.0, p.free_evidence_floor), 1.0);
+            scale * std::clamp((si - pt.speed[static_cast<size_t>(i)]) / si, std::min(0.0, p.free_evidence_floor), 1.0);
+    }
     const std::vector<char> st = Viterbi(e, p.switch_cost);
 
     std::vector<PartContact> cs;
@@ -372,11 +379,12 @@ void SegmentPart(PartTrack& pt, double leg, double rate, const PhysicsParams& p)
             const int    hi = std::min(n - 1, std::min(k + 1 < cs.size() ? cs[k + 1].start : n - 1, c.end + fwd));
             int          best = -1;
             for (int j = lo; j <= hi; ++j)
-                if (pt.speed[static_cast<size_t>(j - 1)] < th && pt.speed[static_cast<size_t>(j)] >= th &&
+                if (pt.speed[static_cast<size_t>(j - 1)] < th + Slack(pt, j - 1) &&
+                    pt.speed[static_cast<size_t>(j)] >= th + Slack(pt, j) &&
                     (best < 0 || std::abs(j - c.end) < std::abs(best - c.end)))
                     best = j;
             c.lift_s = best > 0 ? CrossTime(best, pt.speed[static_cast<size_t>(best - 1)],
-                                            pt.speed[static_cast<size_t>(best)], th, rate)
+                                            pt.speed[static_cast<size_t>(best)], th + Slack(pt, best), rate)
                                 : c.end / rate;
             c.departure = PeakSpeed(pt.speed, c.end, c.end + aw);
         }
@@ -400,8 +408,8 @@ void AddArrival(PartTrack& pt, double rate, const PhysicsParams& p, double min_a
     const int    prev_end = pt.contacts.empty() ? 0 : pt.contacts.back().end;
     const int    lo = std::max({1, prev_end, n - 1 - SamplesOf(p.arrival_window_s, rate)});
     int          b = -1;
-    for (int j = n - 1; j >= 1 && sp[static_cast<size_t>(j)] < th; --j)
-        if (sp[static_cast<size_t>(j - 1)] >= th) b = j;
+    for (int j = n - 1; j >= 1 && sp[static_cast<size_t>(j)] < th + Slack(pt, j); --j)
+        if (sp[static_cast<size_t>(j - 1)] >= th + Slack(pt, j - 1)) b = j;
     if (b < lo || b > n - 1 - edge) return;
     const int aw = SamplesOf(p.approach_window_s, rate);
     PartContact c;
@@ -409,7 +417,7 @@ void AddArrival(PartTrack& pt, double rate, const PhysicsParams& p, double min_a
     c.end = n;
     c.approach = PeakSpeed(sp, b - aw, b);
     if (c.approach < min_approach) return;
-    const double t = CrossTime(b, sp[static_cast<size_t>(b - 1)], sp[static_cast<size_t>(b)], th, rate);
+    const double t = CrossTime(b, sp[static_cast<size_t>(b - 1)], sp[static_cast<size_t>(b)], th + Slack(pt, b), rate);
     for (double& s : c.step_s) s = t;
     c.support_y = SupportOf(pt, c, RestStart(pt, c, SamplesOf(p.rest_search_s, rate), p),
                             SamplesOf(p.support_window_s, rate));
@@ -451,7 +459,7 @@ std::vector<Scuff> FindSlides(const FootTrack& f, double leg, double rate, const
         for (const PartContact& c : pt.contacts) {
             auto sliding = [&](int i) {
                 const double h = pt.hspeed[static_cast<size_t>(i)];
-                return h >= p.slide_speed && h <= p.slide_max_speed &&
+                return h >= p.slide_speed + Slack(pt, i) && h <= p.slide_max_speed &&
                        std::fabs(pt.y[static_cast<size_t>(i)] - c.support_y) <= tol;
             };
             for (int i = c.start; i < c.end;) {
@@ -860,16 +868,62 @@ PhysicsAnalysis AnalyseTrack(const std::vector<BoneTrack>& rt, const PhysicsPara
         return a;
     }
 
-    // Ground frame: the median horizontal velocity of the lowest part (0 without a foot part).
+    // Ground frame (story 10-8t), per sample. Only an in-place clip (root motion removed) has a
+    // moving ground, read per stance: a stance candidate is a sample where the lowest foot part
+    // holds a steady velocity over a centred ground_stance_s window (|vy| < ground_stance_tol,
+    // horizontal within max(ground_stance_tol, ground_stance_frac x mean) of the window mean);
+    // a run of candidates is one stance, its value the median velocity. A stance is a moving
+    // ground only when the hips' travel speed over the clip is below ground_inplace_frac of its
+    // speed (a crawl with root motion drags its feet; else 0, the world; source: in place = the
+    // hips do not travel, Zeni's pelvis-relative method exists because a treadmill's stance foot
+    // moves at the belt speed). Each value is the
+    // median of 3 consecutive stances (an isolated glide is not a treadmill); held before the
+    // first / after the last stance, interpolated between; 0 without a stance or a foot part.
+    // ground_velocity is the clip summary (median per axis).
     // An in-place climb (story 10-8g), whose root motion was removed, slides every planted hand
     // and foot down at the climbing speed, and its lowest part is often the foot about to step
     // up: there the frame is the velocity two limbs share (per sample, the closest pair among
-    // the hands and the feet, the foot's toe else heel else toe end, closer than 0.4 leg/s (the
-    // default contact speed); the median over the samples that have one; at least three limbs,
-    // so that two can hold while one moves), taken on every axis once its vertical one passes
-    // ground_vertical_min.
+    // the hands and the feet, the foot's toe else heel else toe end, both steady over the stance
+    // window (3D, within ground_stance_tol of their mean), closer than 0.4 leg/s (the default
+    // contact speed); the median over the samples that have one; at least three limbs, so that
+    // two can hold while one moves), taken on every axis once its vertical one passes
+    // ground_vertical_min and the hips' travel is below ground_inplace_frac of its speed. It
+    // then replaces the stance frame (constant, no slack).
+    a.ground_vel.assign(n, Vec3d{0.0, 0.0, 0.0});
+    bool  climb_frame = false;
+    bool  has_travel = false;  // the hips' travel over the clip (end - start) / duration, m/s
+    Vec3d travel{0.0, 0.0, 0.0};
+    if (const BoneTrack* hb = track(Role::Hips)) {
+        const double T = static_cast<double>(n - 1) / rate;
+        travel = Vec3d{(hb->pos[n - 1].x - hb->pos[0].x) / T, (hb->pos[n - 1].y - hb->pos[0].y) / T,
+                       (hb->pos[n - 1].z - hb->pos[0].z) / T};
+        has_travel = true;
+    }
     if (any) {
-        std::vector<double> vx(n), vz(n);
+        const int hw = std::max(1, SamplesOf(0.5 * p.ground_stance_s, rate));
+        std::vector<char> st[2][kFootPartCount];
+        for (int s = 0; s < 2; ++s)
+            for (int q = 0; q < kFootPartCount; ++q) {
+                if (!a.foot[s].part[q].present) continue;
+                st[s][q].assign(n, 0);
+                const std::vector<Vec3d>& v = vel[s][q];
+                for (int i = hw; i + hw < static_cast<int>(n); ++i) {
+                    double mx = 0.0, mz = 0.0, my = 0.0;
+                    for (int j = i - hw; j <= i + hw; ++j) {
+                        mx += v[j].x;
+                        mz += v[j].z;
+                        my = std::max(my, std::fabs(v[j].y));
+                    }
+                    mx /= 2 * hw + 1;
+                    mz /= 2 * hw + 1;
+                    if (my >= p.ground_stance_tol * leg) continue;
+                    const double tol = std::max(p.ground_stance_tol * leg, p.ground_stance_frac * std::hypot(mx, mz));
+                    bool ok = true;
+                    for (int j = i - hw; j <= i + hw && ok; ++j) ok = std::hypot(v[j].x - mx, v[j].z - mz) < tol;
+                    st[s][q][i] = ok;
+                }
+            }
+        std::vector<int> cs(n, -1), cq(n, -1);  // per sample, the lowest part when it is a candidate
         for (size_t i = 0; i < n; ++i) {
             int bs = -1, bq = -1;
             for (int s = 0; s < 2; ++s)
@@ -878,8 +932,62 @@ PhysicsAnalysis AnalyseTrack(const std::vector<BoneTrack>& rt, const PhysicsPara
                         bs = s;
                         bq = q;
                     }
-            vx[i] = vel[bs][bq][i].x;
-            vz[i] = vel[bs][bq][i].z;
+            if (st[bs][bq][i]) {
+                cs[i] = bs;
+                cq[i] = bq;
+            }
+        }
+        struct Stance {
+            size_t lo, hi;  // samples [lo, hi)
+            double x, z;    // m/s
+        };
+        std::vector<Stance> stances;
+        // A gap of at most hw samples does not end a stance: a velocity change inside a stance
+        // (a foot that glides, then holds) leaves a short gap where the window straddles the
+        // change, and would split one glide into stances that outvote the median of 3. Source:
+        // short gaps filled in contact labels (UnderPressure, Mourot et al. 2022: an 11-frame
+        // majority filter).
+        for (size_t i = 0; i < n;) {
+            if (cs[i] < 0) {
+                ++i;
+                continue;
+            }
+            size_t              last = i;
+            std::vector<double> xs, zs;
+            for (size_t j = i; j < n && j <= last + 1 + static_cast<size_t>(hw); ++j)
+                if (cs[j] >= 0) {
+                    xs.push_back(vel[cs[j]][cq[j]][j].x);
+                    zs.push_back(vel[cs[j]][cq[j]][j].z);
+                    last = j;
+                }
+            stances.push_back(Stance{i, last + 1, Median(xs), Median(zs)});
+            i = last + 1;
+        }
+        if (has_travel)
+            for (Stance& s : stances)
+                if (std::hypot(travel.x, travel.z) >= p.ground_inplace_frac * std::hypot(s.x, s.z)) s.x = s.z = 0.0;
+        std::vector<Stance> f = stances;
+        if (stances.size() >= 3)
+            for (size_t k = 0; k < stances.size(); ++k) {
+                const size_t c0 = std::clamp<size_t>(k, 1, stances.size() - 2);
+                f[k].x = Median(std::vector<double>{stances[c0 - 1].x, stances[c0].x, stances[c0 + 1].x});
+                f[k].z = Median(std::vector<double>{stances[c0 - 1].z, stances[c0].z, stances[c0 + 1].z});
+            }
+        // Held before the first stance and after the last, interpolated between two.
+        size_t k = 0;
+        for (size_t i = 0; i < n && !f.empty(); ++i) {
+            while (k + 1 < f.size() && f[k + 1].lo <= i) ++k;
+            if (i < f[k].hi || k + 1 == f.size()) {
+                a.ground_vel[i] = Vec3d{f[k].x, 0.0, f[k].z};
+            } else {
+                const double u = static_cast<double>(i - f[k].hi + 1) / static_cast<double>(f[k + 1].lo - f[k].hi + 1);
+                a.ground_vel[i] = Vec3d{f[k].x + u * (f[k + 1].x - f[k].x), 0.0, f[k].z + u * (f[k + 1].z - f[k].z)};
+            }
+        }
+        std::vector<double> vx(n), vz(n);
+        for (size_t i = 0; i < n; ++i) {
+            vx[i] = a.ground_vel[i].x;
+            vz[i] = a.ground_vel[i].z;
         }
         a.ground_velocity = Vec3d{Median(vx), 0.0, Median(vz)};
     }
@@ -892,6 +1000,19 @@ PhysicsAnalysis AnalyseTrack(const std::vector<BoneTrack>& rt, const PhysicsPara
             if (a.hand[s].part.present) limb.push_back(&hvel[s]);
         }
         if (limb.size() >= 3) {
+            const int hw = std::max(1, SamplesOf(0.5 * p.ground_stance_s, rate));
+            std::vector<std::vector<char>> steady(limb.size(), std::vector<char>(n, 0));
+            for (size_t u = 0; u < limb.size(); ++u) {
+                const std::vector<Vec3d>& v = *limb[u];
+                for (int i = hw; i + hw < static_cast<int>(n); ++i) {
+                    Vec3d m{0.0, 0.0, 0.0};
+                    for (int j = i - hw; j <= i + hw; ++j) m = Vec3d{m.x + v[j].x, m.y + v[j].y, m.z + v[j].z};
+                    m = Vec3d{m.x / (2 * hw + 1), m.y / (2 * hw + 1), m.z / (2 * hw + 1)};
+                    bool ok = true;
+                    for (int j = i - hw; j <= i + hw && ok; ++j) ok = Dist(v[j], m) < p.ground_stance_tol * leg;
+                    steady[u][i] = ok;
+                }
+            }
             std::vector<double> cx, cy, cz;
             for (size_t i = 0; i < n; ++i) {
                 double best = 0.4 * leg;  // leg/s, the default contact speed: further apart is not together
@@ -899,6 +1020,7 @@ PhysicsAnalysis AnalyseTrack(const std::vector<BoneTrack>& rt, const PhysicsPara
                 bool   found = false;
                 for (size_t u = 0; u < limb.size(); ++u)
                     for (size_t w = u + 1; w < limb.size(); ++w) {
+                        if (!steady[u][i] || !steady[w][i]) continue;
                         const Vec3d& A = (*limb[u])[i];
                         const Vec3d& B = (*limb[w])[i];
                         const double d = Dist(A, B);
@@ -913,9 +1035,27 @@ PhysicsAnalysis AnalyseTrack(const std::vector<BoneTrack>& rt, const PhysicsPara
                 cz.push_back(c.z);
             }
             const double gy = cy.empty() ? 0.0 : Median(cy);
-            if (std::fabs(gy) > p.ground_vertical_min * leg) a.ground_velocity = Vec3d{Median(cx), gy, Median(cz)};
+            // The hips' travel is checked against the frame (the median), not per sample: per
+            // sample it drops the planted pairs (speed 0) and keeps only the carried ones
+            // (Kneeling Down To Crouch then read a -0.66 leg/s climb from 3 samples of 664).
+            const Vec3d g = cy.empty() ? Vec3d{0.0, 0.0, 0.0} : Vec3d{Median(cx), gy, Median(cz)};
+            const bool  in_place =
+                !has_travel || Dist(travel, Vec3d{0.0, 0.0, 0.0}) < p.ground_inplace_frac * Dist(g, Vec3d{0.0, 0.0, 0.0});
+            if (std::fabs(gy) > p.ground_vertical_min * leg && in_place) {
+                a.ground_velocity = g;
+                a.ground_vel.assign(n, g);
+                climb_frame = true;
+            }
         }
     }
+    // The feet's slack: an in-place clip follows its ground only roughly (0 in a world frame /
+    // climb). Source: a speed-scaled contact threshold (Bruening & Ridge 2014, Bonci et al. 2022;
+    // Hendershot et al.: speed-adjusted foot-velocity thresholds are the most consistent on a
+    // treadmill); a belt varies 4-9 % within a step, a keyframed clip about 15 %.
+    a.ground_slack.assign(n, 0.0);
+    if (!climb_frame)
+        for (size_t i = 0; i < n; ++i)
+            a.ground_slack[i] = p.ground_stance_frac * std::hypot(a.ground_vel[i].x, a.ground_vel[i].z) / leg;
     // A height in the ground frame: minus the ground's climb since the clip start.
     auto ground_y = [&](double y, size_t i) { return y - a.ground_velocity.y * static_cast<double>(i) / rate; };
 
@@ -924,10 +1064,10 @@ PhysicsAnalysis AnalyseTrack(const std::vector<BoneTrack>& rt, const PhysicsPara
         const std::vector<Vec3d> hs = Smooth(t->pos, p.smooth_ms / 1000.0, rate);
         const std::vector<Vec3d> hv = Velocity(hs, rate);
         a.hips_vy.resize(n);
-        for (size_t i = 0; i < n; ++i) a.hips_vy[i] = (hv[i].y - a.ground_velocity.y) / leg;
+        for (size_t i = 0; i < n; ++i) a.hips_vy[i] = (hv[i].y - a.ground_vel[i].y) / leg;
         a.hips_vh.resize(n);  // story 10-9a-2
         for (size_t i = 0; i < n; ++i)
-            a.hips_vh[i] = std::hypot(hv[i].x - a.ground_velocity.x, hv[i].z - a.ground_velocity.z) / leg;
+            a.hips_vh[i] = std::hypot(hv[i].x - a.ground_vel[i].x, hv[i].z - a.ground_vel[i].z) / leg;
     } else {
         a.hips_missing = std::string("no bone for ") + RoleName(Role::Hips);
     }
@@ -942,13 +1082,14 @@ PhysicsAnalysis AnalyseTrack(const std::vector<BoneTrack>& rt, const PhysicsPara
             pt.hspeed.resize(n);
             pt.vy.resize(n);
             for (size_t i = 0; i < n; ++i) {
-                const double dx = vel[s][q][i].x - a.ground_velocity.x, dz = vel[s][q][i].z - a.ground_velocity.z;
-                const double dy = vel[s][q][i].y - a.ground_velocity.y;
+                const double dx = vel[s][q][i].x - a.ground_vel[i].x, dz = vel[s][q][i].z - a.ground_vel[i].z;
+                const double dy = vel[s][q][i].y - a.ground_vel[i].y;
                 pt.y[i] = ground_y(sm[s][q][i].y, i);
                 pt.speed[i] = std::sqrt(dx * dx + dy * dy + dz * dz) / leg;
                 pt.hspeed[i] = std::sqrt(dx * dx + dz * dz) / leg;
                 pt.vy[i] = dy / leg;
             }
+            pt.slack = a.ground_slack;
             SegmentPart(pt, leg, rate, p);
         }
 
@@ -1059,13 +1200,18 @@ PhysicsAnalysis AnalyseTrack(const std::vector<BoneTrack>& rt, const PhysicsPara
         pt.hspeed.resize(n);
         pt.vy.resize(n);
         for (size_t i = 0; i < n; ++i) {
-            const double dx = hvel[s][i].x - a.ground_velocity.x, dz = hvel[s][i].z - a.ground_velocity.z;
-            const double dy = hvel[s][i].y - a.ground_velocity.y;
+            const double dx = hvel[s][i].x - a.ground_vel[i].x, dz = hvel[s][i].z - a.ground_vel[i].z;
+            const double dy = hvel[s][i].y - a.ground_vel[i].y;
             pt.y[i] = ground_y(hsm[s][i].y, i);
             pt.speed[i] = std::sqrt(dx * dx + dy * dy + dz * dz) / leg;
             pt.hspeed[i] = std::sqrt(dx * dx + dz * dz) / leg;
             pt.vy[i] = dy / leg;
         }
+        // No slack on a hand (story 10-8t): a hand is not carried by the belt, and the slack
+        // only added grabs / releases that are not there (Crouched Walking, Running Crawl,
+        // Ascending Stairs, Rope Climb on the all-trigger bench). Source: hand thresholds scale
+        // with the hand's own reach (10 % of the reach's peak speed, Schnorenberg et al. 2015,
+        // story 10-8q); gait-speed scaling is a foot rule.
         SegmentPart(pt, leg, rate, hp);
 
         // The heading (story 10-8e): a bone-space axis perpendicular to the hand's mean up (the

@@ -11,9 +11,17 @@
 //                 the sides; the hips stand in for a missing up leg). When no side gives it (no
 //                 heel), 2 x (up leg -> knee), noted "thigh x2". Speeds are in leg lengths
 //                 per second (leg/s), heights in leg lengths.
-//   ground frame  the median horizontal velocity of the lowest foot part (0 without a foot
-//                 part). An in-place clip (a treadmill walk) slides; a normal clip reads about
-//                 0. Every speed is measured in this frame.
+//   ground frame  per sample (story 10-8t). Only an in-place clip (root motion removed) has a
+//                 moving ground. It is read per stance: where the lowest foot part holds a
+//                 steady velocity (100 ms), that velocity is the ground's, unless the hips
+//                 travel over the clip ((end - start) / duration) at half that speed or more (then
+//                 the ground is the world, 0); each stance value is the median of 3 consecutive
+//                 stances; held before the first / after the last stance, interpolated between
+//                 (a run that speeds up is followed); 0 without a stance or a foot part. An
+//                 in-place climb (story 10-8g) replaces it with one constant frame. Every speed
+//                 is measured in this frame; a foot's contact and slide thresholds widen by a
+//                 slack of 15 % of the ground's horizontal speed (0 in a world frame and under
+//                 a climb; none on the hands).
 //   contact       per foot part: a two-state segmentation (free / contact), the most probable
 //                 sequence (Viterbi) on the ground-frame speed, with a cost per switch. The
 //                 evidence for contact at a sample is (contact_speed - speed) / contact_speed,
@@ -242,6 +250,31 @@ struct PhysicsParams {
     // climb, story 10-8g: -0.67 leg/s on Climbing Up Wall_InPlace, -0.72 on Climbing Ladder; at
     // most 0.09 on the other fixtures, the real climbs included, where planted parts hold still).
     double ground_vertical_min = 0.3;
+    // The stance ground frame (story 10-8t), set on the all-trigger bench (10-8o).
+    // A stance candidate: over a centred ground_stance_s window, |vy| < ground_stance_tol and the
+    // horizontal velocity within max(ground_stance_tol, ground_stance_frac x its window mean) of
+    // that mean. 0.4 leg/s is the default contact speed. Candidate runs on the fast in-place
+    // runs are short (4 - 165 ms on Treadmill Running, Run Forward_Exhausted), so the window is short too; a gap of at
+    // most half the window does not end a stance (a glide's ramps would split it). Source:
+    // short gaps are filled in contact labels (UnderPressure, Mourot et al. 2022: an 11-frame
+    // majority filter).
+    double ground_stance_s = 0.100;     // s
+    double ground_stance_tol = 0.4;     // leg/s; also the climb-frame limbs' steadiness (3D)
+    // Also the slack, on the feet only: an in-place clip follows its ground only roughly (Two
+    // Cycle Sprint: the planted toe moves -5.6 to -8.1 leg/s around a -7.3 ground), so a foot's
+    // contact and slide speeds widen by this fraction of the ground's horizontal speed (without
+    // it the fast in-place runs lose 26 steps / lift-offs on the bench). Source: a speed-scaled
+    // contact threshold (foot thresholds as a fraction of walking speed: Bruening & Ridge 2014,
+    // Bonci et al. 2022; Hendershot et al.: speed-adjusted foot-velocity thresholds are the most
+    // consistent on a treadmill); a real belt's speed varies 4-9 % within a step, a keyframed
+    // in-place clip follows its ground within about 15 % (Two Cycle Sprint).
+    double ground_stance_frac = 0.15;
+    // A stance (or the climb frame) is a moving ground only when the hips' travel speed over the
+    // clip is below this fraction of its speed: a crawl with root motion drags its feet at the
+    // body's speed (hips +0.59, feet +0.73 leg/s), a strafe jump carries its hands (hips -3.3).
+    // Source: in place = the hips do not travel (root motion removed; Zeni's pelvis-relative
+    // method exists because a treadmill's stance foot moves at the belt speed).
+    double ground_inplace_frac = 0.5;
     double pivot_smooth_ms = 20.0;       // Gaussian sigma on positions for the yaw
     double pivot_rate_dps = 90.0;
     double pivot_min_s = 0.05;
@@ -348,6 +381,7 @@ struct PartTrack {
     std::vector<double>      speed;     // ground-frame speed (leg/s)
     std::vector<double>      hspeed;    // ground-frame horizontal speed (leg/s)
     std::vector<double>      vy;        // vertical velocity (leg/s, up > 0)
+    std::vector<double>      slack;     // per sample, added to contact / slide speeds (leg/s); empty = 0 (hands)
     std::vector<char>        contact;   // 1 = contact (after slid gaps are joined)
     std::vector<PartContact> contacts;
 };
@@ -404,7 +438,10 @@ struct PhysicsAnalysis {
     size_t                   samples = 0;
     double                   leg_length = 0.0;  // m
     std::string              scale_note;        // "" or how the scale was found when not both legs
-    Vec3d                    ground_velocity;   // m/s, y = 0 unless past ground_vertical_min
+    Vec3d                    ground_velocity;   // m/s, clip summary (median per axis of ground_vel);
+                                                // y = 0 unless the climb frame applies
+    std::vector<Vec3d>       ground_vel;        // m/s per sample, the frame every speed uses
+    std::vector<double>      ground_slack;      // leg/s per sample, the feet's (0 in a world frame / climb)
     FootTrack                foot[2];           // L, R
     std::vector<std::string> missing;           // one line per dropped foot part / event type
     HandTrack                hand[2];           // L, R

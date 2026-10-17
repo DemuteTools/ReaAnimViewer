@@ -632,6 +632,10 @@ Cut a footstep (one item, or a stack of layers) and its variations, then put the
 
 Your variations move onto the first markers of that type (one each, in time order) and are attached to them; variations beyond the number of markers stay where they are. Every other marker of the type gets a copy of one variation, drawn at random, avoiding a repeat of the last two when there are enough variations; the top layer's snap offset lands on the marker and the other layers keep their place under it. A copy that would overlap another item goes to a free track of the folder holding your sounds (a new one if needed). Run it again to replace the copies: the same draw comes back. The result shows at the bottom right of REAPER's window, and Ctrl+Z undoes the whole run. The marker type is its exact name: `FS L` and `FS R` are two types.
 
+- **Takes as variations (NVK style).** When your items hold their variations as takes, every copy plays one take drawn the same way (avoiding a repeat of the last two), and the stacks' layers draw the same take number.
+- **Attached sounds follow their marker.** Move the animation item or its markers: the attached variations and the copies move with them. Move one by hand and RAV keeps your offset.
+- **Add a layer.** To add a layer to stacks already in place, cut the new layer's variations, put the first one where you want it against one stack (for example 20 ms after the footstep), select them, click the marker's label and run **RAV: Add selected items to stack on selected marker type (this animation)** or **(all instances)**. Every marker of the type gets one of these variations at that same offset; nothing already on the markers is removed.
+
 ### Copies of one animation share their tagging
 
 Sound designers often duplicate one animation to build a longer take: a two-step walk copied five times makes ten steps. You tag it once. Like REAPER's pooled MIDI items, the items of a project that play the same animation file are **linked**: they share one tagging (rules, thresholds, item options, preset, events and corrections).

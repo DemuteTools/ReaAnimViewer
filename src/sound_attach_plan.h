@@ -23,6 +23,7 @@ struct AttachItem {
     double      len = 0.0;
     double      snap = 0.0;  // D_SNAPOFFSET
     int         takes = 0;
+    int         cur_take = 0;  // I_CURTAKE (13-68: the take a moved pile keeps playing)
 };
 
 // One event a pile may attach to: a rule's event at one of its project times.
@@ -130,6 +131,7 @@ struct SpreadSelPile {
 struct SpreadSelCopy {
     int target = -1;
     int pile = -1;
+    int take = -1;  // the take the copy plays (variations as takes, NVK style); -1 = the source's active take
 };
 struct SpreadSelPlan {
     std::vector<SpreadSelPile> piles;   // time order

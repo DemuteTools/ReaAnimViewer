@@ -238,7 +238,7 @@ std::string Finish(const std::string& text)
     return text;
 }
 
-std::string Run(SpreadScope scope)
+std::string Run(SpreadScope scope, bool add_layer)
 {
     if (!f_set_item || !f_move_to_track) return Finish("REAPER functions missing");
     // P3b: no project marker to select.
@@ -287,7 +287,8 @@ std::string Run(SpreadScope scope)
         }
     }
     const bool        all = scope == SpreadScope::AllInstances;
-    const std::string undo = "RAV: Spread selection to " + type + (all ? " (all instances)" : " (this animation)");
+    const std::string undo = (add_layer ? "RAV: Add selection to stack on " : "RAV: Spread selection to ") + type
+                           + (all ? " (all instances)" : " (this animation)");
 
     SoundUndoScope scope_undo(proj, undo.c_str());
     BusyScope      busy("Spreading selection");
@@ -305,7 +306,8 @@ std::string Run(SpreadScope scope)
         si.guid = ItemGuidOf(si.item);
         si.rec = ReadItemSounds(si.item);
         if (si.rec.seed == 0) si.rec.seed = NewSeed();
-        seeds.push_back(si.rec.seed);
+        // P5b: a new layer draws apart from the stacks already there.
+        seeds.push_back(add_layer ? si.rec.seed ^ 0xA5A5A5A55A5A5A5Aull : si.rec.seed);
         for (AttachEvent& e : si.events) {
             e.rid = e.block >= 0 && static_cast<size_t>(e.block) < rids.size() ? rids[static_cast<size_t>(e.block)] : "";
             if (e.rid.empty()) continue;
@@ -320,6 +322,21 @@ std::string Run(SpreadScope scope)
     for (const SelectedSound& s : sel) {
         facts.push_back(s.facts);
         sel_guids.insert(GuidKey(s.facts.guid));
+    }
+    // P5b: the new layer keeps its offset to the stacks: the selection's top item's snap against the
+    // nearest marker of the type on the selected marker's item; every marker gets the layer there.
+    double shift = 0.0;
+    if (add_layer && !facts.empty()) {
+        std::vector<int> every;
+        for (size_t i = 0; i < facts.size(); ++i) every.push_back(static_cast<int>(i));
+        const double anchor = PileAnchor(facts[static_cast<size_t>(TopmostOf(facts, every))]);
+        double       best = -1.0;
+        for (const SpreadSelTarget& t : targets)
+            if (t.item == 0 && (best < 0.0 || std::fabs(anchor - t.ev.project_t) < best)) {
+                best = std::fabs(anchor - t.ev.project_t);
+                shift = anchor - t.ev.project_t;
+            }
+        for (SpreadSelTarget& t : targets) t.ev.project_t += shift;
     }
     const SpreadSelPlan plan = PlanSpreadSelection(facts, targets, seeds);
 
@@ -346,7 +363,7 @@ std::string Run(SpreadScope scope)
                 return t.item;
         return -1;
     };
-    {
+    if (!add_layer) {  // P5b: Add to stack keeps what is there
         std::vector<std::pair<MediaItem*, int>> drop;
         const int                               n = CountMediaItems(proj);
         for (int i = 0; i < n; ++i) {
@@ -431,7 +448,7 @@ std::string Run(SpreadScope scope)
                         ModifyItemSounds(owner, nullptr, [&g](ItemSounds& r) { return DetachFromRecord(r, g); });
                     }
             }
-            const double offset = p.in_place ? p.anchor - ev.project_t : 0.0;
+            const double offset = (p.in_place ? p.anchor - ev.project_t : 0.0) + shift;
             AddToRecord(first.rec, ev.rid, ev.clip_t, AttachPlacementOf(s.facts, offset));
             WritePlacedTag(s.item, AttachTagOf(first.guid, ev));
         }
@@ -465,6 +482,7 @@ std::string Run(SpreadScope scope)
                 req.own = Ownership::Spread;
                 req.source.kind = SoundSourceKind::Item;
                 req.source.item_guid = s.facts.guid;
+                req.variation = (c.take >= 0 && s.facts.takes > c.take) ? c.take : -1;  // P4 on takes
                 req.offset_s = SpreadMemberOffset(p.anchor, s.facts.pos, s.facts.snap, 0.0);
                 req.track = to;
                 const PlaceResult pr = PlaceSounds(proj, req);
@@ -478,6 +496,7 @@ std::string Run(SpreadScope scope)
                     SoundPlacement sp;
                     sp.item_guid = g;
                     sp.own = Ownership::Spread;
+                    sp.variation = req.variation;
                     sp.track_guid = tg;
                     AddToRecord(si.rec, t.ev.rid, t.ev.clip_t, sp);
                 }
@@ -500,7 +519,7 @@ std::string Run(SpreadScope scope)
         });
     }
     UpdateArrange();
-    return Finish(SpreadSelectionReport(counts));
+    return Finish((add_layer ? std::string("Added to stack: ") : std::string()) + SpreadSelectionReport(counts));
 }
 
 }  // namespace
@@ -516,9 +535,18 @@ void InitSoundSpreadSelection(void* (*get_func)(const char* name))
 std::string SpreadSelectionToMarkerType(SpreadScope scope)
 {
     try {
-        return Run(scope);
+        return Run(scope, false);
     } catch (...) {
         return Finish("Spread selection failed");
+    }
+}
+
+std::string AddSelectionToStack(SpreadScope scope)
+{
+    try {
+        return Run(scope, true);
+    } catch (...) {
+        return Finish("Add to stack failed");
     }
 }
 
@@ -528,6 +556,7 @@ std::string SpreadSelectionToMarkerType(SpreadScope scope)
 
 namespace rav {
 std::string SpreadSelectionToMarkerType(SpreadScope) { return {}; }
+std::string AddSelectionToStack(SpreadScope) { return {}; }
 }  // namespace rav
 
 #endif

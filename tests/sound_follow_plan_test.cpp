@@ -362,14 +362,27 @@ int main()
         CHECK(Count(q, FollowKind::Move) == 0 && q.actions.size() == 1);
         CHECK(q.actions.size() == 1 && Near(q.actions[0].store.pos, 9.9) && Near(q.actions[0].store.pt, 11.0));
     }
-    // Retag on an attached sound: its tag follows the event, it is never moved nor stored.
+    // 13-68: an attached sound follows its event (retagged and moved), like a placed one.
     {
         FollowInput in = OneSound(Ownership::Attached);
         in.events = {Ev("r1", 1.02, 11.0)};
         in.items = {Fact("{A}", 9.9, true, 9.9, 10.0)};
         const FollowPlan p = PlanItemFollow(in);
-        CHECK(p.actions.size() == 1 && p.actions[0].kind == FollowKind::Retag && Near(p.actions[0].tag_t, 1.02));
-        CheckIdempotent(in, p);
+        CHECK(Count(p, FollowKind::Retag) == 1 && Near(Find(p, FollowKind::Retag)->tag_t, 1.02));
+        CHECK(Count(p, FollowKind::Move) == 1 && Near(Find(p, FollowKind::Move)->project_t, 10.9));
+        CHECK(Count(p, FollowKind::Mute) == 0);
+        // First sight: stored, nothing moved.
+        FollowInput fs = OneSound(Ownership::Attached);
+        fs.events = {Ev("r1", 1.0, 10.0)};
+        fs.items = {Fact("{A}", 9.9, false, 0, 0)};
+        const FollowPlan q = PlanItemFollow(fs);
+        CHECK(Count(q, FollowKind::Move) == 0 && Count(q, FollowKind::Store) == 1);
+        // Moved by hand: the nudge is kept in the record, nothing moved.
+        FollowInput hm = OneSound(Ownership::Attached);
+        hm.events = {Ev("r1", 1.0, 10.0)};
+        hm.items = {Fact("{A}", 10.2, true, 9.9, 10.0)};
+        const FollowPlan r = PlanItemFollow(hm);
+        CHECK(Count(r, FollowKind::Move) == 0 && Near(r.record.events[0].placed[0].offset_s, 0.3));
     }
     // Orphan rule with an attached sound: one Detach, two report lines.
     {

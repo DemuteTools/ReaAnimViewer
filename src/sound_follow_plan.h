@@ -89,6 +89,7 @@ constexpr int kMuteDisabled = 2;  // its rule is disabled
 
 constexpr double kFollowPosTolS = 1e-4;  // a placed item this close to its stored pos did not move
 constexpr double kFollowPtTolS = 1e-6;   // an event this close to its stored pt did not move
+constexpr double kFollowPtUnknown = -1e9;  // 13-68: stored pt of an attached sound first seen while its rule is disabled
 
 // What the follow reads of one placed item.
 struct FollowItemFacts {

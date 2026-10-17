@@ -571,6 +571,27 @@ int main()
         CHECK(ChooseLane({{3, true}, {5, false}}, 4) == -1);
         CHECK(ChooseLane({}, 0) == -1);
 
+        // Takes as variations (NVK style): one pile of 3 takes playing take 1, 7 FS: the pile is moved onto
+        // #1, the 6 copies draw a take each, never one of the 2 before it (the moved pile's take counts).
+        {
+            std::vector<AttachItem> tk = {Item("k", 1, 70.0, 0.2)};
+            tk[0].takes = 3;
+            tk[0].cur_take = 1;
+            std::vector<SpreadSelTarget> seven;
+            for (int m = 0; m < 7; ++m) seven.push_back(tg(0, "r", m, 30.0 + m));
+            const SpreadSelPlan tp = PlanSpreadSelection(tk, seven, seeds);
+            CHECK(tp.copies.size() == 6);
+            std::vector<int> seq = {1};
+            for (const SpreadSelCopy& c : tp.copies) {
+                CHECK(c.pile == 0 && c.take >= 0 && c.take < 3);
+                seq.push_back(c.take);
+            }
+            for (size_t i = 1; i < seq.size(); ++i) CHECK(seq[i] != seq[i - 1] && (i < 2 || seq[i] != seq[i - 2]));
+            // One take only: the copies play the source's take (-1).
+            tk[0].takes = 1;
+            for (const SpreadSelCopy& c : PlanSpreadSelection(tk, seven, seeds).copies) CHECK(c.take == -1);
+        }
+
         // The toast never opens a window in a host build.
         CHECK(!ShowReaperToast("FS L (this animation): 8 markers"));
 

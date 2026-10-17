@@ -26,5 +26,11 @@ void InitSoundSpreadSelection(void* (*get_func)(const char* name));
 // Runs the action: one undo point "RAV: Spread selection to <marker> (this animation)" / "(all
 // instances)" when it writes; its report (or why it cannot run) as a toast. Returns that text.
 std::string SpreadSelectionToMarkerType(SpreadScope scope);
+// P5b: "RAV: Add selected items to stack (selected marker type)": the selection is a new layer (its
+// piles = that layer's variations); every marker of the type gets one of them, at the offset the
+// selection's top item has to its nearest marker of the type; nothing already there is removed.
+// The first piles move onto the first markers and are attached, as above. One undo point
+// "RAV: Add selection to stack on <marker> (this animation)" / "(all instances)".
+std::string AddSelectionToStack(SpreadScope scope);
 
 }  // namespace rav

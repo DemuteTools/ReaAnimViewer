@@ -335,41 +335,66 @@ SpreadSelPlan PlanSpreadSelection(const std::vector<AttachItem>& items, const st
     std::vector<int> pile_on(targets.size(), -1);  // the pile attached to each target
     for (size_t i = 0; i < plan.piles.size(); ++i)
         if (plan.piles[i].target >= 0) pile_on[static_cast<size_t>(plan.piles[i].target)] = static_cast<int>(i);
-    std::vector<int>            history;  // this item's piles, marker by marker in time order
-    int                         cur_item = 0;
-    std::vector<SpreadSelCopy>  done;  // this item's copies so far (shared picks)
+    // The takes of a pile (variations as takes, NVK style): the first member with 2+ takes gives the
+    // count (SpreadPickTakes); the take its top item plays now.
+    std::vector<int> pile_takes(plan.piles.size(), 0), pile_cur(plan.piles.size(), -1);
+    for (size_t i = 0; i < plan.piles.size(); ++i) {
+        std::vector<AttachItem> m;
+        for (int k : plan.piles[i].members) m.push_back(items[static_cast<size_t>(k)]);
+        pile_takes[i] = SpreadPickTakes(m);
+        if (pile_takes[i] >= 2) pile_cur[i] = items[static_cast<size_t>(plan.piles[i].top)].cur_take;
+    }
+    std::vector<int>              history;       // this item's piles, marker by marker in time order
+    std::vector<std::vector<int>> take_history;  // per pile: this item's takes, marker by marker
+    int                           cur_item = -1;
+    std::vector<SpreadSelCopy>    done;  // this item's copies so far (shared picks)
     for (int t : order) {
         const SpreadSelTarget& tg = targets[static_cast<size_t>(t)];
         if (tg.item != cur_item) {
             cur_item = tg.item;
             history.clear();
+            take_history.assign(plan.piles.size(), {});
             done.clear();
         }
         if (taken[static_cast<size_t>(t)]) {
-            history.push_back(pile_on[static_cast<size_t>(t)]);
+            const int p = pile_on[static_cast<size_t>(t)];
+            history.push_back(p);
+            if (p >= 0 && pile_cur[static_cast<size_t>(p)] >= 0) take_history[static_cast<size_t>(p)].push_back(pile_cur[static_cast<size_t>(p)]);
             continue;
         }
-        int pick = -1;
-        // Another project time of an event a pile is attached to (a loop pass): that pile.
+        int pick = -1, take = -1;
+        bool shared = false;
+        // Another project time of an event a pile is attached to (a loop pass): that pile, as it plays.
         for (size_t i = 0; i < plan.piles.size() && pick < 0; ++i) {
             const int pt = plan.piles[i].target;
             if (pt < 0) continue;
             const SpreadSelTarget& o = targets[static_cast<size_t>(pt)];
-            if (o.item == tg.item && o.ev.rid == tg.ev.rid && std::fabs(o.ev.clip_t - tg.ev.clip_t) <= kEventMatchSeconds)
+            if (o.item == tg.item && o.ev.rid == tg.ev.rid && std::fabs(o.ev.clip_t - tg.ev.clip_t) <= kEventMatchSeconds) {
                 pick = static_cast<int>(i);
+                take = pile_cur[i];
+                shared = true;
+            }
         }
         for (size_t j = 0; j < done.size() && pick < 0; ++j) {
             const SpreadSelTarget& o = targets[static_cast<size_t>(done[j].target)];
-            if (o.ev.rid == tg.ev.rid && std::fabs(o.ev.clip_t - tg.ev.clip_t) <= kEventMatchSeconds) pick = done[j].pile;
+            if (o.ev.rid == tg.ev.rid && std::fabs(o.ev.clip_t - tg.ev.clip_t) <= kEventMatchSeconds) {
+                pick = done[j].pile;
+                take = done[j].take;
+                shared = true;
+            }
         }
-        if (pick < 0) {
-            const uint64_t seed = tg.item >= 0 && static_cast<size_t>(tg.item) < seeds.size() ? seeds[static_cast<size_t>(tg.item)] : 0;
-            pick = DrawPick(active, 2, history, seed, EventSalt(tg.ev.rid, tg.ev.clip_t));
-        }
+        const uint64_t seed = tg.item >= 0 && static_cast<size_t>(tg.item) < seeds.size() ? seeds[static_cast<size_t>(tg.item)] : 0;
+        const uint64_t salt = EventSalt(tg.ev.rid, tg.ev.clip_t);
+        if (pick < 0) pick = DrawPick(active, 2, history, seed, salt);
         history.push_back(pick);
+        // P4 on takes: the copy draws one take of its pile (avoid the last 2 of that pile on this item).
+        std::vector<int>& th = take_history[static_cast<size_t>(pick)];
+        if (!shared) take = SpreadTakePick(pile_takes[static_cast<size_t>(pick)], th, seed, salt ^ 0x9E3779B97F4A7C15ull);
+        if (take >= 0) th.push_back(take);
         SpreadSelCopy c;
         c.target = t;
         c.pile = pick;
+        c.take = take;
         done.push_back(c);
         plan.copies.push_back(c);
     }

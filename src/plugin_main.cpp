@@ -94,6 +94,14 @@ int                  g_spread_this_id    = 0;
 gaccel_register_t    g_spread_this_accel = {};
 int                  g_spread_all_id     = 0;
 gaccel_register_t    g_spread_all_accel  = {};
+constexpr const char kStackThisName[] = "RAV_ADD_SELECTION_TO_STACK_THIS_ANIMATION";
+constexpr const char kStackThisDesc[] = "RAV: Add selected items to stack on selected marker type (this animation)";
+constexpr const char kStackAllName[]  = "RAV_ADD_SELECTION_TO_STACK_ALL_INSTANCES";
+constexpr const char kStackAllDesc[]  = "RAV: Add selected items to stack on selected marker type (all instances)";
+int                  g_stack_this_id    = 0;
+gaccel_register_t    g_stack_this_accel = {};
+int                  g_stack_all_id     = 0;
+gaccel_register_t    g_stack_all_accel  = {};
 
 int                     g_key_ids[kShortcutCount]    = {};
 gaccel_register_t       g_key_accels[kShortcutCount] = {};
@@ -178,6 +186,14 @@ bool OnHookCommand(int command, int /*flag*/)
         SpreadSelectionToMarkerType(SpreadScope::AllInstances);
         return true;
     }
+    if (command == g_stack_this_id) {
+        AddSelectionToStack(SpreadScope::ThisAnimation);
+        return true;
+    }
+    if (command == g_stack_all_id) {
+        AddSelectionToStack(SpreadScope::AllInstances);
+        return true;
+    }
     if (command == g_sound_check_id) {
         RunSoundStoreCheck();
         return true;
@@ -253,6 +269,8 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
             if (g_sound_check_id) g_register("-gaccel", &g_sound_check_accel);
             if (g_spread_this_id) g_register("-gaccel", &g_spread_this_accel);
             if (g_spread_all_id) g_register("-gaccel", &g_spread_all_accel);
+            if (g_stack_this_id) g_register("-gaccel", &g_stack_this_accel);
+            if (g_stack_all_id) g_register("-gaccel", &g_stack_all_accel);
             if (g_make_unique_id) g_register("-gaccel", &g_make_unique_accel);
             if (g_measure_detection_id) g_register("-gaccel", &g_measure_detection_accel);
             if (g_video_bg_id) g_register("-gaccel", &g_video_bg_accel);
@@ -329,6 +347,8 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
     InitSoundSpreadSelection(rec->GetFunc);
     g_spread_this_id = RegisterAction(rec, kSpreadThisName, kSpreadThisDesc, &g_spread_this_accel);
     g_spread_all_id = RegisterAction(rec, kSpreadAllName, kSpreadAllDesc, &g_spread_all_accel);
+    g_stack_this_id = RegisterAction(rec, kStackThisName, kStackThisDesc, &g_stack_this_accel);
+    g_stack_all_id = RegisterAction(rec, kStackAllName, kStackAllDesc, &g_stack_all_accel);
 
     rec->Register("hookcommand", (void*)&OnHookCommand);
     rec->Register("toggleaction", (void*)&OnToggleAction);

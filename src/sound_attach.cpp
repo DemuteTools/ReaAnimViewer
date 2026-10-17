@@ -101,6 +101,7 @@ void ReadSelection(std::vector<SelItem>* eligible, int* skipped, std::string* no
         s.facts.len = f.length;
         s.facts.snap = f.snap_offset;
         s.facts.takes = f.takes;
+        s.facts.cur_take = static_cast<int>(GetMediaItemInfo_Value(it, "I_CURTAKE"));
         eligible->push_back(s);
     }
     note->clear();

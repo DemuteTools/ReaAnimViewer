@@ -144,7 +144,7 @@ void HoldPlacement(const SoundPlacement& p, const FollowItemFacts& f, FollowPlan
     FollowStore st = f.store;
     if (!f.has_store) {
         st.pos = f.pos;
-        st.pt = f.pos;
+        st.pt = kFollowPtUnknown;  // 13-68: an attached sound's event time is learnt when it is back
     }
     MuteStep(kMuteDisabled, f, st, plan);
     StoreIfChanged(f, st, plan);
@@ -435,19 +435,10 @@ bool FollowPlacement(SoundPlacement& p, const FollowEvent& ev, const FollowInput
         a.tag_t = e.t;
         plan->actions.push_back(a);
     }
-    if (p.own == Ownership::Attached) {
-        // Never moved, nor muted for an event outside the item; muted while its rule is disabled
-        // (fix C 2026-10-12), unmuted when it is enabled again.
-        if (!disabled && !(f->has_store && (f->store.mute || f->store.hand))) return false;
-        FollowStore st = f->store;
-        if (!f->has_store) {
-            st.pos = f->pos;
-            st.pt = f->pos;
-        }
-        MuteStep(disabled ? kMuteDisabled : 0, *f, st, plan);
-        StoreIfChanged(*f, st, plan);
-        return false;
-    }
+    // 13-68 (Antho 2026-10-18): an attached sound follows its event like a placed one (moved with
+    // it, the user's nudge kept); it is never muted for an event outside the item, only while its
+    // rule is disabled (fix C 2026-10-12).
+    const bool attached = p.own == Ownership::Attached;
     // First sight while the event is outside the item: its project time is unknown, nothing is
     // stored nor muted until the event is back in the item.
     if (!f->has_store && !e.in_item) return false;
@@ -456,7 +447,11 @@ bool FollowPlacement(SoundPlacement& p, const FollowEvent& ev, const FollowInput
     st.has_pass = have_pass;
     st.pass = pass;
     double      pos = f->pos;
-    if (!f->has_store) {
+    if (attached && f->has_store && f->store.pt <= kFollowPtUnknown * 0.5) {
+        // 13-68: held while its rule was disabled, its event time unknown: learnt now, nothing moved.
+        if (e.in_item) st.pt = e.project_t;
+        st.pos = pos;
+    } else if (!f->has_store) {
         // First sight: stored, nothing moved.
         st.pos = pos;
         st.pt = e.project_t;
@@ -484,7 +479,7 @@ bool FollowPlacement(SoundPlacement& p, const FollowEvent& ev, const FollowInput
     }
     // F5: outside the item (or its rule disabled) = muted by the follow; a mute of the user's own
     // stays theirs, and so does an unmute of a sound the follow muted (fix C 2026-10-12).
-    MuteStep(disabled ? kMuteDisabled : (!e.in_item ? kMuteOutside : 0), *f, st, plan);
+    MuteStep(disabled ? kMuteDisabled : (!e.in_item && !attached ? kMuteOutside : 0), *f, st, plan);
     StoreIfChanged(*f, st, plan);
     return false;
 }

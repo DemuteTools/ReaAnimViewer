@@ -54,7 +54,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-const char* kMissingMotions = "sprint, stairs down, dance swivel, crawl / kneel, skid to a halt";
+const char* kMissingMotions = "stairs down, skid to a halt";
 
 std::string Lower(std::string s)
 {
@@ -161,7 +161,11 @@ void EnsureDump(const fs::path& src, const fs::path& dumps, const std::string& f
         return;
     }
     fs::remove(tmp, ec);
-    fs::copy_file(log, fail, fs::copy_options::overwrite_existing, ec);
+    {  // copied through streams: fs::copy_file leaves an empty file on the Windows mount (WSL)
+        std::ifstream in(log, std::ios::binary);
+        std::ofstream out(fail, std::ios::binary | std::ios::trunc);
+        out << in.rdbuf();
+    }
     c.failure = "dump failed: " + LastLine(log.u8string());
 }
 

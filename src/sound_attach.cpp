@@ -63,13 +63,8 @@ std::string NewGuidString()
 
 std::string ReadChunk(MediaItem* item) { return ReadItemStateChunk(f_get_chunk, item); }
 
-// One selected item.
-struct SelItem {
-    MediaItem* item = nullptr;
-    AttachItem facts;
-    bool       tagged = false;  // carries RAV_SND (eligible: attached)
-    PlacedTag  tag;
-};
+// One selected item (13-68: public as SelectedSound).
+using SelItem = SelectedSound;
 
 // The selected items: the eligible ones, and how many were skipped and why.
 void ReadSelection(std::vector<SelItem>* eligible, int* skipped, std::string* note)
@@ -336,6 +331,16 @@ void InitSoundAttach(void* (*get_func)(const char* name))
     f_set_item = reinterpret_cast<SetMediaItemInfo_ValueFn>(get_func("SetMediaItemInfo_Value"));
     f_get_take = reinterpret_cast<GetMediaItemTakeFn>(get_func("GetMediaItemTake"));
     f_count_takes = reinterpret_cast<CountTakesFn>(get_func("CountTakes"));
+}
+
+void ReadSelectedSounds(std::vector<SelectedSound>* eligible, int* skipped, std::string* skip_note)
+{
+    ReadSelection(eligible, skipped, skip_note);
+}
+
+bool ItemRuleIds(MediaItem* anim, std::vector<std::string>* rids, std::string* err)
+{
+    return RuleIds(anim, rids, err);
 }
 
 std::vector<AttachEvent> AttachEventsOf(const std::vector<ShownEvent>& shown, const ItemClipMap& map)

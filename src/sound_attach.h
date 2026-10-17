@@ -41,6 +41,19 @@ struct AttachSelectionInfo {
 };
 AttachSelectionInfo ReadAttachSelection();
 
+// 13-68: one eligible selected item (ReadSelectedSounds), and the selection read by the attach rules
+// (no RAV item, no folder item, no item RAV placed; an attached item is eligible): `skip_note` as above.
+struct SelectedSound {
+    MediaItem* item = nullptr;
+    AttachItem facts;
+    bool       tagged = false;  // carries RAV_SND (eligible: attached)
+    PlacedTag  tag;
+};
+void ReadSelectedSounds(std::vector<SelectedSound>* eligible, int* skipped, std::string* skip_note);
+// 13-68: the rid of every rule of the animation item, giving the rules ids first (inside the
+// caller's undo scope). False (and `err`) when the rules cannot be read or written.
+bool ItemRuleIds(MediaItem* anim, std::vector<std::string>* rids, std::string* err);
+
 // A gesture's outcome: a one-line note and its report.
 struct AttachResult {
     bool        wrote = false;

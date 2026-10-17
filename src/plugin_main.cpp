@@ -13,6 +13,8 @@
 #include "reaper_api.h"
 #include "self_update.h"
 #include "sound_attach.h"
+#include "sound_spread_selection.h"  // 13-68
+#include "reaper_toast.h"            // 13-68 (P9)
 #include "library_media_ui.h"
 #include "library_user_ui.h"
 #include "sound_audition.h"  // Epic 13 (D20): each sound module resolves its own functions
@@ -83,6 +85,16 @@ gaccel_register_t    g_sound_check_accel = {};
 
 // Lot 13-60b -- one action per viewer key (src/shortcuts.h ShortcutDef::action): a Shortcuts row on
 // "REAPER" runs on the keys the user gives it in REAPER's Actions window. Full screen has its own above.
+// Story 13-68 -- spread the selected sounds onto every marker of the selected marker's type.
+constexpr const char kSpreadThisName[] = "RAV_SPREAD_SELECTION_THIS_ANIMATION";
+constexpr const char kSpreadThisDesc[] = "RAV: Spread selected items to selected marker type (this animation)";
+constexpr const char kSpreadAllName[]  = "RAV_SPREAD_SELECTION_ALL_INSTANCES";
+constexpr const char kSpreadAllDesc[]  = "RAV: Spread selected items to selected marker type (all instances)";
+int                  g_spread_this_id    = 0;
+gaccel_register_t    g_spread_this_accel = {};
+int                  g_spread_all_id     = 0;
+gaccel_register_t    g_spread_all_accel  = {};
+
 int                     g_key_ids[kShortcutCount]    = {};
 gaccel_register_t       g_key_accels[kShortcutCount] = {};
 
@@ -158,6 +170,14 @@ bool OnHookCommand(int command, int /*flag*/)
         MakeTaggingUniqueOnSelectedItems();
         return true;
     }
+    if (command == g_spread_this_id) {
+        SpreadSelectionToMarkerType(SpreadScope::ThisAnimation);
+        return true;
+    }
+    if (command == g_spread_all_id) {
+        SpreadSelectionToMarkerType(SpreadScope::AllInstances);
+        return true;
+    }
     if (command == g_sound_check_id) {
         RunSoundStoreCheck();
         return true;
@@ -218,6 +238,7 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
         QuitSoundPeaks();
         // 13-11 -- the User Library timer and the Locate worker.
         QuitLibraryUser();
+        QuitReaperToast();  // 13-68
         if (g_register) {
             // Story 11-4 -- the viewer's keyboard hook (same pointer as at load).
             g_register("-accelerator", ViewerAcceleratorRegistration());
@@ -230,6 +251,8 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
             for (int i = 0; i < kShortcutCount; ++i)  // 13-60b
                 if (g_key_ids[i]) g_register("-gaccel", &g_key_accels[i]);
             if (g_sound_check_id) g_register("-gaccel", &g_sound_check_accel);
+            if (g_spread_this_id) g_register("-gaccel", &g_spread_this_accel);
+            if (g_spread_all_id) g_register("-gaccel", &g_spread_all_accel);
             if (g_make_unique_id) g_register("-gaccel", &g_make_unique_accel);
             if (g_measure_detection_id) g_register("-gaccel", &g_measure_detection_accel);
             if (g_video_bg_id) g_register("-gaccel", &g_video_bg_accel);
@@ -302,6 +325,10 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
     InitLibraryMedia(rec->GetFunc);  // 13-7c: preview + the media database load (on first draw)
     InitLibraryUser(rec);            // 13-11: User Libraries (.ravlib), File Sound import, Locate
     g_sound_check_id = RegisterAction(rec, kSoundStoreCheckName, kSoundStoreCheckDesc, &g_sound_check_accel);
+    InitReaperToast(hInstance, rec->hwnd_main);  // 13-68 (P9)
+    InitSoundSpreadSelection(rec->GetFunc);
+    g_spread_this_id = RegisterAction(rec, kSpreadThisName, kSpreadThisDesc, &g_spread_this_accel);
+    g_spread_all_id = RegisterAction(rec, kSpreadAllName, kSpreadAllDesc, &g_spread_all_accel);
 
     rec->Register("hookcommand", (void*)&OnHookCommand);
     rec->Register("toggleaction", (void*)&OnToggleAction);

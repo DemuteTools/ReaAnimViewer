@@ -252,6 +252,8 @@ if(WIN32)
             src/tagging_attach_ui.cpp
             src/sound_attach.cpp
             src/sound_attach_plan.cpp
+            src/sound_spread_selection.cpp  # 13-68
+            src/reaper_toast.cpp
             src/library_user_ui.cpp
             src/ravlib.cpp
             src/sound_tracks.cpp

@@ -37,9 +37,10 @@ struct AttachEvent {
 // item RAV placed (populated / spread). An attached item is eligible (it re-attaches, D3).
 std::string AttachSkipReason(bool rav_item, bool folder, bool has_tag, Ownership own);
 
-// The items grouped by overlapping time spans (touching counts), each group's indices sorted by
-// position; groups in time order.
-std::vector<std::vector<int>> OverlapGroups(const std::vector<AttachItem>& items);
+// The items grouped by overlapping time spans (touching counts, unless `touching_apart`: 13-68's
+// variations cut end to end are separate piles), each group's indices sorted by position; groups in
+// time order.
+std::vector<std::vector<int>> OverlapGroups(const std::vector<AttachItem>& items, bool touching_apart = false);
 // The topmost of `indices`: lowest track number, then earliest position. -1 when empty.
 int TopmostOf(const std::vector<AttachItem>& items, const std::vector<int>& indices);
 // A pile's anchor: its top item's position + snap offset.
@@ -101,6 +102,87 @@ std::vector<int> SpreadPicks(const std::vector<AttachEvent>& targets, int takes,
 bool DetachFromRecord(ItemSounds& rec, const std::string& guid);
 // Adds a placement to the event (rid, t), creating the event when absent.
 void AddToRecord(ItemSounds& rec, const std::string& rid, double t, const SoundPlacement& p);
+
+// ---- 13-68: Spread selection to marker type (the REAPER actions: sound_spread_selection.h) -------
+
+// P2: a marker's type = its name on one line, trimmed (as Commit writes it); two markers are of one
+// type when those are equal, case-sensitive ("FS L" != "FS R" != "fs l"). The one rule to change.
+std::string MarkerTypeName(const std::string& marker);
+bool        SameMarkerType(const std::string& a, const std::string& b);
+// The type of a marker named `name` on an item with these rules: the type of the rule that writes it
+// (also as a preview marker, "<marker> - Preview"); "" when no rule writes that name.
+std::string TypeOfMarker(const std::vector<std::string>& rule_markers, const std::string& name);
+
+// One marker of the type: an event of an animation item at one of its project times.
+struct SpreadSelTarget {
+    int         item = 0;  // the animation item (index into the caller's list; 0 = the selected marker's)
+    AttachEvent ev;        // its rid filled
+};
+// A pile of the selection (a stack: items overlapping in time).
+struct SpreadSelPile {
+    std::vector<int> members;          // indices into the items: track order (top first), then position
+    int              top = -1;         // TopmostOf
+    double           anchor = 0.0;     // PileAnchor of the top item
+    int              target = -1;      // P6: the target it is moved onto and attached to (-1 = left over)
+    bool             in_place = false; // P6b: it already sits on that target (+-30 ms): attached there, not moved
+};
+// A spread copy of pile `pile` on target `target`.
+struct SpreadSelCopy {
+    int target = -1;
+    int pile = -1;
+};
+struct SpreadSelPlan {
+    std::vector<SpreadSelPile> piles;   // time order
+    std::vector<SpreadSelCopy> copies;  // per item (target order), then time order
+    int                        left_over = 0;
+};
+// The plan of one run. The piles = OverlapGroups of `items` (touching = apart); each one already on a marker of item 0
+// (+-30 ms) takes that marker (P6b), the others the next free markers of item 0 in time order (P6);
+// piles beyond item 0's markers are left over. Every other target gets a copy of one pile (P4):
+// DrawPick over the piles, avoid the last 2 (history per item, in time order: every marker's pile,
+// attached or copied), seed `seeds[item]`, salt EventSalt(rid, clip t); the project times of one
+// clip event share their pick, and a loop pass of an attached pile's event takes that pile. Same
+// input = same plan.
+SpreadSelPlan PlanSpreadSelection(const std::vector<AttachItem>& items, const std::vector<SpreadSelTarget>& targets,
+                                  const std::vector<uint64_t>& seeds);
+// The project time a pile member lands at when the pile's anchor goes on `project_t`.
+inline double MemberLanding(double project_t, double anchor, double member_pos) { return project_t + member_pos - anchor; }
+
+// P7: a span [start, end) overlaps one of `spans` (touching does not).
+struct TimeSpan {
+    double start = 0.0;
+    double end = 0.0;
+};
+bool SpanOverlaps(const std::vector<TimeSpan>& spans, double start, double end);
+// P7: a track a layer may land on: its index in the project and whether the layer's span is free there.
+struct LaneOption {
+    int  index = 0;
+    bool free = false;
+};
+// The first free option (in the given order: the layer's own track, then the folder's children) whose
+// index is at least `after` (the previous layer's track: layers keep their track order). -1 = none:
+// a new track is made.
+int ChooseLane(const std::vector<LaneOption>& options, int after);
+
+// What a run did, for its report.
+struct SpreadSelCounts {
+    std::string marker;                // the type
+    bool        all_instances = false;
+    int         selected_markers = 1;  // RAV markers selected (the first in time is used)
+    int         items = 0;             // animation items with that marker
+    int         markers = 0;
+    int         piles = 0;
+    int         attached = 0;          // piles attached (moved or in place)
+    int         copies = 0;            // spread copies placed (piles)
+    int         replaced = 0;          // attached / spread items removed first (P5)
+    int         left_over = 0;
+    int         failed = 0;
+    int         tracks = 0;            // tracks made (P7)
+    std::string skip_note;             // "2 skipped: placed by RAV" ("" = none)
+};
+// The report, one line each: "Used FS L (2 markers selected)" when several, then
+// "FS L (this animation): 8 markers, 3 piles, 5 copies placed, ..." with only the counts that are not 0.
+std::string SpreadSelectionReport(const SpreadSelCounts& c);
 
 // Promote (D8): inserts `nodes` (nodes[0] = the new top Sound or Blend, parent ignored; the
 // others its children, parent = nodes[0].uid) into the library. Root Switch: under the value

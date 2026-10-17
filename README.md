@@ -66,6 +66,7 @@ ReaAnimViewer is a native REAPER extension (a `.dll`, plus a small video FX that
   - [Markers](#markers)
   - [Markers follow their item](#markers-follow-their-item)
   - [Editing the markers in REAPER](#editing-the-markers-in-reaper)
+  - [Spreading your sounds onto the markers](#spreading-your-sounds-onto-the-markers)
   - [Copies of one animation share their tagging](#copies-of-one-animation-share-their-tagging)
   - [Known limits](#known-limits)
 - [Saving and Sharing Projects](#saving-and-sharing-projects)
@@ -620,6 +621,16 @@ You can also correct events right on REAPER's timeline, with the RAV window open
 - With **Both**, the other marker of the same event follows (drag one, the other moves; delete one, the other goes).
 - After editing a committed marker, the item still reads **markers up to date**: no preview appears. Ctrl+Z undoes the marker edit and the event change together.
 - The items linked to it follow too (see the next section).
+
+### Spreading your sounds onto the markers
+
+Cut a footstep (one item, or a stack of layers) and its variations, then put them on every marker of one type in one gesture:
+
+1. Select the sound items. Items that overlap in time are one variation and its layers; items apart in time are separate variations.
+2. Click the label of one RAV project marker of the type you want, for example `FS L`. With several RAV markers selected, the first in time is used and the report says so. With **Markers written** set to **Take** only, there is no project marker to select: the action does nothing and says so.
+3. Run the action **RAV: Spread selected items to selected marker type (this animation)**, or **(all instances)** for every animation item that has that marker.
+
+Your variations move onto the first markers of that type (one each, in time order) and are attached to them; variations beyond the number of markers stay where they are. Every other marker of the type gets a copy of one variation, drawn at random, avoiding a repeat of the last two when there are enough variations; the top layer's snap offset lands on the marker and the other layers keep their place under it. A copy that would overlap another item goes to a free track of the folder holding your sounds (a new one if needed). Run it again to replace the copies: the same draw comes back. The result shows at the bottom right of REAPER's window, and Ctrl+Z undoes the whole run. The marker type is its exact name: `FS L` and `FS R` are two types.
 
 ### Copies of one animation share their tagging
 

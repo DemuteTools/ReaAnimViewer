@@ -1530,6 +1530,20 @@ void InitTagMarkers(void* (*get_func)(const char* name))
     f_set_marker_by_index2 = reinterpret_cast<SetProjectMarkerByIndex2Fn>(get_func("SetProjectMarkerByIndex2"));
 }
 
+bool ProjectMarkerSelected(const std::string& guid, double* pos)
+{
+    try {
+        if (!f_get_region_or_marker || !f_marker_value || !f_marker_string) return false;
+        ProjectMarker* m = FindProjectMarker(guid);
+        if (!m || f_marker_value(nullptr, m, "B_ISREGION") != 0.0) return false;
+        if (f_marker_value(nullptr, m, "B_UISEL") == 0.0) return false;
+        if (pos) *pos = f_marker_value(nullptr, m, "D_STARTPOS");
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
 MarkerMode GetTaggingMarkerMode()
 {
     if (g_mode < 0) {

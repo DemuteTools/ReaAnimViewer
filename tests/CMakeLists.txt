@@ -219,8 +219,8 @@ add_test(NAME media_db COMMAND media_db_test)
 add_executable(sound_place_plan_test sound_place_plan_test.cpp ../src/sound_place_plan.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp)
 target_include_directories(sound_place_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_place_plan COMMAND sound_place_plan_test)
-# Story 13-10 -- src/sound_attach_plan.h
-add_executable(sound_attach_plan_test sound_attach_plan_test.cpp ../src/sound_attach_plan.cpp ../src/sound_draw.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp)
+# Story 13-10 -- src/sound_attach_plan.h (13-68: Spread selection to marker type; the toast's host stub, never a window)
+add_executable(sound_attach_plan_test sound_attach_plan_test.cpp ../src/sound_attach_plan.cpp ../src/reaper_toast.cpp ../src/sound_draw.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp)
 target_include_directories(sound_attach_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_attach_plan COMMAND sound_attach_plan_test)
 # Story 13-8 -- src/sound_populate_plan.h

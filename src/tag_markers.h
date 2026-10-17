@@ -49,6 +49,10 @@ namespace rav {
 // Resolves the marker functions (plugin load, with rec->GetFunc).
 void InitTagMarkers(void* (*get_func)(const char* name));
 
+// 13-68 (P3): the project marker of this GUID is selected in REAPER (its label clicked: B_UISEL);
+// `pos` (optional) = its position. False when absent, a region, or the marker API is missing.
+bool ProjectMarkerSelected(const std::string& guid, double* pos = nullptr);
+
 MarkerMode GetTaggingMarkerMode();
 void SetTaggingMarkerMode(MarkerMode mode);  // kept across sessions
 // "Writes take markers" / "Writes project markers" / "Writes take + project markers".

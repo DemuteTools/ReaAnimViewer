@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "event_list.h"  // kPreviewSuffix
 #include "sound_draw.h"
 #include "sound_record.h"
 
@@ -20,7 +21,7 @@ std::string AttachSkipReason(bool rav_item, bool folder, bool has_tag, Ownership
     return {};
 }
 
-std::vector<std::vector<int>> OverlapGroups(const std::vector<AttachItem>& items)
+std::vector<std::vector<int>> OverlapGroups(const std::vector<AttachItem>& items, bool touching_apart)
 {
     std::vector<int> order(items.size());
     for (size_t i = 0; i < items.size(); ++i) order[i] = static_cast<int>(i);
@@ -29,7 +30,7 @@ std::vector<std::vector<int>> OverlapGroups(const std::vector<AttachItem>& items
     double                        end = 0.0;
     for (int i : order) {
         const AttachItem& it = items[static_cast<size_t>(i)];
-        if (out.empty() || it.pos > end) {
+        if (out.empty() || it.pos > end || (touching_apart && it.pos >= end - 1e-9)) {
             out.push_back({i});
             end = it.pos + it.len;
         } else {
@@ -247,6 +248,176 @@ void AddToRecord(ItemSounds& rec, const std::string& rid, double t, const SoundP
         e = &rec.events.back();
     }
     e->placed.push_back(p);
+}
+
+// ---- 13-68 ------------------------------------------------------------------------------------
+
+std::string MarkerTypeName(const std::string& marker)
+{
+    std::string t = marker;
+    for (char& c : t)
+        if (c == '\r' || c == '\n') c = ' ';
+    const size_t b = t.find_first_not_of(' ');
+    if (b == std::string::npos) return "";
+    const size_t e = t.find_last_not_of(' ');
+    return t.substr(b, e - b + 1);
+}
+
+bool SameMarkerType(const std::string& a, const std::string& b)
+{
+    const std::string ta = MarkerTypeName(a);
+    return !ta.empty() && ta == MarkerTypeName(b);
+}
+
+std::string TypeOfMarker(const std::vector<std::string>& rule_markers, const std::string& name)
+{
+    for (const std::string& m : rule_markers) {
+        const std::string t = MarkerTypeName(m);
+        if (t.empty()) continue;
+        if (t == MarkerTypeName(name) || t + kPreviewSuffix == MarkerTypeName(name)) return t;
+    }
+    return {};
+}
+
+SpreadSelPlan PlanSpreadSelection(const std::vector<AttachItem>& items, const std::vector<SpreadSelTarget>& targets,
+                                  const std::vector<uint64_t>& seeds)
+{
+    SpreadSelPlan plan;
+    for (const std::vector<int>& g : OverlapGroups(items, true)) {
+        SpreadSelPile p;
+        p.members = g;
+        std::stable_sort(p.members.begin(), p.members.end(), [&](int a, int b) {
+            const AttachItem& x = items[static_cast<size_t>(a)];
+            const AttachItem& y = items[static_cast<size_t>(b)];
+            return x.track != y.track ? x.track < y.track : x.pos < y.pos;
+        });
+        p.top = TopmostOf(items, p.members);
+        if (p.top < 0) continue;
+        p.anchor = PileAnchor(items[static_cast<size_t>(p.top)]);
+        plan.piles.push_back(p);
+    }
+    // Targets in time order: per item, then project time.
+    std::vector<int> order(targets.size());
+    for (size_t i = 0; i < targets.size(); ++i) order[i] = static_cast<int>(i);
+    std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
+        const SpreadSelTarget& x = targets[static_cast<size_t>(a)];
+        const SpreadSelTarget& y = targets[static_cast<size_t>(b)];
+        return x.item != y.item ? x.item < y.item : x.ev.project_t < y.ev.project_t;
+    });
+    std::vector<int> own;  // item 0's targets, time order
+    for (int i : order)
+        if (targets[static_cast<size_t>(i)].item == 0) own.push_back(i);
+    std::vector<char> taken(targets.size(), 0);
+    // P6b: a pile on one of item 0's markers takes it.
+    for (SpreadSelPile& p : plan.piles)
+        for (int t : own)
+            if (!taken[static_cast<size_t>(t)] && PileOnEvent(p.anchor, targets[static_cast<size_t>(t)].ev.project_t)) {
+                p.target = t;
+                p.in_place = true;
+                taken[static_cast<size_t>(t)] = 1;
+                break;
+            }
+    // P6: the others fill the next free markers.
+    for (SpreadSelPile& p : plan.piles) {
+        if (p.target >= 0) continue;
+        for (int t : own)
+            if (!taken[static_cast<size_t>(t)]) {
+                p.target = t;
+                taken[static_cast<size_t>(t)] = 1;
+                break;
+            }
+        if (p.target < 0) ++plan.left_over;
+    }
+    if (plan.piles.empty()) return plan;
+    // P4: every other target draws one pile.
+    std::vector<int> active;
+    for (size_t i = 0; i < plan.piles.size(); ++i) active.push_back(static_cast<int>(i));
+    std::vector<int> pile_on(targets.size(), -1);  // the pile attached to each target
+    for (size_t i = 0; i < plan.piles.size(); ++i)
+        if (plan.piles[i].target >= 0) pile_on[static_cast<size_t>(plan.piles[i].target)] = static_cast<int>(i);
+    std::vector<int>            history;  // this item's piles, marker by marker in time order
+    int                         cur_item = 0;
+    std::vector<SpreadSelCopy>  done;  // this item's copies so far (shared picks)
+    for (int t : order) {
+        const SpreadSelTarget& tg = targets[static_cast<size_t>(t)];
+        if (tg.item != cur_item) {
+            cur_item = tg.item;
+            history.clear();
+            done.clear();
+        }
+        if (taken[static_cast<size_t>(t)]) {
+            history.push_back(pile_on[static_cast<size_t>(t)]);
+            continue;
+        }
+        int pick = -1;
+        // Another project time of an event a pile is attached to (a loop pass): that pile.
+        for (size_t i = 0; i < plan.piles.size() && pick < 0; ++i) {
+            const int pt = plan.piles[i].target;
+            if (pt < 0) continue;
+            const SpreadSelTarget& o = targets[static_cast<size_t>(pt)];
+            if (o.item == tg.item && o.ev.rid == tg.ev.rid && std::fabs(o.ev.clip_t - tg.ev.clip_t) <= kEventMatchSeconds)
+                pick = static_cast<int>(i);
+        }
+        for (size_t j = 0; j < done.size() && pick < 0; ++j) {
+            const SpreadSelTarget& o = targets[static_cast<size_t>(done[j].target)];
+            if (o.ev.rid == tg.ev.rid && std::fabs(o.ev.clip_t - tg.ev.clip_t) <= kEventMatchSeconds) pick = done[j].pile;
+        }
+        if (pick < 0) {
+            const uint64_t seed = tg.item >= 0 && static_cast<size_t>(tg.item) < seeds.size() ? seeds[static_cast<size_t>(tg.item)] : 0;
+            pick = DrawPick(active, 2, history, seed, EventSalt(tg.ev.rid, tg.ev.clip_t));
+        }
+        history.push_back(pick);
+        SpreadSelCopy c;
+        c.target = t;
+        c.pile = pick;
+        done.push_back(c);
+        plan.copies.push_back(c);
+    }
+    return plan;
+}
+
+bool SpanOverlaps(const std::vector<TimeSpan>& spans, double start, double end)
+{
+    for (const TimeSpan& s : spans)
+        if (start < s.end - 1e-9 && end > s.start + 1e-9) return true;
+    return false;
+}
+
+int ChooseLane(const std::vector<LaneOption>& options, int after)
+{
+    for (size_t i = 0; i < options.size(); ++i)
+        if (options[i].free && options[i].index >= after) return static_cast<int>(i);
+    return -1;
+}
+
+namespace {
+
+std::string Count(int n, const char* one, const char* many)
+{
+    return std::to_string(n) + " " + (n == 1 ? one : many);
+}
+
+}  // namespace
+
+std::string SpreadSelectionReport(const SpreadSelCounts& c)
+{
+    std::string out;
+    if (c.selected_markers > 1)
+        out += "Used " + c.marker + " (" + std::to_string(c.selected_markers) + " markers selected)\n";
+    out += c.marker + (c.all_instances ? " (all instances)" : " (this animation)") + ": ";
+    std::vector<std::string> parts;
+    parts.push_back(Count(c.markers, "marker", "markers"));
+    if (c.all_instances) parts.push_back(Count(c.items, "animation", "animations"));
+    parts.push_back(Count(c.piles, "pile", "piles"));
+    if (c.attached > 0) parts.push_back(std::to_string(c.attached) + " attached");
+    parts.push_back(Count(c.copies, "copy placed", "copies placed"));
+    if (c.replaced > 0) parts.push_back(std::to_string(c.replaced) + " replaced");
+    if (c.left_over > 0) parts.push_back(Count(c.left_over, "pile left over (no free marker)", "piles left over (no free marker)"));
+    if (c.tracks > 0) parts.push_back(Count(c.tracks, "track made", "tracks made"));
+    if (c.failed > 0) parts.push_back(std::to_string(c.failed) + " failed");
+    if (!c.skip_note.empty()) parts.push_back(c.skip_note);
+    for (size_t i = 0; i < parts.size(); ++i) out += (i ? ", " : "") + parts[i];
+    return out;
 }
 
 namespace {

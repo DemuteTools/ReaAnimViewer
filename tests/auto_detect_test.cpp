@@ -7,6 +7,7 @@
 //   cmake -S tests -B build-tests && cmake --build build-tests && ctest --test-dir build-tests
 
 #include "auto_detect.h"
+#include "auto_types.h"
 #include "bone_roles.h"
 #include "event_list.h"
 #include "motion_physics.h"
@@ -17,6 +18,7 @@
 #include <cstdio>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace rav;
@@ -1796,6 +1798,9 @@ int main()
         // Jump and land alone: one of each, at the take-off and the landing.
         const std::vector<Event> ev_jl = DetectAutoEvents(jl, rig, nullptr, false);
         CHECK(ev_jl.size() == 2 && count(ev_jl, "Jump") == 1 && count(ev_jl, "Land") == 1);
+        // Story 10-9a-2: the take-off's push is found by both signatures; merged into one, the
+        // flight's (the first signature).
+        for (const Event& e : ev_jl) CHECK(e.signature == 0);
         if (ev_jl.size() == 2) {
             CHECK(std::fabs(ev_jl[0].time_s - 1.0) < 0.03 && std::fabs(ev_jl[1].time_s - 1.5) < 0.04);
             CHECK(ev_jl[0].strength > 1.0 && std::fabs(ev_jl[0].speed - ev_jl[0].strength * 0.87) < 1e-6);
@@ -1884,8 +1889,16 @@ int main()
         AutoAnalysis aa;
         aa.params = AutoPhysicsParams(AutoType::Jump, 50.0, false);
         aa.analysis = AnalyseMotion(rig, aa.params);
-        const std::vector<AutoLane> lanes = AutoBlockLanes(aa, jl[0]);
+        // Story 10-9a-2: Jump's second lane, the hips' upward acceleration vs the push-off threshold.
+        const std::vector<AutoLane> lanes = AutoBlockLanes(aa, jl[1]);
         CHECK(lanes.size() == 1 && lanes[0].no_threshold && !lanes[0].shade_note.empty());
+        const std::vector<AutoLane> jlanes = AutoBlockLanes(aa, jl[0]);
+        CHECK(jlanes.size() == 2);
+        if (jlanes.size() == 2) {
+            CHECK(jlanes[1].unit == "g" && !jlanes[1].no_threshold && jlanes[1].above);
+            CHECK(jlanes[1].threshold == aa.params.jump_impulse_g && jlanes[1].curve.size() == aa.analysis.samples);
+            CHECK(jlanes[1].label == "Hips  upward acceleration" && !jlanes[1].shade_note.empty());
+        }
         if (lanes.size() == 1) {
             int flight = 0;
             for (char c : lanes[0].contact) flight += c;
@@ -1896,6 +1909,63 @@ int main()
         nh.analysis = AnalyseMotion(rig_nh, aa.params);
         std::string why;
         CHECK(AutoBlockLanes(nh, jl[1], &why).empty() && why == "no bone for " + std::string(RoleName(Role::Hips)));
+    }
+
+    // ---- Story 10-9a-2: several signatures per kind -----------------------------------------
+    {
+        // The merge: a later signature's event within kAutoMergeS of an earlier one's is dropped
+        // (the earlier keeps its time and index); far apart, both stay; one signature never merges
+        // its own events; through the seam on a loop.
+        auto picks = [](const std::vector<std::vector<double>>& t, double period) {
+            std::vector<std::pair<int, size_t>> out;
+            for (const AutoSigPick& p : MergeSignatureEvents(t, period)) out.emplace_back(p.signature, p.index);
+            return out;
+        };
+        using PV = std::vector<std::pair<int, size_t>>;
+        CHECK(picks({{1.0}, {1.03}}, 0.0) == (PV{{0, 0}}));
+        CHECK(picks({{1.03}, {1.0}}, 0.0) == (PV{{0, 0}}));
+        CHECK(picks({{1.0}, {1.0 + kAutoMergeS}}, 0.0) == (PV{{0, 0}}));
+        CHECK(picks({{1.0}, {1.5}}, 0.0) == (PV{{0, 0}, {1, 0}}));
+        CHECK(picks({{1.0, 1.02}}, 0.0) == (PV{{0, 0}, {0, 1}}));
+        CHECK(picks({{}, {1.0}}, 0.0) == (PV{{1, 0}}));
+        CHECK(picks({{0.0, 1.0}, {0.5, 1.04, 1.06}}, 0.0) == (PV{{0, 0}, {0, 1}, {1, 0}}));
+        CHECK(picks({{0.01}, {1.98}}, 2.0) == (PV{{0, 0}}));
+        CHECK(picks({{0.01}, {1.98}}, 0.0) == (PV{{0, 0}, {1, 0}}));
+        CHECK(picks({{1.0}, {1.04}, {1.08}}, 0.0) == (PV{{0, 0}, {2, 0}}));  // only earlier signatures' kept events count
+        CHECK(MergeSignatureEvents({}, 0.0).empty());
+
+        // A short hop (both feet off 250 ms, under the 300 ms minimum flight) pushed off hard (the
+        // hips dip 3 cm just before it: about 1.2 g upward at 0.97 s): no flight, one Jump found by
+        // push-off (signature 1); Land finds nothing.
+        Options o;
+        o.dur = 2.0;
+        std::vector<BoneTrack> rig = Rig(JumpFoot(-0.1, 1.0, 0.25), JumpFoot(0.1, 1.0, 0.25), o);
+        for (size_t i = 0; i < rig[static_cast<size_t>(Role::Hips)].pos.size(); ++i) {
+            const double u = (i / o.rate - 0.95) / 0.04;
+            rig[static_cast<size_t>(Role::Hips)].pos[i].y -= 0.03 * std::exp(-0.5 * u * u);
+        }
+        AutoSettings s;
+        s.type[static_cast<int>(AutoType::Jump)].on = true;
+        s.type[static_cast<int>(AutoType::Land)].on = true;
+        const std::vector<Block> jl = AutoBlocks(s);
+        const std::vector<Event> ev = DetectAutoEvents(jl, rig, nullptr, false);
+        CHECK(ev.size() == 1);
+        if (ev.size() == 1) {
+            CHECK(ev[0].marker == "Jump" && ev[0].signature == 1 && std::fabs(ev[0].time_s - 1.0) < 0.03);
+            CHECK(AutoSignatureCount(AutoKindRow(AutoKind::Jump)) == 2 &&
+                  std::string(AutoKindRow(AutoKind::Jump).sigs[ev[0].signature].name) == "push-off");
+        }
+        // The event list carries the signature.
+        const std::vector<ShownEvent> shown = BuildEventList(ev, {}, jl.size());
+        CHECK(shown.size() == 1 && !ev.empty() && shown[0].signature == ev[0].signature);
+        // A lower Jump sensitivity raises the push-off threshold: none at 0 % (1.8 g).
+        std::vector<Block> low = jl;
+        low[0].sens = 0.0;
+        CHECK(DetectAutoEvents(low, rig, nullptr, false).empty());
+        // Existing kinds (one signature): every event's signature is 0.
+        std::vector<Block> sl;
+        ApplyAutoSettings(sl, Ticked(true, true, true, true));
+        for (const Event& e : DetectAutoEvents(sl, rig, nullptr, false)) CHECK(e.signature == 0);
     }
 
     if (g_fails) std::printf("%d check(s) failed\n", g_fails);

@@ -4,6 +4,7 @@
 // as the rows of auto_types.cpp read them: their event sources, matches, required parts, lanes and
 // roles.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 
@@ -57,6 +58,12 @@ std::vector<PhysicsEvent> AutoSourceFootParts(const PhysicsAnalysis& a, const Ph
 std::vector<PhysicsEvent> AutoSourceJump(const PhysicsAnalysis& a, const PhysicsParams& p)
 {
     return JumpEvents(a, p);
+}
+
+// Story 10-9a-2: push-off take-offs (Jump's second signature).
+std::vector<PhysicsEvent> AutoSourceJumpPushOff(const PhysicsAnalysis& a, const PhysicsParams& p)
+{
+    return JumpPushOffEvents(a, p);
 }
 
 // ---- Type parts (AutoMissingParts) -------------------------------------------------------------
@@ -305,9 +312,9 @@ void AutoLanesPivot(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::s
     out.push_back(std::move(l));
 }
 
-// Story 10-9a: jump and land: the hips' vertical speed (signed, no threshold), shaded where both
-// feet are off (every present part of both feet free).
-void AutoLanesJump(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason)
+// Story 10-9a: land (and jump's first lane): the hips' vertical speed (signed, no threshold),
+// shaded where both feet are off (every present part of both feet free).
+void AutoLanesLand(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason)
 {
     const PhysicsAnalysis& a = *args.a;
     if (a.hips_vy.empty()) {
@@ -340,6 +347,40 @@ void AutoLanesJump(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::st
                   "(this sensitivity's minimum flight) where the hips fall freely\n"
                   "(their vertical speed drops steadily).",
                   args.p->jump_min_flight_s * 1000.0);
+    l.shade_note = buf;
+    out.push_back(std::move(l));
+}
+
+// Story 10-9a-2: jump: land's lane, then the hips' upward acceleration (g, downward shown as 0)
+// against the push-off threshold, shaded where a foot is on the ground.
+void AutoLanesJump(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason)
+{
+    const size_t before = out.size();
+    AutoLanesLand(args, out, reason);
+    if (out.size() == before) return;
+    const PhysicsAnalysis&    a = *args.a;
+    const std::vector<double> acc = HipsUpAccelerationG(a, *args.p);
+    if (acc.empty()) return;
+    AutoLane l;
+    l.label = "Hips  upward acceleration";
+    l.unit = "g";
+    l.curve = AutoLaneWindow(acc, args.first, args.n, false);
+    for (double& v : l.curve) v = std::max(0.0, v);
+    l.contact.assign(args.n, 0);
+    for (size_t i = 0; i < args.n; ++i) {
+        const size_t j = args.first + i;
+        bool         on = false;
+        for (const FootTrack& f : a.foot)
+            for (const PartTrack& pt : f.part) on = on || (pt.present && j < pt.contact.size() && pt.contact[j]);
+        l.contact[i] = on ? 1 : 0;
+    }
+    l.threshold = args.p->jump_impulse_g;
+    l.above = true;
+    char buf[256];
+    std::snprintf(buf, sizeof(buf),
+                  "Shaded: a foot is on the ground. A push-off is a peak above the line while a foot\n"
+                  "is on, with both feet leaving within %.0f ms after it and no hand holding on.",
+                  args.p->jump_impulse_window_s * 1000.0);
     l.shade_note = buf;
     out.push_back(std::move(l));
 }

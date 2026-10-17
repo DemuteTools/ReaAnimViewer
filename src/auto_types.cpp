@@ -23,6 +23,18 @@
 //   - a new PhysicsKind: kPhysicsKindCount and a kPhysicsKindRows row (motion_physics.cpp);
 //   - a type with a mode: code in KindsOf, AutoTypeSeparate, AutoPending, ReadAutoSettings /
 //     ApplyAutoSettings (auto_detect.cpp) and its widget in tagging_view_ui.cpp.
+// Adding a signature to a kind (story 10-9a-2): a new way to recognise the same event, for an
+// edge case the kind's other signatures miss. Append {name, event source, match} to the kind's
+// `sigs` (at most kAutoMaxSignatures, contiguous); its source and match live in the category's
+// file, its constants in PhysicsParams (body units, seconds, g), and a constant the type's
+// sensitivity moves goes in the type row's `sens` (SameAutoAnalysis then compares it). All
+// signatures run; per block an event within kAutoMergeS of one an earlier signature kept is
+// dropped, so a signature appended at the end never moves an existing marker's time; its new
+// events can still remove existing markers through the Land / Jump replacement of steps and
+// lift-offs (kAutoReplaceS). Signatures are
+// not saved: no save word, no RAV_RULES change. The inspector names the one that found an event
+// ("Found by") when a kind has more than one; tests/detection_eval.cpp and
+// src/detection_measure.cpp print its events on a line of their own.
 // The save words (kind `word`, type `sound_word`) are saved data: never rename one.
 
 #include "auto_types.h"
@@ -68,11 +80,14 @@ void AutoLanesPivot(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::s
 std::vector<Role> AutoRolesFoot(char side);
 // Story 10-9a: jump and land.
 std::vector<PhysicsEvent> AutoSourceJump(const PhysicsAnalysis& a, const PhysicsParams& p);
+// Story 10-9a-2: the push-off take-offs (Jump's second signature).
+std::vector<PhysicsEvent> AutoSourceJumpPushOff(const PhysicsAnalysis& a, const PhysicsParams& p);
 void AutoPartsJump(bool separate, const std::vector<int>& role_to_bone, std::vector<std::string>& out);
 bool AutoMatchJump(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
 bool AutoMatchLand(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
 bool AutoMissingJump(char side, const std::vector<int>& role_to_bone);
 void AutoLanesJump(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+void AutoLanesLand(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
 std::vector<Role> AutoRolesJump(char side);
 
 // auto_types_arms.cpp
@@ -128,11 +143,13 @@ constexpr AutoTypeInfo kTypeRows[] = {
     {T::HandPivot, "Pivot scuff", "Arms Pivot scuff", C::Arms,
      "A marker where a planted hand turns: Hand Pivot L / Hand Pivot R.", "hand_pivot",
      {{&P::hand_pivot_min_deg, S::Divide}, {&P::hand_pivot_rate_dps, S::Divide}}, &AutoPartsHands},
-    // Story 10-9a: sideless (one block each). Higher sensitivity = shorter flights count.
+    // Story 10-9a: sideless (one block each). Higher sensitivity = shorter flights count; story
+    // 10-9a-2: and a softer push-off (jump_impulse_g) counts.
     {T::Jump, "Jump", "Jump", C::Legs,
      "A marker where a jump takes off: the last foot leaving before both feet are off\n"
-     "while the body falls freely (Jump). With Lift-off ticked, it replaces the lifts there.",
-     "jump", {{&P::jump_min_flight_s, S::Divide}, {}}, &AutoPartsJump, true},
+     "while the body falls freely, or right after a hard push off the ground (Jump).\n"
+     "With Lift-off ticked, it replaces the lifts there.",
+     "jump", {{&P::jump_min_flight_s, S::Divide}, {&P::jump_impulse_g, S::Divide}}, &AutoPartsJump, true},
     {T::Land, "Land", "Land", C::Legs,
      "A marker where a jump lands: the first foot touching after the flight (Land).\n"
      "With Step ticked, it replaces the steps there.",
@@ -147,51 +164,55 @@ constexpr ScuffParts kNo = ScuffParts::Combined, kEach = ScuffParts::EachPart, k
 
 constexpr AutoKindInfo kKindRows[] = {
     // kind, word, type, marker, colours L/R, scuff mode, scuff heel, degrees, role key, sound key,
-    // event source, match, part missing, lanes, roles
-    {K::Step, "step", T::Step, "FS", {0x5F9EDD, 0xDD9E5F}, kNo, false, false, "", K::Step, &AutoSourceFoot,
-     &AutoMatchStep, &AutoMissingFootAny, &AutoLanesFootContact, &AutoRolesFoot},
-    {K::Heel, "heel", T::Step, "Heel", {0x5F9EDD, 0xDD9E5F}, kNo, false, false, "heel", K::Heel, &AutoSourceFoot,
-     &AutoMatchHeel, &AutoMissingHeel, &AutoLanesHeel, &AutoRolesFoot},
-    {K::Toe, "toe", T::Step, "Toe", {0x5FDDDD, 0xDDDD5F}, kNo, false, false, "toe", K::Toe, &AutoSourceFoot,
-     &AutoMatchToe, &AutoMissingToe, &AutoLanesToe, &AutoRolesFoot},
-    {K::Lift, "lift", T::LiftOff, "Lift", {0x5F5FDD, 0xDD5F5F}, kNo, false, false, "", K::Lift, &AutoSourceFoot,
-     &AutoMatchLift, &AutoMissingFootAny, &AutoLanesFootContact, &AutoRolesFoot},
-    {K::Slide, "slide", T::Slide, "Slide", {0x5FDD5F, 0xDD5FDD}, kNo, false, false, "", K::Slide, &AutoSourceFoot,
-     &AutoMatchSlide, &AutoMissingFootAny, &AutoLanesFootSlide, &AutoRolesFoot},
-    {K::Pivot, "pivot", T::Pivot, "Pivot", {0x9E5FDD, 0xDD5F9E}, kNo, false, true, "", K::Pivot, &AutoSourceFoot,
-     &AutoMatchPivot, &AutoMissingHeelOrToe, &AutoLanesPivot, &AutoRolesFoot},
-    {K::Grab, "grab", T::Grab, "Grab", {0x5FDD9E, 0xDDB45F}, kNo, false, false, "hand", K::Grab, &AutoSourceHand,
-     &AutoMatchGrab, &AutoMissingHand, &AutoLanesHandContact, &AutoRolesHand},
+    // signatures ({name, event source, match}...), part missing, lanes, roles
+    {K::Step, "step", T::Step, "FS", {0x5F9EDD, 0xDD9E5F}, kNo, false, false, "", K::Step,
+     {{"contact", &AutoSourceFoot, &AutoMatchStep}}, &AutoMissingFootAny, &AutoLanesFootContact, &AutoRolesFoot},
+    {K::Heel, "heel", T::Step, "Heel", {0x5F9EDD, 0xDD9E5F}, kNo, false, false, "heel", K::Heel,
+     {{"contact", &AutoSourceFoot, &AutoMatchHeel}}, &AutoMissingHeel, &AutoLanesHeel, &AutoRolesFoot},
+    {K::Toe, "toe", T::Step, "Toe", {0x5FDDDD, 0xDDDD5F}, kNo, false, false, "toe", K::Toe,
+     {{"contact", &AutoSourceFoot, &AutoMatchToe}}, &AutoMissingToe, &AutoLanesToe, &AutoRolesFoot},
+    {K::Lift, "lift", T::LiftOff, "Lift", {0x5F5FDD, 0xDD5F5F}, kNo, false, false, "", K::Lift,
+     {{"contact", &AutoSourceFoot, &AutoMatchLift}}, &AutoMissingFootAny, &AutoLanesFootContact, &AutoRolesFoot},
+    {K::Slide, "slide", T::Slide, "Slide", {0x5FDD5F, 0xDD5FDD}, kNo, false, false, "", K::Slide,
+     {{"slide", &AutoSourceFoot, &AutoMatchSlide}}, &AutoMissingFootAny, &AutoLanesFootSlide, &AutoRolesFoot},
+    {K::Pivot, "pivot", T::Pivot, "Pivot", {0x9E5FDD, 0xDD5F9E}, kNo, false, true, "", K::Pivot,
+     {{"pivot", &AutoSourceFoot, &AutoMatchPivot}}, &AutoMissingHeelOrToe, &AutoLanesPivot, &AutoRolesFoot},
+    {K::Grab, "grab", T::Grab, "Grab", {0x5FDD9E, 0xDDB45F}, kNo, false, false, "hand", K::Grab,
+     {{"contact", &AutoSourceHand, &AutoMatchGrab}}, &AutoMissingHand, &AutoLanesHandContact, &AutoRolesHand},
     {K::Release, "release", T::Release, "Release", {0x9EB4DD, 0xDD9E9E}, kNo, false, false, "hand", K::Release,
-     &AutoSourceHand, &AutoMatchRelease, &AutoMissingHand, &AutoLanesHandContact, &AutoRolesHand},
+     {{"contact", &AutoSourceHand, &AutoMatchRelease}}, &AutoMissingHand, &AutoLanesHandContact, &AutoRolesHand},
     {K::HandPivot, "hand_pivot", T::HandPivot, "Hand Pivot", {0xA8DD3C, 0xB4643C}, kNo, false, true, "hand",
-     K::HandPivot, &AutoSourceHand, &AutoMatchHandPivot, &AutoMissingHand, &AutoLanesHandPivot, &AutoRolesHand},
+     K::HandPivot,
+     {{"pivot", &AutoSourceHand, &AutoMatchHandPivot}}, &AutoMissingHand, &AutoLanesHandPivot, &AutoRolesHand},
     {K::HandPivotAny, "hand_pivot_any", T::HandPivot, "Hand Pivot", {0xA8DD3C, 0xB4643C}, kNo, false, true, "hand",
-     K::HandPivot, &AutoSourceHandAny, &AutoMatchHandPivot, &AutoMissingHand, &AutoLanesHandPivot, &AutoRolesHand},
-    {K::SlideHeel, "slide_heel", T::Slide, "Slide Heel", {0x5FDD5F, 0xDD5FDD}, kEach, true, false, "heel",
-     K::SlideHeel, &AutoSourceFootParts, &AutoMatchSlideHeel, &AutoMissingHeel, &AutoLanesSlideHeel, &AutoRolesFoot},
+     K::HandPivot,
+     {{"pivot", &AutoSourceHandAny, &AutoMatchHandPivot}}, &AutoMissingHand, &AutoLanesHandPivot, &AutoRolesHand},
+    {K::SlideHeel, "slide_heel", T::Slide, "Slide Heel", {0x5FDD5F, 0xDD5FDD}, kEach, true, false, "heel", K::SlideHeel,
+     {{"slide", &AutoSourceFootParts, &AutoMatchSlideHeel}}, &AutoMissingHeel, &AutoLanesSlideHeel, &AutoRolesFoot},
     {K::SlideToe, "slide_toe", T::Slide, "Slide Toe", {0x9FEE9F, 0xEE9FEE}, kEach, false, false, "toe", K::SlideToe,
-     &AutoSourceFootParts, &AutoMatchSlideToe, &AutoMissingToe, &AutoLanesSlideToe, &AutoRolesFoot},
-    {K::PivotHeel, "pivot_heel", T::Pivot, "Pivot Heel", {0x9E5FDD, 0xDD5F9E}, kEach, true, true, "heel",
-     K::PivotHeel, &AutoSourceFootParts, &AutoMatchPivotHeel, &AutoMissingHeelOrToe, &AutoLanesPivot, &AutoRolesFoot},
+     {{"slide", &AutoSourceFootParts, &AutoMatchSlideToe}}, &AutoMissingToe, &AutoLanesSlideToe, &AutoRolesFoot},
+    {K::PivotHeel, "pivot_heel", T::Pivot, "Pivot Heel", {0x9E5FDD, 0xDD5F9E}, kEach, true, true, "heel", K::PivotHeel,
+     {{"pivot", &AutoSourceFootParts, &AutoMatchPivotHeel}}, &AutoMissingHeelOrToe, &AutoLanesPivot, &AutoRolesFoot},
     {K::PivotToe, "pivot_toe", T::Pivot, "Pivot Toe", {0xC49FEE, 0xEE9FC4}, kEach, false, true, "toe", K::PivotToe,
-     &AutoSourceFootParts, &AutoMatchPivotToe, &AutoMissingHeelOrToe, &AutoLanesPivot, &AutoRolesFoot},
-    {K::SlideHeelLongest, "slide_heel_longest", T::Slide, "Slide Heel", {0x5FDD5F, 0xDD5FDD}, kLong, true, false,
-     "heel", K::SlideHeel, &AutoSourceFoot, &AutoMatchSlideHeelLongest, &AutoMissingHeel, &AutoLanesSlideHeel,
-     &AutoRolesFoot},
+     {{"pivot", &AutoSourceFootParts, &AutoMatchPivotToe}}, &AutoMissingHeelOrToe, &AutoLanesPivot, &AutoRolesFoot},
+    {K::SlideHeelLongest, "slide_heel_longest", T::Slide, "Slide Heel", {0x5FDD5F, 0xDD5FDD}, kLong, true, false, "heel",
+     K::SlideHeel,
+     {{"slide", &AutoSourceFoot, &AutoMatchSlideHeelLongest}}, &AutoMissingHeel, &AutoLanesSlideHeel, &AutoRolesFoot},
     {K::SlideToeLongest, "slide_toe_longest", T::Slide, "Slide Toe", {0x9FEE9F, 0xEE9FEE}, kLong, false, false, "toe",
-     K::SlideToe, &AutoSourceFoot, &AutoMatchSlideToeLongest, &AutoMissingToe, &AutoLanesSlideToe, &AutoRolesFoot},
-    {K::PivotHeelLongest, "pivot_heel_longest", T::Pivot, "Pivot Heel", {0x9E5FDD, 0xDD5F9E}, kLong, true, true,
-     "heel", K::PivotHeel, &AutoSourceFoot, &AutoMatchPivotHeelLongest, &AutoMissingHeelOrToe, &AutoLanesPivot,
-     &AutoRolesFoot},
+     K::SlideToe,
+     {{"slide", &AutoSourceFoot, &AutoMatchSlideToeLongest}}, &AutoMissingToe, &AutoLanesSlideToe, &AutoRolesFoot},
+    {K::PivotHeelLongest, "pivot_heel_longest", T::Pivot, "Pivot Heel", {0x9E5FDD, 0xDD5F9E}, kLong, true, true, "heel",
+     K::PivotHeel,
+     {{"pivot", &AutoSourceFoot, &AutoMatchPivotHeelLongest}}, &AutoMissingHeelOrToe, &AutoLanesPivot, &AutoRolesFoot},
     {K::PivotToeLongest, "pivot_toe_longest", T::Pivot, "Pivot Toe", {0xC49FEE, 0xEE9FC4}, kLong, false, true, "toe",
-     K::PivotToe, &AutoSourceFoot, &AutoMatchPivotToeLongest, &AutoMissingHeelOrToe, &AutoLanesPivot,
-     &AutoRolesFoot},
+     K::PivotToe,
+     {{"pivot", &AutoSourceFoot, &AutoMatchPivotToeLongest}}, &AutoMissingHeelOrToe, &AutoLanesPivot, &AutoRolesFoot},
     // Story 10-9a: sideless kinds (one colour: color[0]).
-    {K::Jump, "jump", T::Jump, "Jump", {0x3CC8B4, 0x3CC8B4}, kNo, false, false, "", K::Jump, &AutoSourceJump,
-     &AutoMatchJump, &AutoMissingJump, &AutoLanesJump, &AutoRolesJump},
-    {K::Land, "land", T::Land, "Land", {0xE0503C, 0xE0503C}, kNo, false, false, "", K::Land, &AutoSourceJump,
-     &AutoMatchLand, &AutoMissingJump, &AutoLanesJump, &AutoRolesJump},
+    {K::Jump, "jump", T::Jump, "Jump", {0x3CC8B4, 0x3CC8B4}, kNo, false, false, "", K::Jump,
+     {{"flight", &AutoSourceJump, &AutoMatchJump}, {"push-off", &AutoSourceJumpPushOff, &AutoMatchJump}},
+     &AutoMissingJump, &AutoLanesJump, &AutoRolesJump},
+    {K::Land, "land", T::Land, "Land", {0xE0503C, 0xE0503C}, kNo, false, false, "", K::Land,
+     {{"flight", &AutoSourceJump, &AutoMatchLand}}, &AutoMissingJump, &AutoLanesLand, &AutoRolesJump},
 };
 
 // One row per enum value, in enum order.
@@ -216,7 +237,22 @@ constexpr bool KindRowsInOrder()
 static_assert(sizeof(kCategoryRows) / sizeof(kCategoryRows[0]) == kAutoCategoryCount, "one row per AutoCategory");
 static_assert(sizeof(kTypeRows) / sizeof(kTypeRows[0]) == kAutoTypeCount, "one row per AutoType");
 static_assert(sizeof(kKindRows) / sizeof(kKindRows[0]) == kAutoKindCount, "one row per AutoKind");
+// Story 10-9a-2: every kind has a first signature; the used slots are contiguous and named.
+constexpr bool KindSignaturesValid()
+{
+    for (const AutoKindInfo& r : kKindRows) {
+        if (!r.sigs[0].source) return false;
+        bool ended = false;
+        for (const AutoSignature& g : r.sigs) {
+            const bool used = g.source != nullptr;
+            if (used != (g.match != nullptr) || used != (g.name != nullptr) || (used && ended)) return false;
+            ended = ended || !used;
+        }
+    }
+    return true;
+}
 static_assert(CategoryRowsInOrder(), "category rows follow the AutoCategory order");
+static_assert(KindSignaturesValid(), "every kind: a first signature, used slots contiguous and named");
 static_assert(TypeRowsInOrder(), "type rows follow the AutoType order");
 static_assert(KindRowsInOrder(), "kind rows follow the AutoKind order");
 
@@ -240,6 +276,13 @@ const AutoTypeInfo& AutoTypeRow(AutoType t)
 const AutoKindInfo& AutoKindRow(AutoKind k)
 {
     return kKindRows[RowIndex(static_cast<int>(k), kAutoKindCount)];
+}
+
+int AutoSignatureCount(const AutoKindInfo& row)
+{
+    int n = 0;
+    while (n < kAutoMaxSignatures && row.sigs[n].source && row.sigs[n].match) ++n;
+    return n;
 }
 
 std::vector<AutoType> AutoTypesOf(AutoCategory c)

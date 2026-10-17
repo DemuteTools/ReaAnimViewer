@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <tuple>
+#include <utility>
 
 #include "auto_types.h"  // story 10-9-0: the rows of the types and kinds
 #include "bone_roles.h"
@@ -490,6 +491,32 @@ std::vector<PhysicsParams> AutoParamSets(const std::vector<Block>& blocks, bool 
     return out;
 }
 
+std::vector<AutoSigPick> MergeSignatureEvents(const std::vector<std::vector<double>>& times, double period)
+{
+    std::vector<AutoSigPick> out;
+    std::vector<double>      kept;  // the times kept from the signatures before the current one
+    for (size_t g = 0; g < times.size(); ++g) {
+        const size_t earlier = kept.size();
+        for (size_t i = 0; i < times[g].size(); ++i) {
+            const double t = times[g][i];
+            bool         near = false;
+            for (size_t j = 0; j < earlier && !near; ++j) {
+                double d = std::fabs(t - kept[j]);
+                // A loop: the distance through the seam too.
+                if (period > 0.0) {
+                    d = std::fmod(d, period);
+                    d = std::min(d, period - d);
+                }
+                near = d <= kAutoMergeS + 1e-9;
+            }
+            if (near) continue;
+            out.push_back(AutoSigPick{static_cast<int>(g), i});
+            kept.push_back(t);
+        }
+    }
+    return out;
+}
+
 namespace {
 
 // AutoEvents; `replace` (story 10-9a): Land / Jump events replace the steps / lift-offs near them
@@ -522,13 +549,33 @@ std::vector<Event> AutoEventsImpl(const std::vector<AutoAnalysis>& analyses, con
         const PhysicsAnalysis& a = analyses[ai].analysis;
         if (!a.ok) continue;
         const AutoKindInfo& row = AutoKindRow(k);
-        size_t              si = sources.size();
-        for (size_t j = 0; j < sources.size() && si == sources.size(); ++j)
-            if (sources[j].analysis == ai && sources[j].fn == row.source) si = j;
-        if (si == sources.size()) sources.push_back(Source{ai, row.source, row.source(a, analyses[ai].params)});
-        for (const PhysicsEvent& e : sources[si].events) {
-            if (e.side != side || !row.match(e, a, side)) continue;
+        const double        loop_period = looping && a.looping && a.window_samples > 1
+                                              ? static_cast<double>(a.window_samples - 1) / a.rate_hz
+                                              : 0.0;
+        // Story 10-9a-2: every signature of the kind, each source computed once per analysis;
+        // merged (MergeSignatureEvents) before they become the block's events.
+        const int                                     nsig = AutoSignatureCount(row);
+        // found[g]: signature g's events, as (source index, event index) (sources may grow).
+        std::vector<std::vector<std::pair<size_t, size_t>>> found(static_cast<size_t>(nsig));
+        std::vector<std::vector<double>>                    times(static_cast<size_t>(nsig));
+        for (int g = 0; g < nsig; ++g) {
+            const AutoSignature& sig = row.sigs[g];
+            size_t               si = sources.size();
+            for (size_t j = 0; j < sources.size() && si == sources.size(); ++j)
+                if (sources[j].analysis == ai && sources[j].fn == sig.source) si = j;
+            if (si == sources.size()) sources.push_back(Source{ai, sig.source, sig.source(a, analyses[ai].params)});
+            for (size_t ei = 0; ei < sources[si].events.size(); ++ei) {
+                const PhysicsEvent& e = sources[si].events[ei];
+                if (e.side != side || !sig.match(e, a, side)) continue;
+                found[static_cast<size_t>(g)].emplace_back(si, ei);
+                times[static_cast<size_t>(g)].push_back(e.time_s);
+            }
+        }
+        for (const AutoSigPick& pick : MergeSignatureEvents(times, loop_period)) {
+            const std::pair<size_t, size_t>& at = found[static_cast<size_t>(pick.signature)][pick.index];
+            const PhysicsEvent&              e = sources[at.first].events[at.second];
             Event ev;
+            ev.signature = pick.signature;
             ev.time_s = e.time_s + b.offset_ms / 1000.0;
             // Story 10-8i: on a loop the offset wraps round the cycle (period T = the seam), as the
             // events themselves do: kept in [0, T).
@@ -546,9 +593,7 @@ std::vector<Event> AutoEventsImpl(const std::vector<AutoAnalysis>& analyses, con
             out.push_back(std::move(ev));
             raw.push_back(e.time_s);
             type.push_back(row.type);
-            period.push_back(looping && a.looping && a.window_samples > 1
-                                 ? static_cast<double>(a.window_samples - 1) / a.rate_hz
-                                 : 0.0);
+            period.push_back(loop_period);
         }
     }
     // Story 10-9a: a Land replaces the steps within kAutoReplaceS of it, a Jump the lift-offs, on

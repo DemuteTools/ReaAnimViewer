@@ -83,7 +83,20 @@ void TestRowsComplete()
         CHECK(static_cast<int>(r.type) >= 0 && static_cast<int>(r.type) < kAutoTypeCount);  // the kind's type exists
         CHECK(Filled(r.marker));
         CHECK(r.role_key != nullptr);
-        CHECK(r.source && r.match && r.part_missing && r.lanes && r.roles);
+        CHECK(r.part_missing && r.lanes && r.roles);
+        // Story 10-9a-2: at least one signature, every used slot named with a source and a match,
+        // the used slots first (contiguous), names unique within the kind.
+        const int nsig = AutoSignatureCount(r);
+        CHECK(nsig >= 1 && nsig <= kAutoMaxSignatures);
+        for (int g = 0; g < kAutoMaxSignatures; ++g) {
+            const AutoSignature& sg = r.sigs[g];
+            if (g < nsig) {
+                CHECK(sg.source && sg.match && Filled(sg.name));
+                for (int h = 0; h < g; ++h) CHECK(std::strcmp(r.sigs[h].name, sg.name) != 0);
+            } else {
+                CHECK(!sg.source && !sg.match && !sg.name);
+            }
+        }
         CHECK(!r.roles('L').empty() && !r.roles('R').empty());
         // The sound key's kind is a kind of the same type with the same marker.
         const AutoKindInfo& key = AutoKindRow(r.sound_key);
@@ -170,6 +183,18 @@ void TestKnownValues()
     const PhysicsParams l = AutoPhysicsParams(AutoType::Land, 0.0, false);
     CHECK(j.jump_min_flight_s == d.jump_min_flight_s / 2.0 && l.jump_min_flight_s == d.jump_min_flight_s * 2.0);
     CHECK(j.contact_speed == d.contact_speed && !SameAutoAnalysis(j, d));
+    // Story 10-9a-2: Jump has two signatures (flight, then push-off), Land one (flight); every
+    // other kind one. Jump's sensitivity also divides the push-off threshold, Land's does not.
+    CHECK(AutoSignatureCount(AutoKindRow(AutoKind::Jump)) == 2 && AutoSignatureCount(AutoKindRow(AutoKind::Land)) == 1);
+    CHECK(std::string(AutoKindRow(AutoKind::Jump).sigs[0].name) == "flight" &&
+          std::string(AutoKindRow(AutoKind::Jump).sigs[1].name) == "push-off");
+    CHECK(AutoKindRow(AutoKind::Jump).sigs[0].source == AutoKindRow(AutoKind::Land).sigs[0].source);
+    for (int k = 0; k < kAutoKindCount; ++k)
+        if (static_cast<AutoKind>(k) != AutoKind::Jump) CHECK(AutoSignatureCount(AutoKindRow(static_cast<AutoKind>(k))) == 1);
+    CHECK(j.jump_impulse_g == d.jump_impulse_g / 2.0 && l.jump_impulse_g == d.jump_impulse_g);
+    PhysicsParams q = d;
+    q.jump_impulse_g = d.jump_impulse_g / 2.0;
+    CHECK(!SameAutoAnalysis(q, d));  // the push-off threshold tells analyses apart
 }
 
 // AutoTypeSeparate: only steps, slides and pivots have the mode.
@@ -240,14 +265,14 @@ void TestRowInvariants()
             if (j == k || o.type != r.type || o.scuff != r.scuff) continue;
             const bool hand_pivot_pair = (r.kind == AutoKind::HandPivot && o.kind == AutoKind::HandPivotAny) ||
                                          (r.kind == AutoKind::HandPivotAny && o.kind == AutoKind::HandPivot);
-            if (hand_pivot_pair) CHECK(r.source != o.source);
-            else CHECK(r.source == o.source);
+            if (hand_pivot_pair) CHECK(r.sigs[0].source != o.sigs[0].source);
+            else CHECK(r.sigs[0].source == o.sigs[0].source);
         }
         if (r.scuff != ScuffParts::Combined) {
             const AutoKindInfo& combined = AutoKindRow(r.type == AutoType::Slide ? AutoKind::Slide : AutoKind::Pivot);
             CHECK(combined.scuff == ScuffParts::Combined && combined.type == r.type);
-            if (r.scuff == ScuffParts::EachPart) CHECK(r.source != combined.source);
-            else CHECK(r.source == combined.source);
+            if (r.scuff == ScuffParts::EachPart) CHECK(r.sigs[0].source != combined.sigs[0].source);
+            else CHECK(r.sigs[0].source == combined.sigs[0].source);
         }
     }
 }

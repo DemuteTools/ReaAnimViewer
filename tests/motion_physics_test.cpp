@@ -1710,6 +1710,110 @@ int main()
         }
     }
 
+    // Story 10-9a-2: push-off jumps, on an analysis set by hand (standing feet, then the hips'
+    // acceleration and the feet's contacts written in): a push of `push_g` peaking at 0.9 s, both
+    // feet off over [1.0 s, 1.0 s + off_s).
+    {
+        Options o;
+        o.dur = 2.0;
+        const PhysicsAnalysis stand = AnalyseMotion(Rig(Planted(-0.1, 0.0), Planted(0.1, 0.0), o));
+        CHECK(stand.ok && stand.hips_vy.size() == stand.samples);
+        auto make = [&](double push_g, double off_s) {
+            PhysicsAnalysis a = stand;
+            const int       n = static_cast<int>(a.samples);
+            const double    rate = a.rate_hz;
+            double          v = 0.0;  // m/s
+            for (int i = 0; i < n; ++i) {
+                const double t = i / rate, u = (t - 0.9) / 0.05;
+                v += push_g * 9.81 * std::exp(-0.5 * u * u) / rate;
+                a.hips_vy[static_cast<size_t>(i)] = v / a.leg_length;
+            }
+            const int fs = static_cast<int>(std::lround(1.0 * rate)), fe = fs + static_cast<int>(std::lround(off_s * rate));
+            for (FootTrack& f : a.foot)
+                for (PartTrack& pt : f.part) {
+                    if (!pt.present) continue;
+                    pt.contact.assign(a.samples, 1);
+                    pt.contacts.clear();
+                    if (fe <= fs) {
+                        PartContact c;
+                        c.end = n;
+                        pt.contacts.push_back(c);
+                        continue;
+                    }
+                    for (int i = fs; i < fe; ++i) pt.contact[static_cast<size_t>(i)] = 0;
+                    PartContact c0, c1;
+                    c0.end = fs;
+                    c0.lift_s = fs / rate;
+                    c1.start = fe;
+                    c1.end = n;
+                    pt.contacts = {c0, c1};
+                }
+            return a;
+        };
+        // A 1.5 g push, then both feet off 50 ms: one Jump at the take-off.
+        const PhysicsAnalysis a = make(1.5, 0.05);
+        const std::vector<double> acc = HipsUpAccelerationG(a);
+        CHECK(acc.size() == a.samples);
+        if (acc.size() == a.samples) {
+            const size_t peak = static_cast<size_t>(std::max_element(acc.begin(), acc.end()) - acc.begin());
+            CHECK(acc[peak] > 1.0 && acc[peak] < 1.5 && std::fabs(peak / a.rate_hz - 0.9) < 0.01);
+        }
+        const std::vector<PhysicsEvent> ev = JumpPushOffEvents(a);
+        CHECK(ev.size() == 1);
+        if (ev.size() == 1) {
+            CHECK(ev[0].kind == PhysicsKind::Jump && ev[0].side == 'B' && ev[0].part == -1);
+            CHECK(std::fabs(ev[0].time_s - 1.0) < 1e-9 && ev[0].strength > 0.0);
+        }
+        CHECK(JumpPushOffSummary(a, ev) == "jumps (push-off): 1");
+        CHECK(JumpEvents(a).empty());  // 50 ms: no flight jump
+        // The same push with a hand in contact: none.
+        PhysicsAnalysis held = a;
+        held.hand[0].part.present = true;
+        held.hand[0].part.contact.assign(held.samples, 1);
+        CHECK(JumpPushOffEvents(held).empty());
+        // The hand in contact before the push only: still a jump.
+        for (size_t i = 0; i < held.samples; ++i) held.hand[0].part.contact[i] = i / held.rate_hz < 0.6 ? 1 : 0;
+        CHECK(JumpPushOffEvents(held).size() == 1);
+        // The push with no feet off after it: none; a single free sample: none.
+        CHECK(JumpPushOffEvents(make(1.5, 0.0)).empty());
+        CHECK(JumpPushOffEvents(make(1.5, 1.0 / a.rate_hz)).empty());
+        // A soft push (0.5 g): none at the default, one with a lower threshold.
+        CHECK(JumpPushOffEvents(make(0.5, 0.05)).empty());
+        PhysicsParams soft;
+        soft.jump_impulse_g = 0.3;
+        CHECK(JumpPushOffEvents(make(0.5, 0.05), soft).size() == 1);
+        // The push too long before the take-off (window 0.05 s < 0.1 s): none.
+        PhysicsParams tight;
+        tight.jump_impulse_window_s = 0.05;
+        CHECK(JumpPushOffEvents(a, tight).empty());
+        // No hips: none, said in the report.
+        PhysicsAnalysis nh = a;
+        nh.hips_vy.clear();
+        nh.hips_missing = "no bone for hips";
+        CHECK(JumpPushOffEvents(nh).empty() && HipsUpAccelerationG(nh).empty());
+        CHECK(JumpPushOffSummary(nh, {}) == "jumps (push-off): 0; missing: hips: no bone for hips");
+    }
+
+    // Story 10-9a-2: looping push-off. A 250 ms hop (no flight jump) taking off at 1.8 s of a
+    // 2 s cycle, the hips dipping 3 cm just before it (a hard push): one Jump, in clip time.
+    {
+        Options o;
+        o.dur = 2.0;
+        PhysicsParams loop;
+        loop.looping = true;
+        std::vector<BoneTrack> rig = Rig(JumpFoot(-0.1, 1.8, 0.25, 2.0), JumpFoot(0.1, 1.8, 0.25, 2.0), o);
+        for (size_t i = 0; i < rig[static_cast<size_t>(Role::Hips)].pos.size(); ++i) {
+            const double u = (i / o.rate - 1.77) / 0.04;
+            rig[static_cast<size_t>(Role::Hips)].pos[i].y -= 0.03 * std::exp(-0.5 * u * u);
+        }
+        const PhysicsAnalysis a = AnalyseMotion(rig, loop);
+        CHECK(a.ok && a.looping);
+        const std::vector<PhysicsEvent> ev = JumpPushOffEvents(a, loop);
+        CHECK(ev.size() == 1);
+        if (ev.size() == 1) CHECK(ev[0].time_s >= 0.0 && ev[0].time_s < 2.0 && std::fabs(ev[0].time_s - 1.8) < 0.03);
+        CHECK(JumpEvents(a, loop).empty());
+    }
+
     if (g_fails == 0) std::printf("motion_physics: all tests passed\n");
     return g_fails == 0 ? 0 : 1;
 }

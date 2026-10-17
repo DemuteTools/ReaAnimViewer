@@ -160,6 +160,16 @@
 //                 before it (leg/s).
 // Both are sideless (PhysicsEvent::side 'B', part -1). Looping clips: as the other events.
 //
+// Push-off jumps (JumpPushOffEvents, story 10-9a-2): a second way to find a take-off, for jumps
+// whose flight is too short or does not fall (a leap onto a ledge, one foot to the other). The
+// ground pushes the body up well above its weight (F = m (a + g), the hips standing for the
+// centre of mass): the hips' upward acceleration (HipsUpAccelerationG) peaks at jump_impulse_g at
+// least while a foot is on the ground, a both-feet-off run (2 samples at least, no minimum
+// flight) starts within jump_impulse_window_s after that peak, and no hand is in contact from the
+// peak to that take-off (a push the hands share, climbing, is no jump).
+//   jump          the take-off as JumpEvents' (the latest lift_s of the contacts that end where
+//                 the run starts), never at the clip start. Strength as JumpEvents'.
+//
 // A missing role drops only that part's events (PhysicsAnalysis::missing says why for the feet,
 // hand_missing for the hands, hips_missing for the jumps). Two parts on the same bone (an Unreal
 // toe end standing in on ball_l) keep the first.
@@ -297,6 +307,17 @@ struct PhysicsParams {
     // no jump there.
     double     jump_min_flight_s = 0.300;
     double     jump_fall_g = 0.5;
+    // Story 10-9a-2: the push-off jumps (see "Push-off jumps" above). The hips' upward
+    // acceleration peak (g) a push must reach while a foot is on the ground (the sensitivity
+    // divides it), and how soon after that peak both feet must leave (s). Chosen on the fixtures
+    // (peak with a foot down in the window before a both-feet-off run, 40 ms smoothing): Jumping's
+    // push-off 1.12 g (no hand); the highest elsewhere without a hand is Climbing's 0.52 g (a 58 ms
+    // hop at 2.72 s), Left Strafe 0.48 g, Walk With Briefcase 0.18 g; Climbing Ladder's 0.74 g
+    // has the hands on. 0.9 sits between: Jumping is found from 35 % sensitivity up, Climbing's
+    // first false Jump comes at 90 %. Jumping Down steps off a ledge (0.26 g): its flight finds it.
+    double     jump_impulse_g = 0.9;
+    double     jump_impulse_window_s = 0.25;
+    double     jump_impulse_smooth_s = 0.040;  // the acceleration's smoothing (Gaussian sigma, s)
 };
 
 // One contact of a part, in samples [start, end).
@@ -434,6 +455,13 @@ std::vector<PhysicsEvent> HandEvents(const PhysicsAnalysis& a, const PhysicsPara
 // Story 10-9a: the jumps (take-offs and landings), by time. Uses p.jump_min_flight_s,
 // p.jump_fall_g and the steps' p.step_timing / p.step_offset_s (a landing is timed as a step).
 std::vector<PhysicsEvent> JumpEvents(const PhysicsAnalysis& a, const PhysicsParams& p = {});
+// Story 10-9a-2: the hips' upward acceleration per analysed sample, in g (the change of
+// PhysicsAnalysis::hips_vy through the leg length, smoothed over p.jump_impulse_smooth_s).
+// Empty without hips.
+std::vector<double> HipsUpAccelerationG(const PhysicsAnalysis& a, const PhysicsParams& p = {});
+// Story 10-9a-2: the push-off take-offs (Kind Jump, sideless), by time. Uses p.jump_impulse_g,
+// p.jump_impulse_window_s and p.jump_impulse_smooth_s.
+std::vector<PhysicsEvent> JumpPushOffEvents(const PhysicsAnalysis& a, const PhysicsParams& p = {});
 
 // The separate step times of one part (side 'L' / 'R'), by `timing` plus `offset_s`.
 std::vector<double> PartStepTimes(const PhysicsAnalysis& a, char side, int part, StepTiming timing, double offset_s);
@@ -455,6 +483,9 @@ std::string HandSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEvent
 // Story 10-9a: the jumps' report: "jumps: take-offs 1, landings 1" plus "; missing: ..." when
 // the hips have no bone ("jumps: skipped: <error>" when the analysis failed).
 std::string JumpSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEvent>& ev);
+// Story 10-9a-2: the push-off jumps' report: "jumps (push-off): 1" plus "; missing: hips: ..."
+// ("jumps (push-off): skipped: <error>" when the analysis failed).
+std::string JumpPushOffSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEvent>& ev);
 // One line per event ("   1.234 s  PHY L heel 1.8", a scuff or hand pivot "... (to 1.456 s)"), each with
 // `indent` in front and '\n' after.
 std::string PhysicsEventLines(const std::vector<PhysicsEvent>& ev, const std::string& indent);

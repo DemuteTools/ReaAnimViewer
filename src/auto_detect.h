@@ -244,8 +244,26 @@ std::vector<PhysicsParams> AutoParamSets(const std::vector<Block>& blocks, bool 
 // analysis of each block's parameter set (a block whose set is not in `analyses`, or whose
 // analysis failed, has none). Sorted by time (then block). Story 10-9a: a Land event replaces the
 // step blocks' events (combined, heel, toe) within kAutoReplaceS of it, a Jump event the lift-off
-// blocks' events, both on their physics times (before the blocks' offsets).
+// blocks' events, both on their physics times (before the blocks' offsets). Story 10-9a-2: every
+// signature of a block's kind runs (AutoKindInfo::sigs), merged per block by
+// MergeSignatureEvents; Event::signature = the signature that found it.
 constexpr double kAutoReplaceS = 0.030;
+// Story 10-9a-2: the merge window of a kind's signatures (wider than kAutoReplaceS: two
+// signatures time the same take-off from different signals).
+constexpr double kAutoMergeS = 0.060;
+// One kept event of MergeSignatureEvents: its signature and its index in that signature's list.
+struct AutoSigPick {
+    int    signature = 0;
+    size_t index = 0;
+};
+// Story 10-9a-2: the merge of one block's signatures. `times[s]` = the physics times (before the
+// block's offset) of signature s's events; signature by signature, an event within kAutoMergeS
+// of one kept from an EARLIER signature is dropped (through the seam when `period` > 0, a loop's
+// period), so a signature never loses its own events and the earlier one gives the time (an
+// appended signature never moves an existing event; its new events can still remove steps /
+// lift-offs through the Land / Jump replacement). The kept events, signature by signature, each
+// list in its order.
+std::vector<AutoSigPick> MergeSignatureEvents(const std::vector<std::vector<double>>& times, double period);
 std::vector<Event> AutoEvents(const std::vector<AutoAnalysis>& analyses, const std::vector<Block>& blocks,
                               bool looping);
 

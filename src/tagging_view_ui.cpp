@@ -3680,6 +3680,21 @@ void DrawEventInspector(const TaggingModel& m, const ItemRules& rules, const Sho
     }
     key("Rule");
     ImGui::TextUnformatted(rule.c_str());
+    // Story 10-9a-2: which of its kind's signatures found a detection (only for a kind with more
+    // than one).
+    if ((e.kind == ShownKind::Detected || e.kind == ShownKind::Suppressed) && IsAutoBlock(blk)) {
+        AutoKind k = AutoKind::Step;
+        if (AutoBlockKind(blk, &k, nullptr)) {
+            const AutoKindInfo& row = AutoKindRow(k);
+            const int           nsig = AutoSignatureCount(row);
+            if (nsig > 1 && e.signature >= 0 && e.signature < nsig) {
+                key("Found by");
+                ImGui::TextUnformatted(row.sigs[e.signature].name);
+                ui::ItemTip("The way of recognising this event that found it (a kind can have several;\n"
+                            "when two find the same moment, the first in the list gives its time).");
+            }
+        }
+    }
 
     ImGui::Dummy(ImVec2(0.0f, ui::Dp(2.0f)));
     ui::SubText(e.kind == ShownKind::User       ? "Detection never moves your events. Their values are measured at their time."

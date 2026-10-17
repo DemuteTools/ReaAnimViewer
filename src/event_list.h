@@ -51,6 +51,7 @@ struct ShownEvent {
     double    speed = 0.0;
     int       entry = -1;      // Suppressed: the suppression; Orphan / User: the entry (index into ItemRules::events)
     int       detection = -1;  // Detected / Suppressed: index into the detections given
+    int       signature = 0;   // story 10-9a-2: Detected / Suppressed: the detection's Event::signature
 };
 
 // The displayed list, sorted by time (then rule). `detections` = the live detections (any

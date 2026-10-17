@@ -83,6 +83,16 @@ using AutoLanesFn = void (*)(const AutoLaneArgs& args, std::vector<AutoLane>& ou
 // The roles the Tagging view highlights for a block of that side (B: a sideless kind's).
 using AutoRolesFn = std::vector<Role> (*)(char side);
 
+// Story 10-9a-2: one way to recognise a kind's events: its event source and match. A kind holds
+// an ordered list of them (AutoKindInfo::sigs); all run, their events merged per block (an event
+// within kAutoMergeS of one an earlier signature kept is dropped). Not saved data.
+struct AutoSignature {
+    const char*       name = nullptr;  // "flight", "push-off" (the inspector's "Found by")
+    AutoEventSourceFn source = nullptr;
+    AutoMatchFn       match = nullptr;
+};
+constexpr int kAutoMaxSignatures = 4;
+
 struct AutoKindInfo {
     AutoKind          kind;
     const char*       word;  // the save word (Block::auto_type): never renamed
@@ -94,8 +104,9 @@ struct AutoKindInfo {
     bool              degrees;   // strength in degrees (a pivot): no speed
     const char*       role_key;  // Epic 13: the event's role key ("heel", "toe", "hand", "")
     AutoKind          sound_key; // Epic 13: the kind whose word names its sound key (kinds of one marker share it)
-    AutoEventSourceFn source;
-    AutoMatchFn       match;
+    // Story 10-9a-2: its signatures, in order (the first gives an event's time when two find it);
+    // unused slots null (name, source and match), at least one, contiguous.
+    AutoSignature     sigs[kAutoMaxSignatures];
     AutoPartMissingFn part_missing;
     AutoLanesFn       lanes;
     AutoRolesFn       roles;
@@ -105,6 +116,8 @@ struct AutoKindInfo {
 const AutoCategoryInfo& AutoCategoryRow(AutoCategory c);
 const AutoTypeInfo&     AutoTypeRow(AutoType t);
 const AutoKindInfo&     AutoKindRow(AutoKind k);
+// Story 10-9a-2: how many signatures a kind holds (its leading non-null slots).
+int AutoSignatureCount(const AutoKindInfo& row);
 
 // The types of a category, in enum order (the section's rows and the sound parts' types).
 std::vector<AutoType> AutoTypesOf(AutoCategory c);

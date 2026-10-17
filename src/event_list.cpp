@@ -56,6 +56,7 @@ std::vector<ShownEvent> BuildEventList(const std::vector<Event>& detections, con
         s.strength = e.strength;
         s.speed = e.speed;
         s.detection = static_cast<int>(d);
+        s.signature = e.signature;
         s.kind = ShownKind::Detected;
         // The nearest suppression of this rule within the window.
         double best = 1e300;
@@ -123,6 +124,7 @@ void KeepBlockEvents(std::vector<Event>& detections, const std::vector<EventEntr
         e.marker = blocks[static_cast<size_t>(x.block)].marker;
         e.strength = x.strength;
         e.speed = x.speed;
+        e.signature = -1;  // story 10-9a-2: signatures are not saved (no "Found by")
         detections.push_back(e);
     }
     std::stable_sort(detections.begin(), detections.end(), [](const Event& a, const Event& b) {

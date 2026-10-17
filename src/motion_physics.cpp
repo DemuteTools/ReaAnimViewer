@@ -1527,6 +1527,103 @@ std::vector<PhysicsEvent> JumpEvents(const PhysicsAnalysis& a, const PhysicsPara
     return ev;
 }
 
+std::vector<double> HipsUpAccelerationG(const PhysicsAnalysis& a, const PhysicsParams& p)
+{
+    std::vector<double> acc;
+    if (!a.ok || a.hips_vy.size() != a.samples || a.samples < 2 || !(a.rate_hz > 0.0)) return acc;
+    const int    n = static_cast<int>(a.samples);
+    const double rate = a.rate_hz;
+    // Central differences of the vertical speed (leg/s^2), smoothed over jump_impulse_smooth_s (a
+    // push lasts 150-300 ms; at the parts' 8 ms the second derivative keeps a strafe's brief
+    // spikes as high as a real push-off), in g.
+    std::vector<Vec3d> d(a.samples);
+    for (int i = 0; i < n; ++i) {
+        const int lo = std::max(0, i - 1), hi = std::min(n - 1, i + 1);
+        d[static_cast<size_t>(i)].y = (a.hips_vy[static_cast<size_t>(hi)] - a.hips_vy[static_cast<size_t>(lo)]) * rate /
+                                      static_cast<double>(hi - lo);
+    }
+    d = Smooth(d, p.jump_impulse_smooth_s, rate);
+    acc.resize(a.samples);
+    for (size_t i = 0; i < a.samples; ++i) acc[i] = d[i].y * a.leg_length / kGravity;
+    return acc;
+}
+
+// Story 10-9a-2: see "Push-off jumps" in motion_physics.h; the default constants' fixture
+// measures are at PhysicsParams::jump_impulse_g.
+std::vector<PhysicsEvent> JumpPushOffEvents(const PhysicsAnalysis& a, const PhysicsParams& p)
+{
+    std::vector<PhysicsEvent> ev;
+    const std::vector<double> acc = HipsUpAccelerationG(a, p);
+    if (acc.empty() || a.samples < 3) return ev;
+    const int    n = static_cast<int>(a.samples);
+    const double rate = a.rate_hz;
+    // A foot on the ground: any present part of either foot in contact (a foot with no part: no jump).
+    std::vector<char> on(static_cast<size_t>(n), 0);
+    for (const FootTrack& f : a.foot) {
+        bool part = false;
+        for (const PartTrack& pt : f.part) {
+            if (!pt.present) continue;
+            part = true;
+            for (int i = 0; i < n && static_cast<size_t>(i) < pt.contact.size(); ++i)
+                if (pt.contact[static_cast<size_t>(i)]) on[static_cast<size_t>(i)] = 1;
+        }
+        if (!part) return ev;
+    }
+    auto hand_on = [&](int i) {
+        for (const HandTrack& h : a.hand)
+            if (h.part.present && static_cast<size_t>(i) < h.part.contact.size() && h.part.contact[static_cast<size_t>(i)])
+                return true;
+        return false;
+    };
+    const int win = std::max(1, SamplesOf(p.jump_impulse_window_s, rate));
+    const int aw = std::max(1, SamplesOf(p.approach_window_s, rate));
+    const double thr = p.jump_impulse_g;
+    for (int i = 1; i < n;) {
+        if (on[static_cast<size_t>(i)] || !on[static_cast<size_t>(i - 1)]) {
+            ++i;
+            continue;
+        }
+        const int fs = i;  // both feet leave here: the run [fs, fe)
+        while (i < n && !on[static_cast<size_t>(i)]) ++i;
+        if (i - fs < 2) continue;
+        // The push: the peak upward acceleration with a foot down within the window before the run.
+        int peak = -1;
+        for (int k = std::max(0, fs - win); k < fs; ++k)
+            if (on[static_cast<size_t>(k)] && (peak < 0 || acc[static_cast<size_t>(k)] > acc[static_cast<size_t>(peak)]))
+                peak = k;
+        if (peak < 0 || !(acc[static_cast<size_t>(peak)] >= thr)) continue;
+        bool held = false;
+        for (int k = peak; k <= fs && !held; ++k) held = hand_on(k);
+        if (held) continue;
+        PhysicsEvent best;
+        bool         found = false;
+        for (const FootTrack& f : a.foot)
+            for (int q = 0; q < kFootPartCount; ++q) {
+                if (!f.part[q].present) continue;
+                for (const PartContact& c : f.part[q].contacts)
+                    if (c.end == fs && (!found || c.lift_s > best.time_s + kTieS)) {
+                        best.time_s = best.start_s = best.end_s = c.lift_s;
+                        found = true;
+                    }
+            }
+        if (!found) continue;
+        best.kind = PhysicsKind::Jump;
+        best.side = 'B';
+        best.part = -1;
+        // Strength as JumpEvents': the peak |hips vertical speed| over the approach window after it.
+        const long j0 = std::clamp(std::lround(best.time_s * rate), 0L, static_cast<long>(n - 1));
+        const long j1 = std::min(static_cast<long>(n - 1), j0 + aw);
+        for (long k = j0; k <= j1; ++k) best.strength = std::max(best.strength, std::fabs(a.hips_vy[static_cast<size_t>(k)]));
+        ev.push_back(best);
+    }
+    ToClipTime(a, ev);
+    std::stable_sort(ev.begin(), ev.end(), [](const PhysicsEvent& x, const PhysicsEvent& y) {
+        return std::make_tuple(std::llround(x.time_s * 1e6), static_cast<int>(x.kind)) <
+               std::make_tuple(std::llround(y.time_s * 1e6), static_cast<int>(y.kind));
+    });
+    return ev;
+}
+
 std::vector<double> PartStepTimes(const PhysicsAnalysis& a, char side, int part, StepTiming timing, double offset_s)
 {
     std::vector<double> t;
@@ -1664,6 +1761,17 @@ std::string JumpSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEvent
         if (e.kind == PhysicsKind::Land) ++lands;
     }
     std::string out = Format("jumps: take-offs %d, landings %d", jumps, lands);
+    if (!a.hips_missing.empty()) out += "; missing: hips: " + a.hips_missing;
+    return out;
+}
+
+std::string JumpPushOffSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEvent>& ev)
+{
+    if (!a.ok) return "jumps (push-off): skipped: " + a.error;
+    int jumps = 0;
+    for (const PhysicsEvent& e : ev)
+        if (e.kind == PhysicsKind::Jump) ++jumps;
+    std::string out = Format("jumps (push-off): %d", jumps);
     if (!a.hips_missing.empty()) out += "; missing: hips: " + a.hips_missing;
     return out;
 }

@@ -38,6 +38,9 @@ struct ZoneLook {
     double  snap = 0.0;              // ZoneSnap
     bool    snap_own = false;
     bool    butt_next = false;       // the next zone starts where it ends (Butted)
+    // 13-75: the curves of its rise (fin) and fall (fout): ZoneFadeCurve (a side a Gap holds: the Gap's). A Gap: its own
+    // (cin: the right zone's fade-in across it, cout: the left zone's fade-out).
+    FadeCurve cin, cout;
 };
 // Every zone's look from one AllZones list (neighbours by index; the same values as GapBefore / GapAfter /
 // GapLeft / GapRight / ZoneFade / ZoneSnap). 13-62i: of timeline `tl` (AllZones(d, tl)).
@@ -119,9 +122,33 @@ struct ZoneHitView {
     // Sound Edit evening (D): a lane of the Heard strip (x over w = heard time over its total; only its members hit;
     // v0 / vl unused). `looks`, when given, are its HeardLooks. A Gap's two edges on one join: the side the mouse is on.
     const HeardStrip*                strip = nullptr;
+    // 13-75: Ctrl+Alt held (REAPER's fade curvature modifier): a press anywhere along a fade is its curve (Curve).
+    bool                             curve_mod = false;
 };
 
-enum class ZoneHitKind { None, Ruler, TselEdge, Var, Pick, Xf, Fade, Snap, Cut, GapEdge, Edge, Zone, Grey };
+// 13-75: one fade of a lane as drawn and hit (px local to the row, as HitZones): a part zone's fade-in / fade-out, or
+// one side of a Gap's crossfade (the left zone's fade-out, the right zone's fade-in across it). Its rise / fall from
+// x0 to x1 between the row's bottom (`bottom`, gain 0) and `top` (gain 1) on its curve; `z` / `side` = the part zone and
+// side it fades (FadeCurveHolder keeps a crossfade's curve on its Gap).
+struct FadeSpan {
+    ZoneRef   z;
+    int       side = 0;  // < 0 a fade-in (rises), > 0 a fade-out (falls)
+    float     x0 = 0.0f, x1 = 0.0f, top = 0.0f, bottom = 0.0f;
+    FadeCurve c;
+    bool      xfade = false;
+};
+// Every fade of the lane `v` shows (the Heard strip: its members'; a crossfade read on its own pieces, HeardXfadeOf).
+std::vector<FadeSpan> FadeSpans(const SoundData& d, const ZoneHitView& v, const std::vector<ZoneLook>& looks);
+// The y of span f at x (clamped into it).
+float FadeSpanY(const FadeSpan& f, float x);
+// Its curve handle (REAPER's fade curvature: the diamond, drawn and grabbed in its middle) when it is wide enough
+// (>= 12 logical px): false when too narrow.
+bool FadeDiamond(const FadeSpan& f, float dp, float* x, float* y);
+// The curvature a vertical drag of dy logical px gives from `dir0` (up = convex: the curve bulges up, as REAPER: 1 per
+// 100 px, clamped to -1..1, 0.01 steps).
+double CurveDragDir(double dir0, float dy_px);
+
+enum class ZoneHitKind { None, Ruler, TselEdge, Var, Pick, Xf, Fade, Snap, Cut, GapEdge, Edge, Zone, Grey, Curve };
 
 struct ZoneHit {
     ZoneHitKind kind = ZoneHitKind::None;
@@ -130,7 +157,7 @@ struct ZoneHit {
     double      t = 0.0;     // source seconds under the mouse
     bool        top = true;  // the top half of the row
     ZoneRef     z, z2;       // the zone (Cut: the left one, z2 the right one)
-    int         side = 0;    // Edge / GapEdge / Fade / Xf / TselEdge: < 0 start / in / left, > 0 end / out / right
+    int         side = 0;    // Edge / GapEdge / Fade / Xf / TselEdge / Curve: < 0 start / in / left, > 0 end / out / right
     int         var = -1;    // Var: the frame
 };
 
@@ -138,13 +165,15 @@ struct ZoneHit {
 bool ZoneMine(const SoundData& d, const ZoneRef& r, int lane);
 // What is under (x, y) of a row (the mockup's hitAt): on a lane, in this order, a Gap's crossfade handle and a
 // fade handle in the top band, a snap tag, a cut grab at the bottom, a Gap edge, a zone edge (not held by a Gap),
-// then the zone (another lane's part zone: Grey).
+// then the zone (another lane's part zone: Grey). 13-75: a fade's curve handle (the diamond) after the top band's
+// handles; with `curve_mod` first of all, anywhere along a fade (the curve nearest the mouse there): Curve, its part
+// zone and side.
 ZoneHit HitZones(const SoundData& d, const ZoneHitView& v, float x, float y);
 
 // What a press does once the mouse moves.
 enum class ZoneDragKind {
     None, Pending, Reserved, Tsel, TselEdge, MkGap, MkZone, Swipe, Move, MoveChain, Scrub, Gain,
-    Edge, Cut, GapEdge, Fade, Snap, Xf
+    Edge, Cut, GapEdge, Fade, Snap, Xf, Curve
 };
 // At the press: a handle drags at once (TselEdge, Edge, Cut, GapEdge, Fade, Snap, Xf); else Pending. With Ctrl,
 // or Alt on a handle (but a Gap's crossfade, where Alt = one side), it is Pending too: released unmoved it is the
@@ -196,14 +225,15 @@ bool        ZoneDoubleTap(ZoneTap& last, const std::string& key, double now, flo
                           double max_s = 0.45);
 
 // What a double-click does (the mockup's onDouble).
-enum class ZoneDoubleAction { None, RemoveTsel, TselVariation, TselZone, TselItem, ResetEdge, ResetSnap, ResetFade };
+// 13-75: ResetCurve (the diamond): the curve's shape at its preset curvature.
+enum class ZoneDoubleAction { None, RemoveTsel, TselVariation, TselZone, TselItem, ResetEdge, ResetSnap, ResetFade, ResetCurve };
 ZoneDoubleAction DoubleActionOf(const ZoneHit& h);
 // 13-62h (v5): the same, a zone / Gap of an item (a lane's own or greyed one, not the Placed strip's block) = the
 // item whole selected, a time selection over it and the cursor at its start (TselItem).
 ZoneDoubleAction DoubleActionOf(const SoundData& d, const ZoneHit& h);
 
 // The hover cursor of a hit (the mockup's CURSORS: a zone's top half grabs, its bottom half is a text cursor).
-enum class ZoneCursor { Arrow, Hand, ResizeEW, Text, Grab };
+enum class ZoneCursor { Arrow, Hand, ResizeEW, Text, Grab, ResizeNS };
 ZoneCursor ZoneCursorOf(const ZoneHit& h);
 // The tooltip of a hit, in the mockup's words (tipOf). `names`: the parts' names by divide value index.
 std::string ZoneTip(const SoundData& d, const ZoneHit& h, const std::vector<std::string>& names, bool click_plays);

@@ -167,7 +167,15 @@ double GapReach(const SoundData& d, const ZoneRef& r, int side);
 // Gap's edge because the zone across the Gap is not heard there (not placed in the same event, muted / not
 // soloed): the Sound's cut_fade, capped as ZoneFade.
 ZoneFadeInfo ZoneCutFade(const SoundData& d, const ZoneRef& r, int side);
-// A part zone's gain (0..1, the fades and Gap crossfades) at t; t may run into a Gap next to it (the crossfade).
+// 13-75: the curve (REAPER's shape + curvature, fade_curve.h) of zone r's fade on `side` (< 0 in, > 0 out). A part
+// zone's side a Gap holds: that crossfade's curve (the Gap's fade_in_* for the right zone's fade-in, fade_out_* for the
+// left zone's fade-out), unless `cut` (the side cut at the Gap's edge, ZoneCutFade): then its own; else its own,
+// whatever gives the fade its length. A Gap: its own curve of that side (< 0 the fade-in crossing it, > 0 the fade-out).
+FadeCurve ZoneFadeCurve(const SoundData& d, const ZoneRef& r, int side, bool cut = false);
+// 13-75: where the curve of zone r's `side` is kept: a part zone's side a Gap holds -> {that Gap, its side}; else r.
+std::pair<ZoneRef, int> FadeCurveHolder(const SoundData& d, const ZoneRef& r, int side);
+// A part zone's gain (0..1, the fades and Gap crossfades, 13-75: on their curves) at t; t may run into a Gap next to
+// it (the crossfade).
 double ZoneEnv(const SoundData& d, const ZoneRef& r, double t);
 struct ZoneSnapInfo {
     double t = 0.0;
@@ -290,6 +298,11 @@ bool SetZoneFade(SoundData& d, const ZoneRef& r, int side, double s, const ZoneC
 // Fix 2026-10-19: REAPER's fade drag on one of several selected items: every selected part zone's own fade on `side` set to
 // the same `s`, each within half its length; a side held by a Gap stays (its crossfade). `out` = `sel` re-resolved.
 bool SetZonesFade(SoundData& d, const ZoneSel& sel, int side, double s, const ZoneContext& ctx = {}, ZoneSel* out = nullptr);
+// 13-75 (REAPER's fade shape actions / buttons, the curvature drag): the fade on `side` (< 0 in, > 0 out) of every zone
+// of `sel` (a part zone's held by a Gap: that crossfade's; each holder once) gets `shape` (0..6; < 0 = keep its shape)
+// and curvature `dir` (clamped to -1..1; NaN = the shape's preset, as REAPER's actions set it). `out` = `sel`.
+bool SetZonesFadeCurve(SoundData& d, const ZoneSel& sel, int side, int shape, double dir, const ZoneContext& ctx = {},
+                       ZoneSel* out = nullptr);
 // Fix 2026-10-19: r's snap offset dragged to t (clamped into it) with the selection: every selected part zone's snap
 // offset moved by the same delta from where it lands now (ZoneSnap on ctx's peaks), each clamped into its zone, its own.
 bool ShiftZonesSnap(SoundData& d, const ZoneSel& sel, const ZoneRef& r, double t, const ZoneContext& ctx = {},

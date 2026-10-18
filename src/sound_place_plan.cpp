@@ -442,9 +442,12 @@ std::vector<PieceApply> ZonePieces(const SoundData& data, int variation, const s
         const ZoneFadeInfo fo = cut_out ? ZoneCutFade(data, r, 1) : ZoneFade(data, r, 1);
         pa.fades.in = fi.s;
         pa.fades.out = fo.s;
-        // 13-62i: a zone's own fade keeps its shape (a frame's shaped fade migrated); any other is linear.
-        pa.fades.in_shape = fi.src == FadeSrc::Own ? z.fade_in_shape : 0;
-        pa.fades.out_shape = fo.src == FadeSrc::Own ? z.fade_out_shape : 0;
+        // 13-75: each side on its curve (ZoneFadeCurve: a Gap's crossfade on the Gap's), heard as placed.
+        const FadeCurve ci = ZoneFadeCurve(data, r, -1, cut_in), co = ZoneFadeCurve(data, r, 1, cut_out);
+        pa.fades.in_shape = ci.shape;
+        pa.fades.in_dir = ci.dir;
+        pa.fades.out_shape = co.shape;
+        pa.fades.out_dir = co.dir;
         pa.db = std::isfinite(z.db) ? z.db : 0.0;
         if (r == anchor) {  // the anchor, at its snap offset
             pa.anchor = true;

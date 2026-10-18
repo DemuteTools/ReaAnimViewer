@@ -79,6 +79,8 @@ struct FrameFades {
     double out = 0.0;
     int    in_shape = 0;
     int    out_shape = 0;
+    double in_dir = NAN;  // 13-75: their curvatures (NaN = the shape's preset)
+    double out_dir = NAN;
     bool   own_in = false;
     bool   own_out = false;
 };

@@ -35,6 +35,7 @@
 #include <utility>
 #include <vector>
 
+#include "fade_curve.h"         // 13-75: FadeCurve
 #include "file_change_check.h"  // FileVersion (13-54 review: what peaks were read from)
 
 namespace rav {
@@ -109,6 +110,12 @@ struct EditZone {
     // 13-62i (appended): its own fades' shapes (REAPER's C_FADEINSHAPE / C_FADEOUTSHAPE index, 0 = linear), read only
     // with its own fade on that side (a frame's shaped fades migrated).
     int                                              fade_in_shape = 0, fade_out_shape = 0;
+    // 13-75 (appended): their curvatures (REAPER's D_FADEINDIR / D_FADEOUTDIR, -1..1; none = the shape's preset, as
+    // REAPER sets it with the shape: fade_curve.h). Unlike the lengths they apply whatever gives the fade its length
+    // (its own, At cuts, its part's, the Sound's), but a side a Gap holds: that crossfade's curves are the Gap's.
+    // A Gap's: fade_out_* = the curve of the left zone's fade-out across it (its xl / left side), fade_in_* = the
+    // right zone's fade-in (its right side); 0 / none = linear, as before 13-75.
+    std::optional<double>                            fade_in_dir, fade_out_dir;
     bool IsGap() const { return part.empty(); }
 };
 

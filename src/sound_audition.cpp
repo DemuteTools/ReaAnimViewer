@@ -34,6 +34,7 @@ struct Voice {
     double                      start = 0.0, length = 0.0, delay = 0.0, gain = 1.0;
     double                      fade_in = 0.0, fade_out = 0.0;  // s (FadeGainAt)
     int                         in_shape = 0, out_shape = 0;
+    double                      in_dir = NAN, out_dir = NAN;        // 13-75
     double                      fade_from = 0.0, fade_span = 0.0;  // 13-29: a window of a longer stretch
     MonoMode                    mono = MonoMode::Off;               // 13-41
 };
@@ -128,7 +129,7 @@ private:
             const bool   mono = v.mono != MonoMode::Off && nch >= 2;  // 13-41: one channel or L + R, on both
             for (int k = 0; k < got; ++k) {
                 const double g = fades ? v.gain * FadeGainAt(t_voice + k / sr, span, v.fade_in, v.fade_out,
-                                                             v.in_shape, v.out_shape)
+                                                             v.in_shape, v.out_shape, v.in_dir, v.out_dir)
                                        : v.gain;
                 const ReaSample* in = &scratch_[static_cast<size_t>(k * nch)];
                 ReaSample*       out = &outp[static_cast<size_t>((off + k) * nch)];
@@ -227,6 +228,8 @@ std::vector<Voice> OpenVoices(const std::vector<PlayVoice>& voices, std::vector<
         v.fade_out = std::max(0.0, p.fade_out_s);
         v.in_shape = p.fade_in_shape;
         v.out_shape = p.fade_out_shape;
+        v.in_dir = p.fade_in_dir;
+        v.out_dir = p.fade_out_dir;
         v.fade_from = std::max(0.0, p.fade_from_s);
         v.fade_span = std::max(0.0, p.fade_span_s);
         v.mono = p.mono;

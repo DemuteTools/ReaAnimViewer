@@ -143,7 +143,12 @@ enum ShortcutId : int {
     // waveform by default; notches in a row = one undo point, zone_gain_nudge.h).
     kShortcutEditGainUp    = 31,
     kShortcutEditGainDown  = 32,
-    kShortcutCount       = 33,
+    // 13-75 (Antho 2026-10-19): REAPER's fade shape actions on the selected zones' fades (a Gap's crossfade side too),
+    // in kFadePresets order (fade_curve.h): linear, slight convex, slight concave, sharp convex, sharp concave, slight
+    // S-curve, sharp S-curve. One undo point each.
+    kShortcutEditFadeIn0   = 33,  // .. kShortcutEditFadeIn0 + 6: the fade-in (41514 .. 41519, 41836)
+    kShortcutEditFadeOut0  = 40,  // .. kShortcutEditFadeOut0 + 6: the fade-out (41521 .. 41526, 41837)
+    kShortcutCount       = 47,
 };
 
 inline const ShortcutDef kShortcutTable[kShortcutCount] = {
@@ -229,6 +234,36 @@ inline const ShortcutDef kShortcutTable[kShortcutCount] = {
      "RAV_KEY_EDIT_GAIN_UP", "RAV: Sound Edit - Increase gain of selected zones (+1 dB)"},
     {"edit_gain_down", "Gain of selected zones: -1 dB", {vk::kWheelDown, true, true, false}, ShortcutContext::LibraryEdit,
      "RAV_KEY_EDIT_GAIN_DOWN", "RAV: Sound Edit - Decrease gain of selected zones (-1 dB)"},
+    // 13-75 (Antho 2026-10-19): REAPER's fade shape actions, on the selected zones' fades (ids and what each one sets
+    // measured in REAPER 7.81: fade_curve.h).
+    {"edit_fade_in_linear", "Fade-in shape: Linear", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+     "41514", "Item: Set fade-in shape to linear"},
+    {"edit_fade_in_slight_convex", "Fade-in shape: Slight convex", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+     "41515", "Item: Set fade-in shape to slight convex"},
+    {"edit_fade_in_slight_concave", "Fade-in shape: Slight concave", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+     "41516", "Item: Set fade-in shape to slight concave"},
+    {"edit_fade_in_sharp_convex", "Fade-in shape: Sharp convex", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+     "41517", "Item: Set fade-in shape to sharp convex"},
+    {"edit_fade_in_sharp_concave", "Fade-in shape: Sharp concave", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+     "41518", "Item: Set fade-in shape to sharp concave"},
+    {"edit_fade_in_slight_s", "Fade-in shape: Slight S-curve", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+     "41519", "Item: Set fade-in shape to slight S-curve"},
+    {"edit_fade_in_sharp_s", "Fade-in shape: Sharp S-curve", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+     "41836", "Item: Set fade-in shape to sharp S-curve"},
+    {"edit_fade_out_linear", "Fade-out shape: Linear", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+     "41521", "Item: Set fade-out shape to linear"},
+    {"edit_fade_out_slight_convex", "Fade-out shape: Slight convex", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+     "41522", "Item: Set fade-out shape to slight convex"},
+    {"edit_fade_out_slight_concave", "Fade-out shape: Slight concave", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+     "41523", "Item: Set fade-out shape to slight concave"},
+    {"edit_fade_out_sharp_convex", "Fade-out shape: Sharp convex", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+     "41524", "Item: Set fade-out shape to sharp convex"},
+    {"edit_fade_out_sharp_concave", "Fade-out shape: Sharp concave", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+     "41525", "Item: Set fade-out shape to sharp concave"},
+    {"edit_fade_out_slight_s", "Fade-out shape: Slight S-curve", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+     "41526", "Item: Set fade-out shape to slight S-curve"},
+    {"edit_fade_out_sharp_s", "Fade-out shape: Sharp S-curve", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+     "41837", "Item: Set fade-out shape to sharp S-curve"},
 };
 
 // 13-74: a row that takes the wheel (up / down, with modifiers) as well as keys: its default is a wheel.

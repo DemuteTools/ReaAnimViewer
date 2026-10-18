@@ -296,6 +296,8 @@ std::vector<PlayVoice> VoicesOf(const ZoneWaveHost& h, const EditPlay& ep)
         p.fade_out_s = a.fade_out_s;
         p.fade_in_shape = a.fade_in_shape;
         p.fade_out_shape = a.fade_out_shape;
+        p.fade_in_dir = a.fade_in_dir;  // 13-75
+        p.fade_out_dir = a.fade_out_dir;
         p.fade_from_s = a.fade_from_s;
         p.fade_span_s = a.fade_span_s;
         p.mono = a.mono;
@@ -304,6 +306,21 @@ std::vector<PlayVoice> VoicesOf(const ZoneWaveHost& h, const EditPlay& ep)
     return pv;
 }
 
+// 13-75: a fade curve in words: its shape's name, its curvature when changed by hand ("Slight convex", "Linear, +0.30").
+std::string CurveText(const FadeCurve& c)
+{
+    std::string s = kFadePresets[FadeShapeOk(c.shape)].name;
+    if (FadePresetOf(c) < 0) {
+        char buf[24];
+        std::snprintf(buf, sizeof(buf), ", %+.2f", c.dir);
+        s += buf;
+    }
+    return s;
+}
+
+// 13-75: two curvatures the same (NaN = the shape's preset on both).
+bool SameDir(double a, double b) { return a == b || (std::isnan(a) && std::isnan(b)); }
+
 bool SameVoices(const std::vector<PlayVoice>& x, const std::vector<PlayVoice>& y)
 {
     if (x.size() != y.size()) return false;
@@ -311,7 +328,8 @@ bool SameVoices(const std::vector<PlayVoice>& x, const std::vector<PlayVoice>& y
         const PlayVoice &a = x[i], &b = y[i];
         if (a.path != b.path || a.start_s != b.start_s || a.length_s != b.length_s || a.delay_s != b.delay_s || a.gain != b.gain ||
             a.fade_in_s != b.fade_in_s || a.fade_out_s != b.fade_out_s || a.fade_in_shape != b.fade_in_shape ||
-            a.fade_out_shape != b.fade_out_shape || a.fade_from_s != b.fade_from_s || a.fade_span_s != b.fade_span_s || a.mono != b.mono)
+            a.fade_out_shape != b.fade_out_shape || a.fade_from_s != b.fade_from_s || a.fade_span_s != b.fade_span_s || a.mono != b.mono ||
+            !SameDir(a.fade_in_dir, b.fade_in_dir) || !SameDir(a.fade_out_dir, b.fade_out_dir))
             return false;
     }
     return true;
@@ -558,6 +576,19 @@ void Double(const ZoneWaveHost& h, const ZoneHit& hit)
             ShowLibraryToast("Already its default", false);
         return;
     }
+    case ZoneDoubleAction::ResetCurve: {  // 13-75: the curve's shape at its own curvature (REAPER's preset)
+        const ZoneRef r = hit.z;
+        const int     side = hit.side;
+        if (!Write(h, "Fade curve", [r, side](SoundData& x, const ZoneContext& c, ZoneSel* s) {
+                       return SetZonesFadeCurve(x, {r}, side, -1, NAN, c, s);
+                   },
+                   [nm, r, side](const SoundData& x, const ZoneSel&) {
+                       return nm + " fade " + (side < 0 ? "in" : "out") + " curve: " + CurveText(ZoneFadeCurve(x, r, side));
+                   },
+                   true))
+            ShowLibraryToast("Already its shape's own curvature", false);
+        return;
+    }
     case ZoneDoubleAction::None: return;
     }
 }
@@ -574,8 +605,8 @@ double EnvOf(const ZoneLook& z, double t)
 {
     if (z.gap || t < z.lo || t >= z.hi) return 0.0;
     double g = 1.0;
-    if (z.fin > 0.0 && t < z.lo + z.fin) g *= (t - z.lo) / z.fin;
-    if (z.fout > 0.0 && t > z.hi - z.fout) g *= (z.hi - t) / z.fout;
+    if (z.fin > 0.0 && t < z.lo + z.fin) g *= FadeCurveGain((t - z.lo) / z.fin, z.cin);  // 13-75: REAPER's curves
+    if (z.fout > 0.0 && t > z.hi - z.fout) g *= FadeCurveGain((z.hi - t) / z.fout, z.cout);
     return Clamp(g, 0.0, 1.0);
 }
 
@@ -961,12 +992,11 @@ void DrawLane(const Frame& F, const Row& row)
         HatchRect(dl, ImVec2(ha, y0), ImVec2(hb, y1), Alpha(kGapCol, 0.45f));
         dl->AddLine(ImVec2(std::round(ha) + 0.5f, y0), ImVec2(std::round(ha) + 0.5f, y1), Alpha(kGapCol, 0.9f));
         dl->AddLine(ImVec2(std::round(hb) - 0.5f, y0), ImVec2(std::round(hb) - 0.5f, y1), Alpha(kGapCol, 0.9f));
-        const ImU32 xc = IM_COL32(231, 233, 238, 217);
         // The left zone's fade-out (g.a - xr .. g.a + xl), the right zone's fade-in (g.b - xr .. g.b + xl), the xl / xr
-        // handles. Late fix (2026-10-19): on the Heard strip each end is read on its own piece (HeardXfadeOf; F.X maps a
+        // handles (13-75: the two crossing fades themselves are drawn on their curves with the zones' fades, FadeSpans). Late fix (2026-10-19): on the Heard strip each end is read on its own piece (HeardXfadeOf; F.X maps a
         // file time on the first piece holding it: at the maximum the right piece's start went onto the left piece's
         // end) and the overlap where both play is shaded.
-        float ox0 = F.X(g.a - g.xr), ox1 = F.X(g.a + g.xl), ix0 = F.X(g.b - g.xr), ix1 = F.X(g.b + g.xl);
+        float ox0 = F.X(g.a - g.xr), ox1 = F.X(g.a + g.xl), ix0 = F.X(g.b - g.xr);
         if (F.strip) {
             const HeardXfade xf = HeardXfadeOf(d, *F.strip, z.ref);
             auto             hx = [&](double t) {
@@ -976,12 +1006,9 @@ void DrawLane(const Frame& F, const Row& row)
                 ox0 = hx(xf.out0);
                 ox1 = hx(xf.out1);
                 ix0 = hx(xf.in0);
-                ix1 = hx(xf.in1);
                 if (ox1 - ox0 >= 1.0f) dl->AddRectFilled(ImVec2(ox0, y0), ImVec2(ox1, y1), Alpha(kGapCol, 0.16f));
             }
         }
-        dl->AddLine(ImVec2(ox0, y0 + 6.0f * dp), ImVec2(ox1, y1), xc, 1.2f);
-        dl->AddLine(ImVec2(ix0, y1), ImVec2(ix1, y0 + 6.0f * dp), xc, 1.2f);
         const bool hv = v.hover_on && v.hover.kind == ZoneHitKind::Xf && v.hover.z == z.ref && v.hover.lane == lane;
         auto       handle = [&](float hx, bool hot) {
             const ImVec2 a(hx - 4.0f * dp, y0 + 2.0f * dp), b(hx + 4.0f * dp, y0 + 10.0f * dp);
@@ -1005,6 +1032,30 @@ void DrawLane(const Frame& F, const Row& row)
         const bool ghot = v.hover_on && v.hover.kind == ZoneHitKind::GapEdge && v.hover.z == z.ref;
         if (F.strip && (SelHas(v.sel, z.ref) || ghot)) dl->AddRectFilled(ImVec2(ha - 1.0f * dp, y0), ImVec2(ha + 1.0f * dp, y1), ui::kWhite);
     }
+    // 13-75: every fade and crossfade side on its curve (FadeSpans: the same spans HitZones grabs).
+    ZoneHitView sv;
+    sv.v0 = F.v0;
+    sv.vl = F.vl;
+    sv.w = F.cw;
+    sv.h = row.y1 - row.y0;
+    sv.row = ZoneRow::Lane;
+    sv.lane = lane;
+    sv.dp = dp;
+    sv.tl = h.tl;
+    sv.strip = F.strip;
+    const std::vector<FadeSpan> spans = FadeSpans(d, sv, F.Looks());
+    for (const FadeSpan& f : spans) {
+        const float a = std::max(f.x0, -2.0f), b = std::min(f.x1, F.cw + 2.0f);
+        if (!(b > a)) continue;
+        const int steps = std::clamp(static_cast<int>((b - a) / (3.0f * dp)), 1, 48);
+        ImVec2    prev;
+        for (int k = 0; k <= steps; ++k) {
+            const float  x = a + (b - a) * static_cast<float>(k) / static_cast<float>(steps);
+            const ImVec2 p(F.cx0 + x, row.y0 + FadeSpanY(f, x));
+            if (k > 0) dl->AddLine(prev, p, f.xfade ? IM_COL32(231, 233, 238, 217) : IM_COL32(231, 233, 238, 191), f.xfade ? 1.2f : 1.0f);
+            prev = p;
+        }
+    }
     // Zones: borders, fades, labels, hand marks, snap offsets.
     const bool gain_drag = v.drag.kind == ZoneDragKind::Gain;
     for (const ZoneLook& z : F.Looks()) {
@@ -1021,9 +1072,6 @@ void DrawLane(const Frame& F, const Row& row)
             const float ex = v.hover.side < 0 ? xa : xb;
             dl->AddRectFilled(ImVec2(ex - 1.5f * dp, y0), ImVec2(ex + 1.5f * dp, y1), ui::kWhite);
         }
-        const ImU32 fl = IM_COL32(231, 233, 238, 191);
-        if (!z.lg) dl->AddLine(ImVec2(xa, y1), ImVec2(F.X(z.a + z.fi_s), y0 + 1.0f), fl);
-        if (!z.rg) dl->AddLine(ImVec2(F.X(z.b - z.fo_s), y0 + 1.0f), ImVec2(xb, y1), fl);
         const bool hf = v.hover_on && v.hover.kind == ZoneHitKind::Fade && v.hover.z == z.ref && v.hover.lane == lane;
         auto       fh = [&](float fx, bool hot) {
             dl->AddCircleFilled(ImVec2(fx, y0 + 4.0f * dp), (hot ? 4.0f : 3.0f) * dp, hot ? ui::kWhite : IM_COL32(0xC7, 0xCB, 0xD3, 0xFF));
@@ -1109,6 +1157,19 @@ void DrawLane(const Frame& F, const Row& row)
         DashedV(dl, cx, y0, y1 - 10.0f * dp, hot ? ui::kWhite : IM_COL32(231, 233, 238, 153), 3.0f * dp, 3.0f * dp);
         dl->AddRectFilled(ImVec2(cx - 2.5f * dp, y1 - 11.0f * dp), ImVec2(cx + 2.5f * dp, y1 - 1.0f * dp), hot ? ui::kWhite : IM_COL32(0xC7, 0xCB, 0xD3, 0xFF));
     }
+    // 13-75: the curve handles (REAPER's fade curvature), on top: a small diamond in each fade's middle.
+    for (const FadeSpan& f : spans) {
+        float fx = 0.0f, fy = 0.0f;
+        if (!FadeDiamond(f, dp, &fx, &fy) || fx < -6.0f * dp || fx > F.cw + 6.0f * dp) continue;
+        const bool hot = (v.hover_on && v.hover.kind == ZoneHitKind::Curve && v.hover.z == f.z && v.hover.side == f.side &&
+                          v.hover.lane == lane) ||
+                         (v.drag.kind == ZoneDragKind::Curve && v.drag.hit.z == f.z && v.drag.hit.side == f.side && v.drag.tl == h.tl);
+        const float  r = (hot ? 4.5f : 3.5f) * dp;
+        const ImVec2 c(F.cx0 + fx, row.y0 + fy);
+        dl->AddQuadFilled(ImVec2(c.x, c.y - r), ImVec2(c.x + r, c.y), ImVec2(c.x, c.y + r), ImVec2(c.x - r, c.y),
+                          hot ? ui::kWhite : IM_COL32(0xC7, 0xCB, 0xD3, 0xFF));
+        dl->AddQuad(ImVec2(c.x, c.y - r), ImVec2(c.x + r, c.y), ImVec2(c.x, c.y + r), ImVec2(c.x - r, c.y), ui::kBg);
+    }
     // Lane: another part's zone shows what a click does.
     if (lane >= 0 && v.hover_on && v.hover.lane == lane && v.hover.kind == ZoneHitKind::Grey && v.drag.kind == ZoneDragKind::None &&
         static_cast<size_t>(lane) < d.divide_values.size()) {
@@ -1146,7 +1207,7 @@ void DrawLane(const Frame& F, const Row& row)
 bool IsHandle(ZoneDragKind k)
 {
     return k == ZoneDragKind::Edge || k == ZoneDragKind::Cut || k == ZoneDragKind::GapEdge || k == ZoneDragKind::Fade ||
-           k == ZoneDragKind::Snap || k == ZoneDragKind::Xf;
+           k == ZoneDragKind::Snap || k == ZoneDragKind::Xf || k == ZoneDragKind::Curve;
 }
 
 // One frame of a drag at source time t (the mouse moved dx, dy px from the press).
@@ -1178,8 +1239,9 @@ void DragMove(const ZoneWaveHost& h, double t, float dx, float dy, double px_per
     if (IsHandle(g.kind) && !g.moved) {
         if (std::fabs(dx) <= 2.0f * dp && std::fabs(dy) <= 2.0f * dp) return;
         g.moved = true;
-        if (g.kind == ZoneDragKind::Edge || g.kind == ZoneDragKind::Fade || g.kind == ZoneDragKind::Snap)
-            g.group = GroupDragZones(Stored(h), SelValid(Stored(h), v.sel), g.hit.z);  // fix 2026-10-19
+        if (g.kind == ZoneDragKind::Edge || g.kind == ZoneDragKind::Fade || g.kind == ZoneDragKind::Snap || g.kind == ZoneDragKind::Curve)
+            g.group = GroupDragZones(Stored(h), SelValid(Stored(h), v.sel), g.hit.z);  // fix 2026-10-19 (13-75: a curve too)
+        if (g.kind == ZoneDragKind::Curve) g.value = ZoneFadeCurve(Stored(h), g.hit.z, g.hit.side).dir;  // 13-75: from where it is
     }
     ZoneContext c = Ctx(h);
     c.live = true;  // freeze audit #2: no read of the file's samples at each frame (Commit settles the snaps)
@@ -1244,6 +1306,13 @@ void DragMove(const ZoneWaveHost& h, double t, float dx, float dy, double px_per
     case ZoneDragKind::Xf:
         g.changed = DragGapXfade(h.live(), g.hit.z, g.hit.side, t, !g.alt, c, &(g.after = {g.hit.z}));
         return;
+    case ZoneDragKind::Curve: {  // 13-75: REAPER's fade curvature, up / down (the selection's same side with it)
+        const double dir = CurveDragDir(g.value, dy / dp);
+        const ZoneSel targets = g.group.empty() ? ZoneSel{g.hit.z} : g.group;
+        g.changed = SetZonesFadeCurve(h.live(), targets, g.hit.side, -1, dir, c, &g.after);
+        if (g.group.empty()) g.after = {g.hit.z};
+        return;
+    }
     case ZoneDragKind::Scrub:
         g.moved = true;
         *h.cursor = t;
@@ -1294,6 +1363,9 @@ void DragRelease(const ZoneWaveHost& h, double px_per_s)
                 const double dv = z && z0 ? (g.hit.side < 0 ? z->a - z0->a : z->b - z0->b) : 0.0;
                 name = "Zone edges";
                 toast = n + (g.hit.side < 0 ? "start " : "end ") + by(dv) + " each, by hand (each stops at its own limit)";
+            } else if (g.kind == ZoneDragKind::Curve) {  // 13-75
+                name = "Fade curves";
+                toast = n + "fade " + (g.hit.side < 0 ? "in" : "out") + " curve " + CurveText(ZoneFadeCurve(dr, g.hit.z, g.hit.side)) + " each";
             } else if (g.kind == ZoneDragKind::Fade) {
                 name = "Zone fades";
                 toast = n + "fade " + (g.hit.side < 0 ? "in " : "out ") + std::to_string(Ms(g.value)) + " ms each (their own)";
@@ -1322,6 +1394,10 @@ void DragRelease(const ZoneWaveHost& h, double px_per_s)
         case ZoneDragKind::Fade:
             name = "Zone fade";
             toast = nm + " fade " + (g.hit.side < 0 ? "in" : "out") + ": " + std::to_string(Ms(g.value)) + " ms (this zone's own)";
+            break;
+        case ZoneDragKind::Curve:  // 13-75
+            name = "Fade curve";
+            toast = nm + " fade " + (g.hit.side < 0 ? "in" : "out") + " curve: " + CurveText(ZoneFadeCurve(dr, g.hit.z, g.hit.side));
             break;
         case ZoneDragKind::Snap:
             name = "Snap offset";
@@ -1857,6 +1933,7 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
         hv.looks = strip ? &heard_looks : &lc.looks;
         hv.blocks = &lc.blocks;
         hv.strip = strip;
+        hv.curve_mod = io.KeyCtrl && io.KeyAlt;  // 13-75: REAPER's fade curvature modifier
         return HitZones(Shown(h), hv, p.x - cx0, p.y - r.y0);
     };
     if (heard && !strip) {  // nothing selected: the strip's box only
@@ -2154,6 +2231,7 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
         case ZoneCursor::Hand: ImGui::SetMouseCursor(ImGuiMouseCursor_Hand); break;
         case ZoneCursor::Text: ImGui::SetMouseCursor(ImGuiMouseCursor_TextInput); break;
         case ZoneCursor::Grab: ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll); break;
+        case ZoneCursor::ResizeNS: ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS); break;  // 13-75
         case ZoneCursor::Arrow: break;
         }
         // Antho 2026-10-15: no tooltip over the zones and the strips (too much); ZoneTip waits for a tool-wide tips
@@ -2201,7 +2279,10 @@ void ZoneEditRequest(const ZoneWaveHost& h, int id)
     case kShortcutEditMonoSum: ZoneSetMono(h, MonoMode::Sum); return;
     case kShortcutEditMonoLeft: ZoneSetMono(h, MonoMode::Left); return;
     case kShortcutEditMonoRight: ZoneSetMono(h, MonoMode::Right); return;
-    default: return;
+    default:
+        if (id >= kShortcutEditFadeIn0 && id < kShortcutEditFadeIn0 + 7) ZoneSetFadeShape(h, -1, id - kShortcutEditFadeIn0);  // 13-75
+        else if (id >= kShortcutEditFadeOut0 && id < kShortcutEditFadeOut0 + 7) ZoneSetFadeShape(h, 1, id - kShortcutEditFadeOut0);
+        return;
     }
 }
 
@@ -2415,6 +2496,43 @@ void ZoneSetMono(const ZoneWaveHost& h, MonoMode m)
                },
                toast))
         ShowLibraryToast(toast + " already", false);
+}
+
+// ---- 13-75: REAPER's fade shapes on the selected zones -------------------------------------------------------------
+
+void ZoneSetFadeShape(const ZoneWaveHost& h, int side, int preset)
+{
+    if (preset < 0 || preset > 6 || side == 0) return;
+    const SoundData& d = Shown(h);
+    const ZoneSel    sel = SelValid(d, h.view->sel);
+    const char*      what = side < 0 ? "fade-in" : "fade-out";
+    const std::string shape = kFadePresets[preset].name;
+    if (sel.empty()) {
+        ShowLibraryToast(std::string("Select zones first: the ") + what + " shape goes on the selected zones' " + what + "s", false);
+        return;
+    }
+    const std::string who = sel.size() > 1 ? std::to_string(sel.size()) + " zones: " : NameOfZone(h, d, sel.front()) + ": ";
+    const std::string toast = who + what + " " + shape;
+    const int         sh = kFadePresets[preset].shape;
+    if (!Write(h, "Fade shape", [sel, side, sh](SoundData& x, const ZoneContext& c, ZoneSel* s) {
+                   return SetZonesFadeCurve(x, sel, side, sh, NAN, c, s);
+               },
+               toast))
+        ShowLibraryToast(toast + " already", false);
+}
+
+int ZoneSelFadePreset(const ZoneWaveHost& h, int side)
+{
+    const SoundData& d = Shown(h);
+    const ZoneSel    sel = SelValid(d, h.view->sel);
+    if (sel.empty()) return -2;
+    int got = -2;
+    for (const ZoneRef& r : sel) {
+        const int p = FadePresetOf(ZoneFadeCurve(d, r, side));
+        if (got == -2) got = p;
+        else if (got != p) return -1;
+    }
+    return got;
 }
 
 // ---- 13-74: the selected zones' gain, a notch at a time (zone_gain_nudge.h) -------------------------------------------

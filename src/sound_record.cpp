@@ -753,6 +753,8 @@ Fields FzoneFields(const EditZone& z)
     if (z.xr != 0.0) f.push_back({"xr", FormatNumber(z.xr)});
     if (z.fade_in_shape != 0) f.push_back({"fis", FmtInt(z.fade_in_shape)});  // 13-62i
     if (z.fade_out_shape != 0) f.push_back({"fos", FmtInt(z.fade_out_shape)});
+    if (z.fade_in_dir) f.push_back({"fid", FormatNumber(*z.fade_in_dir)});  // 13-75: a curvature not its shape's preset
+    if (z.fade_out_dir) f.push_back({"fod", FormatNumber(*z.fade_out_dir)});
     if (z.auto_snap.set) {  // 13-62h review (R2): its measured automatic snap and what it was measured for
         std::vector<double> n = {z.auto_snap.t, z.auto_snap.a, z.auto_snap.b, static_cast<double>(z.auto_snap.mode), z.auto_snap.thr,
                                  z.auto_snap.off};
@@ -789,6 +791,12 @@ Got SetFzone(EditZone& z, bool* has_sa, bool* has_sb, const std::string& k, cons
         int x = 0;
         if (!ReadInt(v, &x) || x < 0 || x > 6) return Got::Bad;
         (k == "fis" ? z.fade_in_shape : z.fade_out_shape) = x;
+        return Got::Ok;
+    }
+    if (k == "fid" || k == "fod") {  // 13-75: a REAPER fade curvature (-1..1)
+        double x = 0.0;
+        if (!ReadNumber(v, &x) || !(x >= -1.0 && x <= 1.0)) return Got::Bad;
+        (k == "fid" ? z.fade_in_dir : z.fade_out_dir) = x;
         return Got::Ok;
     }
     if (k == "as") {  // 13-62h review (R2): t, a, b, mode, threshold, offset (fix 2026-10-19: then 1 = on the samples)

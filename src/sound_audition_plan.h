@@ -55,6 +55,8 @@ struct AuditionVoice {
     double                   fade_out_s = 0.0;
     int                      fade_in_shape = 0;
     int                      fade_out_shape = 0;
+    double                   fade_in_dir = NAN;   // 13-75: their curvatures (NaN = the shape's preset)
+    double                   fade_out_dir = NAN;
     std::vector<std::string> path;           // uids from the auditioned node's child to the Sound
     int                      piece = 0;      // 13-20 / 13-23: its piece of the variation (0 = the first)
     // 13-29: a voice that is a window of a longer faded stretch (a part of a piece, or a voice restarted
@@ -82,10 +84,11 @@ struct AuditionPlan {
 };
 
 // The gain of a voice's fades at `t` s into it (0..1): ramps up over `in` s from its start and down
-// over `out` s to its `length` (in + out clamped to it; 1 between). Shapes = REAPER's index (0 linear,
-// 1 / 3 fast start, 2 / 4 fast end, 5 S-curve; anything else linear). No allocation: the audio thread
-// calls it per sample.
-double FadeGainAt(double t, double length, double in, double out, int in_shape = 0, int out_shape = 0);
+// over `out` s to its `length` (in + out clamped to it; 1 between). Shapes = REAPER's index, curvatures
+// REAPER's D_FADEINDIR / D_FADEOUTDIR (13-75: fade_curve.h, REAPER's curves exactly; NaN = the shape's preset,
+// as REAPER sets it with the shape). No allocation: the audio thread calls it per sample.
+double FadeGainAt(double t, double length, double in, double out, int in_shape = 0, int out_shape = 0, double in_dir = NAN,
+                  double out_dir = NAN);
 
 // What one press plays (decisions 5-6). A child with no active variation is skipped.
 AuditionPlan PlanAudition(const SoundStore& store, const SoundLibrary& lib, const std::string& node_uid,
@@ -174,8 +177,10 @@ struct HeardSpan {
     double  a = 0.0, b = 0.0;   // its file stretch (s)
     ZoneRef z;                  // {-1, -1} = empty space (silence)
     bool    heard = true;       // false: muted / not soloed / off variation (no voice)
-    // Its envelope (linear, as ZoneEnv): it rises over `fin` s from `lo` and falls over `fout` s to `hi`.
+    // Its envelope (as ZoneEnv): it rises over `fin` s from `lo` and falls over `fout` s to `hi` (13-75: on curves cin /
+    // cout, as its voice).
     double  lo = 0.0, hi = 0.0, fin = 0.0, fout = 0.0;
+    FadeCurve cin, cout;
 };
 // Heard time -> file time.
 struct HeardMap {

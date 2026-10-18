@@ -746,8 +746,67 @@ static void TestHeardXfade()
     }
 }
 
+
+// 13-75: the fades' curves on a lane: the spans drawn and hit (FadeSpans), the diamond in a fade's middle, Ctrl+Alt
+// anywhere along a fade (a crossfade side too: its part zone and side), the drag's curvature, the double-click, tip.
+static void TestFadeCurveHits()
+{
+    SoundData d = Sample();
+    d.frames[0].zones[0].fade_in = 0.040;   // Heel 1 fades in over 40 px
+    d.frames[1].zones[0].fade_out = 0.100;  // Toe 2 fades out over 100 px
+    CHECK(ZonesProblem(d, 2.0).empty());
+    ZoneHitView v = Lane(-1);
+    const std::vector<ZoneLook> looks = ZoneLooks(d, nullptr);
+    const std::vector<FadeSpan> sp = FadeSpans(d, v, looks);
+    const FadeSpan* in1 = nullptr;
+    const FadeSpan* xo = nullptr;
+    const FadeSpan* xi = nullptr;
+    for (const FadeSpan& f : sp) {
+        if (f.z == (ZoneRef{0, 0}) && f.side < 0) in1 = &f;
+        if (f.z == (ZoneRef{0, 0}) && f.side > 0) xo = &f;
+        if (f.z == (ZoneRef{0, 2}) && f.side < 0) xi = &f;
+    }
+    CHECK(in1 && !in1->xfade && std::fabs(in1->x0 - 100.0f) < 1e-3f && std::fabs(in1->x1 - 140.0f) < 1e-3f);
+    CHECK(xo && xo->xfade && std::fabs(xo->x0 - 395.0f) < 1e-3f && std::fabs(xo->x1 - 405.0f) < 1e-3f);
+    CHECK(xi && xi->xfade && std::fabs(xi->x0 - 445.0f) < 1e-3f && std::fabs(xi->x1 - 455.0f) < 1e-3f);
+    float dx = 0.0f, dy = 0.0f;
+    CHECK(in1 && FadeDiamond(*in1, 1.0f, &dx, &dy) && std::fabs(dx - 120.0f) < 1e-3f && std::fabs(dy - 50.5f) < 1e-3f);
+    CHECK(xo && !FadeDiamond(*xo, 1.0f, nullptr, nullptr));  // 10 px: too narrow for a diamond
+    // The diamond is the curve's handle.
+    ZoneHit h = HitZones(d, v, 121.0f, 51.0f);
+    CHECK(h.kind == ZoneHitKind::Curve && h.z == (ZoneRef{0, 0}) && h.side < 0);
+    CHECK(PressDragKind(h, false, false) == ZoneDragKind::Curve && DoubleActionOf(h) == ZoneDoubleAction::ResetCurve);
+    CHECK(ZoneCursorOf(h) == ZoneCursor::ResizeNS && ZoneTip(d, h, {"Heel", "Toe"}, false).find("curve (Linear)") != std::string::npos);
+    // On a convex curve the diamond goes up with it.
+    SoundData c = d;
+    CHECK(SetZonesFadeCurve(c, {{0, 0}}, -1, 3, NAN));
+    const std::vector<FadeSpan> sc = FadeSpans(c, v, ZoneLooks(c, nullptr));
+    for (const FadeSpan& f : sc)
+        if (f.z == (ZoneRef{0, 0}) && f.side < 0) CHECK(FadeDiamond(f, 1.0f, &dx, &dy) && std::fabs(dy - (97.0f - 0.9375f * 93.0f)) < 1e-3f);
+    // Ctrl+Alt: anywhere along a fade, the crossfade's two sides too; elsewhere the usual hit.
+    v.curve_mod = true;
+    h = HitZones(d, v, 130.0f, 20.0f);
+    CHECK(h.kind == ZoneHitKind::Curve && h.z == (ZoneRef{0, 0}) && h.side < 0);
+    h = HitZones(d, v, 400.0f, 50.0f);
+    CHECK(h.kind == ZoneHitKind::Curve && h.z == (ZoneRef{0, 0}) && h.side > 0);
+    h = HitZones(d, v, 450.0f, 50.0f);
+    CHECK(h.kind == ZoneHitKind::Curve && h.z == (ZoneRef{0, 2}) && h.side < 0);
+    h = HitZones(d, v, 1550.0f, 60.0f);
+    CHECK(h.kind == ZoneHitKind::Curve && h.z == (ZoneRef{1, 0}) && h.side > 0);
+    CHECK(!ZoneReservedOnMove(h, true, true) && PressDragKind(h, true, true) == ZoneDragKind::Curve);
+    h = HitZones(d, v, 250.0f, 60.0f);
+    CHECK(h.kind == ZoneHitKind::Zone);
+    v.curve_mod = false;
+    h = HitZones(d, v, 400.0f, 50.0f);
+    CHECK(h.kind == ZoneHitKind::GapEdge);
+    // The drag: up = convex, 1 per 100 px, clamped, 0.01 steps.
+    CHECK(std::fabs(CurveDragDir(0.0, -50.0f) - 0.5) < 1e-9 && CurveDragDir(0.9, -50.0f) == 1.0 && CurveDragDir(0.0, 100.0f) == -1.0);
+    CHECK(std::fabs(CurveDragDir(-0.5, 12.3f) - (-0.62)) < 1e-9);
+}
+
 int main()
 {
+    TestFadeCurveHits();  // 13-75
     TestHitLane();
     TestHitStrips();
     TestDrags();

@@ -136,7 +136,7 @@ bool SameZone(const EditZone& x, const EditZone& y)
            x.a_hand == y.a_hand && x.b_hand == y.b_hand && x.a_auto_cut == y.a_auto_cut && x.onset == y.onset &&
            x.snap == y.snap && x.fade_in == y.fade_in && x.fade_out == y.fade_out && x.db == y.db && x.xl == y.xl &&
            x.xr == y.xr && x.kept == y.kept && x.auto_snap == y.auto_snap && x.fade_in_shape == y.fade_in_shape &&
-           x.fade_out_shape == y.fade_out_shape;
+           x.fade_out_shape == y.fade_out_shape && x.fade_in_dir == y.fade_in_dir && x.fade_out_dir == y.fade_out_dir;
 }
 
 // What a gesture compares to tell whether it changed anything: every frame's zones, edges and on.
@@ -624,6 +624,7 @@ std::pair<int, int> Work::cutOut(double x0, double x1)
             r.b_hand = z.b_hand;
             r.fade_out = z.fade_out;
             r.fade_out_shape = z.fade_out_shape;
+            r.fade_out_dir = z.fade_out_dir;  // 13-75
             r.snap = z.snap && *z.snap > x1 ? z.snap : std::nullopt;
             EditZone& l = Z(i);
             l.b = x0;
@@ -631,6 +632,7 @@ std::pair<int, int> Work::cutOut(double x0, double x1)
             l.b_hand = true;
             l.fade_out.reset();
             l.fade_out_shape = 0;
+            l.fade_out_dir.reset();
             if (l.snap && *l.snap > x0) l.snap.reset();
             lid = zs[static_cast<size_t>(i)].id;
             const int ri = push(frame, r);
@@ -985,6 +987,8 @@ std::string ZonesProblem(const SoundData& d, double file_len)
             if (!z.IsGap() && PartIndex(d, z.part) < 0) return at + "a zone of a part that is not a divide value (or kWholePart)";
             if (!(z.fade_in_shape >= 0 && z.fade_in_shape <= 6 && z.fade_out_shape >= 0 && z.fade_out_shape <= 6))
                 return at + "a zone fade shape out of REAPER's 0..6";
+            for (const std::optional<double>& c : {z.fade_in_dir, z.fade_out_dir})  // 13-75
+                if (c && !(*c >= -1.0 && *c <= 1.0)) return at + "a zone fade curvature out of REAPER's -1..1";
             if (z.IsGap()) {
                 const double w = z.b - z.a;
                 if (!(z.xl >= 0.0 && z.xr >= 0.0 && z.xl <= w / 2.0 + 1e-9 && z.xr <= w / 2.0 + 1e-9))
@@ -1070,6 +1074,8 @@ void SanitizeZones(SoundData& d)
         for (EditZone& z : f.zones) {
             if (!(z.fade_in_shape >= 0 && z.fade_in_shape <= 6)) z.fade_in_shape = 0;
             if (!(z.fade_out_shape >= 0 && z.fade_out_shape <= 6)) z.fade_out_shape = 0;
+            for (std::optional<double>* c : {&z.fade_in_dir, &z.fade_out_dir})  // 13-75: REAPER's -1..1
+                if (*c) *c = std::isfinite(**c) ? Clamp(**c, -1.0, 1.0) : 0.0;
         }
     }
     for (SoundFrame& f : d.frames)  // a zoned variation keeps none of the old model's keys
@@ -1574,6 +1580,28 @@ ZoneFadeInfo ZoneCutFade(const SoundData& d, const ZoneRef& r, int side)
     return out;
 }
 
+FadeCurve ZoneFadeCurve(const SoundData& d, const ZoneRef& r, int side, bool cut)
+{
+    const EditZone* z = ZoneOf(d, r);
+    if (!z || side == 0) return {};
+    if (!z->IsGap() && !cut) {
+        const std::pair<ZoneRef, int> h = FadeCurveHolder(d, r, side);
+        if (h.first != r) return ZoneFadeCurve(d, h.first, h.second);
+    }
+    const int                    shape = FadeShapeOk(side < 0 ? z->fade_in_shape : z->fade_out_shape);
+    const std::optional<double>& dir = side < 0 ? z->fade_in_dir : z->fade_out_dir;
+    return {shape, FadeDirOr(shape, dir ? *dir : NAN)};
+}
+
+std::pair<ZoneRef, int> FadeCurveHolder(const SoundData& d, const ZoneRef& r, int side)
+{
+    const EditZone* z = ZoneOf(d, r);
+    if (!z || z->IsGap() || side == 0) return {r, side};
+    const ZoneRef g = side < 0 ? GapBefore(d, r) : GapAfter(d, r);
+    if (ZoneOf(d, g)) return {g, side};  // its fade-in crosses its left Gap (that Gap's fade-in), its fade-out its right one
+    return {r, side};
+}
+
 double ZoneEnv(const SoundData& d, const ZoneRef& r, double t)
 {
     const EditZone* z = ZoneOf(d, r);
@@ -1582,20 +1610,21 @@ double ZoneEnv(const SoundData& d, const ZoneRef& r, double t)
     const EditZone* rg = ZoneOf(d, GapAfter(d, r));
     const double    lo = lg ? lg->b - lg->xr : z->a, hi = rg ? rg->a + rg->xl : z->b;
     if (t < lo || t >= hi) return 0.0;
-    double g = 1.0;
+    double          g = 1.0;
+    const FadeCurve ci = ZoneFadeCurve(d, r, -1), co = ZoneFadeCurve(d, r, 1);  // 13-75: on REAPER's curves
     if (lg) {
         const double L = lg->xl + lg->xr;
-        if (L > 0.0 && t < lg->b + lg->xl) g *= (t - lo) / L;
+        if (L > 0.0 && t < lg->b + lg->xl) g *= FadeCurveGain((t - lo) / L, ci);
     } else {
         const double fi = ZoneFade(d, r, -1).s;
-        if (fi > 0.0 && t < z->a + fi) g *= (t - z->a) / fi;
+        if (fi > 0.0 && t < z->a + fi) g *= FadeCurveGain((t - z->a) / fi, ci);
     }
     if (rg) {
         const double L = rg->xl + rg->xr;
-        if (L > 0.0 && t > rg->a - rg->xr) g *= (hi - t) / L;
+        if (L > 0.0 && t > rg->a - rg->xr) g *= FadeCurveGain((hi - t) / L, co);
     } else {
         const double fo = ZoneFade(d, r, 1).s;
-        if (fo > 0.0 && t > z->b - fo) g *= (z->b - t) / fo;
+        if (fo > 0.0 && t > z->b - fo) g *= FadeCurveGain((z->b - t) / fo, co);
     }
     return Clamp(g, 0.0, 1.0);
 }
@@ -1835,6 +1864,7 @@ bool SplitZoneAt(SoundData& d, double t, const ZoneContext& ctx, ZoneSel* sel)
     rz.b_hand = w.Z(i).b_hand;
     rz.fade_out = w.Z(i).fade_out;
     rz.fade_out_shape = w.Z(i).fade_out_shape;
+    rz.fade_out_dir = w.Z(i).fade_out_dir;  // 13-75
     rz.snap = w.Z(i).snap && *w.Z(i).snap > t ? w.Z(i).snap : std::nullopt;
     EditZone& lz = w.Z(i);
     lz.slot_b = t;
@@ -1842,6 +1872,7 @@ bool SplitZoneAt(SoundData& d, double t, const ZoneContext& ctx, ZoneSel* sel)
     lz.b_hand = true;
     lz.fade_out.reset();
     lz.fade_out_shape = 0;
+    lz.fade_out_dir.reset();
     if (lz.snap && *lz.snap >= t) lz.snap.reset();
     const int ri = w.push(w.frameOf(i), rz);
     return Finish(w, before, sel, {w.zs[static_cast<size_t>(ri)].id});
@@ -1957,6 +1988,7 @@ bool HealZones(SoundData& d, ZoneSel& sel, const ZoneContext& ctx, bool* mixed)
             iz.slot_b = yz.slot_b;
             iz.fade_out = yz.fade_out;
             iz.fade_out_shape = yz.fade_out_shape;
+            iz.fade_out_dir = yz.fade_out_dir;  // 13-75
         }
         w.erase(y);
         head = into;
@@ -2447,6 +2479,31 @@ bool SetZonesFade(SoundData& d, const ZoneSel& sel, int side, double s, const Zo
     return !Same(before, d);
 }
 
+bool SetZonesFadeCurve(SoundData& d, const ZoneSel& sel, int side, int shape, double dir, const ZoneContext& ctx, ZoneSel* out)
+{
+    if (!UsesZones(d) || side == 0 || shape > 6) return false;
+    const Snap                           before = Take(d);
+    std::vector<std::pair<ZoneRef, int>> done;
+    for (const ZoneRef& q : sel) {
+        if (!LiveZone(d, q)) continue;
+        const std::pair<ZoneRef, int> h = FadeCurveHolder(d, q, side);
+        if (std::find(done.begin(), done.end(), h) != done.end()) continue;
+        done.push_back(h);
+        EditZone* z = ZoneOf(d, h.first);
+        if (!z) continue;
+        int&                   zs = h.second < 0 ? z->fade_in_shape : z->fade_out_shape;
+        std::optional<double>& zd = h.second < 0 ? z->fade_in_dir : z->fade_out_dir;
+        if (shape >= 0) zs = shape;
+        zs = FadeShapeOk(zs);
+        const double c = std::isfinite(dir) ? Clamp(std::round(dir * 1000.0) / 1000.0, -1.0, 1.0) : FadePresetDir(zs);
+        if (std::fabs(c - FadePresetDir(zs)) < 1e-9) zd.reset();  // the shape's preset: nothing of its own to keep
+        else zd = c;
+    }
+    if (out) *out = sel;
+    Relay(d, ctx, out, &before);
+    return !Same(before, d);
+}
+
 bool ShiftZonesSnap(SoundData& d, const ZoneSel& sel, const ZoneRef& r, double t, const ZoneContext& ctx, ZoneSel* out)
 {
     const EditZone* z0 = LiveZone(d, r);
@@ -2524,6 +2581,7 @@ bool ResetZoneFade(SoundData& d, const ZoneRef& r, int side, const ZoneContext& 
     const Snap before = Take(d);
     f.reset();
     (side < 0 ? z->fade_in_shape : z->fade_out_shape) = 0;
+    (side < 0 ? z->fade_in_dir : z->fade_out_dir).reset();  // 13-75: its curve back to linear too
     Relay(d, ctx, sel, &before);
     return true;
 }

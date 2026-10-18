@@ -1078,7 +1078,18 @@ void FuzzRun(uint64_t seed, int count, FuzzStats& st, int kind = 0)
         case 17: ch = SetZoneDb(d, z, r.U(-30.0, 30.0), ctx, &cur); break;
         case 18: ch = ShiftZonesDb(d, sel, r.U(-6.0, 6.0), {}, ctx, &cur); break;
         case 19: ch = ResetZoneEdge(d, z, side, ctx, &cur); break;
-        case 20: ch = ResetZoneFade(d, z, side, ctx, &cur); break;
+        case 20: {
+            // 13-75: a fade curve (a shape at its preset, or a curvature) on a copy, checked there: the fuzz's own
+            // stream and Sound stay as they were (a changed trajectory reaches edge cases the fuzz's contexts make up).
+            SoundData    dc = d;
+            ZoneSel      oc;
+            const std::string bc = SerializeSoundStore(StoreOf(dc));
+            const bool   cc = SetZonesFadeCurve(dc, i % 2 ? sel : ZoneSel{z}, side, i % 8 == 1 ? -1 : static_cast<int>(i % 7),
+                                                i % 3 ? NAN : static_cast<double>(i % 11) / 5.0 - 1.0, gc, &oc);
+            CHECK(ZonesProblem(dc, T).empty() && RoundTrips(dc) && (cc || SerializeSoundStore(StoreOf(dc)) == bc));
+            ch = ResetZoneFade(d, z, side, ctx, &cur);
+            break;
+        }
         case 21: ch = ResetZoneSnap(d, z, ctx, &cur); break;
         case 22: ch = r.I(3) ? SetPartFader(d, part, r.U(-24.0, 12.0), ctx, &cur) : SetPartFader(d, part, 0.0, ctx, &cur); break;
         case 23: {  // 13-62h (v5): an item moved whole -- a Gap's item mostly, else any zone (none: false)
@@ -1334,6 +1345,69 @@ void TestSampleAccurateSnap()
         CHECK(ParseSoundStore(txt, &back) && back.libraries[0].nodes[0].sound.frames[0].zones[0].auto_snap.set &&
               !back.libraries[0].nodes[0].sound.frames[0].zones[0].auto_snap.fine);
     }
+}
+
+
+// 13-75: the fades' curves on the zones: ZoneFadeCurve (own, a Gap's crossfade, a cut side), SetZonesFadeCurve (a
+// shape at its preset, a curvature kept per shape, a batch, a Gap held side once), ZoneEnv on the curves, the reset,
+// the record round trip (an old record = the shape's preset, as REAPER placed it).
+void TestFadeCurves()
+{
+    // Heel [0.10, 0.40] Gap [0.40, 0.45] xl = xr = 5 ms Heel [0.45, 0.70], Toe [0.80, 1.00] (own 20 ms fades).
+    SoundData d = With({Z(kHeel, 0.10, 0.40), G(0.40, 0.45, 0.005, 0.005), Z(kHeel, 0.45, 0.70), Z(kToe, 0.80, 1.00)});
+    d.frames[0].zones[3].fade_in = 0.020;
+    d.frames[0].zones[3].fade_out = 0.020;
+    d.frames[0].length = 0.90;
+    CHECK(ZonesProblem(d, 3.0).empty());
+    // Today's curve: linear everywhere (a crossfade too).
+    CHECK(ZoneFadeCurve(d, {0, 0}, -1) == FadeCurve{} && ZoneFadeCurve(d, {0, 0}, 1) == FadeCurve{} && ZoneFadeCurve(d, {0, 2}, -1) == FadeCurve{});
+    // An old record's shape alone: REAPER's preset curvature (the placement wrote the shape, REAPER set it).
+    d.frames[0].zones[3].fade_in_shape = 1;
+    CHECK(ZoneFadeCurve(d, {0, 3}, -1).shape == 1 && Near(ZoneFadeCurve(d, {0, 3}, -1).dir, 0.5));
+    CHECK(Near(ZoneEnv(d, {0, 3}, 0.81), 1.0 - 0.25));  // half way into the 20 ms: 1 - (1 - 0.5)^2
+    CHECK(RoundTrips(d));
+    // A batch: both Heels + Toe, fade-out sharp concave: Heel 1's fade-out is the Gap's crossfade -> the Gap's fade_out
+    // side; Heel 2 own; Toe own.
+    SoundData b = d;
+    ZoneSel   out;
+    CHECK(SetZonesFadeCurve(b, {{0, 0}, {0, 2}, {0, 3}}, 1, 4, NAN, {}, &out));
+    CHECK(b.frames[0].zones[1].fade_out_shape == 4 && !b.frames[0].zones[1].fade_out_dir);  // the Gap's; preset = nothing kept
+    CHECK(b.frames[0].zones[0].fade_out_shape == 0);                                        // Heel 1's own untouched
+    CHECK(b.frames[0].zones[2].fade_out_shape == 4 && b.frames[0].zones[3].fade_out_shape == 4);
+    CHECK(ZoneFadeCurve(b, {0, 0}, 1).shape == 4 && Near(ZoneFadeCurve(b, {0, 0}, 1).dir, -1.0));
+    CHECK(ZoneFadeCurve(b, {0, 0}, 1, true) == FadeCurve{});  // cut at the Gap's edge: its own (linear)
+    CHECK(ZoneFadeCurve(b, {0, 2}, -1) == FadeCurve{});      // the Gap's other side stays linear
+    // The crossfade on its curve: Heel 1 at the overlap's middle (0.400) = (1 - 0.5)^4.
+    CHECK(Near(ZoneEnv(b, {0, 0}, 0.400), 0.0625) && Near(ZoneEnv(b, {0, 2}, 0.450), 0.5));
+    // The Gap selected with Heel 2: its fade-in side once (one holder).
+    SoundData c = d;
+    CHECK(SetZonesFadeCurve(c, {{0, 1}, {0, 2}}, -1, 5, NAN, {}, &out));
+    CHECK(c.frames[0].zones[1].fade_in_shape == 5 && c.frames[0].zones[2].fade_in_shape == 0);
+    CHECK(ZoneFadeCurve(c, {0, 2}, -1).shape == 5);
+    CHECK(!SetZonesFadeCurve(c, {{0, 2}}, -1, 5, NAN, {}, &out));  // already: no change, no undo point
+    // A curvature (the drag): the shape kept, the value stored; its preset again = nothing stored.
+    CHECK(SetZonesFadeCurve(c, {{0, 3}}, 1, -1, 0.3, {}, &out));
+    CHECK(c.frames[0].zones[3].fade_out_shape == 0 && c.frames[0].zones[3].fade_out_dir && Near(*c.frames[0].zones[3].fade_out_dir, 0.3));
+    CHECK(SetZonesFadeCurve(c, {{0, 3}}, 1, -1, 7.0, {}, &out) && Near(ZoneFadeCurve(c, {0, 3}, 1).dir, 1.0));  // clamped
+    CHECK(RoundTrips(c));
+    // Saved: only a curvature that is not its shape's preset (a project of today's curves writes no new key).
+    CHECK(SerializeSoundStore(StoreOf(c)).find("fod=1") != std::string::npos);
+    CHECK(SerializeSoundStore(StoreOf(d)).find("fid=") == std::string::npos && SerializeSoundStore(StoreOf(d)).find("fod=") == std::string::npos);
+    CHECK(SetZonesFadeCurve(c, {{0, 3}}, 1, -1, 0.0, {}, &out) && !c.frames[0].zones[3].fade_out_dir);
+    // Toe's fade-out at curvature 0.3, half way out (0.99): FadeCurveGain(0.5, 0, 0.3).
+    CHECK(SetZonesFadeCurve(c, {{0, 3}}, 1, -1, 0.3, {}, &out));
+    CHECK(Near(ZoneEnv(c, {0, 3}, 0.99), FadeCurveGain(0.5, 0, 0.3)));
+    // Double-click on its fade handle: its default length and a linear curve again.
+    CHECK(ResetZoneFade(c, {0, 3}, 1) && ZoneFadeCurve(c, {0, 3}, 1) == FadeCurve{});
+    CHECK(ZonesProblem(c, 3.0).empty());
+    // A split keeps the fade-out's curve on the right piece.
+    SoundData s = d;
+    CHECK(SetZonesFadeCurve(s, {{0, 3}}, 1, 3, NAN, {}, &out));
+    CHECK(SplitZoneAt(s, 0.90));
+    bool right_has = false;
+    for (const EditZone& z : s.frames[0].zones)
+        if (z.part == kToe && Near(z.b, 1.00)) right_has = z.fade_out_shape == 3;
+    CHECK(right_has);
 }
 
 void TestFuzz()
@@ -1666,6 +1740,7 @@ int main()
     TestUndividedAndTakes();
     TestSampleAccurateSnap();  // fix 2026-10-19
     TestLiveDragSnaps();       // freeze audit #2
+    TestFadeCurves();  // 13-75
     TestFuzz();
     if (g_fails) {
         std::printf("sound_zones_test: %d failure(s)\n", g_fails);

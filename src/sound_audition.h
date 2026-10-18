@@ -35,6 +35,8 @@ struct PlayVoice {
     double      fade_out_s = 0.0;
     int         fade_in_shape = 0;
     int         fade_out_shape = 0;
+    double      fade_in_dir = NAN;   // 13-75: their curvatures (NaN = the shape's preset)
+    double      fade_out_dir = NAN;
     // 13-29: the voice is a window of a longer faded stretch (AuditionVoice::fade_from_s / fade_span_s).
     double      fade_from_s = 0.0;
     double      fade_span_s = 0.0;  // 0 = the voice itself

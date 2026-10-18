@@ -239,6 +239,8 @@ std::vector<AuditionVoice> PartAuditionVoices(const SoundLibrary& lib, const Sou
         voice.fade_out_s = pa.fades.set_out ? pa.fades.out : 0.0;
         voice.fade_in_shape = pa.fades.set_in ? pa.fades.in_shape : 0;
         voice.fade_out_shape = pa.fades.set_out ? pa.fades.out_shape : 0;
+        voice.fade_in_dir = pa.fades.set_in ? pa.fades.in_dir : NAN;  // 13-75
+        voice.fade_out_dir = pa.fades.set_out ? pa.fades.out_dir : NAN;
         voice.piece = static_cast<int>(k);
         voice.mono = mono;
         voice.part = part_value;
@@ -366,23 +368,7 @@ std::string VariationCountText(int detected, const std::vector<SoundFrame>& fram
     return s;
 }
 
-namespace {
-// A fade-in curve over x in [0, 1] (0 -> 0, 1 -> 1).
-double FadeCurve(double x, int shape)
-{
-    x = std::min(std::max(x, 0.0), 1.0);
-    switch (shape) {
-    case 1: return 1.0 - (1.0 - x) * (1.0 - x);
-    case 2: return x * x;
-    case 3: { const double y = 1.0 - x; return 1.0 - y * y * y * y; }
-    case 4: return x * x * x * x;
-    case 5: return x * x * (3.0 - 2.0 * x);
-    default: return x;
-    }
-}
-}  // namespace
-
-double FadeGainAt(double t, double length, double in, double out, int in_shape, int out_shape)
+double FadeGainAt(double t, double length, double in, double out, int in_shape, int out_shape, double in_dir, double out_dir)
 {
     if (!std::isfinite(t) || !std::isfinite(length) || length <= 0.0) return 1.0;
     double a = std::isfinite(in) ? std::max(in, 0.0) : 0.0;
@@ -393,8 +379,8 @@ double FadeGainAt(double t, double length, double in, double out, int in_shape, 
         b *= k;
     }
     double g = 1.0;
-    if (a > 0.0 && t < a) g *= FadeCurve(t / a, in_shape);
-    if (b > 0.0 && t > length - b) g *= FadeCurve((length - t) / b, out_shape);
+    if (a > 0.0 && t < a) g *= FadeCurveGain(t / a, in_shape, in_dir);  // 13-75: REAPER's curve, exactly
+    if (b > 0.0 && t > length - b) g *= FadeCurveGain((length - t) / b, out_shape, out_dir);
     return g;
 }
 
@@ -487,6 +473,8 @@ EditPlay EditPlayFrom(const SoundData& d, double from, double to, const PartList
             }
             if (cut_out && s.b > z->b) s.b = z->b;
             if (s.heard && !(s.b > s.a)) s.heard = false;  // only its jumped stretch was in the range
+            s.cin = ZoneFadeCurve(d, p.z, -1, cut_in);  // 13-75: its sides' curves, as Populate places them
+            s.cout = ZoneFadeCurve(d, p.z, 1, cut_out);
             if (s.heard) {
                 AuditionVoice v;
                 v.variation = p.z.frame;
@@ -496,9 +484,12 @@ EditPlay EditPlayFrom(const SoundData& d, double from, double to, const PartList
                 v.gain_db = z->db;
                 v.fade_in_s = s.fin;
                 v.fade_out_s = s.fout;
-                // 13-62i: a zone's own fade keeps its shape, as Populate places it (a Gap's crossfade, At cuts: linear).
-                if (!lg && !cut_in && ZoneFade(d, p.z, -1).src == FadeSrc::Own) v.fade_in_shape = z->fade_in_shape;
-                if (!rg && !cut_out && ZoneFade(d, p.z, 1).src == FadeSrc::Own) v.fade_out_shape = z->fade_out_shape;
+                // 13-75: each side on its curve, as Populate places it (ZoneFadeCurve: a Gap's crossfade on the Gap's).
+                const FadeCurve ci = s.cin, co = s.cout;
+                v.fade_in_shape = ci.shape;
+                v.fade_in_dir = ci.dir;
+                v.fade_out_shape = co.shape;
+                v.fade_out_dir = co.dir;
                 v.fade_from_s = s.a - s.lo;
                 v.fade_span_s = s.hi - s.lo;
                 v.piece = nth[p.z.frame]++;
@@ -539,8 +530,8 @@ std::vector<HeardHead> HeardHeads(const HeardMap& map, double heard_t)
         if (s.z.frame >= 0) {
             const double t = h.file_t;
             double       g = 1.0;
-            if (s.fin > 0.0 && t < s.lo + s.fin) g *= (t - s.lo) / s.fin;
-            if (s.fout > 0.0 && t > s.hi - s.fout) g *= (s.hi - t) / s.fout;
+            if (s.fin > 0.0 && t < s.lo + s.fin) g *= FadeCurveGain((t - s.lo) / s.fin, s.cin);  // 13-75
+            if (s.fout > 0.0 && t > s.hi - s.fout) g *= FadeCurveGain((s.hi - t) / s.fout, s.cout);
             h.gain = std::min(std::max(g, 0.0), 1.0);
         }
         h.incoming = !out.empty();  // the later span of a crossfade

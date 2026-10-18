@@ -243,6 +243,13 @@ void ZoneSelectAll(const ZoneWaveHost& h);     // Sound Edit evening (A): REAPER
 void ZoneSetSide(const ZoneWaveHost& h, char side);
 // 13-73: the Sound's Mono (REAPER 40176 / 40178 / 40179 / 40180 keys): one undo point.
 void ZoneSetMono(const ZoneWaveHost& h, MonoMode m);
+// 13-75: REAPER's fade shape actions / the Edit header's fade buttons: kFadePresets[preset] (its shape at its own
+// curvature) on the selected zones' fade on `side` (< 0 in, > 0 out; a side a Gap holds: that crossfade's side): one
+// undo point (a toast when nothing is selected).
+void ZoneSetFadeShape(const ZoneWaveHost& h, int side, int preset);
+// 13-75: the preset the selected zones' fade on `side` all have (kFadePresets index), -1 when they differ or one's
+// curvature was changed by hand, -2 when nothing is selected.
+int  ZoneSelFadePreset(const ZoneWaveHost& h, int side);
 bool ZonePlaying(const ZoneWaveHost& h);
 // 13-74: the selected part zones' own gain moved by `notches` x 1 dB (Ctrl+Shift+wheel over the waveform, or the
 // rows' keys), each clamped as the Gain row (zone_gain_nudge.h). Notches in a row (same Sound, timeline and

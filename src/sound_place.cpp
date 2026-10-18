@@ -330,13 +330,14 @@ void ApplyFades(MediaItem* item, const FadeApply& fa)
     f_set_item(item, "D_FADEOUTLEN", out);
     if (fa.set_in) {
         f_set_item(item, "D_FADEINLEN_AUTO", -1.0);  // the source's auto-fade would override the length
-        f_set_item(item, "D_FADEINDIR", 0.0);
+        // 13-75: the shape first (REAPER sets its preset curvature with it), then the curvature.
         if (fa.shape_in) f_set_item(item, "C_FADEINSHAPE", static_cast<double>(fa.in_shape));
+        f_set_item(item, "D_FADEINDIR", fa.shape_in ? FadeDirOr(fa.in_shape, fa.in_dir) : 0.0);
     }
     if (fa.set_out) {
         f_set_item(item, "D_FADEOUTLEN_AUTO", -1.0);
-        f_set_item(item, "D_FADEOUTDIR", 0.0);
         if (fa.shape_out) f_set_item(item, "C_FADEOUTSHAPE", static_cast<double>(fa.out_shape));
+        f_set_item(item, "D_FADEOUTDIR", fa.shape_out ? FadeDirOr(fa.out_shape, fa.out_dir) : 0.0);
     }
 }
 
@@ -524,10 +525,12 @@ PlaceResult PlaceFileImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* 
         f_set_item(item, "D_FADEOUTLEN", fld.fade_out);
         f_set_item(item, "D_FADEINLEN_AUTO", -1.0);  // REAPER's auto-fade would override the length
         f_set_item(item, "D_FADEOUTLEN_AUTO", -1.0);
-        f_set_item(item, "D_FADEINDIR", 0.0);
-        f_set_item(item, "D_FADEOUTDIR", 0.0);
-        if (pieces[k].fades.shape_in) f_set_item(item, "C_FADEINSHAPE", static_cast<double>(pieces[k].fades.in_shape));
-        if (pieces[k].fades.shape_out) f_set_item(item, "C_FADEOUTSHAPE", static_cast<double>(pieces[k].fades.out_shape));
+        // 13-75: the shape first (REAPER sets its preset curvature with it), then the curvature.
+        const FadeApply& pf = pieces[k].fades;
+        if (pf.shape_in) f_set_item(item, "C_FADEINSHAPE", static_cast<double>(pf.in_shape));
+        if (pf.shape_out) f_set_item(item, "C_FADEOUTSHAPE", static_cast<double>(pf.out_shape));
+        f_set_item(item, "D_FADEINDIR", pf.shape_in ? FadeDirOr(pf.in_shape, pf.in_dir) : 0.0);
+        f_set_item(item, "D_FADEOUTDIR", pf.shape_out ? FadeDirOr(pf.out_shape, pf.out_dir) : 0.0);
 
         PlacedTag tag;
         tag.owner = owner;

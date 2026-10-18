@@ -6,6 +6,7 @@
 //   c++ -std=c++17 -I src tests/shortcuts_test.cpp -o t && ./t
 
 #include "shortcuts.h"
+#include "fade_curve.h"  // 13-75: kFadePresets
 
 #include <cstdio>
 #include <string>
@@ -1205,7 +1206,17 @@ int main()
     // 13-62h: Heal / Loop in the Sound Edit window -- on REAPER's 40548 (Item: Heal splits in items) / 1068
     // (Transport: Toggle repeat) by default, H / R while REAPER lists no key for them; 40508 retargeted.
     {
-        CHECK(kShortcutCount == 33 && kShortcutEditHeal == 22 && kShortcutEditLoop == 23);  // 13-67a: renumbered; 13-73: +7; 13-74: +2; A: +1
+        CHECK(kShortcutCount == 47 && kShortcutEditHeal == 22 && kShortcutEditLoop == 23);  // 13-67a: renumbered; 13-73: +7; 13-74: +2; A: +1; 13-75: +14
+        // 13-75: REAPER's fade shape actions, on REAPER's keys (no key while REAPER has none), in kFadePresets order.
+        for (int k = 0; k < 7; ++k) {
+            CHECK(ShortcutReaperActionId(kShortcutEditFadeIn0 + k) == kFadePresets[k].in_cmd);
+            CHECK(ShortcutReaperActionId(kShortcutEditFadeOut0 + k) == kFadePresets[k].out_cmd);
+            for (int id : {kShortcutEditFadeIn0 + k, kShortcutEditFadeOut0 + k})
+                CHECK(ShortcutDefaultFollowsReaper(id) && kShortcutTable[id].def.vk == 0 && kShortcutTable[id].context == ShortcutContext::LibraryEdit &&
+                      ShortcutReaperFallback(id).vk == 0 && !kShortcutTable[id].action);
+        }
+        CHECK(std::string(kShortcutTable[kShortcutEditFadeIn0 + 6].reaper_name) == "Item: Set fade-in shape to sharp S-curve");
+        CHECK(std::string(kShortcutTable[kShortcutEditFadeOut0 + 1].reaper_name) == "Item: Set fade-out shape to slight convex");
         // 13-73: Mono on REAPER's take channel mode keys; Left / Right as RAV actions with no default key.
         CHECK(ShortcutReaperActionId(kShortcutEditMonoOff) == "40176" && ShortcutReaperActionId(kShortcutEditMonoSum) == "40178");
         CHECK(ShortcutReaperActionId(kShortcutEditMonoLeft) == "40179" && ShortcutReaperActionId(kShortcutEditMonoRight) == "40180");

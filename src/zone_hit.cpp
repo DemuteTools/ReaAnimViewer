@@ -53,9 +53,17 @@ std::vector<ZoneLook> ZoneLooks(const SoundData& d, const PeakView* peaks, int t
         L.b = z.b;
         L.gap = z.IsGap();
         L.butt_next = nx && touch(z.b, nx->a);
+        // 13-75: a zone's own curve of a side (ZoneFadeCurve, from the neighbours).
+        auto own_curve = [](const EditZone& q, int side) {
+            const int                    sh = FadeShapeOk(side < 0 ? q.fade_in_shape : q.fade_out_shape);
+            const std::optional<double>& c = side < 0 ? q.fade_in_dir : q.fade_out_dir;
+            return FadeCurve{sh, FadeDirOr(sh, c ? *c : NAN)};
+        };
         if (L.gap) {
             L.xl = z.xl;
             L.xr = z.xr;
+            L.cin = own_curve(z, -1);
+            L.cout = own_curve(z, 1);
             // GapLeft / GapRight: the part zones of its own variation it touches (zones never overlap: the ones
             // beside it in time order).
             if (pv && !pv->IsGap() && all[i - 1].frame == all[i].frame && touch(pv->b, z.a)) {
@@ -92,6 +100,8 @@ std::vector<ZoneLook> ZoneLooks(const SoundData& d, const PeakView* peaks, int t
         };
         L.fi_s = fade(-1);
         L.fo_s = fade(1);
+        L.cin = own_curve(lg ? *lg : z, -1);
+        L.cout = own_curve(rg ? *rg : z, 1);
         if (lg) {
             L.lo = lg->b - lg->xr;
             L.fin = lg->xl + lg->xr;
@@ -269,6 +279,69 @@ std::vector<ZoneLook> HeardLooks(const std::vector<ZoneLook>& all, const HeardSt
     return out;
 }
 
+// ---- 13-75: the fades' curves ----------------------------------------------------------------------------------------
+
+std::vector<FadeSpan> FadeSpans(const SoundData& d, const ZoneHitView& v, const std::vector<ZoneLook>& looks)
+{
+    std::vector<FadeSpan> out;
+    const double          vl = v.vl > 0.0 ? v.vl : 1.0;
+    const float           w = std::max(1.0f, v.w);
+    const float           dp = v.dp > 0.0f ? v.dp : 1.0f;
+    const HeardStrip*     hs = v.strip && !v.strip->segs.empty() && v.strip->total > 0.0 ? v.strip : nullptr;
+    auto                  X = [&](double t) {
+        return hs ? static_cast<float>(HeardOfFile(*hs, t) / hs->total * w) : static_cast<float>((t - v.v0) / vl * w);
+    };
+    // As DrawLane draws them: the lane's band is 3 px inside the row; a fade rises to 1 px below its top, a crossfade
+    // to 6 px below it.
+    const float bottom = v.h - 3.0f * dp, top_fade = 3.0f * dp + 1.0f, top_xf = 9.0f * dp;
+    const double v1 = v.v0 + vl;
+    for (const ZoneLook& L : looks) {
+        if (hs ? !hs->Has(L.ref) : (L.b < v.v0 || L.a > v1)) continue;
+        if (L.gap) {
+            float ox0 = X(L.a - L.xr), ox1 = X(L.a + L.xl), ix0 = X(L.b - L.xr), ix1 = X(L.b + L.xl);
+            if (hs) {
+                const HeardXfade xf = HeardXfadeOf(d, *hs, L.ref);
+                if (!xf.ok) continue;
+                ox0 = static_cast<float>(xf.out0 / hs->total * w);
+                ox1 = static_cast<float>(xf.out1 / hs->total * w);
+                ix0 = static_cast<float>(xf.in0 / hs->total * w);
+                ix1 = static_cast<float>(xf.in1 / hs->total * w);
+            }
+            if (L.xl + L.xr <= 0.0) continue;
+            if (Valid(d, L.left)) out.push_back({L.left, 1, ox0, ox1, top_xf, bottom, L.cout, true});
+            if (Valid(d, L.right)) out.push_back({L.right, -1, ix0, ix1, top_xf, bottom, L.cin, true});
+            continue;
+        }
+        if (!(v.lane < 0 || L.k == v.lane)) continue;
+        if (!L.lg && L.fi_s > 0.0) out.push_back({L.ref, -1, X(L.a), X(L.a + L.fi_s), top_fade, bottom, L.cin, false});
+        if (!L.rg && L.fo_s > 0.0) out.push_back({L.ref, 1, X(L.b - L.fo_s), X(L.b), top_fade, bottom, L.cout, false});
+    }
+    return out;
+}
+
+float FadeSpanY(const FadeSpan& f, float x)
+{
+    const float  span = f.x1 - f.x0;
+    const double u = span > 0.0f ? Clamp(static_cast<double>((x - f.x0) / span), 0.0, 1.0) : 1.0;
+    const double g = FadeCurveGain(f.side < 0 ? u : 1.0 - u, f.c);
+    return f.bottom - static_cast<float>(g) * (f.bottom - f.top);
+}
+
+bool FadeDiamond(const FadeSpan& f, float dp, float* x, float* y)
+{
+    if (!(f.x1 - f.x0 >= 12.0f * (dp > 0.0f ? dp : 1.0f))) return false;
+    const float xm = (f.x0 + f.x1) * 0.5f;
+    if (x) *x = xm;
+    if (y) *y = FadeSpanY(f, xm);
+    return true;
+}
+
+double CurveDragDir(double dir0, float dy_px)
+{
+    const double d0 = std::isfinite(dir0) ? dir0 : 0.0;
+    return Clamp(std::round((d0 - static_cast<double>(dy_px) / 100.0) * 100.0) / 100.0, -1.0, 1.0);
+}
+
 ZoneHit HitZones(const SoundData& d, const ZoneHitView& v, float x, float y)
 {
     ZoneHit h;
@@ -325,6 +398,40 @@ ZoneHit HitZones(const SoundData& d, const ZoneHitView& v, float x, float y)
     if (!v.looks) own_looks = ZoneLooks(d, v.peaks, v.tl);
     const std::vector<ZoneLook>& looks = v.looks ? *v.looks : own_looks;
     auto mine = [&](const ZoneLook& L) { return v.lane < 0 || L.gap || L.k == v.lane; };
+    // 13-75: the fades' curves: with Ctrl+Alt anywhere along one (the nearest curve there), else its diamond.
+    const std::vector<FadeSpan> spans = FadeSpans(d, v, looks);
+    if (v.curve_mod) {
+        const FadeSpan* best = nullptr;
+        float           bd = 0.0f;
+        for (const FadeSpan& f : spans) {
+            if (x < std::min(f.x0, f.x1) - 2.0f * dp || x > std::max(f.x0, f.x1) + 2.0f * dp) continue;
+            const float dy = std::fabs(y - FadeSpanY(f, x));
+            if (!best || dy < bd) {
+                best = &f;
+                bd = dy;
+            }
+        }
+        if (best) {
+            h.kind = ZoneHitKind::Curve;
+            h.z = best->z;
+            h.side = best->side;
+            return h;
+        }
+    }
+    auto diamond_at = [&]() -> const FadeSpan* {
+        const FadeSpan* best = nullptr;
+        float           bd = 0.0f;
+        for (const FadeSpan& f : spans) {
+            float fx = 0.0f, fy = 0.0f;
+            if (!FadeDiamond(f, dp, &fx, &fy)) continue;
+            const float dd = std::hypot(x - fx, y - fy);
+            if (dd <= 6.0f * dp && (!best || dd < bd)) {
+                best = &f;
+                bd = dd;
+            }
+        }
+        return best;
+    };
     std::vector<const ZoneLook*> parts, gaps;
     const double                 v1 = v.v0 + vl;
     for (const ZoneLook& L : looks) {
@@ -373,6 +480,12 @@ ZoneHit HitZones(const SoundData& d, const ZoneHitView& v, float x, float y)
                 return h;
             }
         }
+    }
+    if (const FadeSpan* f = diamond_at()) {  // 13-75
+        h.kind = ZoneHitKind::Curve;
+        h.z = f->z;
+        h.side = f->side;
+        return h;
     }
     if (y >= 24.0f * dp && y <= 42.0f * dp)
         for (const ZoneLook* L : parts)
@@ -461,13 +574,14 @@ ZoneDragKind PressDragKind(const ZoneHit& h, bool ctrl, bool alt)
     case ZoneHitKind::GapEdge: return ZoneDragKind::GapEdge;
     case ZoneHitKind::Fade: return ZoneDragKind::Fade;
     case ZoneHitKind::Snap: return ZoneDragKind::Snap;
+    case ZoneHitKind::Curve: return ZoneDragKind::Curve;  // 13-75: Ctrl+Alt is its modifier, never reserved
     default: return ZoneDragKind::Pending;
     }
 }
 
 bool ZoneReservedOnMove(const ZoneHit& h, bool ctrl, bool alt)
 {
-    if (h.kind == ZoneHitKind::TselEdge) return false;  // the time selection's edge: like REAPER, no modifier
+    if (h.kind == ZoneHitKind::TselEdge || h.kind == ZoneHitKind::Curve) return false;  // like REAPER (13-75: Ctrl+Alt)
     if (ctrl) return true;
     switch (h.kind) {
     case ZoneHitKind::Edge:
@@ -616,6 +730,7 @@ ZoneDoubleAction DoubleActionOf(const ZoneHit& h)
     case ZoneHitKind::Edge: return ZoneDoubleAction::ResetEdge;
     case ZoneHitKind::Snap: return ZoneDoubleAction::ResetSnap;
     case ZoneHitKind::Fade: return ZoneDoubleAction::ResetFade;
+    case ZoneHitKind::Curve: return ZoneDoubleAction::ResetCurve;  // 13-75
     default: return ZoneDoubleAction::None;
     }
 }
@@ -643,6 +758,7 @@ ZoneCursor ZoneCursorOf(const ZoneHit& h)
     case ZoneHitKind::Zone: return h.top ? ZoneCursor::Grab : ZoneCursor::Text;
     case ZoneHitKind::Ruler:
     case ZoneHitKind::None: return ZoneCursor::Text;
+    case ZoneHitKind::Curve: return ZoneCursor::ResizeNS;  // 13-75
     }
     return ZoneCursor::Arrow;
 }
@@ -673,6 +789,16 @@ std::string ZoneTip(const SoundData& d, const ZoneHit& h, const std::vector<std:
     case ZoneHitKind::Pick: return n + ": click to select; double-click: a time selection on it, the cursor at its start";
     case ZoneHitKind::Xf: return "Crossfade of the Gap: drag (both sides together; Alt: this side only)";
     case ZoneHitKind::Fade: return n + " fade " + (h.side < 0 ? "in" : "out") + ": drag (double-click: its default)";
+    case ZoneHitKind::Curve: {  // 13-75
+        const FadeCurve c = ZoneFadeCurve(d, h.z, h.side);
+        const int       p = FadePresetOf(c);
+        char            buf[48];
+        std::snprintf(buf, sizeof(buf), "%+.2f", c.dir);
+        const bool xf = FadeCurveHolder(d, h.z, h.side).first != h.z;
+        return n + " " + (xf ? "crossfade " : "fade ") + (h.side < 0 ? "in" : "out") + " curve (" +
+               kFadePresets[FadeShapeOk(c.shape)].name + (p < 0 ? std::string(", curvature ") + buf : std::string()) +
+               "): drag up / down (Ctrl+Alt+drag anywhere along it; double-click: its shape's own curvature)";
+    }
     case ZoneHitKind::Snap: return n + " snap offset (where the event lands): drag (double-click: automatic)";
     case ZoneHitKind::Cut: return "Cut between two zones: drag to move it (both edges together)";
     case ZoneHitKind::GapEdge: return "Gap edge: drag (the zone beside it follows)";

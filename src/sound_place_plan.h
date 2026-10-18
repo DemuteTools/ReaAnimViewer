@@ -58,7 +58,8 @@ SliceApply SliceApplyFor(const SoundFrame& frame);
 // or the Sound's default fade); a Whole-item Sound keeps its source item's own fades, except a side
 // the variation set by hand (its shape only when the frame set a non-zero one: the length alone is
 // the user's edit). Each side set also clears REAPER's auto-fade (D_FADE*LEN_AUTO = -1, which else
-// overrides the length) and the curve (D_FADE*DIR = 0), so the placed fade is the drawn one. Nothing
+// overrides the length) and sets the curve (13-75: the shape, then its curvature; no shape: D_FADE*DIR = 0), so the
+// placed fade is the drawn one. Nothing
 // for a variation out of range or a folder-pile source (its members are copied as they are).
 struct FadeApply {
     bool   set_in = false;
@@ -69,6 +70,10 @@ struct FadeApply {
     double out = 0.0;
     int    in_shape = 0;
     int    out_shape = 0;
+    // 13-75: the curvatures written with a shape (D_FADEINDIR / D_FADEOUTDIR, after the shape: REAPER sets the shape's
+    // preset with it); NaN = that preset (FadeDirOr).
+    double in_dir = NAN;
+    double out_dir = NAN;
 };
 FadeApply FadeApplyFor(const SoundData& data, int variation, bool folder_source = false);
 // The fades as written on an item of `item_len` s (playrate already applied to the length; the fade

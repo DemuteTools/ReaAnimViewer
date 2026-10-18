@@ -549,6 +549,8 @@ PlayVoice ToPlayVoice(const AuditionVoice& v, const std::string& path)
     p.fade_out_s = v.fade_out_s;
     p.fade_in_shape = v.fade_in_shape;
     p.fade_out_shape = v.fade_out_shape;
+    p.fade_in_dir = v.fade_in_dir;  // 13-75
+    p.fade_out_dir = v.fade_out_dir;
     p.fade_from_s = v.fade_from_s;
     p.fade_span_s = v.fade_span_s;
     p.mono = v.mono;
@@ -1074,7 +1076,7 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
                 for (int k = 0; k <= kSteps; ++k) {
                     const double t = t0 + len * k / kSteps;
                     const double g = FadeGainAt(t - f.start, f.length, side < 0 ? fd.in : 0.0, side > 0 ? fd.out : 0.0, fd.in_shape,
-                                                fd.out_shape);
+                                                fd.out_shape, fd.in_dir, fd.out_dir);
                     const ImVec2 p(X(t), b.y - static_cast<float>(g) * (b.y - a.y));
                     if (k > 0) {
                         dl->AddQuadFilled(ImVec2(prev.x, a.y), ImVec2(p.x, a.y), p, prev, shade);
@@ -1174,7 +1176,8 @@ void RequestLibraryEditKey(int shortcut_id)
     else if (shortcut_id == kShortcutEditHeal || shortcut_id == kShortcutEditLoop ||  // 13-62h (Lot D; Lot E does them)
              shortcut_id == kShortcutEditSnapOffset || shortcut_id == kShortcutEditPrevStop ||  // 13-67a
              shortcut_id == kShortcutEditSelectAll ||                                         // Sound Edit evening (A)
-             (shortcut_id >= kShortcutEditMonoOff && shortcut_id <= kShortcutEditSideRule))  // 13-73: Mono, Left / Right
+             (shortcut_id >= kShortcutEditMonoOff && shortcut_id <= kShortcutEditSideRule) ||  // 13-73: Mono, Left / Right
+             (shortcut_id >= kShortcutEditFadeIn0 && shortcut_id < kShortcutEditFadeOut0 + 7))  // 13-75: fade shapes
         P.zone_request = shortcut_id;
     else if (shortcut_id == kShortcutEditGainUp || shortcut_id == kShortcutEditGainDown)  // 13-74
         P.gain_request += shortcut_id == kShortcutEditGainUp ? 1 : -1;
@@ -1260,8 +1263,12 @@ std::vector<FrameFades> ShownFades(const SoundData& d)
             const ZoneFadeInfo fi = ZoneFade(d, {static_cast<int>(i), first}, -1), fo = ZoneFade(d, {static_cast<int>(i), last}, 1);
             f.in = fi.s;
             f.out = fo.s;
-            f.in_shape = fi.src == FadeSrc::Own ? zs[static_cast<size_t>(first)].fade_in_shape : 0;
-            f.out_shape = fo.src == FadeSrc::Own ? zs[static_cast<size_t>(last)].fade_out_shape : 0;
+            // 13-75: on their curves, as placed (ZoneFadeCurve).
+            const FadeCurve ci = ZoneFadeCurve(d, {static_cast<int>(i), first}, -1), co = ZoneFadeCurve(d, {static_cast<int>(i), last}, 1);
+            f.in_shape = ci.shape;
+            f.in_dir = ci.dir;
+            f.out_shape = co.shape;
+            f.out_dir = co.dir;
             f.own_in = fi.src == FadeSrc::Own;
             f.own_out = fo.src == FadeSrc::Own;
         }
@@ -3570,6 +3577,50 @@ void EditLegend(const SoundStore& store, const SoundLibrary& lib, const SoundNod
             // cursor at its start), zoomed on it.
             if (ui::ToggleButton(lbl.c_str(), on, ImVec2(0.0f, bh))) ZoneGoToVariation(ZoneHost(lib, n, m), b.frame, true);
             ui::ItemTip("Variation %d: its zones selected, the edit cursor at its start, zoomed on it (Select all: its zones only)", vi);
+        }
+    }
+    // 13-75 (Antho 2026-10-19): REAPER's fade shapes, on the selected zones' fades: a "Fade in" group and a "Fade out"
+    // group of its seven shapes (its fade menu's order and pictures), each REAPER's action (its key works here too). The
+    // selected zones' shape lit when they all have it. One undo point per click.
+    if (UsesZones(d) && len > 0.0) {
+        const ZoneWaveHost zh = ZoneHost(lib, n, m);
+        const float        bh = ui::Dp(22.0f);
+        for (int side = -1; side <= 1; side += 2) {
+            const char* cap = side < 0 ? "Fade in" : "Fade out";
+            next(ImGui::CalcTextSize(cap).x + ImGui::GetStyle().ItemSpacing.x + bh);
+            FitText(cap, ui::kFaint);
+            const int lit = ZoneSelFadePreset(zh, side);
+            for (int k = 0; k < 7; ++k) {
+                if (k > 0) SameLineIfFits(bh);
+                else ImGui::SameLine();
+                const std::string id = std::string("##fsh") + (side < 0 ? "i" : "o") + std::to_string(k);
+                if (ui::ToggleButton(id.c_str(), lit == k, ImVec2(bh, bh))) ZoneSetFadeShape(zh, side, k);
+                {  // its picture: the curve, rising (in) / falling (out)
+                    const ImVec2 a0 = ImGui::GetItemRectMin(), a1 = ImGui::GetItemRectMax();
+                    const float  pad = ui::Dp(5.0f), x0 = a0.x + pad, x1 = a1.x - pad, y0 = a0.y + pad, y1 = a1.y - pad;
+                    ImDrawList*  dl = ImGui::GetWindowDrawList();
+                    const ImU32  ink = lit == k ? ui::kWhite : ui::kText;
+                    ImVec2       prev;
+                    constexpr int kSteps = 16;
+                    for (int i = 0; i <= kSteps; ++i) {
+                        const double u = static_cast<double>(i) / kSteps;
+                        const double g = FadeCurveGain(side < 0 ? u : 1.0 - u, kFadePresets[k].shape, kFadePresets[k].dir);
+                        const ImVec2 q(x0 + static_cast<float>(u) * (x1 - x0), y1 - static_cast<float>(g) * (y1 - y0));
+                        if (i > 0) dl->AddLine(prev, q, ink, 1.5f);
+                        prev = q;
+                    }
+                }
+                if (ImGui::IsItemHovered()) {
+                    const int         row = (side < 0 ? kShortcutEditFadeIn0 : kShortcutEditFadeOut0) + k;
+                    const char*       key = ShortcutKeyLabel(row);
+                    const std::string tip = std::string(side < 0 ? "Fade-in" : "Fade-out") + " shape: " + kFadePresets[k].name +
+                                            ", on the selected zones (a Gap's crossfade side too). REAPER's \"" +
+                                            kShortcutTable[row].reaper_name + "\" (" + kShortcutTable[row].reaper_cmd +
+                                            "): its key works here too" + (key && key[0] ? std::string(" (") + key + ")" : std::string()) +
+                                            ". The curve's diamond: drag up / down for its curvature (Ctrl+Alt+drag along the fade)";
+                    ui::ShowTip(tip.c_str());
+                }
+            }
         }
     }
     ImGui::Dummy(ImVec2(1.0f, ui::Dp(2.0f)));

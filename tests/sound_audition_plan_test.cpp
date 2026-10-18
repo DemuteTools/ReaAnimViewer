@@ -479,6 +479,96 @@ static SoundData Zoned(std::vector<EditZone> zones)
     return d;
 }
 
+
+// 13-75: REAPER's fade curves, exactly: the gains REAPER 7.81 gives (an item of constant 1.0 read back through a track
+// audio accessor, spec 13-75), against FadeCurveGain / FadeGainAt; then a zoned Sound's voices, heard heads and its
+// placement carry the same curves (heard = placed).
+static void TestReaperFadeCurves()
+{
+    struct Row {
+        int    shape;
+        double dir;
+        double x[5], g[5];
+    };
+    const Row rows[] = {
+        // fade-in, x = 0.1 0.25 0.5 0.75 0.9 (shapes 0..4 are the same family: only the curvature counts)
+        {0, -1.0, {0.1, 0.25, 0.5, 0.75, 0.9}, {0.00010, 0.00391, 0.06250, 0.31641, 0.65610}},
+        {0, -0.5, {0.1, 0.25, 0.5, 0.75, 0.9}, {0.01000, 0.06250, 0.25000, 0.56250, 0.81000}},
+        {0, 0.0, {0.1, 0.25, 0.5, 0.75, 0.9}, {0.10000, 0.25000, 0.50000, 0.75000, 0.90000}},
+        {3, 0.5, {0.1, 0.25, 0.5, 0.75, 0.9}, {0.19000, 0.43750, 0.75000, 0.93750, 0.99000}},
+        {4, 1.0, {0.1, 0.25, 0.5, 0.75, 0.9}, {0.34390, 0.68359, 0.93750, 0.99609, 0.99990}},
+        {5, -1.0, {0.1, 0.25, 0.5, 0.75, 0.9}, {0.00000, 0.00003, 0.00781, 0.20023, 0.76347}},
+        {5, -0.5, {0.1, 0.25, 0.5, 0.75, 0.9}, {0.00020, 0.00781, 0.12500, 0.61719, 0.92780}},
+        {5, 0.0, {0.1, 0.25, 0.5, 0.75, 0.9}, {0.02000, 0.12500, 0.50000, 0.87500, 0.98000}},
+        {5, 0.5, {0.1, 0.25, 0.5, 0.75, 0.9}, {0.07220, 0.38281, 0.87500, 0.99219, 0.99980}},
+        {5, 1.0, {0.1, 0.25, 0.5, 0.75, 0.9}, {0.23653, 0.79977, 0.99219, 0.99997, 1.00000}},
+        {6, -1.0, {0.1, 0.25, 0.5, 0.75, 0.9}, {0.00000, 0.00000, 0.00012, 0.08018, 0.88810}},
+        {6, -0.5, {0.1, 0.25, 0.5, 0.75, 0.9}, {0.00000, 0.00012, 0.03125, 0.70691, 0.98957}},
+        {6, 0.0, {0.1, 0.25, 0.5, 0.75, 0.9}, {0.00080, 0.03125, 0.50000, 0.96875, 0.99920}},
+        {6, 0.5, {0.1, 0.25, 0.5, 0.75, 0.9}, {0.01043, 0.29309, 0.96875, 0.99988, 1.00000}},
+        {6, 1.0, {0.1, 0.25, 0.5, 0.75, 0.9}, {0.11190, 0.91982, 0.99988, 1.00000, 1.00000}},
+        // the curvatures between, x = 0.1 0.3 0.5 0.7 0.9
+        {0, -0.75, {0.1, 0.3, 0.5, 0.7, 0.9}, {0.005050, 0.049050, 0.156250, 0.365050, 0.733050}},
+        {0, -0.25, {0.1, 0.3, 0.5, 0.7, 0.9}, {0.055000, 0.195000, 0.375000, 0.595000, 0.855000}},
+        {0, 0.10, {0.1, 0.3, 0.5, 0.7, 0.9}, {0.118000, 0.342000, 0.550000, 0.742000, 0.918000}},
+        {0, 0.25, {0.1, 0.3, 0.5, 0.7, 0.9}, {0.145000, 0.405000, 0.625000, 0.805000, 0.945000}},
+        {0, 0.75, {0.1, 0.3, 0.5, 0.7, 0.9}, {0.266950, 0.634950, 0.843750, 0.950950, 0.994950}},
+    };
+    for (const Row& r : rows)
+        for (int k = 0; k < 5; ++k) CHECK(std::fabs(FadeCurveGain(r.x[k], r.shape, r.dir) - r.g[k]) < 6e-6);
+    // The fade-out, x = time into it (0.1 .. 0.9 of 1 s): the fade-in read backwards, through FadeGainAt (item 2 s,
+    // fade-out 1 s).
+    const Row outs[] = {
+        {0, -1.0, {0.1, 0.3, 0.5, 0.7, 0.9}, {0.656100, 0.240100, 0.062500, 0.008100, 0.000100}},
+        {0, -0.5, {0.1, 0.3, 0.5, 0.7, 0.9}, {0.810000, 0.490000, 0.250000, 0.090000, 0.010000}},
+        {0, 0.5, {0.1, 0.3, 0.5, 0.7, 0.9}, {0.990000, 0.910000, 0.750000, 0.510000, 0.190000}},
+        {5, -1.0, {0.1, 0.3, 0.5, 0.7, 0.9}, {0.763466, 0.115296, 0.007812, 0.000131, 0.000000}},
+        {5, -0.5, {0.1, 0.3, 0.5, 0.7, 0.9}, {0.927800, 0.480200, 0.125000, 0.016200, 0.000200}},
+        {5, 0.5, {0.1, 0.3, 0.5, 0.7, 0.9}, {0.999800, 0.983800, 0.875000, 0.519800, 0.072200}},
+    };
+    for (const Row& r : outs)
+        for (int k = 0; k < 5; ++k) CHECK(std::fabs(FadeGainAt(1.0 + r.x[k], 2.0, 0.0, 1.0, 0, r.shape, NAN, r.dir) - r.g[k]) < 2e-6);
+    // What REAPER's actions set (measured): the shape and its preset curvature; NaN = that preset.
+    const double presets[7] = {0.0, 0.5, -0.5, 1.0, -1.0, 0.0, 0.0};
+    const char*  in_ids[7] = {"41514", "41515", "41516", "41517", "41518", "41519", "41836"};
+    const char*  out_ids[7] = {"41521", "41522", "41523", "41524", "41525", "41526", "41837"};
+    for (int k = 0; k < 7; ++k) {
+        CHECK(kFadePresets[k].shape == k && kFadePresets[k].dir == presets[k] && FadePresetDir(k) == presets[k]);
+        CHECK(std::string(kFadePresets[k].in_cmd) == in_ids[k] && std::string(kFadePresets[k].out_cmd) == out_ids[k]);
+        CHECK(FadePresetOf({k, presets[k]}) == k && FadeCurveGain(0.3, k, NAN) == FadeCurveGain(0.3, k, presets[k]));
+    }
+    CHECK(FadePresetOf({0, 0.3}) == -1 && FadeDirOr(2, 5.0) == 1.0 && FadeDirOr(9, NAN) == 0.0);
+    // Before 13-75 a shape alone was placed with REAPER's preset: the same gains as RAV heard for 0..4.
+    CHECK(Near(FadeGainAt(0.25, 1.0, 0.5, 0.0, 1), 0.75) && Near(FadeGainAt(0.25, 1.0, 0.5, 0.0, 2), 0.25));
+
+    // A zoned Sound: Heel [0.10, 0.40] Gap [0.40, 0.45] 5 + 5 ms Heel [0.45, 0.70]; Heel 1 fade-in slight convex, the
+    // crossfade's fade-out sharp S, Heel 2's fade-out at curvature -0.3.
+    SoundData d = Zoned({ZPart("heel", 0.10, 0.40), ZGap(0.40, 0.45, 0.005, 0.005), ZPart("heel", 0.45, 0.70)});
+    d.frames[0].zones[0].fade_in = 0.020;
+    CHECK(SetZonesFadeCurve(d, {{0, 0}}, -1, 1, NAN));
+    CHECK(SetZonesFadeCurve(d, {{0, 0}}, 1, 6, NAN));  // held by the Gap: the Gap's fade-out side
+    CHECK(SetZonesFadeCurve(d, {{0, 2}}, 1, -1, -0.3));
+    const EditPlay p = EditPlayFrom(d, 0.10, 0.70);
+    CHECK(p.voices.size() == 2);
+    const std::vector<PieceApply> pl = PieceApplyFor(d, 0, "heel", false);
+    CHECK(pl.size() == 2);
+    if (p.voices.size() == 2 && pl.size() == 2) {
+        const AuditionVoice &a = p.voices[0], &b = p.voices[1];
+        CHECK(a.fade_in_shape == 1 && Near(a.fade_in_dir, 0.5) && a.fade_out_shape == 6 && Near(a.fade_out_dir, 0.0));
+        CHECK(b.fade_in_shape == 0 && Near(b.fade_in_dir, 0.0) && b.fade_out_shape == 0 && Near(b.fade_out_dir, -0.3));
+        // Placed the same (Populate writes the shape, then the curvature).
+        CHECK(pl[0].fades.shape_in && pl[0].fades.in_shape == 1 && Near(pl[0].fades.in_dir, 0.5));
+        CHECK(pl[0].fades.out_shape == 6 && Near(pl[0].fades.out_dir, 0.0));
+        CHECK(pl[1].fades.in_shape == 0 && Near(pl[1].fades.in_dir, 0.0) && pl[1].fades.out_shape == 0 && Near(pl[1].fades.out_dir, -0.3));
+        // The playhead's gain = the voice's: 10 ms into Heel 1's 20 ms fade-in = 1 - (1 - 0.5)^2.
+        const std::vector<HeardHead> h = HeardHeads(p.map, 0.010);
+        CHECK(h.size() == 1 && Near(h[0].gain, 0.75));
+        CHECK(Near(FadeGainAt(0.010, a.length_s, a.fade_in_s, a.fade_out_s, a.fade_in_shape, a.fade_out_shape, a.fade_in_dir,
+                              a.fade_out_dir), 0.75));
+        CHECK(Near(ZoneEnv(d, {0, 0}, 0.110), 0.75));
+    }
+}
+
 static void TestZonedEmptySpace()
 {
     // Matrix "Empty space": Heel [0.10, 0.30], Toe [0.40, 0.60]; Edit Play from 0.10: 0.10 s of silence between.
@@ -934,6 +1024,7 @@ void TestSelfLoop()
 
 int main()
 {
+    TestReaperFadeCurves();  // 13-75
     TestSelfLoop();  // fix 2026-10-19
     TestHandFramesText();  // 13-67b
     TestReviewPlayInCrossfade();

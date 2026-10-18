@@ -743,6 +743,69 @@ int main()
                     for (size_t i = 0; i < x.size() && i < y.size(); ++i) CHECK(std::fabs(x[i].time_s - y[i].time_s) < 0.03);
                 }
         }
+        // Story 10-9a-5: a sprint's short stances on a fast belt, the planted foot drifting along
+        // it (Treadmill Running at 5.86 s: the toe goes -4.65 -> -5.97 m/s on a -5.5 m/s belt in a
+        // 137 ms stance). Each foot is planted 0.125 s every 0.5 s (feet 0.25 s apart), the foot's
+        // speed on the belt ramping from -15 % to +15 % of the belt over its contact (within the
+        // 15 % slack). Every stance is a step and a lift-off, as on the same run with root motion;
+        // with the evidence counted against the whole slack (contact_slack_rest = 1, 10-8t) the
+        // stances fall under the two switches' cost.
+        {
+            const Options o;
+            const double  cycle = 0.5, contact = 0.125, stride = 2.6, belt = 5.5, drift = 0.15 * belt;
+            auto foot = [&](double first, double x) {
+                return FootFn([=](double t) {
+                    const double rel = t - first;
+                    const int    k = static_cast<int>(std::floor(rel / cycle));
+                    const double in = rel - k * cycle;
+                    FootPose     f;
+                    f.ball.x = x;
+                    if (in < contact) {
+                        f.ball.z = stride * k;
+                        f.ball.y = 0.02;
+                    } else {
+                        const double u = (in - contact) / (cycle - contact);
+                        f.ball.z = stride * (k + Ease(u));
+                        f.ball.y = 0.02 + 0.2 * std::sin(kPi * u);
+                    }
+                    return f;
+                });
+            };
+            const FootFn           run_l = foot(-0.3, -0.1), run_r = foot(-0.05, 0.1);
+            std::vector<BoneTrack> t = Rig(run_l, run_r, o);
+            for (int s = 0; s < 2; ++s)
+                for (int q = 0; q < kFootPartCount; ++q) {
+                    BoneTrack& b = t[static_cast<size_t>(FootPartRole(s ? 'R' : 'L', q))];
+                    for (size_t i = 0; i < b.pos.size(); ++i) {
+                        const double rel = i / o.rate - (s ? -0.05 : -0.3);
+                        const double in = rel - cycle * std::floor(rel / cycle);
+                        if (in < contact) b.pos[i].z += drift * (in * in / contact - in);
+                    }
+                }
+            for (BoneTrack& b : t)
+                for (size_t i = 0; i < b.pos.size(); ++i) b.pos[i].z -= belt * i / o.rate;
+            const PhysicsAnalysis a = AnalyseMotion(t);
+            CHECK(a.ok && std::fabs(a.ground_velocity.z + belt) < 0.2);
+            const std::vector<PhysicsEvent> moving = FootEvents(AnalyseMotion(Rig(run_l, run_r, o)), SpeedTiming());
+            const std::vector<PhysicsEvent> ev = FootEvents(a, SpeedTiming());
+            PhysicsParams                   whole;
+            whole.contact_slack_rest = 1.0;
+            const std::vector<PhysicsEvent> old = FootEvents(AnalyseMotion(t, whole), SpeedTiming());
+            // Away from the clip's ends (a stance cut by the end, the smoothing's edge).
+            auto after = [&](std::vector<PhysicsEvent> v, PhysicsKind kind) {
+                v = Of(v, kind);
+                v.erase(std::remove_if(v.begin(), v.end(),
+                                       [&](const PhysicsEvent& e) { return e.time_s < 0.3 || e.time_s > o.dur - 0.2; }),
+                        v.end());
+                return v;
+            };
+            for (PhysicsKind kind : {PhysicsKind::FootStep, PhysicsKind::LiftOff}) {
+                const std::vector<PhysicsEvent> x = after(ev, kind), y = after(moving, kind);
+                CHECK(y.size() >= 14 && x.size() == y.size());
+                for (size_t i = 0; i < x.size() && i < y.size(); ++i) CHECK(std::fabs(x[i].time_s - y[i].time_s) < 0.03);
+                CHECK(after(old, kind).size() < y.size() / 2);
+            }
+        }
         // An isolated glide is not a treadmill (the median of 3 stances): feet stepping in place,
         // root motion kept (the hips do not travel), contacts of 0.7 s with a 0.1 s flight
         // between; in its second contact the left foot glides 0.4 s at 0.5 m/s. That stance reads

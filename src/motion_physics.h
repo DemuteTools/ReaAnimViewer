@@ -25,7 +25,9 @@
 //   contact       per foot part: a two-state segmentation (free / contact), the most probable
 //                 sequence (Viterbi) on the ground-frame speed, with a cost per switch. The
 //                 evidence for contact at a sample is (contact_speed - speed) / contact_speed,
-//                 clamped to [free_evidence_floor, 1]; free costs 0. One sample of clear rest
+//                 clamped to [free_evidence_floor, 1]; free costs 0 (on an in-place clip the
+//                 threshold is contact_speed + slack and, below it, the evidence is counted
+//                 against contact_speed + contact_slack_rest x slack). One sample of clear rest
 //                 is worth 1, so a switch costs switch_cost samples of evidence: no hysteresis,
 //                 immune to jitter.
 //                 Two contacts of a part whose gap stays at the first one's support height
@@ -325,6 +327,15 @@ struct PhysicsParams {
     // consistent on a treadmill); a real belt's speed varies 4-9 % within a step, a keyframed
     // in-place clip follows its ground within about 15 % (Two Cycle Sprint).
     double ground_stance_frac = 0.15;
+    // Story 10-9a-5: the share of that slack a foot part's contact evidence is counted against
+    // (evidence = (contact speed + slack - speed) / (contact speed + this x slack), below the
+    // widened threshold; 1 = the plain ratio of 10-8t). A keyframed in-place foot drifts along its
+    // belt within the slack, so a speed inside it is mostly rest: Treadmill Running's
+    // sprint stance at 5.86 s (137 ms, the planted toe going -4.65 -> -5.97 m/s on a -5.5 belt)
+    // earned 19.8 samples of evidence against the 20 two switches cost and was no step. Any value
+    // 0.25 - 0.75 gives the same default matrix on the bench; 0 also takes a heel the reference
+    // judge rejects (Two Cycle Sprint L 0.159 s). No effect in a world frame (no slack) or on hands.
+    double contact_slack_rest = 0.5;
     // A stance (or the climb frame) is a moving ground only when the hips' travel speed over the
     // clip is below this fraction of its speed: a crawl with root motion drags its feet at the
     // body's speed (hips +0.59, feet +0.73 leg/s), a strafe jump carries its hands (hips -3.3).

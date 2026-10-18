@@ -321,9 +321,14 @@ void SegmentPart(PartTrack& pt, double leg, double rate, const PhysicsParams& p,
     const double scale = kEvidenceRateHz / rate;
     std::vector<double> e(static_cast<size_t>(n));
     for (int i = 0; i < n; ++i) {
-        const double si = s0 + Slack(pt, i);  // story 10-8t: widened on an in-place clip
-        e[static_cast<size_t>(i)] =
-            scale * std::clamp((si - pt.speed[static_cast<size_t>(i)]) / si, std::min(0.0, p.free_evidence_floor), 1.0);
+        // Story 10-8t: widened on an in-place clip. Story 10-9a-5: below it, the evidence is
+        // counted against the contact speed plus only contact_slack_rest of the slack (a speed up
+        // to the rest of the slack is clear rest); above it, as before.
+        const double sl = Slack(pt, i);
+        const double si = s0 + sl;
+        const double sp = pt.speed[static_cast<size_t>(i)];
+        const double ev = sp < si ? (si - sp) / (s0 + p.contact_slack_rest * sl) : (si - sp) / si;
+        e[static_cast<size_t>(i)] = scale * std::clamp(ev, std::min(0.0, p.free_evidence_floor), 1.0);
     }
     const std::vector<char> st = Viterbi(e, p.switch_cost);
 

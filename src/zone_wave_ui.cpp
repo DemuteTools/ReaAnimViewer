@@ -253,13 +253,9 @@ bool Write(const ZoneWaveHost& h, const std::string& name, const ZoneFn& f, cons
 std::string PlayTag(const ZoneWaveHost& h) { return "zone:" + h.node->uid; }
 
 // Plays [from, to] as heard (EditPlayFrom: Gaps jumped, empty space silent, Mute / Solo); `tp` = its transport.
-bool StartPlay(const ZoneWaveHost& h, const EditTransport& tp, double from, double to, bool quiet = false)
+// The voices EditPlayFrom gives, as the preview plays them.
+std::vector<PlayVoice> VoicesOf(const ZoneWaveHost& h, const EditPlay& ep)
 {
-    ZoneEditView& v = *h.view;
-    SoundNode     shown = *h.node;
-    shown.sound = Shown(h);
-    const PartListen listen{h.mute ? *h.mute : std::set<std::string>{}, h.solo ? *h.solo : std::set<std::string>{}};
-    const EditPlay   ep = EditPlayFrom(*h.lib, shown, from, to, &listen, h.tl);
     std::vector<PlayVoice> pv;
     for (const AuditionVoice& a : ep.voices) {
         if (!(a.length_s > 0.0)) continue;
@@ -278,6 +274,40 @@ bool StartPlay(const ZoneWaveHost& h, const EditTransport& tp, double from, doub
         p.mono = a.mono;
         pv.push_back(p);
     }
+    return pv;
+}
+
+bool SameVoices(const std::vector<PlayVoice>& x, const std::vector<PlayVoice>& y)
+{
+    if (x.size() != y.size()) return false;
+    for (size_t i = 0; i < x.size(); ++i) {
+        const PlayVoice &a = x[i], &b = y[i];
+        if (a.path != b.path || a.start_s != b.start_s || a.length_s != b.length_s || a.delay_s != b.delay_s || a.gain != b.gain ||
+            a.fade_in_s != b.fade_in_s || a.fade_out_s != b.fade_out_s || a.fade_in_shape != b.fade_in_shape ||
+            a.fade_out_shape != b.fade_out_shape || a.fade_from_s != b.fade_from_s || a.fade_span_s != b.fade_span_s || a.mono != b.mono)
+            return false;
+    }
+    return true;
+}
+
+// What the loop pass of `tp` plays now (Mute / Solo, the draft shown).
+EditPlay LoopPlay(const ZoneWaveHost& h, const EditTransport& tp, PartListen* listen_out = nullptr)
+{
+    SoundNode shown = *h.node;
+    shown.sound = Shown(h);
+    const PartListen listen{h.mute ? *h.mute : std::set<std::string>{}, h.solo ? *h.solo : std::set<std::string>{}};
+    if (listen_out) *listen_out = listen;
+    return EditPlayFrom(*h.lib, shown, tp.loop_a, tp.loop_b, &listen, h.tl);
+}
+
+bool StartPlay(const ZoneWaveHost& h, const EditTransport& tp, double from, double to, bool quiet = false)
+{
+    ZoneEditView& v = *h.view;
+    SoundNode     shown = *h.node;
+    shown.sound = Shown(h);
+    const PartListen listen{h.mute ? *h.mute : std::set<std::string>{}, h.solo ? *h.solo : std::set<std::string>{}};
+    const EditPlay   ep = EditPlayFrom(*h.lib, shown, from, to, &listen, h.tl);
+    std::vector<PlayVoice> pv = VoicesOf(h, ep);
     if (pv.empty()) {
         v.playing = false;
         if (!quiet)
@@ -287,7 +317,16 @@ bool StartPlay(const ZoneWaveHost& h, const EditTransport& tp, double from, doub
                              false);
         return false;
     }
-    if (!PlayVoices(pv, PlayTag(h))) {
+    // Fix 2026-10-19 (Loop not regular): Loop = the loop pass handed to the mixing source with the first pass; it repeats
+    // it itself at the sample. Its pass with nothing heard: the first pass alone, restarted from here as before.
+    EditPlay               lp;
+    std::vector<PlayVoice> lv;
+    if (tp.loops && tp.loop_b > tp.loop_a) {
+        lp = LoopPlay(h, tp);
+        lv = VoicesOf(h, lp);
+    }
+    const bool self = !lv.empty() && lp.map.total > 0.001 && ep.map.total > 0.0;
+    if (self ? !PlayVoicesLooped(pv, ep.map.total, lv, lp.map.total, PlayTag(h)) : !PlayVoices(pv, PlayTag(h))) {
         v.playing = false;
         if (!quiet) ShowLibraryToast("Cannot play: the sound file is not read", false);
         return false;
@@ -299,7 +338,21 @@ bool StartPlay(const ZoneWaveHost& h, const EditTransport& tp, double from, doub
     v.play_tl = h.tl;  // 13-62i: its take's host draws the playheads
     v.tp = tp;
     v.map = ep.map;
+    v.self_loop = self;
+    v.loop_map = self ? lp.map : HeardMap{};
+    v.loop_voices = self ? lv : std::vector<PlayVoice>{};
+    v.loop_pass = 0;
     return true;
+}
+
+// Fix 2026-10-19: once the self-looping play is in its loop pass, the playheads read the pass's map.
+void SyncLoopMap(ZoneEditView& v)
+{
+    if (!v.self_loop) return;
+    const int pass = AuditionLoopPass();
+    if (pass == v.loop_pass) return;
+    v.loop_pass = pass;
+    if (pass > 0) v.map = v.loop_map;
 }
 
 // The mockup's playFrom: the cursor goes to `from`; a time selection keeps the playhead inside it; Loop repeats.
@@ -1812,7 +1865,10 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
         F.sides = FrameSides(*F.d);
         F.rule = FrameRuleSides(*F.d);
     }
-    if (v.playing && v.play_tl == h.tl && AuditionPlaying() && AuditionTag() == PlayTag(h)) F.heads = HeardHeads(v.map, AuditionPosition());
+    if (v.playing && v.play_tl == h.tl && AuditionPlaying() && AuditionTag() == PlayTag(h)) {
+        SyncLoopMap(v);  // fix 2026-10-19
+        F.heads = HeardHeads(v.map, AuditionPosition());
+    }
     const int ncols = std::max(1, static_cast<int>(std::floor(cw)));
     F.have_cols = ReadWaveColumns(h.path, vs, vl, ncols, &F.wc);
     ImDrawList* dl = F.dl;
@@ -1957,10 +2013,24 @@ void ZonePumpPlay(const ZoneWaveHost& h)
         }
         return;
     }
+    SyncLoopMap(v);
     v.last_pos = AuditionPosition();
     v.last_seen_t = now;
+    if (v.self_loop) {
+        // Fix 2026-10-19 (Loop not regular): the mixing source repeats the loop pass itself, at the sample. Mute / Solo
+        // or an edit changing what the pass plays (not while a drag runs: at its release) restarts it with the new
+        // voices from where the playhead is.
+        if (v.drag.kind != ZoneDragKind::None) return;
+        const EditPlay lp = LoopPlay(h, v.tp);
+        if (SameVoices(VoicesOf(h, lp), v.loop_voices)) return;
+        const std::vector<HeardHead> heads = HeardHeads(v.map, v.last_pos);
+        const EditTransport          tp = v.tp;
+        const double                 at = heads.empty() ? tp.loop_a : heads.front().file_t;
+        if (!(at >= tp.loop_a && at < tp.loop_b) || !StartPlay(h, tp, at, tp.loop_b, true)) StartPlay(h, tp, tp.loop_a, tp.loop_b, true);
+        return;
+    }
     // C4: REAPER's preview has no loop: ours, looping and at its heard end (within this frame), the looped range
-    // again from its start. Without Loop it plays to its real end.
+    // again from its start (the loop pass with nothing heard in it). Without Loop it plays to its real end.
     if (!EditLoopDue(v.tp, v.last_pos, v.map.total, ImGui::GetIO().DeltaTime)) return;
     const EditTransport tp = v.tp;
     StartPlay(h, tp, tp.loop_a, tp.loop_b, true);

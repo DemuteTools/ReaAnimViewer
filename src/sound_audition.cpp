@@ -39,14 +39,22 @@ struct Voice {
 
 class AuditionMix : public PCM_source {
 public:
-    explicit AuditionMix(std::vector<Voice> v) : voices_(std::move(v))
+    // Fix 2026-10-19 (Loop not regular): `loop` / `loop_s` > 0: after the head (`head_s` long) the loop pass repeats,
+    // wrapped here at the sample (LoopSegAt), not restarted from the UI.
+    explicit AuditionMix(std::vector<Voice> v, std::vector<Voice> loop = {}, double head_s = 0.0, double loop_s = 0.0)
+        : voices_(std::move(v)), loop_(std::move(loop))
     {
-        for (const Voice& x : voices_) {
-            len_ = std::max(len_, x.delay + x.length);
-            nch_ = std::max(nch_, std::min(2, x.src->GetNumChannels()));
-            if (sr_ < 1.0) sr_ = x.src->GetSampleRate();
-        }
+        for (const Voice& x : voices_) len_ = std::max(len_, x.delay + x.length);
+        for (const std::vector<Voice>* set : {&voices_, &loop_})
+            for (const Voice& x : *set) {
+                nch_ = std::max(nch_, std::min(2, x.src->GetNumChannels()));
+                if (sr_ < 1.0) sr_ = x.src->GetSampleRate();
+            }
         if (nch_ < 1) nch_ = 1;
+        if (!loop_.empty() && loop_s > 0.0) {
+            head_s_ = std::max(head_s, 0.0);
+            loop_s_ = loop_s;
+        }
         scratch_.resize(16384 * 2);  // a usual block: no allocation on the audio thread
     }
     PCM_source* Duplicate() override { return nullptr; }
@@ -55,7 +63,7 @@ public:
     bool        SetFileName(const char*) override { return false; }
     int         GetNumChannels() override { return nch_; }
     double      GetSampleRate() override { return sr_ > 1.0 ? sr_ : 44100.0; }
-    double      GetLength() override { return len_; }
+    double      GetLength() override { return Loops() ? kLoopLen : len_; }  // looping: plays until stopped
     int         PropertiesWindow(HWND) override { return 0; }
     void        GetPeakInfo(PCM_source_peaktransfer_t*) override {}
     void        SaveState(ProjectStateContext*) override {}
@@ -65,6 +73,11 @@ public:
     int         PeaksBuild_Run() override { return 0; }
     void        PeaksBuild_Finish() override {}
 
+    static constexpr double kLoopLen = 86400.0 * 365.0;
+    bool   Loops() const { return loop_s_ > 0.0; }
+    double HeadS() const { return head_s_; }
+    double LoopS() const { return loop_s_; }
+
     void GetSamples(PCM_source_transfer_t* block) override
     {
         if (!block || !block->samples || block->length <= 0 || block->nch <= 0 || !(block->samplerate > 0.0)) {
@@ -72,11 +85,28 @@ public:
             return;
         }
         const int    n = block->length, nch = block->nch;
-        const double sr = block->samplerate, t0 = block->time_s, t1 = t0 + n / sr;
+        const double sr = block->samplerate;
         std::fill(block->samples, block->samples + static_cast<size_t>(n) * static_cast<size_t>(nch), 0.0);
         if (scratch_.size() < static_cast<size_t>(n) * static_cast<size_t>(nch))
             scratch_.resize(static_cast<size_t>(n) * static_cast<size_t>(nch));
-        for (Voice& v : voices_) {
+        if (!Loops()) {
+            Mix(voices_, block->time_s, n, sr, nch, block->samples);
+        } else {
+            for (int done = 0; done < n;) {  // the head, then the loop pass from its start each time it ends
+                const LoopSeg g = LoopSegAt(block->time_s + done / sr, n - done, sr, head_s_, loop_s_);
+                Mix(g.body ? loop_ : voices_, g.t, g.n, sr, nch, block->samples + static_cast<size_t>(done) * static_cast<size_t>(nch));
+                done += g.n;
+            }
+        }
+        block->samples_out = n;
+    }
+
+private:
+    // `n` samples of the voices from mix time t0, added into `outp` (nch interleaved).
+    void Mix(std::vector<Voice>& set, double t0, int n, double sr, int nch, ReaSample* outp)
+    {
+        const double t1 = t0 + n / sr;
+        for (Voice& v : set) {
             const double a = std::max(t0, v.delay), b = std::min(t1, v.delay + v.length);
             if (b <= a) continue;
             const int off = static_cast<int>(std::floor((a - t0) * sr + 0.5));
@@ -99,7 +129,7 @@ public:
                                                              v.in_shape, v.out_shape)
                                        : v.gain;
                 const ReaSample* in = &scratch_[static_cast<size_t>(k * nch)];
-                ReaSample*       out = &block->samples[static_cast<size_t>((off + k) * nch)];
+                ReaSample*       out = &outp[static_cast<size_t>((off + k) * nch)];
                 if (mono) {
                     const double m = MonoOf(in[0], in[1], v.mono) * g;
                     for (int c = 0; c < nch; ++c) out[c] += m;
@@ -108,13 +138,13 @@ public:
                 }
             }
         }
-        block->samples_out = n;
     }
 
-private:
     std::vector<Voice>     voices_;
+    std::vector<Voice>     loop_;  // fix 2026-10-19: the loop pass (empty = no loop)
     std::vector<ReaSample> scratch_;
     double                 len_ = 0.0, sr_ = 0.0;
+    double                 head_s_ = 0.0, loop_s_ = 0.0;
     int                    nch_ = 0;
 };
 
@@ -167,17 +197,13 @@ void StopAudition()
     g_play.active = false;
 }
 
-bool PlayVoices(const std::vector<PlayVoice>& voices, const std::string& tag, std::string* why, std::vector<int>* kept)
+namespace {
+
+// The voices read (a file that cannot be opened, or with nothing left past its start, is dropped; `used` = the indices
+// kept).
+std::vector<Voice> OpenVoices(const std::vector<PlayVoice>& voices, std::vector<int>* used)
 {
-    if (kept) kept->clear();
-    StopAudition();
-    StopMediaPreview();  // a tree audition and a Media Explorer preview never sound together (13-7c)
-    if (!f_play || !f_stop || !f_create) {
-        if (why) *why = "REAPER's preview is not available";
-        return false;
-    }
     std::vector<Voice> vs;
-    std::vector<int>   used;
     for (size_t pi = 0; pi < voices.size(); ++pi) {
         const PlayVoice& p = voices[pi];
         if (p.path.empty()) continue;
@@ -203,14 +229,15 @@ bool PlayVoices(const std::vector<PlayVoice>& voices, const std::string& tag, st
         v.mono = p.mono;
         if (v.length > 0.0) {
             vs.push_back(std::move(v));
-            used.push_back(static_cast<int>(pi));
+            if (used) used->push_back(static_cast<int>(pi));
         }
     }
-    if (vs.empty()) {
-        if (why) *why = "no sound file could be read";
-        return false;
-    }
-    g_play.mix = std::make_unique<AuditionMix>(std::move(vs));
+    return vs;
+}
+
+bool StartMix(std::unique_ptr<AuditionMix> mix, const std::string& tag, std::string* why)
+{
+    g_play.mix = std::move(mix);
     InitReg(g_play.reg, g_play.mix.get());
     g_play.active = true;
     g_play.tag = tag;
@@ -226,8 +253,56 @@ bool PlayVoices(const std::vector<PlayVoice>& voices, const std::string& tag, st
         if (why) *why = "REAPER refused the preview";
         return false;
     }
+    return true;
+}
+
+double RawPosition()
+{
+    if (!g_play.active) return 0.0;
+    EnterCriticalSection(&g_play.reg.cs);
+    const double p = g_play.reg.curpos;
+    LeaveCriticalSection(&g_play.reg.cs);
+    return p;
+}
+
+}  // namespace
+
+bool PlayVoices(const std::vector<PlayVoice>& voices, const std::string& tag, std::string* why, std::vector<int>* kept)
+{
+    if (kept) kept->clear();
+    StopAudition();
+    StopMediaPreview();  // a tree audition and a Media Explorer preview never sound together (13-7c)
+    if (!f_play || !f_stop || !f_create) {
+        if (why) *why = "REAPER's preview is not available";
+        return false;
+    }
+    std::vector<int>   used;
+    std::vector<Voice> vs = OpenVoices(voices, &used);
+    if (vs.empty()) {
+        if (why) *why = "no sound file could be read";
+        return false;
+    }
+    if (!StartMix(std::make_unique<AuditionMix>(std::move(vs)), tag, why)) return false;
     if (kept) *kept = std::move(used);
     return true;
+}
+
+bool PlayVoicesLooped(const std::vector<PlayVoice>& head, double head_s, const std::vector<PlayVoice>& loop, double loop_s,
+                      const std::string& tag)
+{
+    StopAudition();
+    StopMediaPreview();
+    if (!f_play || !f_stop || !f_create) return false;
+    std::vector<Voice> hv = OpenVoices(head, nullptr);
+    std::vector<Voice> lv = OpenVoices(loop, nullptr);
+    if (lv.empty() || !(loop_s > 0.0)) return false;
+    return StartMix(std::make_unique<AuditionMix>(std::move(hv), std::move(lv), head_s, loop_s), tag, nullptr);
+}
+
+int AuditionLoopPass()
+{
+    if (!g_play.active || !g_play.mix->Loops()) return 0;
+    return LoopedPass(RawPosition(), g_play.mix->HeadS(), g_play.mix->LoopS());
 }
 
 bool AuditionFile(const std::string& path, double start_s, double length_s, const std::string& tag, double gain,
@@ -248,16 +323,14 @@ bool AuditionFile(const std::string& path, double start_s, double length_s, cons
 double AuditionPosition()
 {
     if (!g_play.active) return 0.0;
-    EnterCriticalSection(&g_play.reg.cs);
-    const double p = g_play.reg.curpos;
-    LeaveCriticalSection(&g_play.reg.cs);
-    return p;
+    const double p = RawPosition();
+    return g_play.mix->Loops() ? LoopedPosition(p, g_play.mix->HeadS(), g_play.mix->LoopS()) : p;  // in the pass
 }
 
 bool AuditionPlaying()
 {
     if (!g_play.active) return false;
-    const double    pos = AuditionPosition();
+    const double    pos = RawPosition();  // the mix's own time (a self-looping one keeps moving)
     const double    now = NowS();
     if (pos != g_play.last_pos) {
         g_play.last_pos = pos;

@@ -131,6 +131,22 @@ std::vector<SoundFrame> MergeHandFrames(const std::vector<SoundFrame>& detected,
 // (a preview that stops short of the end). Polled each frame.
 bool AuditionEnded(double pos, double length, double stalled_s);
 
+// Fix 2026-10-19 (Loop not regular): a self-looping audition -- its head (`head_s` long: from the cursor to the loop's
+// end) played once, then its loop pass (`loop_s` long) repeated by the mixing source itself, on the audio thread, so
+// the loop point is sample-accurate whatever the UI's frame rate. LoopSegAt: the stretch of a block that starts at mix
+// time `t` with `left` samples to fill at `sr`: whether it reads the loop pass, the time it reads from (in the head, or
+// in the pass), and how many samples until the next boundary (>= 1, <= left). loop_s <= 0 = no loop (all head).
+struct LoopSeg {
+    bool   body = false;
+    double t = 0.0;
+    int    n = 0;
+};
+LoopSeg LoopSegAt(double t, int left, double sr, double head_s, double loop_s);
+// The position shown for a raw mix time: in the head as is, then inside the current pass (0 .. loop_s); which pass
+// (0 = the head, 1 = the first repeat, ...).
+double LoopedPosition(double raw, double head_s, double loop_s);
+int    LoopedPass(double raw, double head_s, double loop_s);
+
 // 13-41: a voice's sample forced to mono from its left / right samples: Left l, Right r, Sum (l + r) / 2;
 // Off l (the caller keeps the channels). The peaks drawn use it too (per column, on the lanes' max abs).
 double MonoOf(double l, double r, MonoMode mono);

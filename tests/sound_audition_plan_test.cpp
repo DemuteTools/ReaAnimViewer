@@ -888,8 +888,53 @@ void TestHandFramesText()
     CHECK(HandFramesText({f[0]}).rfind("Its variation was edited by hand", 0) == 0);
 }
 
+// Fix 2026-10-19 (Loop not regular): the mixing source wraps the loop itself, at the sample.
+void TestSelfLoop()
+{
+    const double sr = 1000.0;  // 1 ms a sample
+    // Head 0.25 s, pass 0.5 s. A block at 0.2 s of 100 samples: 50 of the head, then the pass from 0.
+    LoopSeg s = LoopSegAt(0.2, 100, sr, 0.25, 0.5);
+    CHECK(!s.body && std::fabs(s.t - 0.2) < 1e-12 && s.n == 50);
+    s = LoopSegAt(0.25, 50, sr, 0.25, 0.5);
+    CHECK(s.body && std::fabs(s.t) < 1e-12 && s.n == 50);
+    // At the end of a pass: the rest of it, then the pass again from its start (no sample lost, none repeated).
+    s = LoopSegAt(0.25 + 0.48, 100, sr, 0.25, 0.5);
+    CHECK(s.body && std::fabs(s.t - 0.48) < 1e-9 && s.n == 20);
+    s = LoopSegAt(0.25 + 0.50, 80, sr, 0.25, 0.5);
+    CHECK(s.body && std::fabs(s.t) < 1e-9 && s.n == 80);
+    // Long after: still on the sample grid of the pass (the 1000th repeat).
+    s = LoopSegAt(0.25 + 1000 * 0.5 + 0.499, 10, sr, 0.25, 0.5);
+    CHECK(s.body && std::fabs(s.t - 0.499) < 1e-6 && s.n == 1);
+    // Filling a whole block segment by segment covers it exactly, whatever the block size.
+    for (int n : {64, 333, 1024}) {
+        double t = 0.0;
+        int    done = 0, wraps = 0;
+        while (t < 3.0) {
+            for (int left = n; left > 0;) {
+                const LoopSeg g = LoopSegAt(t, left, sr, 0.25, 0.5);
+                CHECK(g.n >= 1 && g.n <= left);
+                if (g.body && g.t < 1e-9) ++wraps;  // a pass starts on this sample
+                left -= g.n;
+                done += g.n;
+                t = done / sr;  // as the source: the block's start + samples done
+            }
+        }
+        int want = 0;  // pass starts at 0.25, 0.75, ... before the end reached
+        for (double p = 0.25; p < t - 1e-9; p += 0.5) ++want;
+        CHECK(wraps == want && want >= 6);
+    }
+    // No loop: one segment, the whole block.
+    s = LoopSegAt(5.0, 128, sr, 0.25, 0.0);
+    CHECK(!s.body && s.n == 128 && s.t == 5.0);
+    // The position shown and the pass.
+    CHECK(std::fabs(LoopedPosition(0.1, 0.25, 0.5) - 0.1) < 1e-12 && LoopedPass(0.1, 0.25, 0.5) == 0);
+    CHECK(std::fabs(LoopedPosition(0.85, 0.25, 0.5) - 0.1) < 1e-9 && LoopedPass(0.85, 0.25, 0.5) == 2);
+    CHECK(LoopedPass(0.25, 0.25, 0.5) == 1 && LoopedPosition(2.0, 0.25, 0.0) == 2.0);
+}
+
 int main()
 {
+    TestSelfLoop();  // fix 2026-10-19
     TestHandFramesText();  // 13-67b
     TestReviewPlayInCrossfade();
     TestReviewTreePlayZoned();

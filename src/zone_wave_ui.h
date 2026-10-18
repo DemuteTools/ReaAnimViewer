@@ -46,6 +46,7 @@
 
 #include <imgui.h>
 
+#include "sound_audition.h"  // PlayVoice
 #include "sound_audition_plan.h"
 #include "sound_model.h"
 #include "sound_zones.h"
@@ -110,6 +111,13 @@ struct ZoneEditView {
     HeardMap      map;
     double        last_pos = 0.0;  // its heard position last seen
     double        last_seen_t = 0.0;  // 13-67a: when (ImGui time) it was last seen playing
+    // Fix 2026-10-19 (Loop not regular): a looping play wraps itself at the sample (PlayVoicesLooped): the loop pass's
+    // heard map (the playheads once the head has played), the voices it plays (Mute / Solo / an edit changing them
+    // restarts it with the new ones), the pass last seen.
+    bool                   self_loop = false;
+    HeardMap               loop_map;
+    std::vector<PlayVoice> loop_voices;
+    int                    loop_pass = 0;
     // The stored Sound as last seen (its store generation): a change we did not write (Ctrl+Z, another panel)
     // carries the selection over by time and part (SelFollow), and drops the menu's target and the hover.
     SoundData     seen;

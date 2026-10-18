@@ -305,6 +305,40 @@ bool AuditionEnded(double pos, double length, double stalled_s)
     return pos > 0.0 && stalled_s >= 0.5;
 }
 
+LoopSeg LoopSegAt(double t, int left, double sr, double head_s, double loop_s)
+{
+    LoopSeg s;
+    s.n = std::max(left, 0);
+    s.t = t;
+    if (!(loop_s > 0.0) || !(sr > 0.0) || left <= 0 || !std::isfinite(t)) return s;
+    const double head = std::max(head_s, 0.0);
+    double       end = 0.0;  // the next boundary, in s.t's terms
+    if (t < head) {
+        end = head;
+    } else {
+        s.body = true;
+        s.t = std::fmod(t - head, loop_s);
+        if (s.t < 0.0) s.t = 0.0;
+        end = loop_s;
+    }
+    // Whole samples up to the boundary (a sample starting before it belongs to this side).
+    const double k = std::ceil((end - s.t) * sr - 1e-6);
+    s.n = static_cast<int>(std::clamp(k, 1.0, static_cast<double>(left)));
+    return s;
+}
+
+double LoopedPosition(double raw, double head_s, double loop_s)
+{
+    if (!(loop_s > 0.0) || !std::isfinite(raw) || raw < std::max(head_s, 0.0)) return raw;
+    return std::fmod(raw - std::max(head_s, 0.0), loop_s);
+}
+
+int LoopedPass(double raw, double head_s, double loop_s)
+{
+    if (!(loop_s > 0.0) || !std::isfinite(raw) || raw < std::max(head_s, 0.0)) return 0;
+    return 1 + static_cast<int>(std::floor((raw - std::max(head_s, 0.0)) / loop_s));
+}
+
 std::string HandFramesText(const std::vector<SoundFrame>& frames)
 {
     int hand = 0;

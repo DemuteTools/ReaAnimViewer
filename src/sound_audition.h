@@ -46,6 +46,12 @@ struct PlayVoice {
 // nothing left past its start, is dropped), so the caller names only those.
 bool PlayVoices(const std::vector<PlayVoice>& voices, const std::string& tag, std::string* why = nullptr,
                 std::vector<int>* kept = nullptr);
+// Fix 2026-10-19 (Loop not regular): a looping play: `head` played once (its pass `head_s` long), then `loop` (`loop_s`
+// long) repeated by the mixing source itself at the sample, until stopped. False when the loop pass has no voice read.
+// AuditionPosition then gives the position inside the current pass, AuditionLoopPass which pass (0 = the head).
+bool PlayVoicesLooped(const std::vector<PlayVoice>& head, double head_s, const std::vector<PlayVoice>& loop, double loop_s,
+                      const std::string& tag);
+int  AuditionLoopPass();
 // One stretch of one file (length <= 0 = to its end).
 bool AuditionFile(const std::string& path, double start_s, double length_s, const std::string& tag = "file",
                   double gain = 1.0, double fade_in_s = 0.0, double fade_out_s = 0.0, int fade_in_shape = 0,

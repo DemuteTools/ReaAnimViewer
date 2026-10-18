@@ -43,6 +43,22 @@ void CopyArg(char* dst, const char* src)
     dst[i] = '\0';
 }
 
+// A number as text into buf (24 bytes), by hand: the hot paths call no CRT formatting (its locale lock).
+void NumText(char* buf, long long v)
+{
+    char               tmp[24];
+    int                k = 0;
+    unsigned long long u = v < 0 ? 0ull - static_cast<unsigned long long>(v) : static_cast<unsigned long long>(v);
+    do {
+        tmp[k++] = static_cast<char>('0' + u % 10);
+        u /= 10;
+    } while (u && k < 21);
+    int i = 0;
+    if (v < 0) buf[i++] = '-';
+    while (k) buf[i++] = tmp[--k];
+    buf[i] = '\0';
+}
+
 // ---- the main thread's scopes ----
 
 struct ScopeSlot {
@@ -125,7 +141,7 @@ void Crumb(const char* what, const char* arg)
 void CrumbNum(const char* what, long long n)
 {
     char buf[24];
-    std::snprintf(buf, sizeof(buf), "%lld", n);
+    NumText(buf, n);
     Crumb(what, buf);
 }
 
@@ -136,7 +152,7 @@ Scope::Scope(const char* what, long long n) { EnterNum(what, n, true); }
 void Scope::EnterNum(const char* what, long long n, bool crumb)
 {
     char buf[24];
-    std::snprintf(buf, sizeof(buf), "%lld", n);
+    NumText(buf, n);
     Enter(what, buf, crumb);
 }
 
@@ -396,7 +412,8 @@ void WriteText(HANDLE f, const char* s, size_t n)
         s += put;
         n -= put;
     }
-    FlushFileBuffers(f);
+    // No FlushFileBuffers: the text is in the system's cache once written, a killed REAPER does not lose it, and a
+    // flush per line would cost a disk sync each.
 }
 
 void WriteLine(HANDLE f, const char* fmt, ...)
@@ -432,7 +449,16 @@ RawStack SuspendAndCopy()
 {
     RawStack r;
 #if defined(_M_X64) || defined(__x86_64__)
-    if (!g_main || SuspendThread(g_main) == static_cast<DWORD>(-1)) return r;
+    if (!g_main) return r;
+    // Time-critical while the main thread is suspended, so the window stays a few microseconds even on a busy PC
+    // (the main thread may hold a lock the audio thread waits for).
+    const HANDLE self = GetCurrentThread();
+    const int    prio = GetThreadPriority(self);
+    SetThreadPriority(self, THREAD_PRIORITY_TIME_CRITICAL);
+    if (SuspendThread(g_main) == static_cast<DWORD>(-1)) {
+        SetThreadPriority(self, prio == THREAD_PRIORITY_ERROR_RETURN ? THREAD_PRIORITY_NORMAL : prio);
+        return r;
+    }
     CONTEXT ctx;
     std::memset(&ctx, 0, sizeof(ctx));
     ctx.ContextFlags = CONTEXT_CONTROL;
@@ -448,6 +474,7 @@ RawStack SuspendAndCopy()
         }
     }
     ResumeThread(g_main);
+    SetThreadPriority(self, prio == THREAD_PRIORITY_ERROR_RETURN ? THREAD_PRIORITY_NORMAL : prio);
 #endif
     return r;
 }
@@ -598,7 +625,7 @@ DWORD WINAPI WatchLoop(LPVOID)
     int64_t  stalled_beat = 0, first_ms = 0, last_wake = NowMs(), grace_until = 0;
     bool     second_done = false;
     uint64_t pcs1[kMaxFrames], pcs2[kMaxFrames];
-    int      n1 = 0;
+    int      n1 = 0, written = 0;
     uint64_t cpu1 = 0;
     while (WaitForSingleObject(g_stop, static_cast<DWORD>(kWakeMs)) == WAIT_TIMEOUT) {
         const int64_t now = NowMs();
@@ -632,6 +659,8 @@ DWORD WINAPI WatchLoop(LPVOID)
             continue;
         }
         if (now < grace_until || now - beat < kStallMs) continue;
+        if (written >= kKeepReports) continue;  // a session of long REAPER jobs: at most kKeepReports reports
+        ++written;
         // A stall: the report's text first (so a kill right after still leaves it), then the stack.
         char    when[32];
         wchar_t stem[64];
@@ -688,7 +717,17 @@ void StopWatchdog()
 {
     if (g_thread) {
         SetEvent(g_stop);
-        WaitForSingleObject(g_thread, 5000);
+        if (WaitForSingleObject(g_thread, 5000) != WAIT_OBJECT_0) {
+            // Stuck (a report on a dead network folder): it must never run in an unmapped DLL nor on closed
+            // handles, so the DLL stays loaded for the rest of the process and its handles stay open.
+            HMODULE self = nullptr;
+            GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                               reinterpret_cast<LPCWSTR>(&StopWatchdog), &self);
+            g_thread = nullptr;
+            g_stop = nullptr;
+            g_main = nullptr;
+            return;
+        }
         CloseHandle(g_thread);
         g_thread = nullptr;
     }

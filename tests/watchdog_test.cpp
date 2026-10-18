@@ -50,6 +50,10 @@ int main()
         wd::Crumb("long", longer);
         const int m = wd::SnapshotCrumbs(cr, wd::kCrumbs);
         CHECK(std::strlen(cr[m - 1].arg) == static_cast<size_t>(wd::kArgLen - 1) && std::strcmp(cr[m - 1].what, "long") == 0);
+        wd::CrumbNum("neg", -9223372036854775807LL - 1);  // the integer text is made by hand: its extremes
+        wd::CrumbNum("zero", 0);
+        const int m2 = wd::SnapshotCrumbs(cr, wd::kCrumbs);
+        CHECK(std::strcmp(cr[m2 - 2].arg, "-9223372036854775808") == 0 && std::strcmp(cr[m2 - 1].arg, "0") == 0);
         wd::Crumb("none");
         CHECK(wd::SnapshotCrumbs(cr, wd::kCrumbs) == wd::kCrumbs && cr[wd::kCrumbs - 1].arg[0] == '\0');
         CHECK(wd::SnapshotCrumbs(cr, 10) == 10);  // a short buffer: the oldest ones

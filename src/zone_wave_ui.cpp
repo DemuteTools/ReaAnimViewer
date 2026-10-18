@@ -330,7 +330,7 @@ EditPlay LoopPlay(const ZoneWaveHost& h, const EditTransport& tp, PartListen* li
 
 bool StartPlay(const ZoneWaveHost& h, const EditTransport& tp, double from, double to, bool quiet = false)
 {
-    RAV_SCOPE("StartPlay", h.node ? h.node->name : std::string());  // freeze audit
+    RAV_SCOPE("StartPlay", h.node ? h.node->name.c_str() : nullptr);  // freeze audit (no copy of the name)
     ZoneEditView& v = *h.view;
     SoundNode     shown = *h.node;
     shown.sound = Shown(h);
@@ -1663,7 +1663,7 @@ ThrDrag g_thr;
 
 ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
 {
-    RAV_QUIET_SCOPE("Sound Edit", h.node ? h.node->name : std::string());  // freeze audit
+    RAV_QUIET_SCOPE("Sound Edit", h.node ? h.node->name.c_str() : nullptr);  // freeze audit (no copy of the name)
     ZoneWaveEvents ev;
     ZoneEditView&  v = *h.view;
     ImGui::PushID(id);

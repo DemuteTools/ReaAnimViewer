@@ -122,6 +122,15 @@ int main()
         CHECK(SpreadLayerNodes({}, "FS L", &Uid).empty());
     }
 
+    // Antho 2026-10-18: a layer at playrate 1.335 (Dress Boots, snap 50 ms) syncs its copy (played at rate 1) on
+    // its snap in the source, 66.7 ms in (was 50: the copies landed 16.7 ms late).
+    {
+        SpreadSource s = Src("d1", "Dress", 6, 300.0, 0.1667, 0.05);
+        s.playrate = 1.33483985417003;
+        const std::vector<SoundNode> n = SpreadLayerNodes({s}, "FS L", &Uid);
+        CHECK(n.size() == 2 && Near(n[1].sound.sync_offset_ms, 50.0 * 1.33483985417003, 1e-6));
+    }
+
     // Antho 2026-10-18: the pile moved onto the selected marker records what it plays (its Sounds' variations,
     // the Random's child on its path), so the copies avoid repeating it.
     {

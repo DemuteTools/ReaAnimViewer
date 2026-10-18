@@ -258,6 +258,7 @@ std::string Run(SpreadScope scope, bool add_layer)
             src.sound = PileSoundData(s.facts.guid, takes, s.facts.len, top_media.facts.slices);
         } else {
             src.sound = ItemSoundData(s.item);
+            if (MediaItem_Take* take = GetActiveTake(s.item)) src.playrate = GetMediaItemTakeInfo_Value(take, "D_PLAYRATE");
         }
         if (moving.insert(s.item).second) to_move.push_back(s.item);
         if (first && on_marker.insert(s.item).second && !s.folder) attach_items.push_back(s.item);

@@ -27,6 +27,9 @@ struct SpreadSource {
     std::string name;
     SoundData   sound;
     bool        folder = false;  // a folder item (an NVK pile): its pile is this one Sound (PileSoundData)
+    // Its active take's playrate: its snap (item seconds) is snap x playrate into the source, where its copy (played
+    // at rate 1, as auditioned) is synced (Antho 2026-10-18: a 1.335 layer's copies landed 16.7 ms late).
+    double      playrate = 1.0;
 };
 
 // The piles of the selection: OverlapGroups with touching items apart, each pile's members top first

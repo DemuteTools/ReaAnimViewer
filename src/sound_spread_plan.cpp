@@ -41,7 +41,7 @@ SoundNode SoundOf(const SpreadSource& s, const std::string& uid, const std::stri
     n.type = SoundNodeType::Sound;
     n.name = s.name.empty() ? std::string("Sound") : s.name;
     n.sound = s.sound;
-    SyncFromSnap(n.sound, s.facts.snap);
+    SyncFromSnap(n.sound, s.facts.snap * (std::isfinite(s.playrate) && s.playrate > 0.0 ? s.playrate : 1.0));
     return n;
 }
 

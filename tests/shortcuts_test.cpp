@@ -1173,7 +1173,7 @@ int main()
     // 13-62h: Heal / Loop in the Sound Edit window -- on REAPER's 40548 (Item: Heal splits in items) / 1068
     // (Transport: Toggle repeat) by default, H / R while REAPER lists no key for them; 40508 retargeted.
     {
-        CHECK(kShortcutCount == 30 && kShortcutEditHeal == 21 && kShortcutEditLoop == 22);  // 13-67a: renumbered; 13-73: +7
+        CHECK(kShortcutCount == 32 && kShortcutEditHeal == 21 && kShortcutEditLoop == 22);  // 13-67a: renumbered; 13-73: +7; 13-74: +2
         // 13-73: Mono on REAPER's take channel mode keys; Left / Right as RAV actions with no default key.
         CHECK(ShortcutReaperActionId(kShortcutEditMonoOff) == "40176" && ShortcutReaperActionId(kShortcutEditMonoSum) == "40178");
         CHECK(ShortcutReaperActionId(kShortcutEditMonoLeft) == "40179" && ShortcutReaperActionId(kShortcutEditMonoRight) == "40180");
@@ -1246,6 +1246,36 @@ int main()
         CHECK(SanitizeShortcuts(ob).empty());
         CHECK(ShortcutActionFor(ob, 'H', false, false, false, false, false, true) == kShortcutEditHeal);
         CHECK(ShortcutActionFor(ob, 'R', false, false, false, false, false, true) == kShortcutEditLoop);
+    }
+
+    // 13-74: the zones' gain rows: Ctrl+Shift+wheel up / down by default, the wheel stored and matched as a key.
+    {
+        CHECK(ShortcutTakesWheel(kShortcutEditGainUp) && ShortcutTakesWheel(kShortcutEditGainDown));
+        CHECK(!ShortcutTakesWheel(kShortcutEditSplit) && !ShortcutTakesWheel(-1) && !ShortcutTakesWheel(kShortcutCount));
+        CHECK(kShortcutTable[kShortcutEditGainUp].context == ShortcutContext::LibraryEdit);
+        CHECK(kShortcutTable[kShortcutEditGainUp].action && kShortcutTable[kShortcutEditGainDown].action);
+        CHECK(!ShortcutDefaultFollowsReaper(kShortcutEditGainUp));
+        ShortcutBindings b = DefaultShortcutBindings();
+        CHECK(SanitizeShortcuts(b).empty());  // the defaults are valid and clash with nothing
+        CHECK(ShortcutActionFor(b, vk::kWheelUp, true, true, false, false, false, true) == kShortcutEditGainUp);
+        CHECK(ShortcutActionFor(b, vk::kWheelDown, true, true, false, false, false, true) == kShortcutEditGainDown);
+        CHECK(ShortcutActionFor(b, vk::kWheelUp, false, false, false, false, false, true) == -1);  // the plain wheel: the view's
+        CHECK(ShortcutActionFor(b, vk::kWheelUp, true, false, false, false, false, true) == -1);
+        CHECK(FormatShortcut(b[kShortcutEditGainUp]) == "Ctrl+Shift+Wheel up");
+        CHECK(FormatShortcut(b[kShortcutEditGainDown]) == "Ctrl+Shift+Wheel down");
+        KeyBinding d;
+        CHECK(DecodeShortcut(EncodeShortcut(KeyBinding{vk::kWheelDown, false, false, true}).c_str(), &d) &&
+              d == (KeyBinding{vk::kWheelDown, false, false, true}));
+        // Recording: a wheel row takes the wheel or a key; a key-only row never takes the wheel.
+        CHECK(ShortcutRecordStep(b, kShortcutEditSplit, vk::kWheelUp, true, false, false) == RecordOutcome::Ignored);
+        CHECK(ShortcutRecordStep(b, kShortcutEditGainUp, vk::kWheelUp, false, false, true) == RecordOutcome::Assigned);
+        CHECK(ShortcutActionFor(b, vk::kWheelUp, false, false, true, false, false, true) == kShortcutEditGainUp);
+        int owner = -1;
+        CHECK(ShortcutRecordStep(b, kShortcutEditGainDown, vk::kWheelUp, false, false, true, &owner) == RecordOutcome::Conflict &&
+              owner == kShortcutEditGainUp);
+        CHECK(ShortcutRecordStep(b, kShortcutEditGainDown, vk::kNext, true, false, false) == RecordOutcome::Assigned);
+        CHECK(ShortcutActionFor(b, vk::kNext, true, false, false, false, false, true) == kShortcutEditGainDown);
+        CHECK(ShortcutActionFor(b, vk::kNext, true, false, false, false, false, false) == -1);  // Edit not focused
     }
 
     if (g_fails == 0) std::printf("shortcuts: all checks passed\n");

@@ -198,6 +198,9 @@ struct PanelState {
     // -1 = none). Lot E consumes it: Heal = HealZones on the selected zones (one undo point, or a toast when they
     // are not edge to edge); Loop = the Loop toggle (view state, no undo point).
     int                   zone_request = -1;
+    // 13-74: the gain rows' key presses waiting for the overlay (net notches, + = up; 0 = none). Not held back by a
+    // live draft: notches in a row merge into one (ZoneGainNudge).
+    int                   gain_request = 0;
     bool                  roles_more = false;
     bool                  layer_roles_more = false;  // 13-31: the "plays on" list's own "More roles"
     unsigned              draft_rev = 0;  // bumped each time the live draft is rewritten or ends
@@ -244,6 +247,8 @@ void OpenEdit(const std::string& lib_uid, const std::string& uid)
     P.listen_request = 0;
     P.nav_request = 0;
     P.zone_request = -1;  // 13-62h
+    P.gain_request = 0;   // 13-74
+    ZoneGainSettle(true);
     ZoneEditReset(P.zv);  // 13-62h (Lot E1)
     P.zedit_on = false;   // 13-62h (Lot E2)
     P.zedit_sel.clear();
@@ -1156,6 +1161,57 @@ void RequestLibraryEditKey(int shortcut_id)
              shortcut_id == kShortcutEditSnapOffset || shortcut_id == kShortcutEditPrevStop ||  // 13-67a
              (shortcut_id >= kShortcutEditMonoOff && shortcut_id <= kShortcutEditSideRule))  // 13-73: Mono, Left / Right
         P.zone_request = shortcut_id;
+    else if (shortcut_id == kShortcutEditGainUp || shortcut_id == kShortcutEditGainDown)  // 13-74
+        P.gain_request += shortcut_id == kShortcutEditGainUp ? 1 : -1;
+}
+
+namespace {
+
+// 13-74: the Edit waveform under the mouse (its frame), the wheel's part of a notch not given yet (a trackpad's).
+int   g_gain_wave_frame = -100;
+float g_gain_wheel_acc = 0.0f;
+
+// The gain row the wheel up / down runs with these modifiers (Shortcuts: its keys in force), -1 none.
+int GainWheelRow(bool up, bool ctrl, bool shift, bool alt)
+{
+    const int id = ShortcutActionFor(CurrentShortcutKeymap(), up ? vk::kWheelUp : vk::kWheelDown, ctrl, shift, alt, false, false, true);
+    return id == kShortcutEditGainUp || id == kShortcutEditGainDown ? id : -1;
+}
+
+// This frame's gain notches from the wheel over the Edit waveform (`hovered`): + = up. *taken: the wheel is the gain
+// rows' (the view's zoom / scroll does not get it; Dear ImGui does not scroll with it from the next frame).
+int EditGainWheel(bool hovered, ImGuiID owner, bool* taken)
+{
+    *taken = false;
+    if (!hovered) {
+        g_gain_wheel_acc = 0.0f;
+        return 0;
+    }
+    g_gain_wave_frame = ImGui::GetFrameCount();
+    const ImGuiIO& io = ImGui::GetIO();
+    const int      up = GainWheelRow(true, io.KeyCtrl, io.KeyShift, io.KeyAlt);
+    const int      dn = GainWheelRow(false, io.KeyCtrl, io.KeyShift, io.KeyAlt);
+    if (up < 0 && dn < 0) {
+        g_gain_wheel_acc = 0.0f;
+        return 0;
+    }
+    ImGui::SetKeyOwner(ImGuiKey_MouseWheelY, owner);
+    ImGui::SetKeyOwner(ImGuiKey_MouseWheelX, owner);  // Dear ImGui turns a Shift+wheel into a horizontal scroll
+    *taken = io.MouseWheel > 0.0f ? up >= 0 : io.MouseWheel < 0.0f ? dn >= 0 : true;
+    if (!*taken) return 0;
+    g_gain_wheel_acc += io.MouseWheel;
+    int n = 0;
+    for (; g_gain_wheel_acc >= 1.0f; g_gain_wheel_acc -= 1.0f) n += up == kShortcutEditGainUp ? 1 : -1;
+    for (; g_gain_wheel_acc <= -1.0f; g_gain_wheel_acc += 1.0f) n += dn == kShortcutEditGainUp ? 1 : -1;
+    return n;
+}
+
+}  // namespace
+
+bool LibraryEditClaimsWheel(bool horizontal, bool ctrl, bool shift, bool alt)
+{
+    if (horizontal || !ImGui::GetCurrentContext() || !P.edit_open || g_gain_wave_frame < ImGui::GetFrameCount() - 1) return false;
+    return GainWheelRow(true, ctrl, shift, alt) >= 0 || GainWheelRow(false, ctrl, shift, alt) >= 0;
 }
 
 namespace {
@@ -5193,7 +5249,12 @@ void DrawEditOverlay()
         ImGui::BeginChild("##editwave", ImVec2(wave_w, wave_h), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollWithMouse);
         // 13-45: the view actions (your REAPER wheel and zoom keys, or your own: Shortcuts), the wheel over
         // the waveform, the keys while Edit has the focus.
-        if (m.ok) EditNavigate(ViewNavInput(ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows), keys, ImGui::GetID("##editnav")));
+        // 13-74: the gain rows' wheel (Ctrl+Shift by default) over it moves the selected zones' gain instead.
+        const bool wave_hot = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
+        bool       gain_wheel = false;
+        const int  gain_notches = m.ok && zoned ? EditGainWheel(wave_hot, ImGui::GetID("##editgain"), &gain_wheel) : 0;
+        if (m.ok) EditNavigate(ViewNavInput(wave_hot && !gain_wheel, keys, ImGui::GetID("##editnav")));
+        if (gain_notches != 0 && !StoreReplaced()) ZoneGainNudge(zh, gain_notches);
         if (!m.ok) {
             FitText("Source not found", ui::kMissText);
         } else {
@@ -5277,6 +5338,12 @@ void DrawEditOverlay()
                                  false);
         }
         if (P.nav_request != 0 && !StoreReplaced() && !zoned) P.nav_request = 0;  // the media not read: nothing to step
+        // 13-74: the gain rows' keys (one notch each; in a row: one undo point), on the selected zones.
+        if (P.gain_request != 0 && !StoreReplaced()) {
+            const int g = std::exchange(P.gain_request, 0);
+            if (zoned && m.ok) ZoneGainNudge(zh, g);
+            else ShowLibraryToast("Cannot change the gain: the sound file is not read", false);
+        }
         if (keys && !StoreReplaced()) {
             // 13-62h: a zoned Sound's Delete, Space (from the edit cursor; again = stop) and Esc (the selection,
             // then the time selection, before Stop / close).
@@ -6365,8 +6432,16 @@ void NodePanelWidgets()
     // A live edit only lasts while its drag does (an unfinished one never shadows the store).
     // (13-14: a fader typed into holds no mouse button either. 13-53: kept on the release frame, whose
     // "done" commits it as the waveform draws.)
+    // 13-74: a run of gain notches is entered once the wheel rests (0.5 s), at once when anything else happens: a click,
+    // another Edit key, another Sound, the Edit window closed. Until then its draft is held.
+    {
+        bool other = !P.edit_open || P.trim_request >= 0 || P.zone_request >= 0 || P.listen_request != 0 || P.nav_request != 0 ||
+                     ZoneGainUid() != P.edit_uid || ZoneGainUid() != LibraryRowNode();
+        for (int b = 0; b < ImGuiMouseButton_COUNT && !other; ++b) other = ImGui::IsMouseClicked(b);
+        ZoneGainSettle(other);
+    }
     if (P.phase.EndsAtFrameStart(ImGui::IsMouseDown(ImGuiMouseButton_Left), ImGui::IsMouseReleased(ImGuiMouseButton_Left),
-                                 ui::DragNumberActive(), ui::FaderTyping()))
+                                 ui::DragNumberActive(), ui::FaderTyping() || ZoneGainHolds()))
         CancelLive();
     MergeTreeHooks();
     AuditionPlaying();  // frees an audition that has played to its end

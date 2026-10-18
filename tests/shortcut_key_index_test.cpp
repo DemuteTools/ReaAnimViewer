@@ -221,6 +221,17 @@ static void TestRavSide()
     // Alt+wheel: Scroll horizontally.
     u = RavUsesOf(km, nav, Wheel(kViewModAlt));
     CHECK(u.size() == 1 && u[0].kind == RavKeyUse::Kind::ViewRow && u[0].index == kNavScrollH);
+    // 13-74: Ctrl+Shift+wheel: the zones' gain rows (up and down), whatever else the view table puts there.
+    u = RavUsesOf(km, nav, Wheel(kViewModCtrl | kViewModShift));
+    {
+        int gain_rows = 0;
+        for (const RavKeyUse& x : u)
+            if (x.kind == RavKeyUse::Kind::KeyRow && (x.index == kShortcutEditGainUp || x.index == kShortcutEditGainDown) && !x.shadowed)
+                ++gain_rows;
+        CHECK(gain_rows == 2);
+    }
+    CHECK(KbGestureOfBinding(KeyBinding{vk::kWheelUp, true, true, false}) == Wheel(kViewModCtrl | kViewModShift));
+    CHECK(KbGestureOfBinding(KeyBinding{vk::kWheelDown, true, true, false}) == Wheel(kViewModCtrl | kViewModShift));
     // Up: Zoom in (a key of the view table). A character row given by the caller counts once.
     u = RavUsesOf(km, nav, Key(vk::kUp));
     CHECK(u.size() == 1 && u[0].index == kNavZoomIn);

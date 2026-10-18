@@ -34,7 +34,12 @@ constexpr unsigned kBack = 0x08, kTab = 0x09, kReturn = 0x0D, kShift = 0x10, kCo
                    kSeparator = 0x6C, kSubtract = 0x6D, kDecimal = 0x6E, kDivide = 0x6F, kF1 = 0x70,
                    kF11 = 0x7A, kF24 = 0x87, kNumLock = 0x90, kScroll = 0x91, kLShift = 0xA0, kRMenu = 0xA5,
                    kProcessKey = 0xE5, kPacket = 0xE7;
+// 13-74: the mouse wheel as a row's "key" (two codes Windows leaves unassigned, no keyboard sends them): a wheel row
+// (ShortcutTakesWheel) is bound to the wheel up / down with its modifiers, stored and matched as any key.
+constexpr unsigned kWheelUp = 0x0E, kWheelDown = 0x0F;
 }  // namespace vk
+
+inline bool IsWheelKey(unsigned k) { return k == vk::kWheelUp || k == vk::kWheelDown; }
 
 // ---- the table -----------------------------------------------------------------------
 
@@ -131,7 +136,11 @@ enum ShortcutId : int {
     kShortcutEditSideLeft  = 27,
     kShortcutEditSideRight = 28,
     kShortcutEditSideRule  = 29,
-    kShortcutCount       = 30,
+    // 13-74 (Antho 2026-10-19): the selected zones' gain +1 / -1 dB (RAV actions; Ctrl+Shift+wheel up / down over the
+    // waveform by default; notches in a row = one undo point, zone_gain_nudge.h).
+    kShortcutEditGainUp    = 30,
+    kShortcutEditGainDown  = 31,
+    kShortcutCount       = 32,
 };
 
 inline const ShortcutDef kShortcutTable[kShortcutCount] = {
@@ -209,7 +218,18 @@ inline const ShortcutDef kShortcutTable[kShortcutCount] = {
      "RAV_KEY_EDIT_SIDE_RIGHT", "RAV: Sound Edit - Set selected variations Right"},
     {"edit_side_rule", "Left / Right: follow rule", {0, false, false, false}, ShortcutContext::LibraryEdit,
      "RAV_KEY_EDIT_SIDE_RULE", "RAV: Sound Edit - Selected variations follow the Left / Right rule"},
+    // 13-74 (Antho 2026-10-19): REAPER has no zone gain action; the wheel with Ctrl+Shift over the Edit waveform.
+    {"edit_gain_up", "Gain of selected zones: +1 dB", {vk::kWheelUp, true, true, false}, ShortcutContext::LibraryEdit,
+     "RAV_KEY_EDIT_GAIN_UP", "RAV: Sound Edit - Increase gain of selected zones (+1 dB)"},
+    {"edit_gain_down", "Gain of selected zones: -1 dB", {vk::kWheelDown, true, true, false}, ShortcutContext::LibraryEdit,
+     "RAV_KEY_EDIT_GAIN_DOWN", "RAV: Sound Edit - Decrease gain of selected zones (-1 dB)"},
 };
+
+// 13-74: a row that takes the wheel (up / down, with modifiers) as well as keys: its default is a wheel.
+inline bool ShortcutTakesWheel(int id)
+{
+    return id >= 0 && id < kShortcutCount && IsWheelKey(kShortcutTable[id].def.vk);
+}
 
 // 13-60b: REAPER's id of a row's own action ("_RAV_KEY_VIDEO_CUT"), "" out of range. 13-61: a row on one
 // of REAPER's own actions, its id ("40511").
@@ -610,6 +630,7 @@ inline RecordOutcome ShortcutRecordStep(ShortcutBindings& b, int id, unsigned ke
     if (owner) *owner = -1;
     if (key == vk::kEscape) return RecordOutcome::Cancelled;
     if (id < 0 || id >= kShortcutCount || !IsBindableKey(key)) return RecordOutcome::Ignored;
+    if (IsWheelKey(key) && !ShortcutTakesWheel(id)) return RecordOutcome::Ignored;  // 13-74: the wheel on a key-only row
     const KeyBinding nb{key, ctrl, shift, alt};
     const int other = ShortcutOwner(b, nb, id);
     if (other >= 0) {
@@ -805,6 +826,8 @@ inline std::string ShortcutKeyName(unsigned k, std::string (*fallback)(unsigned)
     case vk::kSubtract: return "Num -";
     case vk::kDecimal:  return "Num .";
     case vk::kDivide:   return "Num /";
+    case vk::kWheelUp:   return "Wheel up";    // 13-74
+    case vk::kWheelDown: return "Wheel down";
     default: break;
     }
     if (fallback) {

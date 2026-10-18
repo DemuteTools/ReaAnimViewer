@@ -28,6 +28,7 @@
 #include "ui_theme.h"
 #include "wave_draw_ui.h"  // 13-71: the one waveform drawer
 #include "wave_tiles_plan.h"
+#include "zone_gain_nudge.h"  // 13-74
 
 namespace rav {
 namespace {
@@ -2209,6 +2210,96 @@ void ZoneSetMono(const ZoneWaveHost& h, MonoMode m)
                },
                toast))
         ShowLibraryToast(toast + " already", false);
+}
+
+// ---- 13-74: the selected zones' gain, a notch at a time (zone_gain_nudge.h) -------------------------------------------
+
+namespace {
+
+// The run of notches being merged into one undo point, and how to enter it (the host it began on: its commit, its
+// live state; the view the write marks as ours).
+GainNudgeRun                                                           g_gain;
+std::function<void(const std::string& name, const std::string& toast)> g_gain_commit;
+std::function<bool()>                                                  g_gain_live;
+ZoneEditView*                                                          g_gain_view = nullptr;
+std::string                                                            g_gain_toast;
+
+std::string GainRunToast(const ZoneWaveHost& h, const SoundData& d, const ZoneSel& sel, int notches)
+{
+    if (sel.size() > 1) return std::to_string(sel.size()) + " zones: " + Signed(static_cast<double>(notches) * kGainNudgeStepDb) + " dB each (their own gain)";
+    const EditZone* z = ZoneOf(d, sel.front());
+    return z ? ZoneGainToast(NameOfZone(h, d, sel.front()), PartNameOf(h, z->part), z->db, PartFaderDb(d, z->part)) : std::string("Zone gain");
+}
+
+}  // namespace
+
+bool ZoneGainHolds()
+{
+    return g_gain.on;
+}
+
+const std::string& ZoneGainUid()
+{
+    static const std::string kNone;
+    return g_gain.on ? g_gain.uid : kNone;
+}
+
+void ZoneGainSettle(bool force)
+{
+    if (!g_gain.on) return;
+    if (!g_gain_live || !g_gain_live()) {  // its draft went (cancelled, the store replaced): nothing to enter
+        g_gain = GainNudgeRun{};
+        return;
+    }
+    if (!force && !GainNudgeDue(g_gain, ImGui::GetTime())) return;
+    const std::string toast = g_gain_toast;
+    g_gain = GainNudgeRun{};
+    if (g_gain_view) MarkOwn(*g_gain_view);
+    if (g_gain_commit) g_gain_commit("Zone gain", toast);
+}
+
+void ZoneGainNudge(const ZoneWaveHost& h, int notches)
+{
+    if (notches == 0) return;
+    ZoneEditView&    v = *h.view;
+    const SoundData& d = Shown(h);
+    ZoneSel          sel;
+    for (const ZoneRef& r : SelValid(d, v.sel))
+        if (const EditZone* z = ZoneOf(d, r); z && !z->IsGap()) sel.push_back(r);
+    if (sel.empty()) {
+        ShowLibraryToast("Select zones first: " + KeyHint(kShortcutEditGainUp, "+1 dB") + " / " + KeyHint(kShortcutEditGainDown, "-1 dB") +
+                             " sets their gain",
+                         false);
+        return;
+    }
+    const double now = ImGui::GetTime();
+    const bool   mine = g_gain.on && g_gain.uid == h.node->uid;
+    // Another gesture's draft of this Sound (a drag, a fader, a typed number): the notch is not mixed into it.
+    if (v.drag.kind != ZoneDragKind::None || (h.live_now() && !mine)) return;
+    if (!GainNudgeContinues(g_gain, h.node->uid, h.tl, sel, now)) {
+        ZoneGainSettle(true);  // another run (another selection, a pause): entered first, its own undo point
+        const SoundData& base = Shown(h);  // after a commit this frame: the committed draft (Live restarts from it)
+        g_gain = GainNudgeRun{};
+        g_gain.on = true;
+        g_gain.uid = h.node->uid;
+        g_gain.tl = h.tl;
+        g_gain.sel = sel;
+        for (const ZoneRef& r : sel) {
+            const EditZone* z = ZoneOf(base, r);
+            g_gain.db.push_back(z ? z->db : 0.0);
+        }
+        g_gain_commit = h.commit;
+        g_gain_live = h.live_now;
+        g_gain_view = h.view;
+    }
+    g_gain.db = GainsNudged(g_gain.db, notches);
+    g_gain.notches += notches;
+    g_gain.last_t = now;
+    SoundData& dr = h.live();
+    ZoneSel    out = sel;
+    ShiftZonesDb(dr, sel, 0.0, g_gain.db, Ctx(h), &out);
+    g_gain_toast = GainRunToast(h, dr, sel, g_gain.notches);
+    ShowLibraryToast(g_gain_toast, false);
 }
 
 // 13-67a: REAPER's 40541 "Item: Set snap offset to cursor": the selected part zones holding the edit cursor (none

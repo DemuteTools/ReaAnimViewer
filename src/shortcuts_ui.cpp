@@ -1017,6 +1017,7 @@ void Detail(const RowRef& r)
             dflt = def.def.vk ? ShortcutBindingLabel(def.def) : std::string("none");
         Kv("Default", dflt);
         if (id == kShortcutEditSolo || id == kShortcutEditMute || id == kShortcutEditExclSolo) Kv("Saved", "no (listening only)");
+        if (ShortcutTakesWheel(id)) Kv("Takes", "keys and the wheel (over the Edit waveform); notches in a row = one undo");  // 13-74
         // Conflicts (facts).
         for (const Cap& c : caps)
             if (!c.tip.empty()) warns.push_back(c.tip);
@@ -1108,7 +1109,8 @@ void RecordModal(bool open_now)
         } else if (id >= kShortcutCount) {
             NavRecordBody(id - kShortcutCount);  // 13-45: a view row
         } else {
-            ImGui::Text("Press a key for %s\xE2\x80\xA6", kShortcutTable[id].label);
+            ImGui::Text(ShortcutTakesWheel(id) ? "Press a key or turn the wheel for %s\xE2\x80\xA6" : "Press a key for %s\xE2\x80\xA6",
+                        kShortcutTable[id].label);  // 13-74: the zones' gain rows take the wheel
             if (const char* owner = ShortcutRecordingConflict()) {
                 ui::ToneText(std::string("Already used by ") + owner, ui::kWarn);
             } else {

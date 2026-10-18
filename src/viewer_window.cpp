@@ -2412,6 +2412,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         ShortcutsCaptureWheel(msg == WM_MOUSEHWHEEL, GetKeyState(VK_CONTROL) < 0, GetKeyState(VK_SHIFT) < 0, GetKeyState(VK_MENU) < 0);
         return 0;
     }
+    // 13-74: a wheel row of the Shortcuts popup (the zones' gain) records the wheel up / down with its modifiers; on a
+    // key-only row the wheel is not a key (the popup scrolls).
+    if (msg == WM_MOUSEWHEEL && ShortcutRecordingId() >= 0 && ShortcutTakesWheel(ShortcutRecordingId())) {
+        if (GET_WHEEL_DELTA_WPARAM(wp) != 0)
+            ShortcutRecordKey(GET_WHEEL_DELTA_WPARAM(wp) > 0 ? vk::kWheelUp : vk::kWheelDown, GetKeyState(VK_CONTROL) < 0,
+                              GetKeyState(VK_SHIFT) < 0, GetKeyState(VK_MENU) < 0);
+        return 0;
+    }
     if ((msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL) && ViewNavRecordingRow() >= 0) {
         ViewNavRecordWheel(msg == WM_MOUSEHWHEEL, GetKeyState(VK_CONTROL) < 0, GetKeyState(VK_SHIFT) < 0, GetKeyState(VK_MENU) < 0);
         return 0;
@@ -2932,7 +2940,9 @@ int ViewerTranslateAccel(MSG* msg, accelerator_register_t* /*ctx*/)
     in.imgui_mouse = ImGuiWantsMouse();          // spec 11-fb-12: Alt + wheel over the UI
     in.full_screen = FullScreenActive();         // story 6-5-9: Esc leaves, other keys reach REAPER
     in.horizontal = msg->message == WM_MOUSEHWHEEL;
-    if (in.msg == KeyMsg::Wheel) in.view_wheel = ViewNavClaimsWheel(in.horizontal, in.ctrl, in.shift, in.alt);  // 13-45
+    if (in.msg == KeyMsg::Wheel)  // 13-45; 13-74: the zones' gain wheel over the Edit waveform too
+        in.view_wheel = ViewNavClaimsWheel(in.horizontal, in.ctrl, in.shift, in.alt) ||
+                        LibraryEditClaimsWheel(in.horizontal, in.ctrl, in.shift, in.alt);
     // Story 6-5-10: the clip list's own keys (Up, Down, Enter, Esc) while it has the keyboard, before the
     // Library view's (the list is over it); the key's release follows it.
     if (in.msg == KeyMsg::KeyDown && ClipListTakesKey(in.key, in.ctrl, in.shift, in.alt)) {

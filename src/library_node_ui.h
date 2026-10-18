@@ -113,7 +113,11 @@ bool LibraryEditKeysActive();
 // 13-67a: kShortcutEditExclSolo solos the selected part alone (again on the only soloed part: unsolo; view state),
 // kShortcutEditSnapOffset sets the selected zone's snap offset at the edit cursor (one undo point),
 // kShortcutEditPrevStop moves the edit cursor back one stop (time selection / zone start, file start last).
+// 13-74: kShortcutEditGainUp / Down move the selected zones' gain one notch (1 dB; notches in a row: one undo point).
 void RequestLibraryEditKey(int shortcut_id);
+// 13-74: the Edit waveform was under the mouse last frame and this wheel (Ctrl / Shift / Alt) is a gain row's
+// (Shortcuts: Ctrl+Shift+wheel by default): the accelerator hook keeps it from REAPER.
+bool LibraryEditClaimsWheel(bool horizontal, bool ctrl, bool shift, bool alt);
 
 }  // namespace rav
 

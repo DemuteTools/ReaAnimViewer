@@ -144,8 +144,8 @@ bool KeyBindingOfKbGesture(const KbGesture& g, KeyBinding* out)
 KbGesture KbGestureOfBinding(const KeyBinding& b)
 {
     KbGesture g;
-    g.input = KbInput::Key;
-    g.code = static_cast<int>(b.vk);
+    g.input = IsWheelKey(b.vk) ? KbInput::Wheel : KbInput::Key;  // 13-74: a wheel row's binding is the wheel
+    g.code = IsWheelKey(b.vk) ? 0 : static_cast<int>(b.vk);
     g.mods = (b.ctrl ? kViewModCtrl : 0) | (b.shift ? kViewModShift : 0) | (b.alt ? kViewModAlt : 0);
     return g;
 }
@@ -175,6 +175,11 @@ std::vector<RavKeyUse> RavUsesOf(const ShortcutKeymap& keys, const ViewNavMap& n
         }
     }
     const int m = g.mods & 7;
+    if (g.input == KbInput::Wheel)  // 13-74: a wheel row (up or down) on this wheel
+        for (int pass = 0; pass < 2; ++pass)
+            for (int i = 0; i < kShortcutCount; ++i)
+                for (const KeyBinding& k : (pass ? keys.shadowed : keys.keys)[static_cast<size_t>(i)])
+                    if (IsWheelKey(k.vk) && KbGestureOfBinding(k) == g) add(RavKeyUse::Kind::KeyRow, i, pass == 1);
     if (g.input == KbInput::Wheel && nav.wheel[m].row >= 0) add(RavKeyUse::Kind::ViewRow, nav.wheel[m].row, false);
     if (g.input == KbInput::HWheel && nav.hwheel[m].row >= 0) add(RavKeyUse::Kind::ViewRow, nav.hwheel[m].row, false);
     if (g.input == KbInput::Key) {

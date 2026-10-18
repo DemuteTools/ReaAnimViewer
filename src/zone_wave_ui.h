@@ -213,6 +213,15 @@ void ZoneSetSide(const ZoneWaveHost& h, char side);
 // 13-73: the Sound's Mono (REAPER 40176 / 40178 / 40179 / 40180 keys): one undo point.
 void ZoneSetMono(const ZoneWaveHost& h, MonoMode m);
 bool ZonePlaying(const ZoneWaveHost& h);
+// 13-74: the selected part zones' own gain moved by `notches` x 1 dB (Ctrl+Shift+wheel over the waveform, or the
+// rows' keys), each clamped as the Gain row (zone_gain_nudge.h). Notches in a row (same Sound, timeline and
+// selection, <= 0.5 s apart) are one live draft entered once as ONE undo point ("Zone gain"): ZoneGainSettle enters it
+// when it is due (`force`: at once, something else happens). A toast shows the value at each notch; nothing selected:
+// a hint. ZoneGainHolds: a run is waiting (its draft must not end at the frame start); ZoneGainUid: its Sound ("" none).
+void ZoneGainNudge(const ZoneWaveHost& h, int notches);
+void ZoneGainSettle(bool force);
+bool ZoneGainHolds();
+const std::string& ZoneGainUid();
 
 bool ZoneClickPlays();
 void SetZoneClickPlays(bool on);

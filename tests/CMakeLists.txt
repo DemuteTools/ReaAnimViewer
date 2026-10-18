@@ -46,6 +46,11 @@ add_test(NAME picked_gestures COMMAND picked_gestures_test)
 add_executable(live_draft_phase_test live_draft_phase_test.cpp)
 target_include_directories(live_draft_phase_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME live_draft_phase COMMAND live_draft_phase_test)
+
+# 13-74 -- the selected zones' gain a notch at a time (src/zone_gain_nudge.h).
+add_executable(zone_gain_nudge_test zone_gain_nudge_test.cpp)
+target_include_directories(zone_gain_nudge_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME zone_gain_nudge COMMAND zone_gain_nudge_test)
 # The same rule in the Library view: its lists, menus, rename fields and drops pick their
 # gestures over a real sound store (src/library_tree_edit.h), run after the loop.
 add_executable(library_picked_gestures_test library_picked_gestures_test.cpp ../src/library_tree_edit.cpp ../src/sound_switch.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp)

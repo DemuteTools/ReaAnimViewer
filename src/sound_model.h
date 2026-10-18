@@ -18,6 +18,7 @@
 // 13-62i (spec 13-62i A0): kWholePart, EditZone::fade_in_shape / fade_out_shape, SoundData::fader_db.
 // 13-68 v2 (spec 13-68): SoundLibrary::attached / attached_type. v3: SoundData::keep_rate, SwitchGroup::rav_owned.
 // 13-73 (spec 13-73): SidePattern, NewSoundSides, SoundFrame::side / side_hand, SoundData::sides / side_pattern.
+// 13-35 (spec 13-35): PlacedTag::NodePrint / Written, PlacedTag::lib / va / has_wr / wr.
 //
 // Every `kept` member holds text this version did not understand, written back as read:
 // unknown fields ("key=value" tokens) of the object's own line, and `kept_lines` the unknown
@@ -536,6 +537,34 @@ struct PlacedTag {
     bool        has_g = false;
     double      g = 0.0;
     int         pi = -1;
+    // 13-35 (appended): what the Library looked like when RAV placed it (`lib`: one print per node of its path, the
+    // node first, its root last; sound_sync_plan.h NodePrint) and the variation it played (`va`), and what RAV wrote on
+    // the item (`wr`). Behind = a node whose print now differs; a hand edit = the item no longer holds `wr`. An older tag
+    // has neither (empty lib, has_wr false): never counted nor synced until a Populate or a Sync stamps it.
+    struct NodePrint {
+        std::string node;
+        double      vol = 0.0;   // the node's volume_db
+        double      off = 0.0;   // its offset_ms in its Blend parent
+        uint32_t    fades = 0, sync = 0, zones = 0, level = 0;  // hashes of its user settings (a Sound's: of its variation)
+        bool        on = true;   // a Sound: the variation it played is on
+        bool operator==(const NodePrint& o) const
+        {
+            return node == o.node && vol == o.vol && off == o.off && fades == o.fades && sync == o.sync && zones == o.zones &&
+                   level == o.level && on == o.on;
+        }
+        bool operator!=(const NodePrint& o) const { return !(*this == o); }
+    };
+    struct Written {
+        double vol = 1.0;                         // D_VOL
+        double fade_in = 0.0, fade_out = 0.0;     // D_FADEINLEN / D_FADEOUTLEN
+        int    in_shape = 0, out_shape = 0;       // C_FADEINSHAPE / C_FADEOUTSHAPE
+        double in_dir = 0.0, out_dir = 0.0;       // D_FADEINDIR / D_FADEOUTDIR
+        double length = 0.0;                      // D_LENGTH
+    };
+    std::vector<NodePrint> lib;
+    int                    va = -1;
+    bool                   has_wr = false;
+    Written                wr;
 };
 
 // ---- Shared working types --------------------------------------------------------------------

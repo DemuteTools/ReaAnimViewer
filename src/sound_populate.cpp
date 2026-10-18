@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <functional>
 #include <deque>
 #include <map>
@@ -42,6 +43,7 @@
 #include "sound_project.h"
 #include "sound_record.h"
 #include "sound_switch.h"
+#include "sound_sync_plan.h"  // 13-35: Sync placed sounds
 #include "sound_tracks.h"
 #include "tagging_session.h"
 #include "tagging_signal.h"
@@ -227,6 +229,10 @@ struct PopOpts {
     // the Place steps of the events that already have their sounds (PlanPassFill); nothing removed,
     // replaced or re-drawn, no orphan prune.
     bool        fill_passes = false;
+    // 13-35: a Sync of placed sounds (SyncPlacedSounds; null = a Populate). Only the populated sounds behind on a node of
+    // its scope are touched, in place, keeping the draw (a variation switched off is drawn again); nothing is placed,
+    // removed or replaced by another node, and nothing is pruned.
+    const struct SyncRun* sync = nullptr;
     std::string rid;                      // "" = every rule
     std::vector<std::string> rids;        // 13-8 fix: when not empty, only these rules (one detection for all)
     bool        has_t = false;
@@ -481,6 +487,59 @@ void RemovePopulated(EventSounds& ev)
     ev.placed = keep;
 }
 
+// 13-35: what a Sync does (PopOpts::sync).
+struct SyncRun {
+    std::set<std::string>       scope;      // the behind nodes it syncs
+    std::map<std::string, bool> overwrite;  // a hand-edited placed item (GUID, upper case) -> Overwrite (else Keep)
+    SyncCounts*                 counts = nullptr;
+};
+
+// 13-35: the tag's Library prints and what RAV wrote, stamped from the store now (the item as it is).
+void StampPlaced(MediaItem* it, const SoundLibrary& lib, const std::string& node, int variation)
+{
+    PlacedTag tag;
+    if (!it || !ReadPlacedTag(it, &tag)) return;
+    tag.lib = PathPrints(lib, node, variation);
+    tag.va = variation;
+    tag.has_wr = true;
+    tag.wr = ReadPlacedWritten(it);
+    // A field kept unread stands for its value on write: dropped, so the new prints are written.
+    tag.kept.erase(std::remove_if(tag.kept.begin(), tag.kept.end(),
+                                  [](const std::string& k) {
+                                      return k.compare(0, 4, "lib=") == 0 || k.compare(0, 3, "va=") == 0 ||
+                                             k.compare(0, 3, "wr=") == 0;
+                                  }),
+                   tag.kept.end());
+    WritePlacedTag(it, tag);
+}
+
+// 13-35: a placed item a Sync moved (a Blend offset, a sync point, a nudge put back): the follow's stored position follows,
+// so the follow never reads the move as the user's nudge.
+void SyncMovedFollow(MediaItem* it, double was_pos)
+{
+    const double pos = GetMediaItemInfo_Value(it, "D_POSITION");
+    if (std::fabs(pos - was_pos) <= 1e-9) return;
+    std::string buf(4096, '\0');
+    if (!GetSetMediaItemInfo_String(it, kFollowStoreKey, &buf[0], false)) return;
+    buf.resize(std::strlen(buf.c_str()));
+    FollowStore fs;
+    if (buf.empty() || !ParseFollowStore(buf, &fs)) return;
+    fs.pos = pos;
+    std::string text = FormatFollowStore(fs);
+    GetSetMediaItemInfo_String(it, kFollowStoreKey, &text[0], true);
+}
+
+// 13-35: a placed item a Sync touches: its tag behind on a node of the run's scope.
+bool InSyncScope(MediaItem* it, const SoundStore& store, const SyncRun& run, PlacedTag* tag_out = nullptr)
+{
+    PlacedTag tag;
+    if (!it || !ReadPlacedTag(it, &tag) || tag.own != Ownership::Populated) return false;
+    if (tag_out) *tag_out = tag;
+    for (const std::string& b : BehindNodes(tag, store))
+        if (run.scope.count(b)) return true;
+    return false;
+}
+
 // One item: prune, draw, place / replace / remove, write its record. `events` counts the events
 // handled.
 void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, SoundReport& rep, int* events)
@@ -510,7 +569,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
     std::set<std::string> live;
     for (const Block& b : blocks)
         if (!b.rid.empty()) live.insert(b.rid);
-    const OrphanPrune pr = o.fill_passes ? OrphanPrune{} : PruneOrphanRules(rec, live);
+    const OrphanPrune pr = o.fill_passes || o.sync ? OrphanPrune{} : PruneOrphanRules(rec, live);  // 13-35: a Sync never prunes
     for (const std::string& g : pr.remove_guids) RemoveIndexed(g);
     for (const RuleSounds& r : pr.rules) {  // Antho 2026-10-12: removed and listed, by every gesture
         if (r.library.empty()) continue;  // 13-15a: inherit / None: no library was unassigned
@@ -593,9 +652,9 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                     break;
                 }
         }
-        const StrayAdoption ad = AdoptStrayCopies(rec, strays, live_events, !o.fill_passes);
+        const StrayAdoption ad = AdoptStrayCopies(rec, strays, live_events, !o.fill_passes && !o.sync);
         for (const std::string& g : ad.remove_guids) RemoveIndexed(g);
-        if (!o.fill_passes)  // a fill never removes
+        if (!o.fill_passes && !o.sync)  // a fill never removes (13-35: nor a Sync)
             for (const std::string& g : PruneStaleEvents(rec, live_events)) RemoveIndexed(g);
     }
     // 13-62i (D): what this Populate does with each event (PlanPopulateEvent: drawn, kept -- left out by the filter or
@@ -614,7 +673,15 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
         for (const FollowEvent& e : sound_events) {
             const EventSounds* ev = FindEventSounds(rec, e.rid, e.t);
             evs.push_back(ev);
-            plans.push_back(PlanPopulateEvent(filter, e.rid, e.t, ev, e.enabled));
+            EventPlan plan = PlanPopulateEvent(filter, e.rid, e.t, ev, e.enabled);
+            if (o.sync && plan == EventPlan::Draw) {  // 13-35: only the events holding a sound behind in its scope
+                bool behind = false;
+                if (ev)
+                    for (const SoundPlacement& p : ev->placed)
+                        if (p.own == Ownership::Populated && InSyncScope(FindItemByGuid(p.item_guid), store, *o.sync)) behind = true;
+                plan = SyncEventPlan(plan, ev != nullptr, behind);
+            }
+            plans.push_back(plan);
         }
         SetPopulateTimeline(st, pass_draws ? &pass_states : nullptr, plans, evs);
     }
@@ -636,7 +703,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                                        ? EffectiveAssign()
                                        : ResolveAssignFor(store, rec, ch, rid, po->second.first, po->second.second, e.t);
         const SoundLibrary*   lib = !ea.library.empty() ? FindLibrary(store, ea.library) : nullptr;
-        if (!lib && o.fill_passes) continue;  // 13-56 review: a fill never removes
+        if (!lib && (o.fill_passes || o.sync)) continue;  // 13-56 review: a fill never removes (13-35: nor a Sync)
         if (!lib) {  // P8: library None (or nothing set) removes the populated sounds
             const bool had = ev && EventIsPopulated(*ev);
             if (ev) RemovePopulated(*ev);
@@ -879,7 +946,155 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
             for (const DesiredSlot& d : desired)
                 if (deleted.count(d.node) && !live.count(d.node)) ++o.counts->deleted_kept;
         }
+        // 13-35: a Sync's own state for this event: its placements behind in scope (by index), those it touched, and how
+        // each placed item's hand edit is met.
+        std::set<int> sync_in, sync_done;
+        if (o.sync)
+            for (size_t i = 0; i < ev->placed.size(); ++i)
+                if (ev->placed[i].own == Ownership::Populated && InSyncScope(FindItemByGuid(ev->placed[i].item_guid), store, *o.sync))
+                    sync_in.insert(static_cast<int>(i));
+        auto sync_touches = [&](const SlotStep& step) {
+            for (int i : step.existing)
+                if (sync_in.count(i)) return true;
+            return false;
+        };
+        auto sync_overwrite = [&](const std::string& item_guid) {
+            const auto hit = o.sync->overwrite.find(GuidKey(item_guid));
+            return hit != o.sync->overwrite.end() && hit->second;
+        };
+        // 13-35: a Keep step of a Sync: the slot's items brought to the Library's settings in place (their span, snap,
+        // fades and volume, then their position: the Blend offset and the sync point), each hand edit met as chosen;
+        // their tags stamped. Pieces, a single item or a folder pile (its volume and position alone).
+        auto sync_keep = [&](const SlotStep& step) {
+            const DesiredSlot&   kd = desired[static_cast<size_t>(step.desired)];
+            const ResolvedSound& s = *desired_rs[static_cast<size_t>(step.desired)];
+            const SoundNode*     n = FindNode(*lib, kd.node);
+            if (!n || kd.pass < 0 || static_cast<size_t>(kd.pass) >= passes.size()) return;
+            const bool             file_kind = n->sound.source.kind == SoundSourceKind::File;
+            const int              v = s.variation;
+            std::vector<PieceApply> pa;
+            SliceApply              slice;
+            FadeApply               fades;
+            if (!kd.pile && v >= 0) {
+                const SoundData& sd =
+                    PlacedDataFor(lib_uid, *n, v, [n, v]() { return PlacedSourcePath(*n, v); }, measured_here);
+                const PeakData* zpk =
+                    ZoneSnapPeaks(*n, v, s.part_value, [n, v]() { return PlacedSourcePath(*n, v); }, measured_here);
+                pa = PieceApplyFor(sd, v, s.part_value, file_kind, zpk);
+                if (file_kind) {
+                    slice = FileSliceFor(sd, v);
+                    fades = FileFadeApplyFor(sd, v);
+                } else if (v < static_cast<int>(sd.frames.size())) {
+                    if (sd.mode == DetectMode::TakeMarkers || sd.mode == DetectMode::Silence)
+                        slice = SliceApplyFor(sd.frames[static_cast<size_t>(v)]);
+                    fades = FadeApplyFor(sd, v);
+                }
+            }
+            struct One {
+                MediaItem*        it;
+                int               idx;
+                PlacedTag         tag;
+                const PieceApply* piece;
+                SyncItemPlan      plan;
+                bool              hand;
+                bool              over;
+                double            rate;
+            };
+            std::vector<One> ones;
+            bool             hand_any = false, over_any = false;
+            double           nudge = 0.0;
+            for (int i : step.existing) {
+                const SoundPlacement& pl = ev->placed[static_cast<size_t>(i)];
+                MediaItem*            it = FindItemByGuid(pl.item_guid);
+                PlacedTag             tag;
+                if (!it || !ReadPlacedTag(it, &tag)) continue;
+                One one{it, i, tag, nullptr, SyncItemPlan{}, false, false, 1.0};
+                if (MediaItem_Take* tk = GetActiveTake(it)) one.rate = GetMediaItemTakeInfo_Value(tk, "D_PLAYRATE");
+                if (!(one.rate > 0.0) || !std::isfinite(one.rate)) one.rate = 1.0;
+                const int pi = tag.pi < 0 ? 0 : tag.pi;
+                if (!kd.pile && pi < static_cast<int>(pa.size())) one.piece = &pa[static_cast<size_t>(pi)];
+                const PlacedWrite now = ReadPlacedWritten(it);
+                const HandEdit    hand = tag.has_wr ? HandEdits(tag.wr, now, pl.offset_s) : HandEdit{};
+                one.hand = hand.Any();
+                one.over = one.hand && sync_overwrite(pl.item_guid);
+                const double want = kd.piece_db.empty() ? (tag.has_g ? tag.g : 0.0)
+                                                        : kd.piece_db[std::min(static_cast<size_t>(pi), kd.piece_db.size() - 1)];
+                const PlacedWrite wr = tag.has_wr ? tag.wr : now;
+                one.plan = PlanSyncItem(wr, now, hand, one.over, want, tag.has_g ? tag.g : want, pl.offset_s);
+                one.tag.has_g = true;
+                one.tag.g = want;
+                if (ones.empty()) nudge = one.plan.nudge_s;
+                hand_any = hand_any || one.hand;
+                over_any = over_any || one.over;
+                ones.push_back(one);
+            }
+            if (ones.empty()) return;
+            for (One& one : ones) {
+                PlacedUpdate u;
+                u.piece = one.piece;
+                if (!one.piece && !kd.pile && pa.empty()) {
+                    u.slice = &slice;
+                    u.fades = &fades;
+                }
+                u.set_fades = one.plan.set_fades;
+                u.set_length = one.plan.set_length;
+                u.vol = one.plan.vol;
+                UpdatePlacedItem(one.it, u);
+            }
+            // Where it lands now: the event's pass, the snap of its anchor (a pile: the snap it was placed by), the Blend
+            // offset now, the nudge (Keep) or none (Overwrite).
+            double sync = ones.front().tag.has_anchor ? ones.front().tag.sy : GetMediaItemInfo_Value(ones.front().it, "D_SNAPOFFSET");
+            if (!kd.pile) {
+                const One* anchor = nullptr;
+                for (const One& one : ones)
+                    if (one.piece ? one.piece->anchor : !anchor) anchor = &one;
+                if (anchor) sync = GetMediaItemInfo_Value(anchor->it, "D_SNAPOFFSET");
+            }
+            const double at = PlacementPosition(passes[static_cast<size_t>(kd.pass)], sync, s.offset_ms, nudge);
+            for (One& one : ones) {
+                double pos = at + (one.tag.has_anchor ? one.tag.ao : 0.0);
+                if (one.piece) pos = one.piece->anchor ? at : PiecePosition(at, one.piece->from_anchor, one.rate);
+                const double was_pos = GetMediaItemInfo_Value(one.it, "D_POSITION");
+                SetPlacedPosition(one.it, pos);
+                SyncMovedFollow(one.it, was_pos);
+                const PlacedWrite now = ReadPlacedWritten(one.it);
+                PlacedTag&        t = one.tag;
+                PlacedWrite       wr = t.has_wr ? t.wr : now;
+                wr.vol = one.plan.wr_vol;
+                if (one.plan.set_fades) {
+                    wr.fade_in = now.fade_in;
+                    wr.fade_out = now.fade_out;
+                    wr.in_shape = now.in_shape;
+                    wr.out_shape = now.out_shape;
+                    wr.in_dir = now.in_dir;
+                    wr.out_dir = now.out_dir;
+                }
+                if (one.plan.set_length) wr.length = now.length;
+                t.has_anchor = true;
+                t.ao = GetMediaItemInfo_Value(one.it, "D_POSITION") - at;
+                t.sy = sync;
+                t.lib = PathPrints(*lib, kd.node, v);
+                t.va = v;
+                t.has_wr = true;
+                t.wr = wr;
+                WritePlacedTag(one.it, t);
+                ev->placed[static_cast<size_t>(one.idx)].offset_s = nudge;
+                sync_done.insert(one.idx);
+            }
+            if (o.sync->counts) {
+                ++o.sync->counts->adjusted;
+                if (hand_any) ++(over_any ? o.sync->counts->overwritten : o.sync->counts->kept);
+            }
+        };
         for (const SlotStep& step : o.fill_passes ? PlanPassFill(desired, existing) : PlanEventSlots(desired, existing)) {
+            if (o.sync) {  // 13-35: Sync keeps the draw: no new sound, none removed, no node replaced by another
+                const SyncStep sa = SyncStepAction(step.act, sync_touches(step));
+                if (sa == SyncStep::Skip) continue;
+                if (sa == SyncStep::KeepInPlace) {
+                    sync_keep(step);
+                    continue;
+                }
+            }
             if (step.act == SlotAction::Keep) {
                 if (o.counts) ++o.counts->kept;
                 // 13-16 (B7c): a kept item still on its RAV track that now overlaps (a follow
@@ -888,17 +1103,26 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                 std::vector<MediaItem*> kept_items;
                 for (int i : step.existing)
                     if (MediaItem* it = FindItemByGuid(ev->placed[static_cast<size_t>(i)].item_guid)) kept_items.push_back(it);
+                const DesiredSlot& kd = desired[static_cast<size_t>(step.desired)];
+                if (!o.fill_passes)  // 13-35: a placement older than the prints: stamped as it plays now (Sync then follows it)
+                    for (MediaItem* it : kept_items) {
+                        PlacedTag tag;
+                        if (ReadPlacedTag(it, &tag) && tag.lib.empty()) StampPlaced(it, *lib, kd.node, kd.variation);
+                    }
                 CrossfadeAsButted as_butted(kept_items);
                 for (MediaItem* it : kept_items) FixLaneOverlap(nullptr, it);
                 // 13-62i (D, P2): a kept item plays at the library's gain now (a volume changed since it was placed).
-                const DesiredSlot& kd = desired[static_cast<size_t>(step.desired)];
                 for (MediaItem* it : kept_items) {
                     PlacedTag tag;
                     const bool       tagged = ReadPlacedTag(it, &tag);
+                    const double     vol_was = GetMediaItemInfo_Value(it, "D_VOL");
                     const KeptVolume kv = KeptItemVolume(kd.piece_db, kd.pile, static_cast<int>(step.existing.size()),
-                                                         tagged && tag.has_g, tag.g, tag.pi, GetMediaItemInfo_Value(it, "D_VOL"));
+                                                         tagged && tag.has_g, tag.g, tag.pi, vol_was);
                     if (!kv.set || !f_set_item_value || !f_set_item_value(it, "D_VOL", kv.vol)) continue;
                     if (!tagged) continue;
+                    // 13-35: the Library's volume is on it now: the prints that only changed their volume take it, and
+                    // what RAV wrote follows (a hand edit of its volume stays one).
+                    KeptTagAfterVolume(tag, PathPrints(*lib, kd.node, tag.va), vol_was, kv.vol);
                     tag.has_g = true;
                     tag.g = kv.g;
                     tag.pi = kv.pi;
@@ -1013,7 +1237,92 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                     PlacedPileAnchor(oi, &anchor, &sync);
                     req.offset_s = NudgeOf(anchor, pt, sync, BlendOffsetMs(L, old.node, layers.role));  // 13-31
                 }
+                // 13-35: a Sync placing a sound again (its variation switched off, its zones re-split, its sync point
+                // moved): its nudge from the record (Keep; Overwrite: none), and its hand edits read before.
+                HandEdit    sync_hand;
+                PlacedWrite sync_first, sync_last;  // the old first / last item (by position): their fade-in / fade-out
+                double      sync_ratio = 1.0;      // the user's own volume change (a ratio), when one could be read
+                bool        sync_has_ratio = false, sync_over = false;
+                if (o.sync) {
+                    sync_over = sync_overwrite(old.item_guid);
+                    req.offset_s = sync_over ? 0.0 : old.offset_s;
+                    double first_pos = 0.0, last_pos = 0.0;
+                    bool   any = false;
+                    for (int i : step.existing) {
+                        const SoundPlacement& pl = ev->placed[static_cast<size_t>(i)];
+                        MediaItem*            oi = FindItemByGuid(pl.item_guid);
+                        PlacedTag             ot;
+                        if (!oi || !ReadPlacedTag(oi, &ot) || !ot.has_wr) continue;
+                        const PlacedWrite now = ReadPlacedWritten(oi);
+                        const HandEdit    h = HandEdits(ot.wr, now, pl.offset_s);
+                        MergeHandEdit(sync_hand, h);
+                        if (h.vol && !sync_has_ratio && ot.wr.vol != 0.0 && std::isfinite(now.vol / ot.wr.vol)) {
+                            sync_ratio = now.vol / ot.wr.vol;
+                            sync_has_ratio = true;
+                        }
+                        const double pos = GetMediaItemInfo_Value(oi, "D_POSITION");
+                        if (!any || pos < first_pos) {
+                            first_pos = pos;
+                            sync_first = now;
+                        }
+                        if (!any || pos >= last_pos) {
+                            last_pos = pos;
+                            sync_last = now;
+                        }
+                        any = true;
+                    }
+                }
+                const int sync_old_var = old.variation;
                 r = ReplacePlacement(nullptr, old.item_guid, req);
+                if (o.sync && r.ok) {
+                    for (size_t k = 0; k < r.items.size(); ++k) StampPlaced(r.items[k], *lib, n->uid, s.variation);
+                    if (sync_hand.Any() && !sync_over && !r.items.empty()) {  // Keep: the user's volume (relative), fades, length stay
+                        if (sync_hand.vol && sync_has_ratio)
+                            for (MediaItem* it : r.items) SetPlacedVolume(it, GetMediaItemInfo_Value(it, "D_VOL") * sync_ratio);
+                        if (sync_hand.fades) {
+                            MediaItem* first = r.items.front();
+                            MediaItem* last = r.items.front();
+                            for (MediaItem* it : r.items) {
+                                if (GetMediaItemInfo_Value(it, "D_POSITION") < GetMediaItemInfo_Value(first, "D_POSITION")) first = it;
+                                if (GetMediaItemInfo_Value(it, "D_POSITION") >= GetMediaItemInfo_Value(last, "D_POSITION")) last = it;
+                            }
+                            auto put = [](MediaItem* it, const PlacedWrite& w, bool in, bool out) {
+                                FadeApply fa;
+                                fa.set_in = fa.shape_in = in;
+                                fa.set_out = fa.shape_out = out;
+                                fa.in = w.fade_in;
+                                fa.out = w.fade_out;
+                                fa.in_shape = w.in_shape;
+                                fa.out_shape = w.out_shape;
+                                fa.in_dir = w.in_dir;
+                                fa.out_dir = w.out_dir;
+                                PlacedUpdate u;
+                                u.fades = &fa;
+                                u.vol = GetMediaItemInfo_Value(it, "D_VOL");
+                                UpdatePlacedItem(it, u);
+                            };
+                            if (first == last) {
+                                PlacedWrite w = sync_first;
+                                w.fade_out = sync_last.fade_out;
+                                w.out_shape = sync_last.out_shape;
+                                w.out_dir = sync_last.out_dir;
+                                put(first, w, true, true);
+                            } else {
+                                put(first, sync_first, true, false);
+                                put(last, sync_last, false, true);
+                            }
+                        }
+                        // Its length only for one item played again as one item of the same variation.
+                        if (sync_hand.length && sync_old_var == s.variation && step.existing.size() == 1 && r.items.size() == 1 &&
+                            f_set_item_value)
+                            f_set_item_value(r.items[0], "D_LENGTH", sync_first.length);
+                    }
+                    if (o.sync->counts) {
+                        ++(sync_old_var != s.variation ? o.sync->counts->redrawn : o.sync->counts->adjusted);
+                        if (sync_hand.Any()) ++(sync_over ? o.sync->counts->overwritten : o.sync->counts->kept);
+                    }
+                    for (int i : step.existing) sync_done.insert(i);
+                }
                 for (size_t k = 0; k < step.existing.size(); ++k) {
                     const int i = step.existing[k];
                     if (k > 0 && r.ok) RemoveIndexed(ev->placed[static_cast<size_t>(i)].item_guid);
@@ -1036,6 +1345,8 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                 for (size_t k = 0; k < r.item_guids.size() && k < r.items.size(); ++k)
                     (*g_items)[GuidKey(r.item_guids[k])] = r.items[k];
             CheckOwners(r.item_guids, guid, rep, n->uid, e.t);
+            if (!o.sync)  // 13-35: what the Library looked like (a Sync stamped them before its kept edits)
+                for (size_t k = 0; k < r.items.size(); ++k) StampPlaced(r.items[k], *lib, n->uid, s.variation);
             for (size_t k = 0; k < r.item_guids.size(); ++k) {
                 SoundPlacement p;
                 p.item_guid = r.item_guids[k];
@@ -1079,6 +1390,12 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                     MergePassDraws(ev->draws, pd.id, PassDrawsFromPlaced(*lib, playing));
                 }
             }
+        if (o.sync && o.sync->counts) {  // 13-35: behind in scope but left as it is (no variation left on, a structure change)
+            std::set<std::string> left;
+            for (int i : sync_in)
+                if (!sync_done.count(i)) left.insert(ev->placed[static_cast<size_t>(i)].node + "#" + std::to_string(existing[static_cast<size_t>(i)].pass));
+            o.sync->counts->skipped += static_cast<int>(left.size());
+        }
         std::vector<SoundPlacement> placed;
         for (size_t i = 0; i < ev->placed.size(); ++i)
             if (!erase.count(static_cast<int>(i))) placed.push_back(ev->placed[i]);
@@ -1486,6 +1803,49 @@ SoundReport PopulateLoopPassesNoUndo(const std::vector<MediaItem*>& items)
         UpdateArrange();
     } catch (...) {
         AddLine(rep, ReportKind::Blocked, "Internal error: the loop passes were not all filled", "", "", 0.0);
+    }
+    return rep;
+}
+
+SoundReport SyncPlacedSounds(const SyncPlacedRequest& request, SyncCounts* counts)
+{
+    SoundReport rep;
+    SyncCounts  local;
+    SyncCounts& c = counts ? *counts : local;
+    c = SyncCounts{};
+    try {
+        {
+            SoundUndoScope undo(nullptr, "RAV: Sync placed sounds");
+            ItemIndexScope index;
+            BusyScope      busy("Syncing placed sounds");
+            if (request.remember) {  // Don't ask again: the rule, in this undo point
+                const HandEditRule rule = request.rule;
+                ModifySoundStore(nullptr, nullptr, [rule](SoundStore& st) { return SetHandEditRule(st, rule); });
+            }
+            const SoundStore store = GetSoundStore(nullptr);
+            SyncRun          run;
+            run.scope.insert(request.scope.begin(), request.scope.end());
+            for (const auto& kv : request.overwrite) run.overwrite[GuidKey(kv.first)] = kv.second;
+            run.counts = &c;
+            PopOpts o;
+            o.sync = &run;
+            o.report_replaced = false;
+            o.only_populated = true;
+            std::map<std::string, std::vector<int>> carried;  // a redraw avoids repeating across the items
+            o.carry = &carried;
+            std::vector<MediaItem*> items;
+            for (const std::string& g : request.owners)
+                if (MediaItem* it = FindItemByGuid(g))
+                    if (RavTakeOf(it)) items.push_back(it);
+            items = ByPosition(items);
+            for (size_t k = 0; k < items.size(); ++k) {
+                busy.Item(static_cast<int>(k), static_cast<int>(items.size()));
+                PopulateOne(items[k], store, o, rep, nullptr);
+            }
+        }
+        UpdateArrange();
+    } catch (...) {
+        AddLine(rep, ReportKind::Blocked, "Internal error: the gesture stopped part way (Ctrl+Z undoes it)", "", "", 0.0);
     }
     return rep;
 }

@@ -65,6 +65,10 @@ struct LibraryTreeHooks {
     // 13-69: called every frame a media drag is over a target that takes it (before the drop), with
     // that target's row, so the drag's tooltip says what the drop makes there.
     std::function<void(const std::string& lib, const LibraryRow& row)> media_hover;
+    // 13-35 (Sync placed sounds): the Placed sounds card under the tree's header, and a node's ↻ mark at the right of
+    // its row (its right edge at `right_x`, centred on `cy`; returns the width it took, 0 = none).
+    std::function<void(const std::string& lib)>                                                  sync_card;
+    std::function<float(const std::string& lib, const std::string& node, float right_x, float cy)> sync_mark;
 };
 void SetLibraryTreeHooks(const LibraryTreeHooks& hooks);
 // 13-17d: the tree has the focus (its rows walk with the arrow keys; REAPER must not take them).

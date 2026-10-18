@@ -1265,6 +1265,60 @@ std::string FileForProject(ReaProject* proj, const std::string& path)
     return path;
 }
 
+// ---- 13-35: Sync placed sounds ---------------------------------------------------------------------
+
+void UpdatePlacedItem(MediaItem* item, const PlacedUpdate& u)
+{
+    if (!item || !f_set_item) return;
+    MediaItem_Take* take = GetActiveTake(item);
+    double          rate = take ? GetMediaItemTakeInfo_Value(take, "D_PLAYRATE") : 1.0;
+    if (!(rate > 0.0) || !std::isfinite(rate)) rate = 1.0;
+    if (u.piece) {
+        const SliceApply& sl = u.piece->slice;
+        if (u.set_length && take && f_set_take) {
+            f_set_take(take, "D_STARTOFFS", sl.start_offs);
+            f_set_item(item, "D_LENGTH", sl.length / rate);
+        }
+        f_set_item(item, "D_SNAPOFFSET", u.piece->anchor ? sl.snap_offset / rate : 0.0);
+        if (u.set_fades) ApplyFades(item, u.piece->fades);
+    } else {
+        if (u.slice && u.slice->set) {  // as ApplyVariation
+            if (u.set_length && take && f_set_take) {
+                f_set_take(take, "D_STARTOFFS", u.slice->start_offs);
+                f_set_item(item, "D_LENGTH", u.slice->length / rate);
+            }
+            f_set_item(item, "D_SNAPOFFSET", u.slice->snap_offset);
+        }
+        if (u.fades && u.set_fades) ApplyFades(item, *u.fades);
+    }
+    if (std::isfinite(u.vol)) f_set_item(item, "D_VOL", u.vol);
+}
+
+PlacedTag::Written ReadPlacedWritten(MediaItem* item)
+{
+    PlacedTag::Written w;
+    if (!item) return w;
+    w.vol = GetMediaItemInfo_Value(item, "D_VOL");
+    w.fade_in = GetMediaItemInfo_Value(item, "D_FADEINLEN");
+    w.fade_out = GetMediaItemInfo_Value(item, "D_FADEOUTLEN");
+    w.in_shape = static_cast<int>(GetMediaItemInfo_Value(item, "C_FADEINSHAPE"));
+    w.out_shape = static_cast<int>(GetMediaItemInfo_Value(item, "C_FADEOUTSHAPE"));
+    w.in_dir = GetMediaItemInfo_Value(item, "D_FADEINDIR");
+    w.out_dir = GetMediaItemInfo_Value(item, "D_FADEOUTDIR");
+    w.length = GetMediaItemInfo_Value(item, "D_LENGTH");
+    return w;
+}
+
+void SetPlacedPosition(MediaItem* item, double pos)
+{
+    if (item && f_set_item && std::isfinite(pos)) f_set_item(item, "D_POSITION", std::max(0.0, pos));
+}
+
+void SetPlacedVolume(MediaItem* item, double vol)
+{
+    if (item && f_set_item && std::isfinite(vol)) f_set_item(item, "D_VOL", vol);
+}
+
 }  // namespace rav
 
 #endif  // _WIN32

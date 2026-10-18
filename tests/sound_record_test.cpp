@@ -465,6 +465,45 @@ int main()
             CHECK(SerializePlacedTag(t).find("tk=") == std::string::npos);
         }
         CHECK(ParsePlacedTag(fut, &f) && f.version == 3 && !f.has_anchor && f.kept.size() == 1 && SerializePlacedTag(f) == fut);
+        // 13-35: the Library prints of its path, its variation and what RAV wrote round-trip; none = no field.
+        {
+            PlacedTag a = t;
+            a.va = 2;
+            PlacedTag::NodePrint p1;
+            p1.node = "c000000000000004";
+            p1.vol = -6.5;
+            p1.off = 12.25;
+            p1.fades = 0xdeadbeefu;
+            p1.sync = 1u;
+            p1.zones = 0x0000ffffu;
+            p1.level = 0x80000000u;
+            p1.on = false;
+            PlacedTag::NodePrint p2;
+            p2.node = "root000000000001";
+            a.lib = {p1, p2};
+            a.has_wr = true;
+            a.wr.vol = 0.5;
+            a.wr.fade_in = 0.001;
+            a.wr.fade_out = 0.04;
+            a.wr.in_shape = 1;
+            a.wr.out_shape = 6;
+            a.wr.in_dir = -0.25;
+            a.wr.out_dir = 0.75;
+            a.wr.length = 1.5;
+            const std::string at = SerializePlacedTag(a);
+            CHECK(at.find(" va=2 lib=") != std::string::npos && at.find(" wr=") != std::string::npos);
+            CHECK(at.find(',') == std::string::npos);  // one field each (percent-encoded)
+            PlacedTag b;
+            CHECK(ParsePlacedTag(at, &b) && b.va == 2 && b.lib.size() == 2 && b.lib[0] == p1 && b.lib[1] == p2 && b.has_wr &&
+                  b.wr.vol == 0.5 && b.wr.fade_in == 0.001 && b.wr.fade_out == 0.04 && b.wr.in_shape == 1 &&
+                  b.wr.out_shape == 6 && b.wr.in_dir == -0.25 && b.wr.out_dir == 0.75 && b.wr.length == 1.5);
+            CHECK(SerializePlacedTag(b) == at);
+            CHECK(SerializePlacedTag(t).find("lib=") == std::string::npos && SerializePlacedTag(t).find("wr=") == std::string::npos);
+            // A print that does not read is kept as an unknown field (written back as read).
+            PlacedTag bad;
+            CHECK(ParsePlacedTag("RAVSND 2 owner={O} rid=r t=1 node=n own=populated lib=zz\n", &bad) && bad.lib.empty() &&
+                  bad.kept.size() == 1);
+        }
     }
     // ---- Lookups in the store --------------------------------------------------------------------
     {

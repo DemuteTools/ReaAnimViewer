@@ -49,6 +49,7 @@
 #include "view_nav.h"  // 13-45: Edit's wheel and zoom keys, as every timeline's
 #include "zone_wave_ui.h"  // 13-62h (Lot E1): a zoned Sound's waveform
 #include "wave_draw_ui.h"  // 13-71: the one waveform drawer
+#include "sound_sync_ui.h"  // 13-35: the pending line
 #include "sound_assign.h"  // RoleKeyLabel (13-23 role maps)
 #include "sound_audition.h"
 #include "sound_audition_plan.h"
@@ -6534,11 +6535,13 @@ void NodePanelWidgets()
     if (!StoreReplaced() && n->type != SoundNodeType::Sound) {
         DrawTypeRows(store, *lib, *n);
         if (!StoreReplaced()) DrawVolume(*lib, *n);
+        if (!StoreReplaced()) DrawSyncPendingLine(lib->uid, n->uid);  // 13-35
         if (!StoreReplaced()) ui::FoldScopeBar(fold_scope);
         if (!StoreReplaced() && n->type != SoundNodeType::Blend) DrawMix(store, *lib, *n);
         if (!StoreReplaced() && n->type != SoundNodeType::Switch) DrawPlays(store, *lib, *n);
     } else if (!StoreReplaced()) {
         DrawVolume(*lib, *n);
+        if (!StoreReplaced()) DrawSyncPendingLine(lib->uid, n->uid);  // 13-35
         if (!StoreReplaced()) {
             OpenEditKey(*lib, *n);
             ui::FoldScopeBar(fold_scope);

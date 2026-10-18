@@ -198,6 +198,10 @@ add_test(NAME preset_menu_model COMMAND preset_menu_model_test)
 add_executable(sound_record_test sound_record_test.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/sound_entries.cpp ../src/rule_record.cpp)
 target_include_directories(sound_record_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_record COMMAND sound_record_test)
+# 13-35 -- Sync placed sounds: prints, behind, hand edits, the Library's view (src/sound_sync_plan.h).
+add_executable(sound_sync_plan_test sound_sync_plan_test.cpp ../src/sound_sync_plan.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/sound_entries.cpp ../src/rule_record.cpp)
+target_include_directories(sound_sync_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME sound_sync_plan COMMAND sound_sync_plan_test)
 
 # Epic 13 -- one target per pure module (13-2 placeholders; each wave story replaces its own test).
 # Story 13-3 -- src/sound_entries.h

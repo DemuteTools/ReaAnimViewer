@@ -256,6 +256,9 @@ if(WIN32)
             src/sound_attach_plan.cpp
             src/sound_spread_selection.cpp  # 13-68
             src/sound_spread_plan.cpp       # 13-68 v2
+            src/sound_sync_plan.cpp         # 13-35: Sync placed sounds
+            src/sound_sync.cpp
+            src/sound_sync_ui.cpp
             src/reaper_toast.cpp
             src/library_user_ui.cpp
             src/ravlib.cpp

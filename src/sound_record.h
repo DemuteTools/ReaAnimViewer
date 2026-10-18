@@ -77,6 +77,9 @@
 // The tag on a placed item (item P_EXT:RAV_SND), one line:
 //   RAVSND 1 owner=<guid> rid=<rid> t=<clip s> node=<id> own=populated|attached|spread [ao=<s> sy=<s>] [tk=<s>]
 //        [pt=<id>]                                   -- 13-23: the part it plays (none = the whole variation)
+//        [g=<dB>] [pi=<n>]                           -- 13-62i: the library dB it was placed at, its piece
+//        [va=<n> lib=<node/vol/off/f/s/z/l/on,...>]  -- 13-35: its variation and the prints of its path (hex hashes)
+//        [wr=<vol/fin/fis/fid/fout/fos/fod/len>]     -- 13-35: what RAV wrote on the item
 
 #pragma once
 

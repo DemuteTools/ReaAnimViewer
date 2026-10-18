@@ -1577,6 +1577,11 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
         }
     }
     if (StoreReplaced()) return;
+    // 13-35: its placed sounds behind the Library (the ↻ N mark; a click: the Sync dialog of this node).
+    if (n && (r.kind == TreeRowKind::Node || r.kind == TreeRowKind::Value) && g.hooks.sync_mark) {  // a value row: its content
+        const float mw = g.hooks.sync_mark(lib.uid, n->uid, rx, cy);
+        if (mw > 0.0f) rx -= mw + gap;
+    }
     // 13-21: a library gap on this node, or hidden under it (folded, searched out): an amber "!",
     // the reasons on hover.
     if (n && r.kind != TreeRowKind::UnassignedHeader) {
@@ -2641,6 +2646,7 @@ void LibraryTreeWidgets()
     TreeHeader(*lib);
     lib = CurrentLib();
     if (!lib || StoreReplaced()) return;
+    if (g.hooks.sync_card) g.hooks.sync_card(lib->uid);  // 13-35: the Placed sounds card
     // 13-7a (audit C3.2): the toolbar in its well; the pane's gap under it (no separator).
     Toolbar(*lib);
     if (!StoreReplaced()) TreeKeys(*lib);  // after a toolbar gesture `lib` is stale

@@ -10,6 +10,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
@@ -1535,6 +1536,93 @@ std::string SerializeItemSounds(const ItemSounds& s)
 
 // ---- Placed tag -------------------------------------------------------------------------------
 
+namespace {
+
+// 13-35: the tag's Library prints (`lib`: "node/vol/off/fades/sync/zones/level/on" per node, comma separated, then
+// percent-encoded as one value) and what RAV wrote (`wr`: "vol/fin/fis/fid/fout/fos/fod/len").
+std::string Hex32(uint32_t v)
+{
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "%08x", static_cast<unsigned>(v));
+    return buf;
+}
+
+bool ReadHex32(const std::string& s, uint32_t* out)
+{
+    if (s.empty() || s.size() > 8) return false;
+    uint32_t v = 0;
+    for (char c : s) {
+        int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+        if (d < 0) return false;
+        v = (v << 4) | static_cast<uint32_t>(d);
+    }
+    *out = v;
+    return true;
+}
+
+std::vector<std::string> SplitOn(const std::string& s, char sep)
+{
+    std::vector<std::string> out;
+    size_t                   at = 0;
+    for (;;) {
+        const size_t e = s.find(sep, at);
+        out.push_back(s.substr(at, e == std::string::npos ? std::string::npos : e - at));
+        if (e == std::string::npos) break;
+        at = e + 1;
+    }
+    return out;
+}
+
+std::string TagPrintsText(const std::vector<PlacedTag::NodePrint>& prints)
+{
+    std::string out;
+    for (const PlacedTag::NodePrint& p : prints) {
+        if (!out.empty()) out += ',';
+        out += p.node + '/' + FormatNumber(p.vol) + '/' + FormatNumber(p.off) + '/' + Hex32(p.fades) + '/' + Hex32(p.sync) +
+               '/' + Hex32(p.zones) + '/' + Hex32(p.level) + '/' + (p.on ? "1" : "0");
+    }
+    return out;
+}
+
+bool ReadTagPrints(const std::string& text, std::vector<PlacedTag::NodePrint>* out)
+{
+    std::vector<PlacedTag::NodePrint> v;
+    if (!text.empty())
+        for (const std::string& one : SplitOn(text, ',')) {
+            const std::vector<std::string> f = SplitOn(one, '/');
+            PlacedTag::NodePrint           p;
+            if (f.size() < 8 || f[0].empty() || !ReadNumber(f[1], &p.vol) || !ReadNumber(f[2], &p.off) ||
+                !ReadHex32(f[3], &p.fades) || !ReadHex32(f[4], &p.sync) || !ReadHex32(f[5], &p.zones) ||
+                !ReadHex32(f[6], &p.level) || (f[7] != "0" && f[7] != "1"))
+                return false;
+            p.node = f[0];
+            p.on = f[7] == "1";
+            v.push_back(p);
+        }
+    *out = std::move(v);
+    return true;
+}
+
+std::string TagWrittenText(const PlacedTag::Written& w)
+{
+    return FormatNumber(w.vol) + '/' + FormatNumber(w.fade_in) + '/' + FmtInt(w.in_shape) + '/' + FormatNumber(w.in_dir) + '/' +
+           FormatNumber(w.fade_out) + '/' + FmtInt(w.out_shape) + '/' + FormatNumber(w.out_dir) + '/' + FormatNumber(w.length);
+}
+
+bool ReadTagWritten(const std::string& text, PlacedTag::Written* out)
+{
+    const std::vector<std::string> f = SplitOn(text, '/');
+    PlacedTag::Written             w;
+    if (f.size() < 8 || !ReadNumber(f[0], &w.vol) || !ReadNumber(f[1], &w.fade_in) || !ReadInt(f[2], &w.in_shape) ||
+        !ReadNumber(f[3], &w.in_dir) || !ReadNumber(f[4], &w.fade_out) || !ReadInt(f[5], &w.out_shape) ||
+        !ReadNumber(f[6], &w.out_dir) || !ReadNumber(f[7], &w.length))
+        return false;
+    *out = w;
+    return true;
+}
+
+}  // namespace
+
 bool ParsePlacedTag(const std::string& text, PlacedTag* out)
 {
     if (!out) return false;
@@ -1559,6 +1647,15 @@ bool ParsePlacedTag(const std::string& text, PlacedTag* out)
             if (k == "pt") return G(ReadStr(v, &t.pt));
             if (k == "g") return G(t.has_g = ReadNumber(v, &t.g));  // 13-62i (D)
             if (k == "pi") return G(ReadInt(v, &t.pi));
+            if (k == "va") return G(ReadInt(v, &t.va));  // 13-35
+            if (k == "lib") {
+                std::string txt;
+                return G(ReadStr(v, &txt) && ReadTagPrints(txt, &t.lib));
+            }
+            if (k == "wr") {
+                std::string txt;
+                return G(t.has_wr = ReadStr(v, &txt) && ReadTagWritten(txt, &t.wr));
+            }
             return Got::Unknown;
         });
         if (!owner || t.owner.empty()) return false;
@@ -1586,6 +1683,11 @@ std::string SerializePlacedTag(const PlacedTag& t)
     if (!t.pt.empty()) f.push_back({"pt", Enc(t.pt)});
     if (t.has_g) f.push_back({"g", FormatNumber(t.g)});  // 13-62i (D)
     if (t.pi >= 0) f.push_back({"pi", FmtInt(t.pi)});
+    if (!t.lib.empty()) {  // 13-35
+        f.push_back({"va", FmtInt(t.va)});
+        f.push_back({"lib", Enc(TagPrintsText(t.lib))});
+    }
+    if (t.has_wr) f.push_back({"wr", Enc(TagWrittenText(t.wr))});
     WriteHeader(out, kPlacedTagMagic, t.version, f, t.kept);
     return out;
 }

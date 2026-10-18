@@ -67,6 +67,7 @@ ReaAnimViewer is a native REAPER extension (a `.dll`, plus a small video FX that
   - [Markers follow their item](#markers-follow-their-item)
   - [Editing the markers in REAPER](#editing-the-markers-in-reaper)
   - [Spreading your sounds onto the markers](#spreading-your-sounds-onto-the-markers)
+  - [Syncing placed sounds with the Library](#syncing-placed-sounds-with-the-library)
   - [Copies of one animation share their tagging](#copies-of-one-animation-share-their-tagging)
   - [Known limits](#known-limits)
 - [Saving and Sharing Projects](#saving-and-sharing-projects)
@@ -650,6 +651,21 @@ Cut the new layer's variations and put the first one where you want it against a
 - **RAV: Tagging - Add selected items to stack (this animation)**: the layer is added for this animation only (the item of that marker and its linked copies). RAV puts it in the same `FS` library under a Switch it manages, **RAV - FS layers**, with one value per animation (named after it); the other animations play the default value, which adds nothing, so they are unchanged. What the animations share stays shared: a change to it reaches every animation.
 
 The new items you select with the stack never include the stack's own sounds (its folder item, the library's sources). The new variation you put against the stack stays there, attached to that marker; the others go after the end of the project with the other sources. Ctrl+Z undoes it in one step.
+
+### Syncing placed sounds with the Library
+
+Changing a setting in the Library (a node's volume, a Blend offset, a Sound's fades, sync point, zones or level, a variation switched off) never moves anything in the arrange: the sounds already placed keep what they had. The Library shows what is behind:
+
+- At the top of the tree, the **Placed sounds** card says how many changes of the library shown are not yet on its placed sounds ("1 change not yet on 26 placed sounds in 3 items"). Each library has its own card. When everything matches it folds into a green line, **Placed sounds match the library**.
+- The nodes whose placed sounds are behind carry a **↻ N** mark (N placed sounds); hover it for what changed. The node panel says it too, with a **Sync this node…** button.
+
+**Sync…** (or a **↻** mark: the sounds of that node, with every change they are behind on) opens the choice of where: the animation items holding sounds behind, by track, each with its sounds and the nodes they play. Check the items (per item, a whole track, **Selected in REAPER**, **All** / **None**), then **Apply to N items** or **Apply to all**. An item left unchecked keeps the old setting and stays counted on the card.
+
+Sync keeps the draw: each placed sound keeps its variation, track and position, and RAV updates what changed, in place (your take FX and other edits on the item stay). Only a sound whose variation was switched off is drawn again, among the variations still on; with none left on, it is left as it is. A change of structure (a node added, a Switch value, an assignment) is not Sync's: **Populate** handles it. **Repopulate (reset)** does not change: it removes and draws again.
+
+**Sounds you edited by hand.** A placed sound whose volume, fades, position or length you changed in REAPER is listed in a second dialog (the item, its time, what you changed, its node). For each one, or for all of them: **Keep** leaves your change and updates the rest (your volume change stays on top of the library's new volume), **Overwrite** puts the library's settings back (a moved sound goes back to its place). **Don't ask again** remembers the answer when it is the same for all of them (greyed when the choices differ). The rule is per project, in ☰ › Tagging view › Sounds › **Hand-edited placed sounds, on Sync**: Ask each time, Keep my edits, or Overwrite them.
+
+One Sync is one undo point, "RAV: Sync placed sounds" (the remembered rule included); the toast says how many sounds were adjusted, redrawn, kept, overwritten and skipped (left as they are: no variation left on, or a change only Populate makes). Sounds placed by a RAV older than this feature are not counted until their next Populate.
 
 ### Copies of one animation share their tagging
 

@@ -38,6 +38,7 @@
 #include "sound_project.h"
 #include "sound_populate_plan.h"
 #include "sound_record.h"
+#include "sound_sync_plan.h"  // 13-35: HandEditRuleOf
 #include "sound_tracks_plan.h"
 #include "tagging_session.h"
 #include "undo_guard.h"
@@ -563,6 +564,34 @@ void DrawLoopPassRow(ReaProject* proj)
     }
 }
 
+// 13-35: what Sync does to a placed sound edited by hand in REAPER, per project (the store header, one undo point a
+// change, as the Loop passes row). Ask each time (the default) shows the hand-edit dialog.
+void DrawHandEditRow(ReaProject* proj)
+{
+    static const HandEditRule kRules[3] = {HandEditRule::Ask, HandEditRule::Keep, HandEditRule::Overwrite};
+    const HandEditRule        now = HandEditRuleOf(GetSoundStore(proj));
+    int                       sel = 0;
+    for (int i = 0; i < 3; ++i)
+        if (kRules[i] == now) sel = i;
+    ui::LabelRow("Hand-edited placed sounds, on Sync", ui::Dp(90.0f));
+    const std::string label = std::string(HandEditRuleText(kRules[sel])) + " \xE2\x96\xBE##sndhandedit";
+    if (ui::SolidButton(label.c_str())) ImGui::OpenPopup("##sndhandedit");
+    ui::ItemTipText("What Sync does to a placed sound you changed by hand in REAPER\n"
+                    "(volume, fades, position, length). Per project, one undo point.");
+    if (ui::BeginMenuPopup("##sndhandedit")) {
+        ui::MenuCaption("HAND-EDITED PLACED SOUNDS, ON SYNC");
+        for (int i = 0; i < 3; ++i)
+            if (ImGui::MenuItem(HandEditRuleText(kRules[i]), nullptr, i == sel) && i != sel) {
+                const HandEditRule to = kRules[i];
+                const std::string  undo = std::string("RAV: Hand-edited placed sounds: ") + HandEditRuleText(to);
+                g_track_picks.Pick([proj, to, undo]() {
+                    ModifySoundStore(proj, undo.c_str(), [to](SoundStore& st) { return SetHandEditRule(st, to); });
+                });
+            }
+        ui::EndMenuPopup();
+    }
+}
+
 }  // namespace
 
 void InitSoundFollow(void* (*get_func)(const char* name))
@@ -1049,6 +1078,8 @@ void DrawSoundsMenuSection()
         bool        keep = LoadPrefFloat(kKeepDrawPref, 0.0f) != 0.0f;
         if (ui::Checkbox("Keep the draw on animation copies", &keep)) SavePrefFloat(kKeepDrawPref, keep ? 1.0f : 0.0f);
         ui::ItemTipText("On: a copied animation item plays the same variations.\nOff: it draws new ones.");
+        DrawHandEditRow(proj);  // 13-35
+        g_track_picks.Run();    // after its menu: the gesture replaces the store
 
         int                           placed = 0;
         const std::vector<MediaItem*> items = RepopulateItems(proj, &placed);

@@ -144,6 +144,26 @@ bool ReadCopyImportedMedia();
 // already sits in that folder or the copy fails, the file itself.
 std::string FileForProject(ReaProject* proj, const std::string& path);
 
+// 13-35 (Sync placed sounds): a placed item brought to the Library's settings in place -- nothing copied again, so
+// its takes, FX and the user's other edits stay. `piece` = its piece of the request (its span, its snap on the anchor
+// piece, its fades); else `slice` / `fades` (a sound placed as one item); neither for a folder pile's member (its volume
+// alone). `set_length` / `set_fades` false = the item's own span / fades kept (the user's hand edit). D_VOL = `vol`.
+struct PlacedUpdate {
+    const PieceApply* piece = nullptr;
+    const SliceApply* slice = nullptr;
+    const FadeApply*  fades = nullptr;
+    bool              set_length = true;
+    bool              set_fades = true;
+    double            vol = 1.0;
+};
+void UpdatePlacedItem(MediaItem* item, const PlacedUpdate& u);
+// What a placed item holds now: D_VOL, its fades (length, shape, curvature) and D_LENGTH (PlacedTag::wr).
+PlacedTag::Written ReadPlacedWritten(MediaItem* item);
+// Moves a placed item (D_POSITION, clamped at 0).
+void SetPlacedPosition(MediaItem* item, double pos);
+// Sets a placed item's D_VOL (13-35: a hand edit kept on a sound placed again).
+void SetPlacedVolume(MediaItem* item, double vol);
+
 }  // namespace rav
 
 #endif  // _WIN32

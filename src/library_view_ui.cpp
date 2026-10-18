@@ -3,6 +3,7 @@
 // See library_view_ui.h.
 
 #include "library_view_ui.h"
+#include "sound_sync_ui.h"  // 13-35
 #include "watchdog.h"  // freeze audit: breadcrumbs and scopes
 
 #include "library_view_keys.h"
@@ -412,6 +413,7 @@ void DrawLibraryView(float x, float y, float w, float h)
 {
     RAV_QUIET_SCOPE("Library view", nullptr);  // freeze audit
     LoadPrefs();
+    MergeSyncTreeHooks();  // 13-35: the Placed sounds card and the tree's marks
     // The 3D view stays hidden behind the Library view (its gaps and margins included).
     ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0.0f, 0.0f), ImGui::GetIO().DisplaySize, ui::kBg);
     ImGui::SetNextWindowPos(ImVec2(x, y), ImGuiCond_Always);
@@ -462,6 +464,7 @@ void DrawLibraryView(float x, float y, float w, float h)
     }
     ImGui::End();
     ImGui::PopStyleVar();
+    DrawSyncDialogs();  // 13-35
     DrawToast();
     DrawKitOffer(y);
 }

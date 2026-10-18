@@ -10,6 +10,7 @@
 #ifdef _WIN32
 
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -18,6 +19,7 @@
 #include "reaper_item_read.h"
 #include "sound_assign.h"
 #include "sound_model.h"
+#include "sound_sync_plan.h"  // 13-35
 
 namespace rav {
 
@@ -35,6 +37,22 @@ void InitSoundPopulate(void* (*get_func)(const char* name));
 // placed again. The given items only (not their pools), on the current project. NO undo point: the
 // follow runs after the user's gesture and rides it (13-9 F4).
 SoundReport PopulateLoopPassesNoUndo(const std::vector<MediaItem*>& items);
+
+// 13-35: Sync placed sounds. The populated sounds of the animation items `owners` (GUIDs) behind on a node of `scope`
+// (sound_sync_plan.h BehindNodes) get the Library's settings now through Populate's engine, keeping the draw: same
+// variation, track and position (a variation switched off is drawn again among the ones on); nothing placed, removed or
+// replaced by another node, nothing else in the arrange moved. A hand-edited placed item (GUID in `overwrite`, any
+// case) gets the Library's values and its nudge back to 0 when true, else keeps the user's edits (volume relative, fades,
+// length, nudge) and takes the rest. `remember` writes the rule `rule` (Don't ask again) in the same undo point
+// "RAV: Sync placed sounds". `counts` (optional) = what it did, per sound.
+struct SyncPlacedRequest {
+    std::vector<std::string>    owners;
+    std::vector<std::string>    scope;
+    std::map<std::string, bool> overwrite;
+    bool                        remember = false;
+    HandEditRule                rule = HandEditRule::Ask;
+};
+SoundReport SyncPlacedSounds(const SyncPlacedRequest& request, SyncCounts* counts = nullptr);
 
 // PopulateItems, with the number of events it handled (`events`, optional).
 // Antho 2026-10-12: what it did (placed / replaced / already in place / deleted by hand, not added back),

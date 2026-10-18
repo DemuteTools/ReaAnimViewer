@@ -332,7 +332,7 @@ void TestMoveAndEdges()
     CHECK(ResetZoneFade(a, {0, 0}, -1) && ZoneFade(a, {0, 0}, -1).src == FadeSrc::Sound);
     CHECK(SetZoneSnap(a, {0, 0}, 0.2) && ZoneSnap(a, {0, 0}, &pk).own && Near(ZoneSnap(a, {0, 0}, &pk).t, 0.2));
     CHECK(ResetZoneSnap(a, {0, 0}) && !ZoneSnap(a, {0, 0}, &pk).own);
-    CHECK(Near(ZoneSnap(a, {0, 0}, &pk).t, 0.15 - 0.002, 1e-3));  // Attack, -2 ms
+    CHECK(Near(ZoneSnap(a, {0, 0}, &pk).t, 0.15, 1e-3));  // Attack, 0 ms
     CHECK(SetZoneDb(a, {0, 0}, 3.04) && Near(At(a, 0, 0).db, 3.0) && !SetZoneDb(a, {0, 0}, 3.0));
 }
 
@@ -825,7 +825,7 @@ void TestReviewRows()
         d.sync_mode = SyncMode::Peak;
         PeakData p2 = Peaks({{0.15, 0.25}});
         p2.max_abs[200] = 0.99f;
-        CHECK(Near(ZoneSnap(d, {0, 0}, &p2).t, 0.198, 1e-3));
+        CHECK(Near(ZoneSnap(d, {0, 0}, &p2).t, 0.200, 1e-3));
         PartSettings o;
         o.sync_offset_ms = 0.0;
         SetPartSetting(d, kHeel, o);
@@ -938,16 +938,16 @@ void TestReviewBC()
         CHECK(Near(ZoneSnap(d, {0, 0}, nullptr).t, 0.10));  // never measured: the no-peaks fallback (its start)
         CHECK(SetZoneDb(d, {0, 0}, -1.0, ctx));
         CHECK(ZoneSnapStored(d, {0, 0}) && Near(ZoneSnap(d, {0, 0}, nullptr).t, ZoneSnap(d, {0, 0}, &p2).t) &&
-              Near(ZoneSnap(d, {0, 0}, nullptr).t, 0.198, 1e-3));
+              Near(ZoneSnap(d, {0, 0}, nullptr).t, 0.200, 1e-3));
         CHECK(RoundTrips(d) && SerializeSoundStore(StoreOf(d)).find(" as=") != std::string::npos);
         RelayoutZones(d, nullptr, 3.0);  // laid out again without peaks: kept
         CHECK(ZoneSnapStored(d, {0, 0}));
         PartSettings o;
-        o.sync_offset_ms = 0.0;
+        o.sync_offset_ms = -2.0;
         SetPartSetting(d, kHeel, o);
         CHECK(!ZoneSnapStored(d, {0, 0}) && Near(ZoneSnap(d, {0, 0}, nullptr).t, 0.10));  // stale: ignored
         RelayoutZones(d, &p2, 3.0);  // measured again
-        CHECK(ZoneSnapStored(d, {0, 0}) && Near(ZoneSnap(d, {0, 0}, nullptr).t, 0.200, 1e-3));
+        CHECK(ZoneSnapStored(d, {0, 0}) && Near(ZoneSnap(d, {0, 0}, nullptr).t, 0.198, 1e-3));
         CHECK(DragZoneEdge(d, {0, 0}, -1, 0.12));  // edges moved without peaks: stale
         CHECK(!ZoneSnapStored(d, {0, 0}));
     }
@@ -1258,8 +1258,8 @@ void TestSampleAccurateSnap()
         CHECK(Near(ZoneSnap(d, {0, 0}, &fine).t, FrameT(kHeelPeak), 1e-9));
         CHECK(Near(ZoneSnap(d, {0, 1}, &fine).t, FrameT(kToePeak), 1e-9));  // the part follows its Sound's mode
         CHECK(Near(ZoneSnap(d, {0, 0}, &coarse).t, 0.201, 1e-9));           // the old measure: 0.125 ms early here
-        // The default Offset (-2 ms) is applied after: 2 ms before the peak's frame, as REAPER's snap offset.
-        d.sync_offset_ms = kDefaultSyncOffsetMs;
+        // An Offset of -2 ms is applied after: 2 ms before the peak's frame, as REAPER's snap offset.
+        d.sync_offset_ms = -2.0;
         CHECK(Near(ZoneSnap(d, {0, 0}, &fine).t, FrameT(kHeelPeak) - 0.002, 1e-9));
     }
     {  // Attack: the first frame reaching max(threshold, peak - 20 dB); a part's own Sync point wins over the Sound's

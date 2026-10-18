@@ -515,20 +515,20 @@ static void TestZonePlacement()
         pa = PieceApplyFor(d, 0, "toe");
         CHECK(pa.size() == 1 && Near(pa[0].slice.snap_offset, 0.05));
     }
-    // Snap = ZoneSnap on the anchor zone: without peaks Attack = its onset + the offset (-2 ms); with peaks the
+    // Snap = ZoneSnap on the anchor zone: without peaks Attack = its onset + the offset; with peaks the
     // attack measured in it.
     {
         SoundData d = Zoned({Zn(1.0, 1.4, "heel"), Zn(1.4, 2.0, "toe")});
         d.frames[0].zones[0].onset = 1.05;
         CHECK(PieceSnapNeedsPeaks(d, 0, "heel"));
         std::vector<PieceApply> pa = PieceApplyFor(d, 0, "heel");
-        CHECK(pa.size() == 1 && Near(pa[0].slice.snap_offset, 0.048, 1e-9));
+        CHECK(pa.size() == 1 && Near(pa[0].slice.snap_offset, 0.050, 1e-9));
         PeakData pk;
         pk.rate = 1000.0;
         pk.max_abs.assign(2000, 0.0f);
         for (int i = 1100; i < 1300; ++i) pk.max_abs[static_cast<size_t>(i)] = 0.5f;
         pa = PieceApplyFor(d, 0, "heel", false, &pk);
-        CHECK(pa.size() == 1 && Near(pa[0].slice.snap_offset, 0.098, 1e-6));
+        CHECK(pa.size() == 1 && Near(pa[0].slice.snap_offset, 0.100, 1e-6));
         // The anchor of a whole event = the first zone; the others carry no snap.
         pa = PieceApplyFor(d, 0, "", false, &pk);
         CHECK(pa.size() == 2 && pa[0].anchor && !pa[1].anchor && Near(pa[1].slice.snap_offset, 0.0));
@@ -539,9 +539,9 @@ static void TestZonePlacement()
         RelayoutZones(m, &pk, 2.0);
         CHECK(!PieceSnapNeedsPeaks(m, 0, "heel"));
         pa = PieceApplyFor(m, 0, "heel");
-        CHECK(pa.size() == 1 && Near(pa[0].slice.snap_offset, 0.098, 1e-6));
+        CHECK(pa.size() == 1 && Near(pa[0].slice.snap_offset, 0.100, 1e-6));
         pa = PieceApplyFor(m, 0, "heel", false, &pk);
-        CHECK(pa.size() == 1 && Near(pa[0].slice.snap_offset, 0.098, 1e-6));
+        CHECK(pa.size() == 1 && Near(pa[0].slice.snap_offset, 0.100, 1e-6));
     }
     // 13-62h review (R3): Toe [0.10, 0.30] · Gap [0.30, 0.35] · Heel [0.35, 0.50] · Toe [0.60, 0.80]: a Toe event's
     // first item ends at the Gap's start (At cuts fade), the second still comes the jumped 0.05 s earlier.

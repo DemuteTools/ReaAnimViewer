@@ -21,7 +21,6 @@
 #include "dash_plan.h"        // freeze audit #1: dashes / hatches only where seen
 #include "library_view_ui.h"  // ShowLibraryToast
 #include "shortcuts.h"        // LoadPrefBool, ShortcutKeyLabel, kShortcutEdit*
-#include "shortcuts_ui.h"     // 13-73: RequestOpenShortcutsPopup
 #include "sound_audition.h"
 #include "sound_entries.h"
 #include "sound_peaks.h"
@@ -1488,9 +1487,6 @@ void SideMenu(const ZoneWaveHost& h)
     ui::ItemTipText("Every selected variation plays for right events (its parts with it)");
     if (ui::MenuEntry("Follow rule##zsf", key(kShortcutEditSideRule).c_str(), false, on && any_hand)) ZoneSetSide(h, 0);
     ui::ItemTipText((std::string("Back to the Pattern (") + SidePatternLabel(d.side_pattern) + ")").c_str());
-    ui::MenuSeparator();
-    if (ui::MenuEntry("Shortcuts\xE2\x80\xA6##zskeys")) RequestOpenShortcutsPopup("Left / Right");
-    ui::ItemTipText("Shortcuts window: Set Left, Set Right, Follow rule (none by default)");
 }
 
 void ZoneMenu(const ZoneWaveHost& h)

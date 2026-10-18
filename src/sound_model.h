@@ -209,7 +209,7 @@ inline SyncMode& NewSoundSyncModeRef()
 }
 inline SyncMode NewSoundSyncMode() { return NewSoundSyncModeRef(); }
 inline void     SetNewSoundSyncMode(SyncMode m) { NewSoundSyncModeRef() = m; }
-constexpr double kDefaultSyncOffsetMs = -2.0;
+constexpr double kDefaultSyncOffsetMs = 0.0;  // Antho 2026-10-19: on the point itself (was -2 ms, 13-25)
 // 13-23 (A4): the fade each part gets at a cut or zone edge (s).
 constexpr double kDefaultCutFade = 0.002;
 // 13-62h: the crossfade a new Gap gets (s, total of both sides).

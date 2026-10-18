@@ -431,12 +431,12 @@ void TestSyncSliced()
     RefreshParts(d, &pk);
     CHECK(d.frames[0].zones.size() == 1 && d.frames[0].zones[0].part == kWholePart && d.frames[0].syncs.empty());
     const ZoneRef z{0, 0};
-    // Matrix row 1: the attack at 1.020, -2 ms.
-    CHECK(Near(ZoneOf(d, z)->a, 1.015) && Near(ZoneSnap(d, z, nullptr).t, 1.018) && ZoneSnapStored(d, z));
-    // Peak: the loudest bin (the heel's top), + the offset.
-    CHECK(SetSyncSettings(d, SyncMode::Peak, 0.0));
+    // Matrix row 1: the attack at 1.020, 0 ms.
+    CHECK(Near(ZoneOf(d, z)->a, 1.015) && Near(ZoneSnap(d, z, nullptr).t, 1.020) && ZoneSnapStored(d, z));
+    // Peak: the loudest bin (the heel's top), + the offset (1 ms, the default being 0).
+    CHECK(SetSyncSettings(d, SyncMode::Peak, 1.0));
     RefreshParts(d, &pk);
-    CHECK(Near(ZoneSnap(d, z, nullptr).t, 1.020));
+    CHECK(Near(ZoneSnap(d, z, nullptr).t, 1.021));
     // Slice start (the zone's start) + 3 ms; a negative offset is clamped into the zone.
     SetSyncSettings(d, SyncMode::SliceStart, 3.0);
     RefreshParts(d, &pk);
@@ -455,7 +455,7 @@ void TestSyncSliced()
     SoundData t = Step(&pk);
     t.mode = DetectMode::Takes;
     RefreshParts(t, &pk, 0);
-    CHECK(t.frames[0].zones.size() == 1 && t.frames[0].zones[0].a_hand && Near(ZoneSnap(t, z, &pk).t, 1.018));
+    CHECK(t.frames[0].zones.size() == 1 && t.frames[0].zones[0].a_hand && Near(ZoneSnap(t, z, &pk).t, 1.020));
 }
 
 // Review: a transient rising over 30 ms (-60 to -4 dB): Attack and Peak differ, and the threshold

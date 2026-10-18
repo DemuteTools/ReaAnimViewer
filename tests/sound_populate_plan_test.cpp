@@ -187,14 +187,14 @@ static void TestParts()
         CHECK(ds.history.count("s|vb") == 1 && ds.history.count("s") == 0);  // history per node and part
         const std::vector<PieceApply> pa = PieceApplyFor(sd, v, "vb");
         CHECK(pa.size() == 1 && pa[0].anchor && Near(pa[0].slice.start_offs, v) && Near(pa[0].slice.length, 0.2));
-        CHECK(Near(pa[0].slice.snap_offset, 0.018, 1e-9));  // the event lands on Back's sync point
+        CHECK(Near(pa[0].slice.snap_offset, 0.020, 1e-9));  // the event lands on Back's sync point
         CHECK(pa[0].fades.set_out && Near(pa[0].fades.out, kDefaultCutFade));  // the cut side
         CHECK(pa[0].fades.set_in && Near(pa[0].fades.in, kDefaultFadeIn));      // the frame's own edge
         // A Toe block: the Front part.
         Resolved t = ResolveFor(st, lib, Auto(AutoKind::Toe));
         CHECK(t.res.sounds.size() == 1 && t.res.sounds[0].part_value == "vf");
         const std::vector<PieceApply> pf = PieceApplyFor(sd, t.res.sounds[0].variation, "vf");
-        CHECK(pf.size() == 1 && Near(pf[0].slice.snap_offset, 0.018) && Near(pf[0].fades.in, kDefaultCutFade) &&
+        CHECK(pf.size() == 1 && Near(pf[0].slice.snap_offset, 0.020) && Near(pf[0].fades.in, kDefaultCutFade) &&
               Near(pf[0].fades.out, kDefaultFadeOut));
         // Slide / pivot heel kinds read as heel too.
         CHECK(ResolveFor(st, lib, Auto(AutoKind::PivotHeel)).res.sounds[0].part_value == "vb");
@@ -206,7 +206,7 @@ static void TestParts()
         CHECK(r.res.sounds.size() == 1 && r.res.sounds[0].part_value.empty() && r.ed.out[0].part.empty());
         const int                     v = r.res.sounds[0].variation;
         const std::vector<PieceApply> pa = PieceApplyFor(sd, v, "");
-        CHECK(pa.size() == 2 && pa[0].anchor && Near(pa[0].slice.length, 0.2) && Near(pa[0].slice.snap_offset, 0.018));
+        CHECK(pa.size() == 2 && pa[0].anchor && Near(pa[0].slice.length, 0.2) && Near(pa[0].slice.snap_offset, 0.020));
         if (pa.size() == 2) {
             CHECK(Near(pa[0].fades.in, kDefaultFadeIn) && Near(pa[1].fades.out, kDefaultFadeOut));
             CHECK(Near(pa[0].fades.out, kDefaultCutFade) && Near(pa[1].fades.in, kDefaultCutFade) &&
@@ -279,14 +279,14 @@ static void TestParts()
         CHECK(pa.size() == 2);
         CHECK(Near(pa[0].slice.start_offs, 0.0) && Near(pa[0].slice.length, 0.08) && pa[0].anchor);
         CHECK(Near(pa[1].slice.start_offs, 0.12) && Near(pa[1].slice.length, 0.08) && !pa[1].anchor);
-        CHECK(Near(pa[0].slice.snap_offset, 0.018) && Near(pa[1].slice.snap_offset, 0.0));
+        CHECK(Near(pa[0].slice.snap_offset, 0.020) && Near(pa[1].slice.snap_offset, 0.0));
         CHECK(Near(pa[1].from_anchor, 0.12) && Near(pa[0].from_anchor, 0.0));
         CHECK(Near(pa[0].fades.out, kDefaultFadeOut) && Near(pa[1].fades.in, kDefaultFadeIn) &&
               Near(pa[1].fades.out, kDefaultCutFade));  // free edge, free edge, cut
         // On the timeline: the anchor at event - snap, the second piece 0.12 s later (the space kept).
         const double anchor = PlacementPosition(10.0, pa[0].slice.snap_offset, 0.0, 0.0);
-        CHECK(Near(anchor, 9.982) && Near(PiecePosition(anchor, pa[1].from_anchor, 1.0), 10.102));
-        CHECK(Near(PiecePosition(anchor, pa[1].from_anchor, 2.0), 10.042));  // playrate 2: item seconds
+        CHECK(Near(anchor, 9.980) && Near(PiecePosition(anchor, pa[1].from_anchor, 1.0), 10.100));
+        CHECK(Near(PiecePosition(anchor, pa[1].from_anchor, 2.0), 10.040));  // playrate 2: item seconds
         // 13-62h final review: a snap set by hand on the second zone is the event's (it lands there), the first one
         // placed before it.
         n.sound.frames[0].zones[1].snap = 0.13;

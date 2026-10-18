@@ -938,14 +938,21 @@ GoneCopies SettleGoneCopies(ItemSounds& rec, const std::function<bool(const std:
         return track_exists && !p.track_guid.empty() && !track_exists(p.track_guid);
     };
     auto gone = [&item_exists](const SoundPlacement& p) { return item_exists && !item_exists(p.item_guid); };
-    int live = 0, gone_now = 0;
-    for (const EventSounds& ev : rec.events)
+    int live = 0, gone_now = 0, gone_events = 0;
+    for (const EventSounds& ev : rec.events) {
+        bool here = false;
         for (const SoundPlacement& p : ev.placed)
             if (p.own == Ownership::Populated) {
                 ++live;
-                gone_now += gone(p) ? 1 : 0;
+                const bool g = gone(p);
+                gone_now += g ? 1 : 0;
+                here |= g;
             }
-    const bool output_removed = gone_now >= 2 && gone_now == live;  // every copy went at once
+        gone_events += here ? 1 : 0;
+    }
+    // Every copy went at once, over two events at least (review 2026-10-19: one event's layers or passes deleted
+    // together are one sound deleted by hand, as a lone copy).
+    const bool output_removed = gone_now >= 2 && gone_now == live && gone_events >= 2;
     for (EventSounds& ev : rec.events)
         for (size_t i = 0; i < ev.placed.size();) {
             SoundPlacement& p = ev.placed[i];

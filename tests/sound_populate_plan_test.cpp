@@ -1152,6 +1152,48 @@ static void TestResilience()
         ItemSounds f;
         CHECK(AdoptStrayCopies(f, {{"{X}", "r", 9.0, "n1"}}, live, false).remove_guids.empty());
     }
+    // Review 2026-10-19: a stray is RAV's only while it sits on a pass of its time (no nudge). A copy the user made
+    // of a populated sound (Ctrl+drag, a paste, a duplicate: its tag copied) is theirs: never adopted (Populate would
+    // replace or remove it as a second copy of the event), never removed, even when its event is gone.
+    {
+        auto at = [](const char* g, double t, double anchor, std::vector<double> passes, double sync = 0.1,
+                     double blend = 0.0) {
+            StrayCopy c{g, "r", t, "n1"};
+            c.has_at = true;
+            c.anchor = anchor;
+            c.sync = sync;
+            c.blend_ms = blend;
+            c.passes = std::move(passes);
+            return c;
+        };
+        ItemSounds it;
+        EventSounds e1;
+        e1.rid = "r";
+        e1.t = 1.0;
+        e1.placed = {Pl("{A}", "n1")};
+        it.events = {e1};
+        const std::vector<LiveEvent> live = {{"r", 1.0}};
+        // Placed for pass 10.0 with a 100 ms snap: anchor 9.9. A 20 ms Blend layer: anchor 9.92.
+        const std::vector<StrayCopy> strays = {
+            at("{ON}", 1.0, 9.9, {10.0}),                 // RAV's leftover on the event: adopted
+            at("{LAYER}", 1.0, 9.92, {10.0}, 0.1, 20.0),  // on it with its Blend offset: adopted
+            at("{LOOP}", 1.0, 13.9, {10.0, 14.0}),        // on the loop's second pass: adopted
+            at("{DUP}", 1.0, 10.4, {10.0}),               // a duplicate 500 ms later: the user's
+            at("{NUDGED}", 1.0, 9.95, {10.0}),            // moved 50 ms: the user's
+            at("{OLD}", 3.0, 11.9, {12.0}),               // RAV's, its event gone: removed
+            at("{OLDDUP}", 3.0, 12.7, {12.0}),            // the user's copy of a gone event's sound: kept
+            at("{OUT}", 3.0, 12.0, {}),                   // its time outside the item now: left alone
+        };
+        const StrayAdoption ad = AdoptStrayCopies(it, strays, live);
+        CHECK(ad.adopted == 3);
+        CHECK(ad.remove_guids.size() == 1 && ad.remove_guids[0] == "{OLD}");
+        std::set<std::string> listed;
+        for (const SoundPlacement& p : it.events[0].placed) listed.insert(p.item_guid);
+        CHECK(it.events.size() == 1 && listed.count("{ON}") && listed.count("{LAYER}") && listed.count("{LOOP}") &&
+              !listed.count("{DUP}") && !listed.count("{NUDGED}"));
+        // Run again (the user's copies still unlisted): still left alone.
+        CHECK(AdoptStrayCopies(it, strays, live).adopted == 0);
+    }
     // Detect moved / dropped events: the record events no live event matches lose their copies (no stale copy
     // left beside the new event's); Attached / Spread stay for the follow.
     {

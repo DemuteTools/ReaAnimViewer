@@ -211,7 +211,18 @@ struct StrayCopy {
     std::string rid;
     double      t = 0.0;
     std::string node;
+    // Review 2026-10-19: where it sits (its pile anchor and snap, PlacedPileAnchor), its node's Blend offset, and
+    // the item's passes of its own clip time `t` now (project times). `has_at` false: not known (adopted by rule
+    // and time alone, as a host test builds it).
+    bool                has_at = false;
+    double              anchor = 0.0;
+    double              sync = 0.0;
+    double              blend_ms = 0.0;
+    std::vector<double> passes;
 };
+// Review 2026-10-19: a stray is RAV's own only while it sits where Populate places it (on a pass of its time, no
+// nudge, within this): a copy the user made of it (Ctrl+drag, a paste, a duplicate) or moved is theirs.
+constexpr double kStrayOnPassS = 0.002;
 struct StrayAdoption {
     int                      adopted = 0;
     std::vector<std::string> remove_guids;  // copies of an event that no longer exists
@@ -220,6 +231,8 @@ struct StrayAdoption {
 // of its (rule, time) (made when missing) when that event is live (within kEventMatchSeconds), so Populate keeps,
 // replaces or removes it instead of placing a second copy beside it; a copy of an event that no longer exists is
 // removed (`remove_gone`; else left alone). A GUID the record already lists is ignored (any case).
+// Review 2026-10-19: a stray whose place is known (`has_at`) and is not on one of its passes (kStrayOnPassS) is
+// the user's copy: left alone, never adopted nor removed.
 StrayAdoption AdoptStrayCopies(ItemSounds& item, const std::vector<StrayCopy>& strays, const std::vector<LiveEvent>& live,
                                bool remove_gone = true);
 // The record events no live event plays (the nearest record event of its rule within kEventMatchSeconds,

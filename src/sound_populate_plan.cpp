@@ -708,7 +708,14 @@ StrayAdoption AdoptStrayCopies(ItemSounds& item, const std::vector<StrayCopy>& s
     for (const EventSounds& ev : item.events)
         for (const SoundPlacement& p : ev.placed) listed.insert(UpperGuid(p.item_guid));
     for (const StrayCopy& s : strays) {
-        if (s.item_guid.empty() || !listed.insert(UpperGuid(s.item_guid)).second) continue;
+        if (s.item_guid.empty() || listed.count(UpperGuid(s.item_guid))) continue;
+        if (s.has_at) {  // Review 2026-10-19: off its passes (a duplicate, a paste, moved): the user's copy, left alone
+            bool on_pass = false;
+            for (double pt : s.passes)
+                on_pass |= std::fabs(NudgeOf(s.anchor, pt, s.sync, s.blend_ms)) <= kStrayOnPassS;
+            if (!on_pass) continue;
+        }
+        listed.insert(UpperGuid(s.item_guid));
         const LiveEvent* e = LiveMatch(live, s.rid, s.t);
         if (!e) {
             if (remove_gone) out.remove_guids.push_back(s.item_guid);

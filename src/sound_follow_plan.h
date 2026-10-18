@@ -179,8 +179,9 @@ struct FollowInput {
 // copy, which Populate respects; it never swallows a removal of the output itself:
 //  - a Populated copy no longer in the project (`item_exists` false) is forgotten (dropped from the record: its
 //    event is no longer populated, the next Populate places it again) when its track is gone (`track_exists`
-//    false for its known track) or when every live copy of the item went at once (at least two): the user
-//    removed the output. Otherwise it was deleted by hand (Deleted);
+//    false for its known track) or when every live copy of the item went at once (at least two, on two events at
+//    least: one event's layers deleted together are deleted by hand): the user removed the output. Otherwise it
+//    was deleted by hand (Deleted);
 //  - a Deleted mark is kept only while its track exists: one whose known track is gone is forgotten too.
 // `track_exists` null = the tracks are not known (only the "every copy" rule applies). Attached / Spread
 // placements are left to the caller. Events are kept (their draws).

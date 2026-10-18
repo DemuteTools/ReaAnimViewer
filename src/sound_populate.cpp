@@ -178,7 +178,9 @@ std::vector<StrayCopy> PopulatedCopiesOf(const std::string& owner)
             MediaItem* it = GetMediaItem(nullptr, i);
             PlacedTag  tag;
             if (!it || !ReadPlacedTag(it, &tag) || tag.own != Ownership::Populated || tag.owner.empty()) continue;
-            (*m)[GuidKey(tag.owner)].push_back(StrayCopy{ItemGuidOf(it), tag.rid, tag.t, tag.node});
+            StrayCopy c{ItemGuidOf(it), tag.rid, tag.t, tag.node};
+            c.has_at = PlacedPileAnchor(it, &c.anchor, &c.sync);  // review 2026-10-19: where it sits
+            (*m)[GuidKey(tag.owner)].push_back(c);
         }
         if (g_tagged) g_tagged_built = true;
     }
@@ -578,7 +580,19 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
             [&tracks](const std::string& t) { return tracks.count(GuidKey(t)) > 0; });
         std::vector<LiveEvent> live_events;
         for (const FollowEvent& e : sound_events) live_events.push_back(LiveEvent{e.rid, e.t});
-        const StrayAdoption ad = AdoptStrayCopies(rec, PopulatedCopiesOf(guid), live_events, !o.fill_passes);
+        // Review 2026-10-19: each stray's passes of its time and Blend offset (its node's library), so a copy the user
+        // made of a sound (a duplicate, a paste, moved: off its passes) is left alone.
+        std::vector<StrayCopy> strays = PopulatedCopiesOf(guid);
+        for (StrayCopy& c : strays) {
+            for (const FollowPass& fp : FollowPassesOf(det.map, c.t)) c.passes.push_back(fp.project_t);
+            const auto ro = role_of.find(c.rid);
+            for (const SoundLibrary& L : store.libraries)
+                if (FindNode(L, c.node)) {
+                    c.blend_ms = BlendOffsetMs(L, c.node, ro == role_of.end() ? std::string() : ro->second);
+                    break;
+                }
+        }
+        const StrayAdoption ad = AdoptStrayCopies(rec, strays, live_events, !o.fill_passes);
         for (const std::string& g : ad.remove_guids) RemoveIndexed(g);
         if (!o.fill_passes)  // a fill never removes
             for (const std::string& g : PruneStaleEvents(rec, live_events)) RemoveIndexed(g);

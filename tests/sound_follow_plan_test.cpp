@@ -367,6 +367,30 @@ int main()
         g = SettleGoneCopies(rec, [](const std::string& x) { return x == "{A}"; },
                              [](const std::string&) { return true; });
         CHECK(g.deleted == 1 && g.forgotten == 0);
+        // Review 2026-10-19: one event's two layers (its only sound) deleted together are deleted by hand, not
+        // the output removed (Populate must not place them again); across two events the output rule still holds.
+        FollowInput layers = OneSound(Ownership::Populated);
+        SoundPlacement l2 = layers.rec.events[0].placed[0];
+        l2.item_guid = "{L2}";
+        l2.node = "n2";
+        layers.rec.events[0].placed.push_back(l2);
+        layers.events = {Ev("r1", 1.0, 10.0)};
+        p = PlanItemFollow(layers);
+        CHECK(p.record_changed && p.record.events[0].placed.size() == 2 &&
+              p.record.events[0].placed[0].own == Ownership::Deleted && p.record.events[0].placed[1].own == Ownership::Deleted);
+        rec = layers.rec;
+        g = SettleGoneCopies(rec, [](const std::string&) { return false; }, nullptr);
+        CHECK(g.deleted == 2 && g.forgotten == 0);
+        // Two copies, deleted one after the other (two passes): each deleted by hand, never "all at once".
+        FollowInput first = two();
+        first.items = {Fact("{B}", 11.0, true, 11.0, 11.0, 2.0)};
+        p = PlanItemFollow(first);
+        CHECK(p.record.events[0].placed[0].own == Ownership::Deleted);
+        FollowInput second = two();
+        second.rec = p.record;
+        p = PlanItemFollow(second);
+        CHECK(p.record.events[0].placed.size() == 1 && p.record.events[0].placed[0].own == Ownership::Deleted &&
+              p.record.events[1].placed.size() == 1 && p.record.events[1].placed[0].own == Ownership::Deleted);
     }
     // Hand delete: populated -> Deleted, no action; attached -> dropped.
     {

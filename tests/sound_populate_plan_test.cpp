@@ -1071,6 +1071,135 @@ static void TestSidesDraw()
     }
 }
 
+// ---- Resilience (Antho 2026-10-19: Treadmill Running, populate / assign / Detect / tracks deleted) -----------------
+
+static SoundPlacement Pl(const std::string& guid, const std::string& node, Ownership own = Ownership::Populated)
+{
+    SoundPlacement p;
+    p.item_guid = guid;
+    p.node = node;
+    p.own = own;
+    return p;
+}
+
+static void TestResilience()
+{
+    // Assignment change: on a populated item every event of the rule follows it (follow_item), not only the
+    // populated ones; an event whose sounds were all deleted by hand stays as the user left it.
+    {
+        EventSounds populated, emptied, deleted, partly;
+        populated.placed = {Pl("{A}", "n1")};
+        emptied.draws.push_back(SoundDraw{});  // a gap removed its sound: no placement left
+        deleted.placed = {Pl("{B}", "n1", Ownership::Deleted)};
+        partly.placed = {Pl("{C}", "n1"), Pl("{D}", "n1", Ownership::Deleted)};
+        PopulateFilter f;
+        f.only_populated = true;
+        f.rids = {"r"};
+        CHECK(PlanPopulateEvent(f, "r", 1.0, &emptied) == EventPlan::Skip);  // before: left silent
+        CHECK(PlanPopulateEvent(f, "r", 1.0, nullptr) == EventPlan::Skip);
+        f.follow_item = true;
+        CHECK(PlanPopulateEvent(f, "r", 1.0, &populated) == EventPlan::Draw);
+        CHECK(PlanPopulateEvent(f, "r", 1.0, &emptied) == EventPlan::Draw);
+        CHECK(PlanPopulateEvent(f, "r", 1.0, nullptr) == EventPlan::Draw);
+        CHECK(PlanPopulateEvent(f, "r", 1.0, &deleted) == EventPlan::Skip);
+        CHECK(PlanPopulateEvent(f, "r", 1.0, &partly) == EventPlan::Draw);
+        CHECK(PlanPopulateEvent(f, "other", 1.0, &populated) == EventPlan::Keep);  // another rule: left out
+        CHECK(EventDeletedByHand(deleted) && !EventDeletedByHand(partly) && !EventDeletedByHand(emptied));
+        ItemSounds it;
+        it.events = {emptied, deleted};
+        CHECK(!ItemIsPopulated(it));
+        it.events.push_back(partly);
+        CHECK(ItemIsPopulated(it));
+        CHECK(CountDeletedByHand(it) == 2);
+        // The new assignment's node replaces the old copy in place (never placed beside it).
+        const std::vector<SlotStep> st = PlanEventSlots({De(0, "new", 1)}, {Ex(0, "old", 2)});
+        CHECK(st.size() == 1 && st[0].act == SlotAction::ReplaceNode && st[0].existing.size() == 1);
+        // An assignment with nothing for the event: its old copy removed.
+        const std::vector<SlotStep> rm = PlanEventSlots({}, {Ex(0, "old", 2)});
+        CHECK(rm.size() == 1 && rm[0].act == SlotAction::Remove);
+    }
+    // Re-run never doubles: RAV's copies of the item the record does not list go back into it, so Populate
+    // keeps / replaces them instead of placing a second copy beside them.
+    {
+        ItemSounds it;
+        EventSounds e1;
+        e1.rid = "r";
+        e1.t = 1.0;
+        e1.placed = {Pl("{a1}", "n1")};
+        it.events = {e1};
+        const std::vector<LiveEvent> live = {{"r", 1.0}, {"r", 2.0}};
+        const std::vector<StrayCopy> strays = {
+            {"{A1}", "r", 1.0, "n1"},    // listed already (any case): ignored
+            {"{S1}", "r", 1.01, "n1"},   // event 1 (within 30 ms): a second copy there now in the record
+            {"{S2}", "r", 2.0, "n2"},    // event 2, no record event yet: made
+            {"{S3}", "r", 3.0, "n1"},    // no such event any more: removed
+            {"{S4}", "gone", 1.0, "n1"}, // its rule gone: removed
+        };
+        const StrayAdoption ad = AdoptStrayCopies(it, strays, live);
+        CHECK(ad.adopted == 2 && ad.remove_guids.size() == 2 && ad.remove_guids[0] == "{S3}" && ad.remove_guids[1] == "{S4}");
+        CHECK(it.events.size() == 2 && it.events[0].placed.size() == 2 && it.events[1].rid == "r" &&
+              Near(it.events[1].t, 2.0) && it.events[1].placed.size() == 1 && it.events[1].placed[0].item_guid == "{S2}");
+        // Planned on the event: two copies of a one-piece n1 on pass 0, one wanted: the first placed again in
+        // place, the second removed (SetVariation replaces the first item, removes the others), nothing added.
+        DesiredSlot one = De(0, "n1", 1);
+        one.pieces = 1;
+        const std::vector<SlotStep> st = PlanEventSlots({one}, {Ex(0, "n1", 1), Ex(0, "n1", -1)});
+        CHECK(st.size() == 1 && st[0].act == SlotAction::SetVariation && st[0].existing.size() == 2);
+        // Run again: nothing new.
+        const StrayAdoption again = AdoptStrayCopies(it, strays, live, false);
+        CHECK(again.adopted == 0 && again.remove_guids.empty());
+        // A fill (remove_gone false) never removes.
+        ItemSounds f;
+        CHECK(AdoptStrayCopies(f, {{"{X}", "r", 9.0, "n1"}}, live, false).remove_guids.empty());
+    }
+    // Detect moved / dropped events: the record events no live event matches lose their copies (no stale copy
+    // left beside the new event's); Attached / Spread stay for the follow.
+    {
+        ItemSounds it;
+        EventSounds kept, stale, user;
+        kept.rid = stale.rid = user.rid = "r";
+        kept.t = 1.0;
+        stale.t = 1.5;
+        user.t = 2.5;
+        kept.placed = {Pl("{K}", "n1")};
+        stale.placed = {Pl("{S}", "n1"), Pl("{D}", "n1", Ownership::Deleted)};
+        user.placed = {Pl("{P}", "n1"), Pl("{U}", "n1", Ownership::Attached)};
+        it.events = {kept, stale, user};
+        const std::vector<std::string> rm = PruneStaleEvents(it, {{"r", 1.02}});
+        CHECK(rm.size() == 2 && rm[0] == "{S}" && rm[1] == "{P}");
+        CHECK(it.events.size() == 2 && Near(it.events[0].t, 1.0) && it.events[1].placed.size() == 1 &&
+              it.events[1].placed[0].own == Ownership::Attached);
+        CHECK(PruneStaleEvents(it, {{"r", 1.0}, {"r", 2.5}}).empty());
+        // Two record events near one live event: the nearest plays it, the other one's copy would double it.
+        ItemSounds two;
+        EventSounds a, b2;
+        a.rid = b2.rid = "r";
+        a.t = 1.0;
+        b2.t = 1.02;
+        a.placed = {Pl("{A}", "n1")};
+        b2.placed = {Pl("{B}", "n1")};
+        two.events = {a, b2};
+        const std::vector<std::string> rm2 = PruneStaleEvents(two, {{"r", 1.015}});
+        CHECK(rm2.size() == 1 && rm2[0] == "{A}" && two.events.size() == 1 && two.events[0].placed[0].item_guid == "{B}");
+    }
+    // Restore clears the deleted-by-hand marks; Populate then places those sounds again.
+    {
+        EventSounds ev;
+        ev.placed = {Pl("{A}", "n1"), Pl("{B}", "n2", Ownership::Deleted), Pl("{C}", "n3", Ownership::Attached)};
+        const std::vector<SlotStep> before = PlanEventSlots({De(0, "n1", 1), De(0, "n2", 1)},
+                                                            {Ex(0, "n1", 1), Ex(-1, "n2", 1, Ownership::Deleted)});
+        bool placed_n2 = false;
+        for (const SlotStep& st : before) placed_n2 |= st.act == SlotAction::Place;
+        CHECK(!placed_n2);
+        CHECK(ForgetDeletedMarks(ev) == 1 && ev.placed.size() == 2 && ev.placed[1].own == Ownership::Attached);
+        CHECK(ForgetDeletedMarks(ev) == 0);
+        const std::vector<SlotStep> after = PlanEventSlots({De(0, "n1", 1), De(0, "n2", 1)}, {Ex(0, "n1", 1)});
+        placed_n2 = false;
+        for (const SlotStep& st : after) placed_n2 |= st.act == SlotAction::Place;
+        CHECK(placed_n2);
+    }
+}
+
 int main()
 {
     TestSidesDraw();  // 13-73
@@ -1465,6 +1594,7 @@ int main()
     }
 
     TestParts();
+    TestResilience();
 
     // 13-56 review: a looped item's new passes filled: Place steps only.
     {

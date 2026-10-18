@@ -11,6 +11,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <set>
 #include <string>
 #include <utility>
@@ -167,7 +168,28 @@ struct FollowInput {
     // nodes than the first (a Random container drew another child), so a pass needs a fill only when
     // it has no live populated sound of the event at all.
     bool                         pass_draws = false;
+    // Resilience 2026-10-19: the GUIDs of the project's tracks (`tracks_known` false: not read, the track rule of
+    // SettleGoneCopies does not apply).
+    bool                         tracks_known = false;
+    std::vector<std::string>     tracks;
 };
+
+// Resilience (Antho 2026-10-19: he deleted the generated tracks and every event showed "deleted by hand", with no
+// way back): what becomes of the item's copies that are gone. "Deleted by hand" is the user's removal of a
+// copy, which Populate respects; it never swallows a removal of the output itself:
+//  - a Populated copy no longer in the project (`item_exists` false) is forgotten (dropped from the record: its
+//    event is no longer populated, the next Populate places it again) when its track is gone (`track_exists`
+//    false for its known track) or when every live copy of the item went at once (at least two): the user
+//    removed the output. Otherwise it was deleted by hand (Deleted);
+//  - a Deleted mark is kept only while its track exists: one whose known track is gone is forgotten too.
+// `track_exists` null = the tracks are not known (only the "every copy" rule applies). Attached / Spread
+// placements are left to the caller. Events are kept (their draws).
+struct GoneCopies {
+    int deleted = 0;    // marked deleted by hand now
+    int forgotten = 0;  // dropped (copies and Deleted marks)
+};
+GoneCopies SettleGoneCopies(ItemSounds& rec, const std::function<bool(const std::string&)>& item_exists,
+                            const std::function<bool(const std::string&)>& track_exists);
 
 enum class FollowKind { Move, Remove, Detach, Forget, Mute, Unmute, Store, Retag };
 

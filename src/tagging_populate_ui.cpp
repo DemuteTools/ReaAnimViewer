@@ -71,6 +71,7 @@ struct CountCache {
     std::vector<MediaItem*>               sel;
     int                                   count = -1;
     int                                   events = 0;
+    int                                   deleted = 0;  // Resilience 2026-10-19: events holding a sound deleted by hand
     bool                                  valid = false;
     std::chrono::steady_clock::time_point at;
 };
@@ -85,6 +86,7 @@ int FooterEvents(const std::vector<MediaItem*>& sel)
         g_count.sel = sel;
         g_count.count = count;
         g_count.events = sel.empty() ? 0 : CountPopulateEvents(sel);
+        g_count.deleted = sel.empty() ? 0 : CountDeletedByHandEvents(sel);
         g_count.valid = true;
         g_count.at = now;
     }
@@ -512,25 +514,34 @@ void DrawSoundReportLine(const TaggingSoundContext& ctx)
     if (!SoundFooterVisible(ctx)) return;
     const float help_w = ui::Dp(18.0f);  // ui::HelpMark's circle
     ImGui::AlignTextToFramePadding();
+    // Resilience (Antho 2026-10-19: no way back once his sounds showed "deleted by hand"): Restore stays on the line
+    // while the selected items hold sounds deleted by hand, not only after a Populate that met some.
+    const std::vector<MediaItem*> sel = SelectedRavItems();
+    const int                     n_sel = sel.empty() ? 0 : (FooterEvents(sel), g_count.deleted);
+    const bool                    by_sel = n_sel > 0;
+    const int                     n_restore = by_sel ? n_sel : (g_last.restore_items.empty() ? 0 : g_last.deleted_kept);
+    const std::vector<MediaItem*> restore_items = by_sel ? sel : g_last.restore_items;
+    const std::string             restore_text = "Restore " + std::to_string(n_restore);
+    const float                   sp = ImGui::GetStyle().ItemSpacing.x;
+    const float restore_w = n_restore > 0 ? ImGui::CalcTextSize(restore_text.c_str()).x + sp : 0.0f;
+    const float w = std::max(ui::Dp(20.0f), ImGui::GetContentRegionAvail().x - help_w - sp - restore_w);
+    const flow::MeasureFn measure = [](const char* b, const char* e) { return ImGui::CalcTextSize(b, e).x; };
     if (!g_last.has) {
-        ui::ToneText("Not populated yet", ui::kFaint);
+        ui::ToneText(flow::Ellipsize("Not populated yet", w, "...", measure, nullptr), ui::kFaint);
     } else {
         // A quiet link (muted, underlined under the mouse), ellipsized to the room before Restore and the "?".
-        const char* restore = "Restore##ravrestore";
-        const bool  can_restore = g_last.deleted_kept > 0 && !g_last.restore_items.empty();
-        const float sp = ImGui::GetStyle().ItemSpacing.x;
-        const float restore_w = can_restore ? ImGui::CalcTextSize("Restore").x + sp : 0.0f;
-        const float w = std::max(ui::Dp(20.0f), ImGui::GetContentRegionAvail().x - help_w - sp - restore_w);
-        const flow::MeasureFn measure = [](const char* b, const char* e) { return ImGui::CalcTextSize(b, e).x; };
         bool              cut = false;
         const std::string shown = flow::Ellipsize(g_last.summary, w, "...", measure, &cut);
         if (ui::LinkButton((shown + "##ravreport").c_str(), ui::kMuted)) ImGui::OpenPopup("##ravreportpop");
         ui::ItemTipText(cut ? (g_last.summary + "\nClick for the details").c_str() : "Click for the details");
-        if (can_restore) {
-            ImGui::SameLine();
-            if (ui::LinkButton(restore)) QueuePopulate(g_last.restore_items, true);  // 13-19: checked when it runs
-            ui::ItemTipText("Places again the sounds you deleted by hand on these items. One undo point.");
-        }
+    }
+    if (n_restore > 0) {
+        ImGui::SameLine();
+        if (ui::LinkButton((restore_text + "##ravrestore").c_str())) QueuePopulate(restore_items, true);  // 13-19: checked when it runs
+        const std::string tip = std::to_string(n_restore) + (n_restore == 1 ? " event has" : " events have") +
+                                " a sound you deleted by hand: Populate skips it.\n"
+                                "Restore places those sounds again on these items. One undo point.";
+        ui::ItemTipText(tip.c_str());
     }
     ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetContentRegionMax().x - help_w));
     ui::HelpMark("##ravglyphs");

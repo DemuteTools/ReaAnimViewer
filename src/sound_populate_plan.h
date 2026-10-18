@@ -106,6 +106,10 @@ struct PopulateFilter {
     bool                     has_t = false;
     double                   t = 0.0;
     bool                     only_populated = false;
+    // Resilience (Antho 2026-10-19, an assignment changed on a populated item): with only_populated, the item has
+    // live populated sounds, so every event of the rules follows the new assignment (an event never placed or
+    // emptied by a gap is placed too), except an event whose sounds were all deleted by hand (EventDeletedByHand).
+    bool                     follow_item = false;
     bool Active() const { return !rid.empty() || !rids.empty() || has_t || only_populated; }
 };
 // What a Populate does with one event (time order): Draw it; Keep it (left out by the filter, or attached / spread
@@ -185,6 +189,44 @@ double BlendOffsetMs(const SoundLibrary& lib, const std::string& node_uid, const
 bool EventHasUserPlacement(const EventSounds& ev);
 // True when the event has a live Populated placement.
 bool EventIsPopulated(const EventSounds& ev);
+
+// ---- Resilience 2026-10-19: resilience to timeline edits (Antho 2026-10-19) -----------------------------------------
+//
+// True when some event of the item has a live Populated placement (the item was populated).
+bool ItemIsPopulated(const ItemSounds& item);
+// True when the event's sounds were deleted by hand: a Deleted placement and no live Populated one.
+bool EventDeletedByHand(const EventSounds& ev);
+// The events of the item that hold a sound deleted by hand (a Deleted placement): what Restore puts back.
+int CountDeletedByHand(const ItemSounds& item);
+// Restore: the event's Deleted marks forgotten (Populate places those sounds again). Returns how many.
+int ForgetDeletedMarks(EventSounds& ev);
+// An event of the item now (rule id, clip time): the list Populate and the follow read (SoundEventsOf).
+struct LiveEvent {
+    std::string rid;
+    double      t = 0.0;
+};
+// A RAV copy of this item in the project (tagged for it, placed by Populate) that its record does not list.
+struct StrayCopy {
+    std::string item_guid;
+    std::string rid;
+    double      t = 0.0;
+    std::string node;
+};
+struct StrayAdoption {
+    int                      adopted = 0;
+    std::vector<std::string> remove_guids;  // copies of an event that no longer exists
+};
+// Re-run never doubles: each stray copy goes back into the record, as a Populated placement of the record event
+// of its (rule, time) (made when missing) when that event is live (within kEventMatchSeconds), so Populate keeps,
+// replaces or removes it instead of placing a second copy beside it; a copy of an event that no longer exists is
+// removed (`remove_gone`; else left alone). A GUID the record already lists is ignored (any case).
+StrayAdoption AdoptStrayCopies(ItemSounds& item, const std::vector<StrayCopy>& strays, const std::vector<LiveEvent>& live,
+                               bool remove_gone = true);
+// The record events no live event plays (the nearest record event of its rule within kEventMatchSeconds,
+// FindEventSounds: an event moved by Detect, detected no more, or a second record event near the same one):
+// their Populated copies are returned (to remove), their Populated / Deleted placements and draws dropped; the
+// event goes unless it keeps an Attached / Spread placement (the follow's, 13-9).
+std::vector<std::string> PruneStaleEvents(ItemSounds& item, const std::vector<LiveEvent>& live);
 
 // ---- P15: the footer -------------------------------------------------------------------------
 

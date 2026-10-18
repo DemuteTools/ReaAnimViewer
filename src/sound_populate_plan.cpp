@@ -234,9 +234,11 @@ ResolveHooks MakeDrawHooks(PopulateDrawState& state, EventDraw& ev, std::functio
 EventPlan PlanPopulateEvent(const PopulateFilter& f, const std::string& rid, double t, const EventSounds* ev, bool enabled)
 {
     if (!enabled) return EventPlan::Skip;  // fix C 2026-10-12: a disabled rule's sounds are kept, muted by the follow
+    // Resilience 2026-10-19: an assignment change on a populated item reaches every event of its rules but those deleted by hand.
+    const bool not_drawn = f.follow_item ? (ev && EventDeletedByHand(*ev)) : (!ev || !EventIsPopulated(*ev));
     const bool out = (!f.rid.empty() && rid != f.rid) ||
                      (!f.rids.empty() && std::find(f.rids.begin(), f.rids.end(), rid) == f.rids.end()) ||
-                     (f.has_t && std::fabs(t - f.t) > kEventMatchSeconds) || (f.only_populated && (!ev || !EventIsPopulated(*ev)));
+                     (f.has_t && std::fabs(t - f.t) > kEventMatchSeconds) || (f.only_populated && not_drawn);
     if (out) return ev && EventIsPopulated(*ev) ? EventPlan::Keep : EventPlan::Skip;
     if (EventSkippedByPopulate(ev)) return EventPlan::Keep;  // attached / spread: left alone, its draws still play
     return EventPlan::Draw;
@@ -636,6 +638,128 @@ bool EventIsPopulated(const EventSounds& ev)
     for (const SoundPlacement& p : ev.placed)
         if (IsLive(p)) return true;
     return false;
+}
+
+// ---- Resilience 2026-10-19 -----------------------------------------------------------------------------------------
+
+namespace {
+
+std::string UpperGuid(std::string g)
+{
+    for (char& c : g)
+        if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 32);
+    return g;
+}
+
+bool HasDeleted(const EventSounds& ev)
+{
+    for (const SoundPlacement& p : ev.placed)
+        if (p.own == Ownership::Deleted) return true;
+    return false;
+}
+
+// The live event of `rid` nearest `t` within kEventMatchSeconds (null when none).
+const LiveEvent* LiveMatch(const std::vector<LiveEvent>& live, const std::string& rid, double t)
+{
+    const LiveEvent* best = nullptr;
+    for (const LiveEvent& e : live) {
+        if (e.rid != rid) continue;
+        const double d = std::fabs(e.t - t);
+        if (d <= kEventMatchSeconds + 1e-12 && (!best || d < std::fabs(best->t - t))) best = &e;
+    }
+    return best;
+}
+
+}  // namespace
+
+bool ItemIsPopulated(const ItemSounds& item)
+{
+    for (const EventSounds& ev : item.events)
+        if (EventIsPopulated(ev)) return true;
+    return false;
+}
+
+bool EventDeletedByHand(const EventSounds& ev)
+{
+    return HasDeleted(ev) && !EventIsPopulated(ev);
+}
+
+int CountDeletedByHand(const ItemSounds& item)
+{
+    int n = 0;
+    for (const EventSounds& ev : item.events) n += HasDeleted(ev) ? 1 : 0;
+    return n;
+}
+
+int ForgetDeletedMarks(EventSounds& ev)
+{
+    const size_t before = ev.placed.size();
+    ev.placed.erase(std::remove_if(ev.placed.begin(), ev.placed.end(),
+                                   [](const SoundPlacement& p) { return p.own == Ownership::Deleted; }),
+                    ev.placed.end());
+    return static_cast<int>(before - ev.placed.size());
+}
+
+StrayAdoption AdoptStrayCopies(ItemSounds& item, const std::vector<StrayCopy>& strays, const std::vector<LiveEvent>& live,
+                               bool remove_gone)
+{
+    StrayAdoption         out;
+    std::set<std::string> listed;
+    for (const EventSounds& ev : item.events)
+        for (const SoundPlacement& p : ev.placed) listed.insert(UpperGuid(p.item_guid));
+    for (const StrayCopy& s : strays) {
+        if (s.item_guid.empty() || !listed.insert(UpperGuid(s.item_guid)).second) continue;
+        const LiveEvent* e = LiveMatch(live, s.rid, s.t);
+        if (!e) {
+            if (remove_gone) out.remove_guids.push_back(s.item_guid);
+            continue;
+        }
+        EventSounds* ev = FindEventSounds(item, e->rid, e->t);
+        if (!ev) {
+            EventSounds fresh;
+            fresh.rid = e->rid;
+            fresh.t = e->t;
+            item.events.push_back(fresh);
+            ev = &item.events.back();
+        }
+        SoundPlacement p;
+        p.item_guid = s.item_guid;
+        p.node = s.node;
+        p.own = Ownership::Populated;
+        ev->placed.push_back(p);  // its variation unknown (-1): Populate places it again in place if it differs
+        ++out.adopted;
+    }
+    return out;
+}
+
+std::vector<std::string> PruneStaleEvents(ItemSounds& item, const std::vector<LiveEvent>& live)
+{
+    // The record event each live event plays (FindEventSounds, the one Populate and the strip read): a second
+    // record event near the same live event is stale too (its copies would play beside the first one's).
+    std::set<const EventSounds*> used;
+    for (const LiveEvent& e : live)
+        if (const EventSounds* ev = FindEventSounds(static_cast<const ItemSounds&>(item), e.rid, e.t)) used.insert(ev);
+    std::vector<char> keep_ev;
+    for (const EventSounds& ev : item.events) keep_ev.push_back(used.count(&ev) ? 1 : 0);
+    std::vector<std::string> remove;
+    std::vector<EventSounds> out;
+    for (size_t i = 0; i < item.events.size(); ++i) {
+        EventSounds& ev = item.events[i];
+        if (keep_ev[i]) {
+            out.push_back(std::move(ev));
+            continue;
+        }
+        std::vector<SoundPlacement> keep;
+        for (const SoundPlacement& p : ev.placed) {
+            if (p.own == Ownership::Populated) remove.push_back(p.item_guid);
+            else if (p.own != Ownership::Deleted) keep.push_back(p);
+        }
+        if (keep.empty()) continue;
+        ev.placed = std::move(keep);
+        out.push_back(std::move(ev));
+    }
+    item.events = std::move(out);
+    return remove;
 }
 
 int CountEvents(const std::vector<int>& event_blocks, const std::vector<char>& rule_ok)

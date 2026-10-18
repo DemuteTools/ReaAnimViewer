@@ -787,6 +787,28 @@ FollowPlan PlanItemFollow(const FollowInput& in0)
                 ++i;
             }
 
+    // Resilience (F6): the copies gone from the project: deleted by hand, or forgotten when the output itself was
+    // removed (their track deleted, or every copy at once); a Deleted mark whose track is gone is forgotten.
+    {
+        auto upper = [](std::string g) {
+            for (char& c : g)
+                if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 32);
+            return g;
+        };
+        std::set<std::string> tracks_up;
+        for (const std::string& t : in.tracks) tracks_up.insert(upper(t));
+        const GoneCopies g = SettleGoneCopies(
+            rec,
+            [&in](const std::string& guid) {
+                const FollowItemFacts* f = FactsOf(in.items, guid);
+                return f && f->present;
+            },
+            in.tracks_known ? std::function<bool(const std::string&)>(
+                                  [&tracks_up, &upper](const std::string& t) { return tracks_up.count(upper(t)) > 0; })
+                            : std::function<bool(const std::string&)>());
+        if (g.deleted + g.forgotten > 0) plan.record_changed = true;
+    }
+
     // F7: an assignment whose rule is gone.
     std::vector<std::string> orphan;
     for (size_t i = 0; i < rec.rules.size();) {
@@ -906,6 +928,40 @@ FollowPlan PlanItemFollow(const FollowInput& in0)
     rec.events = std::move(kept);
     if (!plan.record_changed) plan.record = in.rec;  // untouched copy, byte for byte
     return plan;
+}
+
+GoneCopies SettleGoneCopies(ItemSounds& rec, const std::function<bool(const std::string&)>& item_exists,
+                            const std::function<bool(const std::string&)>& track_exists)
+{
+    GoneCopies out;
+    auto track_gone = [&track_exists](const SoundPlacement& p) {
+        return track_exists && !p.track_guid.empty() && !track_exists(p.track_guid);
+    };
+    auto gone = [&item_exists](const SoundPlacement& p) { return item_exists && !item_exists(p.item_guid); };
+    int live = 0, gone_now = 0;
+    for (const EventSounds& ev : rec.events)
+        for (const SoundPlacement& p : ev.placed)
+            if (p.own == Ownership::Populated) {
+                ++live;
+                gone_now += gone(p) ? 1 : 0;
+            }
+    const bool output_removed = gone_now >= 2 && gone_now == live;  // every copy went at once
+    for (EventSounds& ev : rec.events)
+        for (size_t i = 0; i < ev.placed.size();) {
+            SoundPlacement& p = ev.placed[i];
+            const bool      populated_gone = p.own == Ownership::Populated && gone(p);
+            if ((populated_gone && (output_removed || track_gone(p))) || (p.own == Ownership::Deleted && track_gone(p))) {
+                ev.placed.erase(ev.placed.begin() + static_cast<long>(i));
+                ++out.forgotten;
+                continue;
+            }
+            if (populated_gone) {
+                p.own = Ownership::Deleted;
+                ++out.deleted;
+            }
+            ++i;
+        }
+    return out;
 }
 
 FollowPlan PlanOwnerGone(const std::string& owner_guid, const std::vector<SoundPlacement>& placed,

@@ -637,6 +637,13 @@ void SoundFollowTick(ReaProject* proj)
             } catch (...) {
             }
         }
+        // Resilience 2026-10-19: the project's tracks (a copy whose track is gone was not deleted by hand: SettleGoneCopies).
+        std::vector<std::string> track_guids;
+        for (int i = 0, nt = CountTracks(proj); i < nt; ++i) {
+            MediaTrack* tr = GetTrack(proj, i);
+            char        buf[64] = {};
+            if (tr && GetSetMediaTrackInfo_String(tr, "GUID", buf, false) && buf[0]) track_guids.push_back(buf);
+        }
         // Fix C 2026-10-12: tagged sound items in no record (copied or pasted with an animation item).
         std::vector<FollowItemFacts> strays;
         for (const auto& kv : all)
@@ -821,6 +828,8 @@ void SoundFollowTick(ReaProject* proj)
                 in.moved_delta = mv_delta;
                 in.owner_loops = clip_map.loop;  // 13-56
                 in.pass_draws = pass_draws;      // 13-59
+                in.tracks_known = true;          // Resilience 2026-10-19
+                in.tracks = track_guids;
                 if (appeared_now) {
                     in.strays = strays;
                     in.owner_positions = anim_pos;

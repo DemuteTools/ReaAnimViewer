@@ -148,6 +148,8 @@ std::vector<ProjectRig> ProjectRigs();
 // The events Populate would place on these items (their targets): events whose rule resolves to a
 // library that is not blocked.
 int CountPopulateEvents(const std::vector<MediaItem*>& items);
+// Resilience 2026-10-19: the events of these items (their targets) holding a sound deleted by hand (what Restore puts back).
+int CountDeletedByHandEvents(const std::vector<MediaItem*>& items);
 // The item of the current project with this GUID (nullptr when none).
 MediaItem* FindItemByGuid(const std::string& guid);
 // ItemGuidOf: reaper_item_read.h (13-51, shared).

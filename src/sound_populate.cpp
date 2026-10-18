@@ -101,6 +101,11 @@ void WriteMeasuredSyncs(const std::map<std::string, MeasuredSound>& measured);
 std::map<std::string, MediaTrack*>* g_tracks = nullptr;
 
 // The engine's finder: the gesture's map only (a miss, or a GUID known as none: the engine scans).
+// Resilience 2026-10-19: the gesture's Populated copies in the project by owner (GUID upper case), read from their tags once a
+// gesture (built at first use; null outside a gesture: read each time).
+std::map<std::string, std::vector<StrayCopy>>* g_tagged = nullptr;
+bool                                           g_tagged_built = false;
+
 MediaItem* IndexedItem(const std::string& guid)
 {
     if (!g_items) return nullptr;
@@ -121,6 +126,8 @@ public:
             }
         g_items = &map_;
         g_tracks = &tracks_;
+        g_tagged = &tagged_;  // Resilience 2026-10-19
+        g_tagged_built = false;
         g_measured = &measured_;
         owner_ = true;
         SetPlaceItemFinder(&IndexedItem);
@@ -138,6 +145,8 @@ public:
         SetPlaceItemFinder(nullptr);
         g_items = nullptr;
         g_tracks = nullptr;
+        g_tagged = nullptr;
+        g_tagged_built = false;
     }
     ItemIndexScope(const ItemIndexScope&) = delete;
     ItemIndexScope& operator=(const ItemIndexScope&) = delete;
@@ -146,6 +155,7 @@ private:
     std::map<std::string, MediaItem*>  map_;
     std::map<std::string, MediaTrack*> tracks_;
     MeasureCache                       measured_;
+    std::map<std::string, std::vector<StrayCopy>> tagged_;
     bool                               owner_ = false;
 };
 
@@ -154,6 +164,42 @@ bool RemoveIndexed(const std::string& g)
 {
     if (g_items) g_items->erase(GuidKey(g));
     return RemovePlacement(nullptr, g);
+}
+
+// Resilience 2026-10-19: the Populated copies tagged for `owner` still in the project (any record may list them: the caller
+// sorts them out, AdoptStrayCopies).
+std::vector<StrayCopy> PopulatedCopiesOf(const std::string& owner)
+{
+    std::map<std::string, std::vector<StrayCopy>>  local;
+    std::map<std::string, std::vector<StrayCopy>>* m = g_tagged ? g_tagged : &local;
+    if (!g_tagged || !g_tagged_built) {
+        const int n = CountMediaItems(nullptr);
+        for (int i = 0; i < n; ++i) {
+            MediaItem* it = GetMediaItem(nullptr, i);
+            PlacedTag  tag;
+            if (!it || !ReadPlacedTag(it, &tag) || tag.own != Ownership::Populated || tag.owner.empty()) continue;
+            (*m)[GuidKey(tag.owner)].push_back(StrayCopy{ItemGuidOf(it), tag.rid, tag.t, tag.node});
+        }
+        if (g_tagged) g_tagged_built = true;
+    }
+    std::vector<StrayCopy> out;
+    const auto             hit = m->find(GuidKey(owner));
+    if (hit != m->end())
+        for (const StrayCopy& c : hit->second)
+            if (FindItemByGuid(c.item_guid)) out.push_back(c);  // not removed meanwhile by the gesture
+    return out;
+}
+
+// Resilience 2026-10-19: the GUIDs of the project's tracks (upper case).
+std::set<std::string> ProjectTrackGuids()
+{
+    std::set<std::string> out;
+    for (int i = 0, n = CountTracks(nullptr); i < n; ++i) {
+        MediaTrack* tr = GetTrack(nullptr, i);
+        char        buf[64] = {};
+        if (tr && GetSetMediaTrackInfo_String(tr, "GUID", buf, false) && buf[0]) out.insert(GuidKey(buf));
+    }
+    return out;
 }
 
 uint64_t RandomSeed()
@@ -171,6 +217,9 @@ struct PopOpts {
     // the automatic re-placements (a setting changed, the follow) still leave them deleted.
     bool        revive_deleted = false;
     bool        only_populated = false;  // P8: only the events that already have a live placement
+    // Resilience 2026-10-19: an assignment change: on an item that has live populated sounds, every event of the rules follows it
+    // (PopulateFilter::follow_item), not only the populated ones.
+    bool        follow_assign = false;
     bool        report_replaced = true;
     // 13-56 review: a looped item's new passes filled by the follow (PopulateLoopPassesNoUndo): only
     // the Place steps of the events that already have their sounds (PlanPassFill); nothing removed,
@@ -517,6 +566,23 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
         SoundEventsOf(BuildEventList(det.events, det.rules.events, blocks.size()), blocks, det.map);
     const int n_events = static_cast<int>(sound_events.size());
     int       handled = 0;
+    // Resilience (Antho 2026-10-19, "not resilient to timeline manipulations"): the record brought back in line with the
+    // project before anything is drawn. The copies gone: deleted by hand, or forgotten when their track was deleted
+    // or every copy went at once (SettleGoneCopies, as the follow). RAV's copies of this item the record does not
+    // list are taken back (a re-run never stacks a second copy beside them); the record events that match no
+    // event any more (Detect moved or dropped them) lose their copies.
+    {
+        const std::set<std::string> tracks = ProjectTrackGuids();
+        SettleGoneCopies(
+            rec, [](const std::string& g) { return FindItemByGuid(g) != nullptr; },
+            [&tracks](const std::string& t) { return tracks.count(GuidKey(t)) > 0; });
+        std::vector<LiveEvent> live_events;
+        for (const FollowEvent& e : sound_events) live_events.push_back(LiveEvent{e.rid, e.t});
+        const StrayAdoption ad = AdoptStrayCopies(rec, PopulatedCopiesOf(guid), live_events, !o.fill_passes);
+        for (const std::string& g : ad.remove_guids) RemoveIndexed(g);
+        if (!o.fill_passes)  // a fill never removes
+            for (const std::string& g : PruneStaleEvents(rec, live_events)) RemoveIndexed(g);
+    }
     // 13-62i (D): what this Populate does with each event (PlanPopulateEvent: drawn, kept -- left out by the filter or
     // placed by the user, its draws still playing --, or skipped); each draw also avoids the picks the kept events
     // after it play (SetPopulateTimeline).
@@ -526,6 +592,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
     filter.has_t = o.has_t;
     filter.t = o.t;
     filter.only_populated = o.only_populated;
+    filter.follow_item = o.follow_assign && ItemIsPopulated(rec);  // Resilience 2026-10-19
     std::vector<EventPlan> plans;
     {
         std::vector<const EventSounds*> evs;
@@ -579,12 +646,8 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
         }
         if (events) ++*events;
 
-        // P9: a recorded item no longer in the project was deleted by hand.
-        MarkDeletedPlacements(*ev, [](const std::string& g) { return FindItemByGuid(g) != nullptr; });
-        if (o.revive_deleted)
-            ev->placed.erase(std::remove_if(ev->placed.begin(), ev->placed.end(),
-                                            [](const SoundPlacement& p) { return p.own == Ownership::Deleted; }),
-                             ev->placed.end());
+        // P9: a recorded item no longer in the project was deleted by hand (Resilience 2026-10-19: settled above, SettleGoneCopies).
+        if (o.revive_deleted) ForgetDeletedMarks(*ev);
 
         // P10: the draw.
         st.lib = lib;
@@ -955,13 +1018,19 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                 for (size_t k = 0; k < r.item_guids.size() && k < r.items.size(); ++k)
                     (*g_items)[GuidKey(r.item_guids[k])] = r.items[k];
             CheckOwners(r.item_guids, guid, rep, n->uid, e.t);
-            for (const std::string& g : r.item_guids) {
+            for (size_t k = 0; k < r.item_guids.size(); ++k) {
                 SoundPlacement p;
-                p.item_guid = g;
+                p.item_guid = r.item_guids[k];
                 p.node = n->uid;
                 p.own = Ownership::Populated;
                 p.offset_s = req.offset_s;
                 p.variation = s.variation;
+                // Resilience 2026-10-19: its track, known at once (a copy whose track is deleted is forgotten, not deleted by hand).
+                if (k < r.items.size() && r.items[k]) {
+                    char buf[64] = {};
+                    MediaTrack* tr = GetMediaItem_Track(r.items[k]);
+                    if (tr && GetSetMediaTrackInfo_String(tr, "GUID", buf, false)) p.track_guid = buf;
+                }
                 added.push_back(p);
             }
             if (step.act == SlotAction::Place) filled_picks.push_back({d.pass, PlacedPick{n->uid, s.variation, d.part}});
@@ -1075,6 +1144,7 @@ void EditAutoRules(MediaItem* item, const std::vector<std::string>& keys, const 
     for (MediaItem* m : members) ModifyItemSounds(m, nullptr, [&](ItemSounds& s) { return edit(s, rids); });
     PopOpts o;  // 13-8 fix: every rule of the row in one pass (one detection per member, not one per rule)
     o.only_populated = true;
+    o.follow_assign = true;  // Resilience 2026-10-19: every event of the rules follows the assignment
     o.rids = rids;
     PopulateMembers(members, store, o, rep);
 }
@@ -1130,6 +1200,7 @@ void ReplaceChangedRules(const SoundStore& before, SoundReport& rep)
         if (rids.empty()) continue;
         PopOpts o;
         o.only_populated = true;
+        o.follow_assign = true;  // Resilience 2026-10-19: every event of the rules follows the assignment
         o.rids = rids;
         PopulateOne(it, after, o, rep, nullptr);
     }
@@ -1453,6 +1524,7 @@ SoundReport SetRuleLibrary(MediaItem* item, int block, std::string library_uid)
                 ModifyItemSounds(m, nullptr, [&](ItemSounds& s) { return SetRulesLibrary(s, {rid}, state, lib); });
             PopOpts o;
             o.only_populated = true;
+            o.follow_assign = true;  // Resilience 2026-10-19: every event of the rules follows the assignment
             o.rid = rid;
             PopulateMembers(members, store, o, rep);
         }
@@ -1512,6 +1584,7 @@ SoundReport SetSoundValue(MediaItem* item, SoundValueLevel level, int block, dou
                 });
             PopOpts o;
             o.only_populated = true;
+            o.follow_assign = true;  // Resilience 2026-10-19: every event of the rules follows the assignment
             o.rid = rid;
             o.has_t = level == SoundValueLevel::Event;
             o.t = t;
@@ -1598,6 +1671,7 @@ void EditRules(MediaItem* item, const std::vector<std::string>& rids, const Soun
     for (MediaItem* m : members) ModifyItemSounds(m, nullptr, edit);
     PopOpts o;
     o.only_populated = true;
+    o.follow_assign = true;  // Resilience 2026-10-19: every event of the rules follows the assignment
     o.rids = rids;
     PopulateMembers(members, store, o, rep);
 }
@@ -1791,6 +1865,16 @@ SoundReport SetLibraryKit(std::string library_uid, std::vector<std::string> part
         }
         return changed;
     });
+}
+
+int CountDeletedByHandEvents(const std::vector<MediaItem*>& items)
+{
+    int n = 0;
+    try {
+        for (MediaItem* it : PopulateTargets(items)) n += CountDeletedByHand(ReadItemSounds(it));
+    } catch (...) {
+    }
+    return n;
 }
 
 int CountPopulateEvents(const std::vector<MediaItem*>& items)

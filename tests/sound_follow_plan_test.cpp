@@ -299,6 +299,75 @@ int main()
         at.items = {Fact("{A}", 9.9, true, 9.9, 10.0)};
         CHECK(PlanItemFollow(at).actions.empty());
     }
+    // Resilience (Antho 2026-10-19): a deleted-by-hand mark never swallows a removal of the output.
+    {
+        // Two events, one copy each on track {T1}.
+        auto two = []() {
+            FollowInput in = OneSound(Ownership::Populated);
+            EventSounds e2 = in.rec.events[0];
+            e2.t = 2.0;
+            e2.placed[0].item_guid = "{B}";
+            in.rec.events.push_back(e2);
+            in.events = {Ev("r1", 1.0, 10.0), Ev("r1", 2.0, 11.0)};
+            return in;
+        };
+        // One copy deleted while its track stays: deleted by hand (Populate respects it).
+        FollowInput one = two();
+        one.items = {Fact("{B}", 11.0, true, 11.0, 11.0, 2.0)};
+        one.tracks_known = true;
+        one.tracks = {"{T1}"};
+        FollowPlan p = PlanItemFollow(one);
+        CHECK(p.record.events.size() == 2 && p.record.events[0].placed.size() == 1 &&
+              p.record.events[0].placed[0].own == Ownership::Deleted);
+        // The generated track deleted (both copies and their track gone): forgotten, the events no longer
+        // populated, nothing marked deleted by hand.
+        FollowInput trk = two();
+        trk.tracks_known = true;
+        trk.tracks = {"{OTHER}"};
+        p = PlanItemFollow(trk);
+        CHECK(p.record_changed && p.record.events.size() == 2 && p.record.events[0].placed.empty() &&
+              p.record.events[1].placed.empty());
+        CHECK(!p.record.events[0].draws.empty());  // the draw stays: Populate places the same again
+        CheckIdempotent(trk, p);
+        // One copy gone with its track, the other still there: that one forgotten too (track rule alone).
+        FollowInput half = two();
+        half.rec.events[1].placed[0].track_guid = "{T2}";
+        half.items = {Fact("{A}", 10.0, true, 10.0, 10.0)};
+        half.tracks_known = true;
+        half.tracks = {"{T1}"};
+        p = PlanItemFollow(half);
+        CHECK(p.record.events[0].placed.size() == 1 && p.record.events[0].placed[0].own == Ownership::Populated &&
+              p.record.events[1].placed.empty());
+        // Every copy of the item gone at once (tracks not known, still there): the output removed, forgotten.
+        FollowInput all = two();
+        p = PlanItemFollow(all);
+        CHECK(p.record.events[0].placed.empty() && p.record.events[1].placed.empty());
+        // An old deleted-by-hand mark whose track is gone (the project Antho has now): forgotten.
+        FollowInput old = OneSound(Ownership::Deleted);
+        old.events = {Ev("r1", 1.0, 10.0)};
+        old.tracks_known = true;
+        old.tracks = {};
+        p = PlanItemFollow(old);
+        CHECK(p.record_changed && p.record.events[0].placed.empty());
+        // ... kept while its track exists, or when the tracks are not known.
+        old.tracks = {"{t1}"};  // any case
+        CHECK(!PlanItemFollow(old).record_changed);
+        old.tracks_known = false;
+        CHECK(!PlanItemFollow(old).record_changed);
+        // SettleGoneCopies itself: counts; Attached left to the caller; a single lone copy is deleted by hand.
+        ItemSounds rec = OneSound(Ownership::Populated).rec;
+        SoundPlacement at;
+        at.item_guid = "{C}";
+        at.own = Ownership::Attached;
+        rec.events[0].placed.push_back(at);
+        GoneCopies g = SettleGoneCopies(rec, [](const std::string&) { return false; }, nullptr);
+        CHECK(g.deleted == 1 && g.forgotten == 0 && rec.events[0].placed.size() == 2 &&
+              rec.events[0].placed[1].own == Ownership::Attached);
+        rec = two().rec;
+        g = SettleGoneCopies(rec, [](const std::string& x) { return x == "{A}"; },
+                             [](const std::string&) { return true; });
+        CHECK(g.deleted == 1 && g.forgotten == 0);
+    }
     // Hand delete: populated -> Deleted, no action; attached -> dropped.
     {
         FollowInput in = OneSound(Ownership::Populated);

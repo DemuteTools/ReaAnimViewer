@@ -607,6 +607,17 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
 
     // Copy every member first, apply the variation, then position from the anchor's snap.
     std::vector<MediaItem*> placed;
+    // Resilience 2026-10-19: a member that fails takes the copies made before it away (untagged, in no record, they were left
+    // on the timeline beside the next Populate's); the kept item stays.
+    auto drop_made = [&]() {
+        for (MediaItem* it : placed)
+            if (it && it != kept) {
+                ForgetDeleted(it);
+                f_delete_item(GetMediaItem_Track(it), it);
+            }
+        r.item_guids.clear();
+        r.items.clear();
+    };
     for (size_t i = 0; i < members.size(); ++i) {
         const Member& m = members[i];
         MediaItem*    item = nullptr;
@@ -616,6 +627,7 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
             guid = ItemGuidOf(kept);
             if (!user_moved && GetMediaItem_Track(kept) != m.track && !f_move_to_track(kept, m.track)) {
                 r.error = "could not move the kept item to the source track";
+                drop_made();
                 return r;
             }
         } else {
@@ -624,6 +636,7 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
         }
         if (!item) {
             r.error = "could not add an item";
+            drop_made();
             return r;
         }
         if (!WriteCopy(m.src, item, guid, req.as_auditioned && !folder)) {
@@ -632,6 +645,7 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
                 f_delete_item(m.track, item);
             }
             r.error = "could not copy the source item";
+            drop_made();
             return r;
         }
         if (by_pieces) {

@@ -599,4 +599,10 @@ bool EditLoopDue(const EditTransport& tp, double pos, double total, double block
     return tp.loops && total > 0.0 && std::isfinite(pos) && pos >= total - std::max(block_s, 0.0) - 1e-9;
 }
 
+bool EditLoopEndedAtEnd(const EditTransport& tp, double last_pos, double since_s, double total)
+{
+    return tp.loops && total > 0.0 && std::isfinite(last_pos) && std::isfinite(since_s) &&
+           last_pos + std::max(since_s, 0.0) >= total - 0.05;
+}
+
 }  // namespace rav

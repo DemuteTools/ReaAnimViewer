@@ -518,6 +518,45 @@ void TestItems()
     CHECK(ZoneTip(d, h, names, true).find("Heel + Heel glued by a Gap: one item") == 0);
 }
 
+// 13-67a: Go to previous marker / project start (40172) and the right-drag marquee.
+static void TestPrevStopAndMarquee()
+{
+    const SoundData d = Sample();
+    // Zone starts 0.10, 0.45, 0.70 (the Gap is no stop), 1.20; the file start last.
+    CHECK(std::fabs(PrevEditStop(d, -1, 2.0, false, 0.0) - 1.20) < 1e-9);
+    CHECK(std::fabs(PrevEditStop(d, -1, 1.0, false, 0.0) - 0.70) < 1e-9);
+    CHECK(std::fabs(PrevEditStop(d, -1, 0.70, false, 0.0) - 0.45) < 1e-9);  // at a stop: the one before
+    CHECK(std::fabs(PrevEditStop(d, -1, 0.45, false, 0.0) - 0.10) < 1e-9);
+    CHECK(PrevEditStop(d, -1, 0.10, false, 0.0) == 0.0);
+    CHECK(PrevEditStop(d, -1, 0.0, false, 0.0) == 0.0);
+    CHECK(PrevEditStop(d, -1, -1.0, false, 0.0) == 0.0);  // no cursor
+    // A time selection's start is a stop too, nearest first.
+    CHECK(std::fabs(PrevEditStop(d, -1, 0.70, true, 0.55) - 0.55) < 1e-9);
+    CHECK(std::fabs(PrevEditStop(d, -1, 0.55, true, 0.55) - 0.45) < 1e-9);
+    CHECK(std::fabs(PrevEditStop(d, -1, 0.05, true, 0.02) - 0.02) < 1e-9);
+    // Marquee over variation 2 only: its Toe.
+    ZoneSel hits = ZonesInSpan(d, -1, 1.30, 1.10, nullptr);  // either order
+    CHECK(hits.size() == 1 && hits[0].frame == 1 && hits[0].index == 0);
+    // Over the first Heel: its item whole (Heel + Gap + Heel), time order.
+    hits = ZonesInSpan(d, -1, 0.20, 0.30, nullptr);
+    CHECK(hits.size() >= 3 && hits[0].frame == 0 && hits[0].index == 0 && SelHas(hits, ZoneRef{0, 1}) && SelHas(hits, ZoneRef{0, 2}));
+    // Lane rows: only the parts covered (Toe's lane over Heel's time: nothing).
+    const std::vector<std::string> toe = {"toe"};
+    CHECK(ZonesInSpan(d, -1, 0.20, 0.30, &toe).empty());
+    hits = ZonesInSpan(d, -1, 0.75, 1.30, &toe);
+    CHECK(SelHas(hits, ZoneRef{0, 3}) && SelHas(hits, ZoneRef{1, 0}) && !SelHas(hits, ZoneRef{0, 0}));
+    // Nothing under it.
+    CHECK(ZonesInSpan(d, -1, 1.70, 1.90, nullptr).empty());
+    // Replace, or add with Ctrl (once each).
+    ZoneSel sel = {ZoneRef{0, 3}};
+    SelMarquee(sel, {ZoneRef{1, 0}}, false);
+    CHECK(sel.size() == 1 && sel[0].frame == 1);
+    SelMarquee(sel, {ZoneRef{1, 0}, ZoneRef{0, 3}}, true);
+    CHECK(sel.size() == 2 && SelHas(sel, ZoneRef{0, 3}));
+    SelMarquee(sel, {}, false);
+    CHECK(sel.empty());
+}
+
 int main()
 {
     TestHitLane();
@@ -530,6 +569,7 @@ int main()
     TestTipsAndCursors();
     TestSelection();
     TestItems();
+    TestPrevStopAndMarquee();
     if (g_fails) {
         std::printf("zone_hit_test: %d failure(s)\n", g_fails);
         return 1;

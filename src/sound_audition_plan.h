@@ -223,6 +223,11 @@ EditTransport PlanEditTransport(double cursor, bool has_tsel, double tsel_a, dou
 // Whether a looping play at heard position `pos` of a pass `total` s long restarts now (within `block_s`, an
 // audio block, of its end).
 bool EditLoopDue(const EditTransport& tp, double pos, double total, double block_s = 0.0);
+// 13-67a (Loop sometimes stops): a looping play that ended between two frames (the preview reached its end, so it is
+// gone before EditLoopDue could see it within a frame of its end) restarts too: true when it loops and its heard
+// position last seen (`last_pos`) plus the wall time since then (`since_s`) reaches the pass's end (`total`, 50 ms of
+// slack). A play stopped earlier (Esc, Stop) falls short of it.
+bool EditLoopEndedAtEnd(const EditTransport& tp, double last_pos, double since_s, double total);
 
 // "D → N variations · K off" (decision 7): "D → " dropped when D = N, " · K off" when K = 0;
 // "1 variation" singular.

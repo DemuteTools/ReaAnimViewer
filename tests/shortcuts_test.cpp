@@ -1062,6 +1062,36 @@ int main()
         CHECK(m.shadowed[kShortcutEditSplit].size() == 1 && m.keys[kShortcutEditSplit].empty());
     }
 
+    // 13-67a: Set snap offset to cursor (REAPER 40541), Go to previous marker / project start (40172): REAPER rows, no
+    // key, no fallback; Exclusive Solo: a RAV action (REAPER has none), no default key; all Library Edit only.
+    {
+        CHECK(ShortcutReaperActionId(kShortcutEditSnapOffset) == "40541");
+        CHECK(ShortcutReaperActionId(kShortcutEditPrevStop) == "40172");
+        for (const int i : {static_cast<int>(kShortcutEditSnapOffset), static_cast<int>(kShortcutEditPrevStop)}) {
+            CHECK(ShortcutDefaultFollowsReaper(i));
+            CHECK(kShortcutTable[i].action == nullptr && kShortcutTable[i].def.vk == 0);
+            CHECK(ShortcutReaperFallback(i).vk == 0);
+            CHECK(kShortcutTable[i].context == ShortcutContext::LibraryEdit);
+        }
+        CHECK(!ShortcutDefaultFollowsReaper(kShortcutEditExclSolo));
+        CHECK(ShortcutReaperActionId(kShortcutEditExclSolo) == "_RAV_KEY_EDIT_EXCL_SOLO");
+        CHECK(kShortcutTable[kShortcutEditExclSolo].def.vk == 0);
+        CHECK(kShortcutTable[kShortcutEditExclSolo].context == ShortcutContext::LibraryEdit);
+        CHECK(std::string(kShortcutTable[kShortcutEditExclSolo].id) == "edit_excl_solo_part");
+        // The rows are stored by their text id: unique.
+        for (int i = 0; i < kShortcutCount; ++i)
+            for (int j = 0; j < i; ++j) CHECK(std::strcmp(kShortcutTable[i].id, kShortcutTable[j].id) != 0);
+        // Every Edit row on REAPER: the defaults stay valid, no key runs the three while REAPER lists none.
+        bool on_reaper[kShortcutCount] = {};
+        for (int i = kShortcutEditTrimLeft; i <= kShortcutEditLoop; ++i) on_reaper[i] = true;
+        ShortcutBindings sb = DefaultShortcutBindings();
+        CHECK(SanitizeShortcuts(sb, nullptr, nullptr, on_reaper).empty());
+        ShortcutKeyLists lk;
+        bool             used[kShortcutCount] = {};
+        ApplyReaperFallbacks(lk, on_reaper, used);
+        CHECK(!used[kShortcutEditSnapOffset] && !used[kShortcutEditPrevStop] && !used[kShortcutEditExclSolo]);
+    }
+
     // 13-62: the selected part's Solo / Mute in the Sound Edit window -- on REAPER's 40281 / 40280 (track
     // Solo/unsolo, Mute/unmute) by default; no RAV action, no key of their own, no fallback.
     {
@@ -1069,7 +1099,7 @@ int main()
         CHECK(ShortcutReaperActionId(kShortcutEditMute) == "40280");
         CHECK(std::string(kShortcutTable[kShortcutEditSolo].id) == "edit_solo_part");
         CHECK(std::string(kShortcutTable[kShortcutEditMute].id) == "edit_mute_part");
-        for (int i = kShortcutEditSolo; i <= kShortcutEditMute; ++i) {
+        for (const int i : {static_cast<int>(kShortcutEditSolo), static_cast<int>(kShortcutEditMute)}) {  // 13-67a: Exclusive Solo between
             CHECK(ShortcutDefaultFollowsReaper(i));
             CHECK(kShortcutTable[i].action == nullptr && kShortcutTable[i].def.vk == 0);
             CHECK(kShortcutTable[i].context == ShortcutContext::LibraryEdit);
@@ -1143,7 +1173,7 @@ int main()
     // 13-62h: Heal / Loop in the Sound Edit window -- on REAPER's 40548 (Item: Heal splits in items) / 1068
     // (Transport: Toggle repeat) by default, H / R while REAPER lists no key for them; 40508 retargeted.
     {
-        CHECK(kShortcutCount == 20 && kShortcutEditHeal == 18 && kShortcutEditLoop == 19);
+        CHECK(kShortcutCount == 23 && kShortcutEditHeal == 21 && kShortcutEditLoop == 22);  // 13-67a: renumbered
         CHECK(ShortcutReaperActionId(kShortcutEditHeal) == "40548");
         CHECK(ShortcutReaperActionId(kShortcutEditLoop) == "1068");
         CHECK(std::string(kShortcutTable[kShortcutEditHeal].id) == "edit_heal");

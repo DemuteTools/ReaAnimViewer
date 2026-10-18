@@ -99,21 +99,30 @@ enum ShortcutId : int {
     kShortcutFullScreen  = 8,  // story 6-5-9: the viewer full screen on / off (Esc leaves it too)
     kShortcutClipList    = 9,  // story 6-5-10: the animation clip list open / closed (every view)
     // 13-61: the Sound Edit window's trims (Library Edit only), on REAPER's 40511 / 40512 / 40508 keys.
+    // 13-67a: the Edit rows renumbered to put the new ones beside their kin (the rows are stored by their text id).
     kShortcutEditTrimLeft  = 10,  // the variation under the edit cursor starts at the cursor
     kShortcutEditTrimRight = 11,  // ...ends at the cursor
     kShortcutEditTrimZone  = 12,  // 13-62h: the selected zones (else the zones under it) trimmed to the time selection
     // 13-63: the Sound Edit window's split, on REAPER's 40757 keys (B while REAPER gives 40757 none).
     kShortcutEditSplit     = 13,  // the variation(s) under the edit cursor split there
+    // 13-67a: REAPER's 40541 "Item: Set snap offset to cursor" on the selected zone (a hand snap offset, one undo point).
+    kShortcutEditSnapOffset = 14,
     // 13-62: the Sound Edit window's listening, on REAPER's 40281 / 40280 keys (no key while REAPER has none).
-    kShortcutEditSolo      = 14,  // the selected part soloed / unsoloed (view state, never saved)
-    kShortcutEditMute      = 15,  // ...muted / unmuted
+    kShortcutEditSolo      = 15,  // the selected part soloed / unsoloed (view state, never saved)
+    // 13-67a: Exclusive Solo (REAPER has it only as a mouse modifier): the selected part alone soloed; on the only
+    // soloed part = unsolo. A RAV action, no default key (view state, never saved).
+    kShortcutEditExclSolo  = 16,
+    kShortcutEditMute      = 17,  // ...muted / unmuted
     // 13-62F (F5): chain editing, on REAPER's 40417 / 40416 keys (no key while REAPER has none).
-    kShortcutEditNextVar   = 16,  // the next variation selected, the cursor at its start, the view centred on it
-    kShortcutEditPrevVar   = 17,  // ...the previous one
+    kShortcutEditNextVar   = 18,  // the next variation selected, the cursor at its start, the view centred on it
+    kShortcutEditPrevVar   = 19,  // ...the previous one
+    // 13-67a: REAPER's 40172 "Markers: Go to previous marker/project start": the edit cursor back to the nearest
+    // earlier time selection start / zone start, the file start last (view state). No 40173 (Antho 2026-10-17).
+    kShortcutEditPrevStop  = 20,
     // 13-62h: zone editing, on REAPER's 40548 / 1068 keys (H / R while REAPER gives them none).
-    kShortcutEditHeal      = 18,  // the selected zones that are edge to edge healed into one
-    kShortcutEditLoop      = 19,  // Loop on / off (view state, never saved)
-    kShortcutCount       = 20,
+    kShortcutEditHeal      = 21,  // the selected zones that are edge to edge healed into one
+    kShortcutEditLoop      = 22,  // Loop on / off (view state, never saved)
+    kShortcutCount       = 23,
 };
 
 inline const ShortcutDef kShortcutTable[kShortcutCount] = {
@@ -149,9 +158,16 @@ inline const ShortcutDef kShortcutTable[kShortcutCount] = {
     // 13-63 (Antho 2026-10-14): REAPER's split at the edit cursor; B when REAPER gives 40757 no key.
     {"edit_split", "Split at cursor", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
      "40757", "Item: Split items at edit cursor (no change selection)", {'B', false, false, false}},
+    // 13-67a (Antho 2026-10-17): REAPER's snap offset at the edit cursor, on the selected zone.
+    {"edit_snap_offset", "Set snap offset to cursor", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+     "40541", "Item: Set snap offset to cursor"},
     // 13-62 (decision 12, ids checked in REAPER 7.81): REAPER's track solo / mute toggles, on the selected part.
     {"edit_solo_part", "Solo selected part", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
      "40281", "Track: Solo/unsolo tracks"},
+    // 13-67a (Antho 2026-10-17): Exclusive Solo, REAPER's Ctrl+Alt+click on a Solo button; no REAPER action to follow,
+    // so a RAV action with no default key.
+    {"edit_excl_solo_part", "Exclusive solo selected part", {0, false, false, false}, ShortcutContext::LibraryEdit,
+     "RAV_KEY_EDIT_EXCL_SOLO", "RAV: Sound Edit - Exclusive solo selected part"},
     {"edit_mute_part", "Mute selected part", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
      "40280", "Track: Mute/unmute tracks"},
     // 13-62F (F5, Antho 2026-10-14): REAPER's item navigation, to chain through the variations at a fixed zoom.
@@ -159,6 +175,9 @@ inline const ShortcutDef kShortcutTable[kShortcutCount] = {
      "40417", "Item navigation: Select and move to next item"},
     {"edit_prev_variation", "Previous variation", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
      "40416", "Item navigation: Select and move to previous item"},
+    // 13-67a (Antho 2026-10-17): REAPER's previous marker, on the time selection start, the zone starts, the file start.
+    {"edit_prev_stop", "Go to previous zone start / file start", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr,
+     nullptr, "40172", "Markers: Go to previous marker/project start"},
     // 13-62h (decisions "Keys / playback"): REAPER's heal splits on the selected zones (H while REAPER gives
     // 40548 no key), and its repeat toggle on the Edit window's Loop (R while REAPER gives 1068 no key).
     {"edit_heal", "Heal selected zones", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,

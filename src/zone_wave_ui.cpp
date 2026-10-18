@@ -281,6 +281,7 @@ bool StartPlay(const ZoneWaveHost& h, const EditTransport& tp, double from, doub
     }
     v.playing = true;
     v.last_pos = 0.0;
+    v.last_seen_t = ImGui::GetTime();  // 13-67a
     v.play_uid = h.node->uid;
     v.play_tl = h.tl;  // 13-62i: its take's host draws the playheads
     v.tp = tp;
@@ -394,7 +395,12 @@ void Click(const ZoneWaveHost& h, const ZoneHit& hit, bool add)
         if (!z->IsGap()) *h.part_sel = z->part;
     }
     if (hit.row == ZoneRow::Placed) return;  // the Placed strip: click selects
-    if (ZoneClickPlays()) PlayRange(h, ClickPlayRange(d, hit.z, hit.t, h.file_len));
+    if (ZoneClickPlays()) {
+        // 13-67a (Antho 2026-10-17): the click's intent is "hear this": the time selection goes (like REAPER), so the
+        // clicked item plays instead of the time selection.
+        v.has_tsel = false;
+        PlayRange(h, ClickPlayRange(d, hit.z, hit.t, h.file_len));
+    }
 }
 
 // The mockup's onDouble.
@@ -1253,6 +1259,10 @@ bool EscStep(const ZoneWaveHost& h)
     v.esc_frame = frame;
     const bool menu = v.menu_frame >= frame - 1;
     if (menu) v.menu_close = true;
+    if (v.rpress.on) {  // 13-67a: a marquee (or a right press) is dropped, nothing selected
+        v.rpress = ZoneRightPress{};
+        return true;
+    }
     if (v.drag.kind != ZoneDragKind::None) {
         if (h.live_now()) h.cancel();
         v.drag = ZoneDrag{};
@@ -1572,10 +1582,57 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
         ImGui::PopID();
         return ev;
     }
+    // 13-67a (Antho 2026-10-18): the right button. A press records where; dragged past 4 px from empty space it is a
+    // marquee (like REAPER's arrange view); released without that, the right-click menu opens for the press point.
+    ZoneRightPress& rp = v.rpress;
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && v.drag.kind == ZoneDragKind::None) {
         const int ri = row_at(m.y);
         if (ri >= 0) {
-            const ZoneHit   hit = hit_at(ri, m);
+            rp = ZoneRightPress{};
+            rp.on = true;
+            rp.m0 = m;
+            rp.add = io.KeyCtrl;
+            rp.hit = hit_at(ri, m);
+            rp.tl = h.tl;
+            rp.empty = rows[static_cast<size_t>(ri)].row == ZoneRow::Lane && rp.hit.kind != ZoneHitKind::Grey &&
+                       !ZoneOf(Shown(h), rp.hit.z);
+        }
+    }
+    bool marquee_now = false;
+    if (rp.on && rp.tl == h.tl && ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
+        if (!rp.marquee && rp.empty && (std::fabs(m.x - rp.m0.x) > 4.0f * dp || std::fabs(m.y - rp.m0.y) > 4.0f * dp))
+            rp.marquee = true;
+        marquee_now = rp.marquee;
+    } else if (rp.on && rp.tl == h.tl) {  // released (a release this host did not see: dropped)
+        const ZoneRightPress press = rp;
+        rp = ZoneRightPress{};
+        if (!ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
+        } else if (press.marquee) {
+            const float y0 = std::min(press.m0.y, m.y), y1 = std::max(press.m0.y, m.y);
+            const SoundData&         d = Shown(h);
+            std::vector<std::string> parts;
+            bool                     every = !lane_view;
+            for (const Row& r : rows) {
+                if (r.row != ZoneRow::Lane || r.y1 < y0 || r.y0 > y1) continue;
+                if (r.lane < 0) every = true;
+                else if (static_cast<size_t>(r.lane) < d.divide_values.size()) parts.push_back(d.divide_values[static_cast<size_t>(r.lane)]);
+            }
+            const ZoneSel hits = ZonesInSpan(d, h.tl, time_at(press.m0.x), time_at(m.x), every ? nullptr : &parts);
+            SelMarquee(v.sel, hits, press.add);
+            if (!hits.empty() && !press.add) {
+                const EditZone* fz = nullptr;
+                for (const ZoneRef& r : hits)
+                    if (const EditZone* z = ZoneOf(d, r); z && !z->IsGap()) {
+                        fz = z;
+                        break;
+                    }
+                if (fz) *h.part_sel = fz->part;
+            }
+            ShowLibraryToast(hits.empty() ? std::string(press.add ? "Marquee: nothing added" : "Marquee: nothing selected")
+                                          : std::to_string(v.sel.size()) + (v.sel.size() == 1 ? " zone selected" : " zones selected"),
+                             false);
+        } else if (std::fabs(m.x - press.m0.x) <= 4.0f * dp && std::fabs(m.y - press.m0.y) <= 4.0f * dp) {
+            const ZoneHit   hit = press.hit;
             const EditZone* z = ZoneOf(Shown(h), hit.z);
             // 13-62h (v5): on an item (but its greyed copy on another lane): it selected whole (unless it already
             // is) and its item menu.
@@ -1665,6 +1722,12 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
                 (void)0;
         }
     }
+    if (marquee_now) {  // 13-67a: the marquee (accent, translucent), inside the zone canvas
+        const ImVec2 a(std::clamp(std::min(rp.m0.x, m.x), cx0, cx0 + cw), std::clamp(std::min(rp.m0.y, m.y), p0.y, bottom));
+        const ImVec2 b(std::clamp(std::max(rp.m0.x, m.x), cx0, cx0 + cw), std::clamp(std::max(rp.m0.y, m.y), p0.y, bottom));
+        dl->AddRectFilled(a, b, Alpha(ui::kAccent, 0.15f));
+        dl->AddRect(a, b, ui::kAccent);
+    }
     dl->AddRect(ImVec2(cx0, p0.y), ImVec2(cx0 + cw, bottom), ui::kStroke);
     dl->PopClipRect();
 
@@ -1712,6 +1775,8 @@ void ZoneEditRequest(const ZoneWaveHost& h, int id)
     case kShortcutEditLoop: ZoneToggleLoop(h); return;
     case kShortcutEditNextVar: ZoneStepVariation(h, 1); return;
     case kShortcutEditPrevVar: ZoneStepVariation(h, -1); return;
+    case kShortcutEditSnapOffset: ZoneSnapToCursor(h); return;  // 13-67a
+    case kShortcutEditPrevStop: ZonePrevStop(h); return;        // 13-67a
     default: return;
     }
 }
@@ -1724,12 +1789,22 @@ void ZonePumpPlay(const ZoneWaveHost& h)
         v.playing = false;
         return;
     }
-    // Not ours any more: it ended, was stopped (Esc, another button) or another audition took over. Never restarted.
+    const double now = ImGui::GetTime();
+    // Not ours any more: it ended, was stopped (Esc, another button) or another audition took over. 13-67a (Loop
+    // sometimes stops): a looping play that reached its end between two frames is gone before EditLoopDue could see
+    // it within a frame of its end (frames are uneven; AuditionPlaying ends it at its end): restarted too, unless
+    // another audition took over.
     if (!(AuditionPlaying() && AuditionTag() == PlayTag(h))) {
         v.playing = false;
+        if (!AuditionPlaying() && EditLoopEndedAtEnd(v.tp, v.last_pos, now - v.last_seen_t, v.map.total)) {
+            const EditTransport tp = v.tp;
+            StartPlay(h, tp, tp.loop_a, tp.loop_b, true);
+            v.last_seen_t = now;
+        }
         return;
     }
     v.last_pos = AuditionPosition();
+    v.last_seen_t = now;
     // C4: REAPER's preview has no loop: ours, looping and at its heard end (within this frame), the looped range
     // again from its start. Without Loop it plays to its real end.
     if (!EditLoopDue(v.tp, v.last_pos, v.map.total, ImGui::GetIO().DeltaTime)) return;
@@ -1869,6 +1944,61 @@ void ZoneSplit(const ZoneWaveHost& h)
     if (!Write(h, "Split zone", [t](SoundData& x, const ZoneContext& c, ZoneSel* s) { return SplitZoneAt(x, t, c, s); },
                "Split at " + MsText(t) + ": two " + pn + " zones, edge to edge (fades: At cuts)", true))
         ShowLibraryToast("Too close to the zone's edge", false);
+}
+
+// 13-67a: REAPER's 40541 "Item: Set snap offset to cursor": the selected part zones holding the edit cursor (none
+// selected: the part zone under it) get their own snap offset there (a hand snap offset), one undo point.
+void ZoneSnapToCursor(const ZoneWaveHost& h)
+{
+    const double t = *h.cursor;
+    if (t < 0.0) {
+        ShowLibraryToast("Click where the snap offset goes first (the edit cursor)", false);
+        return;
+    }
+    const SoundData& d = Shown(h);
+    ZoneSel          on;
+    const ZoneSel    sel = SelValid(d, h.view->sel);
+    for (const ZoneRef& r : sel) {
+        const EditZone* z = ZoneOf(d, r);
+        if (z && !z->IsGap() && t >= z->a && t <= z->b && (h.tl < 0 || ZoneTimeline(d, r.frame) == NormTl(d, h.tl))) on.push_back(r);
+    }
+    if (sel.empty()) {
+        const ZoneRef   r = ZoneAt(d, t, h.tl);
+        const EditZone* z = ZoneOf(d, r);
+        if (z && !z->IsGap()) on.push_back(r);
+    }
+    if (on.empty()) {
+        ShowLibraryToast(sel.empty() ? "No zone under the cursor: no snap offset to set"
+                                     : "The edit cursor is not inside the selected zone: no snap offset to set",
+                         false);
+        return;
+    }
+    const std::string what = on.size() == 1 ? NameOfZone(h, d, on.front()) : std::to_string(on.size()) + " zones";
+    if (!Write(h, "Snap offset", [on, t](SoundData& x, const ZoneContext& c, ZoneSel*) {
+                   bool any = false;
+                   for (const ZoneRef& r : on) any = SetZoneSnap(x, r, t, c) || any;
+                   return any;
+               },
+               what + ": snap offset at " + MsText(t) + " (by hand; double-click it: automatic again)"))
+        ShowLibraryToast("The snap offset is already there", false);
+}
+
+// 13-67a: REAPER's 40172 "Go to previous marker / project start": the edit cursor back to the nearest earlier stop
+// (the time selection's start, a zone's start), the file start last. View state (no undo point).
+void ZonePrevStop(const ZoneWaveHost& h)
+{
+    const ZoneEditView& v = *h.view;
+    const double        cur = *h.cursor;
+    if (!(cur > 0.0)) {
+        *h.cursor = 0.0;
+        ShowLibraryToast("Already at the file start", false);
+        return;
+    }
+    *h.cursor = PrevEditStop(Shown(h), h.tl, cur, v.has_tsel, v.ts_a);
+    // Keep the cursor in view (same zoom), as Next / Previous variation do.
+    const double vl = *h.view_len;
+    if (vl > 0.0 && (*h.cursor < *h.view_start || *h.cursor > *h.view_start + vl))
+        *h.view_start = std::max(0.0, std::min(*h.cursor - vl * 0.1, std::max(0.0, h.file_len - vl)));
 }
 
 void ZoneTrimAt(const ZoneWaveHost& h, int side)

@@ -625,6 +625,15 @@ static void TestEditTransport()
     const EditPlay p = EditPlayFrom(d, t.from, t.to);
     CHECK(p.voices.size() == 2 && Near(p.map.total, 0.30) && Near(p.voices[1].delay_ms, 200.0));
     CHECK(Near(EditPlayFrom(d, t.loop_a, t.loop_b).map.total, 0.30));
+    // 13-67a (Loop sometimes stops): a looping pass that ended between two frames restarts; a play stopped before its
+    // end (Esc / Stop), or one that does not loop, does not.
+    t = PlanEditTransport(0.8, true, 0.2, 0.5, true, 1.0);
+    CHECK(EditLoopEndedAtEnd(t, 0.27, 0.04, 0.30));   // last seen 30 ms before the end, 40 ms ago
+    CHECK(EditLoopEndedAtEnd(t, 0.20, 0.07, 0.30));   // within the 50 ms slack
+    CHECK(!EditLoopEndedAtEnd(t, 0.10, 0.02, 0.30));  // stopped early
+    CHECK(!EditLoopEndedAtEnd(t, 0.27, 0.04, 0.0));
+    t = PlanEditTransport(0.8, true, 0.2, 0.5, false, 1.0);
+    CHECK(!EditLoopEndedAtEnd(t, 0.29, 0.04, 0.30));  // no Loop
 }
 
 static void TestZonePlayRanges()

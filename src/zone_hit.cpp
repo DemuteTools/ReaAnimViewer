@@ -745,4 +745,46 @@ std::string ZoneDbText(double db)
     return buf;
 }
 
+// ---- 13-67a: previous stop, marquee ----------------------------------------------------------------------------
+
+double PrevEditStop(const SoundData& d, int tl, double cursor, bool has_tsel, double ts_a)
+{
+    if (!(cursor > 0.0)) return 0.0;
+    const double lim = cursor - 0.001;  // a press at a stop goes on to the one before
+    double       best = 0.0;            // the file start: always the last stop
+    auto         take = [&](double t) {
+        if (std::isfinite(t) && t > best && t < lim) best = t;
+    };
+    if (has_tsel) take(ts_a);
+    for (const ZoneRef& r : AllZones(d, tl))
+        if (!Z(d, r).IsGap()) take(Z(d, r).a);
+    return best;
+}
+
+ZoneSel ZonesInSpan(const SoundData& d, int tl, double t0, double t1, const std::vector<std::string>* parts)
+{
+    if (t1 < t0) std::swap(t0, t1);
+    ZoneSel hits;
+    for (const ZoneRef& r : AllZones(d, tl)) {
+        const EditZone& z = Z(d, r);
+        if (z.b < t0 || z.a > t1) continue;
+        if (parts && !z.IsGap() && std::find(parts->begin(), parts->end(), z.part) == parts->end()) continue;
+        const ZoneSel item = ItemOf(d, r);
+        if (item.empty()) {
+            if (!SelHas(hits, r)) hits.push_back(r);
+        } else {
+            for (const ZoneRef& q : item)
+                if (!SelHas(hits, q)) hits.push_back(q);
+        }
+    }
+    return SelSorted(d, hits);
+}
+
+void SelMarquee(ZoneSel& sel, const ZoneSel& hits, bool add)
+{
+    if (!add) sel.clear();
+    for (const ZoneRef& r : hits)
+        if (!SelHas(sel, r)) sel.push_back(r);
+}
+
 }  // namespace rav

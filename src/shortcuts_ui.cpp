@@ -718,9 +718,12 @@ void DrawRow(const RowRef& r, const Cols& c, float w)
         DrawCaps(dl, caps, a.x + c.keys, a.x + c.keys + c.keys_w, ty - ui::Dp(1.5f), hover);
     }
     // 13-62: the Solo / Mute rows say what they do over their keys.
-    if (r.kind == RowRef::Kind::Key && (r.index == kShortcutEditSolo || r.index == kShortcutEditMute) && hover &&
+    if (r.kind == RowRef::Kind::Key &&
+        (r.index == kShortcutEditSolo || r.index == kShortcutEditMute || r.index == kShortcutEditExclSolo) && hover &&
         ImGui::GetIO().MousePos.x < a.x + c.keys)
-        ui::ShowTip(r.index == kShortcutEditSolo ? "Solo the selected part (not saved)" : "Mute the selected part (not saved)");
+        ui::ShowTip(r.index == kShortcutEditSolo   ? "Solo the selected part (not saved)"
+                    : r.index == kShortcutEditMute ? "Mute the selected part (not saved)"
+                                                   : "Solo the selected part alone; again on it: unsolo (not saved)");  // 13-67a
     // Follows.
     const int mode = ModePill(dl, ImVec2(a.x + c.follow, a.y + (h - ui::Dp(20.0f)) * 0.5f), r);
     if (mode) SetRowMode(r, mode == 1);
@@ -1011,7 +1014,7 @@ void Detail(const RowRef& r)
         else
             dflt = def.def.vk ? ShortcutBindingLabel(def.def) : std::string("none");
         Kv("Default", dflt);
-        if (id == kShortcutEditSolo || id == kShortcutEditMute) Kv("Saved", "no (listening only)");
+        if (id == kShortcutEditSolo || id == kShortcutEditMute || id == kShortcutEditExclSolo) Kv("Saved", "no (listening only)");
         // Conflicts (facts).
         for (const Cap& c : caps)
             if (!c.tip.empty()) warns.push_back(c.tip);

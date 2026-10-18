@@ -303,7 +303,7 @@ Double-click a row to record a new key, or for a Timelines row a key or a turn o
 
 Every row is either:
 
-- **REAPER**: it runs on the keys you give its action in REAPER's Actions list, read live. The viewer rows have their own RAV actions ("RAV: Viewer - …", "RAV: Video - …", "RAV: Tagging - …"); REAPER runs them too outside the viewer. The Sound Edit rows follow REAPER's own item actions (split, trims, heal, solo / mute, next / previous item, repeat): your REAPER keys for them do the same thing in the Sound Edit window while it has the focus. Split, Heal and Loop use **B**, **H** and **R** while REAPER gives their action no key. The Timelines rows follow your REAPER bindings of its view actions (scroll and zoom, wheel and keys).
+- **REAPER**: it runs on the keys you give its action in REAPER's Actions list, read live. The viewer rows have their own RAV actions ("RAV: Viewer - …", "RAV: Video - …", "RAV: Tagging - …"); REAPER runs them too outside the viewer. The Sound Edit rows follow REAPER's own item actions (split, trims, heal, solo / mute, next / previous item, repeat, set snap offset to cursor, go to previous marker / project start): your REAPER keys for them do the same thing in the Sound Edit window while it has the focus. **Exclusive solo selected part** has no REAPER action to follow (REAPER does it with Ctrl+Alt+click on a Solo button): it is a RAV action with no key until you give it one; pressed on the only soloed part it unsolos it. Split, Heal and Loop use **B**, **H** and **R** while REAPER gives their action no key. The Timelines rows follow your REAPER bindings of its view actions (scroll and zoom, wheel and keys).
 - **Own**: RAV's own key (or wheel, for the Timelines rows), or a REAPER action you link the row to.
 
 The footer says when `reaper-kb.ini` was last read; RAV reads it again whenever REAPER saves it.
@@ -336,7 +336,7 @@ Each action in the list shows its keys. Click one to check it (its name, and the
 | **Ctrl+V** | Paste shot camera | Video view |
 | **E** | Add event at playhead | Tagging view |
 | **Delete** | Suppress / delete event | Tagging view |
-| your REAPER keys | Trims, split (**B**), heal (**H**), solo / mute the selected part, next / previous variation, Loop (**R**) | Sound Edit |
+| your REAPER keys | Trims, split (**B**), heal (**H**), solo / mute the selected part, next / previous variation, Loop (**R**), snap offset at the cursor, previous zone start / file start | Sound Edit |
 | your REAPER bindings | Scroll and zoom (wheel, Alt+wheel, Ctrl+wheel, +, -, Up, Down by default) | Timelines |
 
 A key you bind is taken from REAPER while the viewer has the focus: bind Space, for example, and Space no longer starts or stops playback from the viewer. Hold Ctrl, Shift or Alt with it to keep REAPER's own key free. The key caps and tooltips in the viewer show your keys, custom ones in the accent colour. On AZERTY and other layouts with an AltGr key, Windows treats Ctrl+Alt+key as AltGr+key, so a Ctrl+Alt binding may type a character instead.

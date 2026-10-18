@@ -179,7 +179,7 @@ struct PanelState {
     double                edit_cursor = -1.0;
     int                   trim_request = -1;
     // 13-62: the selected part ("" = the Sound), the parts muted / soloed for listening and a Solo / Mute key
-    // waiting for the overlay (1 = solo, 2 = mute, 0 = none). View state: never saved, no undo point; reset with
+    // waiting for the overlay (1 = solo, 2 = mute, 3 = exclusive solo (13-67a), 0 = none). View state: never saved, no undo point; reset with
     // the shown Sound (C5).
     std::string           part_sel;
     std::set<std::string> part_mute, part_solo;
@@ -1188,11 +1188,12 @@ void RequestLibraryEditKey(int shortcut_id)
     if (shortcut_id == kShortcutEditTrimLeft || shortcut_id == kShortcutEditTrimRight || shortcut_id == kShortcutEditTrimZone ||
         shortcut_id == kShortcutEditSplit)
         P.trim_request = shortcut_id;
-    else if (shortcut_id == kShortcutEditSolo || shortcut_id == kShortcutEditMute)  // 13-62 (D)
-        P.listen_request = shortcut_id == kShortcutEditSolo ? 1 : 2;
+    else if (shortcut_id == kShortcutEditSolo || shortcut_id == kShortcutEditMute || shortcut_id == kShortcutEditExclSolo)  // 13-62 (D)
+        P.listen_request = shortcut_id == kShortcutEditSolo ? 1 : shortcut_id == kShortcutEditMute ? 2 : 3;  // 13-67a: 3 exclusive
     else if (shortcut_id == kShortcutEditNextVar || shortcut_id == kShortcutEditPrevVar)  // 13-62F (F5)
         P.nav_request = shortcut_id == kShortcutEditNextVar ? 1 : -1;
-    else if (shortcut_id == kShortcutEditHeal || shortcut_id == kShortcutEditLoop)  // 13-62h (Lot D; Lot E does them)
+    else if (shortcut_id == kShortcutEditHeal || shortcut_id == kShortcutEditLoop ||  // 13-62h (Lot D; Lot E does them)
+             shortcut_id == kShortcutEditSnapOffset || shortcut_id == kShortcutEditPrevStop)  // 13-67a
         P.zone_request = shortcut_id;
 }
 
@@ -3436,12 +3437,14 @@ void EditLegend(const SoundStore& store, const SoundLibrary& lib, const SoundNod
         const float bh = ui::Dp(22.0f);
         next(ui::ButtonWidth("All"));
         const bool all = P.view_len <= 0.0;
+        const std::vector<ZoneVarBlock> vblocks = ZoneVarBlocks(d);
         if (ui::ToggleButton("All##zvall", all, ImVec2(0.0f, bh))) {
             P.view_start = 0.0;
             P.view_len = 0.0;
+            if (!vblocks.empty()) P.edit_cursor = vblocks.front().a;  // 13-67a: the cursor at the first item's start
         }
         int vi = 0;
-        for (const ZoneVarBlock& b : ZoneVarBlocks(d)) {
+        for (const ZoneVarBlock& b : vblocks) {
             ++vi;
             const std::string lbl = "V" + std::to_string(vi) + "##zv" + std::to_string(vi);
             const double      a0 = std::max(0.0, b.a - 0.03), b0 = std::min(len, b.b + 0.03);
@@ -3450,8 +3453,9 @@ void EditLegend(const SoundStore& store, const SoundLibrary& lib, const SoundNod
             if (ui::ToggleButton(lbl.c_str(), on, ImVec2(0.0f, bh))) {
                 P.view_start = a0;
                 P.view_len = b0 - a0 >= len ? 0.0 : b0 - a0;
+                P.edit_cursor = b.a;  // 13-67a (Antho 2026-10-17): play starts on it right away (view state)
             }
-            ui::ItemTip("Zoom on variation %d", vi);
+            ui::ItemTip("Zoom on variation %d, the edit cursor at its start", vi);
         }
     }
     ImGui::Dummy(ImVec2(1.0f, ui::Dp(2.0f)));
@@ -3712,7 +3716,18 @@ void ZoneHeardBlock(const SoundData& d, const ZoneRef& r, const ZoneWaveHost& zh
     const float  W = std::max(ui::Dp(40.0f), ImGui::GetContentRegionAvail().x);
     const float  H = std::max(ui::Dp(48.0f), ImGui::GetContentRegionAvail().y - ui::kCardPad - ui::Dp(2.0f));
     const ImVec2 p = ImGui::GetCursorScreenPos();
-    ImGui::Dummy(ImVec2(W, H));
+    // 13-67a (Antho 2026-10-17): a click places the edit cursor where it lands in the file, like the main timeline,
+    // for fine control without zooming in (view state). A crossfade's overlap: the earlier piece's time.
+    ImGui::InvisibleButton("##zheard", ImVec2(W, H));
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && total > 0.0) {
+        const double at = std::clamp(static_cast<double>(ImGui::GetIO().MousePos.x - p.x) / W, 0.0, 1.0) * total;
+        for (const Placed& q : placed) {
+            if (at < q.at - 1e-9 || at > q.at + (q.q.b - q.q.a) + 1e-9) continue;
+            P.edit_cursor = q.q.a + (at - q.at);
+            if (d.mode == DetectMode::Takes) P.zv.cur_tl = tl;  // 13-62i: a Takes-mode Sound's cursor belongs to that take
+            break;
+        }
+    }
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(p, ImVec2(p.x + W, p.y + H), ui::kBg, ui::Dp(ui::kRadiusSm));
     dl->AddRect(p, ImVec2(p.x + W, p.y + H), ui::kStroke, ui::Dp(ui::kRadiusSm));
@@ -4599,8 +4614,8 @@ void ZoneSettingsColumn(const SoundLibrary& lib, const SoundNode& n, const Sound
 // ---- the header of a zoned Sound's Edit window ----
 
 constexpr const char kZoneHelp[] =
-    "Top half of a zone: drag moves it. Bottom half: drag moves the cursor. Shift+drag: a new zone. Alt+drag: a Gap. Every change is "
-    "one undo point (Ctrl+Z).";
+    "Top half of a zone: drag moves it. Bottom half: drag moves the cursor. Shift+drag: a new zone. Alt+drag: a Gap. Right-drag on "
+    "empty space: select the zones it touches (Ctrl adds). Every change is one undo point (Ctrl+Z).";
 
 // How many Sound Edit options are off their default (the ⚙ badge).
 int ZoneOptionsChanged() { return (ZoneClickPlays() ? 0 : 1) + (ZoneTailWins() ? 0 : 1); }
@@ -4616,7 +4631,7 @@ void  ZoneClickPlaysButton(float h)
         SetZoneClickPlays(!on);
         ShowLibraryToast(!on ? "Click plays: on" : "Click plays: off. A click only selects", false);
     }
-    ui::ItemTipText("On: a click on a zone or a Gap plays it. Off: a click only selects.");
+    ui::ItemTipText("On: a click on a zone or a Gap plays it (the time selection goes). Off: a click only selects.");
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float is = ui::IconPx(), x = p.x + ImGui::GetStyle().FramePadding.x;
     const ImU32 ink = on ? ui::kAccentText : ui::kText;
@@ -4936,7 +4951,12 @@ void DrawEditOverlay()
         // point, nothing written, so no media / live gating). No part selected, or not divided: nothing.
         if (P.listen_request != 0 && !StoreReplaced()) {
             const int listen = std::exchange(P.listen_request, 0);
-            if (IsDivided(n->sound) && PartIndex(n->sound, P.part_sel) >= 0) {
+            if (IsDivided(n->sound) && PartIndex(n->sound, P.part_sel) >= 0 && listen == 3) {
+                // 13-67a: Exclusive Solo -- the selected part alone soloed; on the only soloed part: unsolo.
+                const bool alone = P.part_solo.size() == 1 && P.part_solo.count(P.part_sel) == 1;
+                P.part_solo.clear();
+                if (!alone) P.part_solo.insert(P.part_sel);
+            } else if (IsDivided(n->sound) && PartIndex(n->sound, P.part_sel) >= 0) {
                 std::set<std::string>& on = listen == 1 ? P.part_solo : P.part_mute;
                 if (!on.erase(P.part_sel)) on.insert(P.part_sel);
             } else if (IsDivided(n->sound)) {  // review: the mockup's toast (an undivided Sound: nothing)
@@ -4954,7 +4974,9 @@ void DrawEditOverlay()
             const int zr = std::exchange(P.zone_request, -1);
             if (zoned) ZoneEditRequest(zh, zr);
             else  // E1 review: never dropped silently (the media not read)
-                ShowLibraryToast(zr == kShortcutEditHeal ? "Cannot heal: the sound file is not read" : "Cannot loop: the sound file is not read",
+                ShowLibraryToast(zr == kShortcutEditHeal ? "Cannot heal: the sound file is not read"
+                                 : zr == kShortcutEditLoop ? "Cannot loop: the sound file is not read"
+                                                           : "Nothing to do: the sound file is not read",
                                  false);
         }
         if (P.nav_request != 0 && !StoreReplaced() && !zoned) P.nav_request = 0;  // the media not read: nothing to step
@@ -4968,8 +4990,12 @@ void DrawEditOverlay()
                 else toggle_play();
             }
             if (!esc_used && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
-                if (AuditionPlaying()) StopAudition();
-                else close = true;
+                if (AuditionPlaying()) {
+                    StopAudition();
+                    P.zv.playing = false;  // 13-67a: a stop, not an end (a Loop never restarts it)
+                } else {
+                    close = true;
+                }
             }
             if (ImGui::IsKeyPressed(ImGuiKey_E, false)) close = true;
         }

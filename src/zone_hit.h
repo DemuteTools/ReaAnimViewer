@@ -170,6 +170,18 @@ double ZoneStepRef(const SoundData& d, const ZoneSel& sel, double cursor);
 // How many cuts healing `sel` removes: each pair of selected zones edge to edge, a selected Gap counted once.
 int HealCutCount(const SoundData& d, const ZoneSel& sel);
 
+// 13-67a: "Go to previous marker / project start" (REAPER 40172) in the Sound Edit window: the nearest stop
+// strictly before `cursor` (1 ms of slack, so a press at a stop goes on to the one before) among the time selection's
+// start (when `has_tsel`) and the part zones' starts of timeline `tl` (AllZones; Gaps are not stops); the file start
+// (0) is the last stop. A cursor < 0 (none) or at 0: 0.
+double PrevEditStop(const SoundData& d, int tl, double cursor, bool has_tsel, double ts_a);
+// 13-67a: the right-drag marquee: the zones of timeline `tl` overlapping [t0, t1] (either order), each taken with its
+// item whole (ItemOf; a click selects an item whole too). `parts`: null = every zone (Combined); else only part
+// zones of those parts and the Gaps (drawn on every lane) -- the Lane rows the rectangle covers. Time order, once each.
+ZoneSel ZonesInSpan(const SoundData& d, int tl, double t0, double t1, const std::vector<std::string>* parts);
+// 13-67a: the marquee's result: `hits` replace the selection, or with `add` (Ctrl held) join it (once each).
+void SelMarquee(ZoneSel& sel, const ZoneSel& hits, bool add);
+
 // Selection helpers (view state: refs into the Sound's zones).
 bool    SelHas(const ZoneSel& sel, const ZoneRef& r);
 // Ctrl / Shift+click: adds r, or takes it out.

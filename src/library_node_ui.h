@@ -107,6 +107,9 @@ bool LibraryEditKeysActive();
 // nothing when no part is selected). 13-62F: kShortcutEditNextVar / PrevVar select the next / previous variation,
 // the edit cursor at its start, the view centred on it (PlanEditNav; view state, no undo point). 13-62h:
 // kShortcutEditHeal heals the selected zones, kShortcutEditLoop toggles Loop (view state).
+// 13-67a: kShortcutEditExclSolo solos the selected part alone (again on the only soloed part: unsolo; view state),
+// kShortcutEditSnapOffset sets the selected zone's snap offset at the edit cursor (one undo point),
+// kShortcutEditPrevStop moves the edit cursor back one stop (time selection / zone start, file start last).
 void RequestLibraryEditKey(int shortcut_id);
 
 }  // namespace rav

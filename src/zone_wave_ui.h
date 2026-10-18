@@ -25,6 +25,8 @@
 //   ZoneTrimAt(h, side)       40511 (side < 0) / 40512 (> 0) at the cursor; ZoneTrimToTsel(h): 40508
 //   ZoneGiveTo(h, part)       the selected part zones -> part ("Give them to")
 //   ZoneSelectPart(h, part)   every zone of a part selected (double-click a lane header / part chip)
+//   ZoneSnapToCursor(h)       40541: the selected zone's snap offset at the edit cursor (one undo point)
+//   ZonePrevStop(h)           40172: the edit cursor back to the time selection / zone start before it, the file start last
 //   ZoneStepVariation(h, dir) next (+1) / previous (-1) block of the Variations strip: its first zone, cursor at its
 //                             start, view centred (same zoom)
 //   ZoneClickPlays() / SetZoneClickPlays(on)   the Click plays pref (per user, ExtState, default on)
@@ -69,12 +71,25 @@ struct ZoneDrag {
     int          tl = -1;       // 13-62i: the host (a Takes-mode Sound's take) it was pressed in: only that one runs it
 };
 
+// 13-67a: a right-button press on the waveform: a drag from empty space past 4 px is a marquee (the zones it touches
+// selected, Ctrl adds), else the release opens the right-click menu where it was pressed (view state).
+struct ZoneRightPress {
+    bool    on = false;
+    bool    empty = false;   // pressed on empty space of a zone row: may become a marquee
+    bool    marquee = false;  // past 4 px from empty space
+    bool    add = false;      // Ctrl at the press
+    ImVec2  m0;
+    ZoneHit hit;              // at the press (the menu's target)
+    int     tl = -1;          // the host (a Takes-mode Sound's take) it was pressed in
+};
+
 struct ZoneEditView {
     ZoneSel     sel;  // the selected zones
     bool        has_tsel = false;
     double      ts_a = 0.0, ts_b = 0.0;
     bool        loop = false;
     ZoneDrag    drag;
+    ZoneRightPress rpress;  // 13-67a
     ZoneTap     tap;
     // The hover (for the drawn hints), the right-click menu's target.
     bool        hover_on = false;
@@ -87,6 +102,7 @@ struct ZoneEditView {
     EditTransport tp;
     HeardMap      map;
     double        last_pos = 0.0;  // its heard position last seen
+    double        last_seen_t = 0.0;  // 13-67a: when (ImGui time) it was last seen playing
     // The stored Sound as last seen (its store generation): a change we did not write (Ctrl+Z, another panel)
     // carries the selection over by time and part (SelFollow), and drops the menu's target and the hover.
     SoundData     seen;
@@ -174,6 +190,8 @@ void ZoneTrimToTsel(const ZoneWaveHost& h);
 void ZoneGiveTo(const ZoneWaveHost& h, const std::string& part);
 void ZoneSelectPart(const ZoneWaveHost& h, const std::string& part);
 void ZoneStepVariation(const ZoneWaveHost& h, int dir);
+void ZoneSnapToCursor(const ZoneWaveHost& h);  // 13-67a: REAPER 40541 on the selected zone (one undo point)
+void ZonePrevStop(const ZoneWaveHost& h);      // 13-67a: REAPER 40172, the cursor back one stop (view state)
 bool ZonePlaying(const ZoneWaveHost& h);
 
 bool ZoneClickPlays();

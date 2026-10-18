@@ -29,6 +29,9 @@ void DrawNodePanel();
 // Shift-click on another tree row shows the batch panel instead): one undo point on its own node.
 // Called before column 3 draws; a fader left behind longer than a frame is dropped unwritten.
 void SettleNodePanelFaders();
+// The main menu's Library tab: a "Sound Edit" card with the Edit window's ⚙ Options rows (one shared list, the
+// same prefs: per user, no undo point).
+void DrawSoundEditMenuSection();
 
 // ---- 13-7b additions ----------------------------------------------------------------------------
 

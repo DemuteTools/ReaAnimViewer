@@ -1565,6 +1565,7 @@ void DrawToolUi()
         // --- Story 13-17 (N6): Library view -- the tracks placed sounds land on ---
         case kMenuTabLibrary: {
             DrawLibraryTracksSection();
+            DrawSoundEditMenuSection();  // the Edit window's ⚙ Options, the same rows
             break;
         }
 

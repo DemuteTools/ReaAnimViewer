@@ -4894,50 +4894,11 @@ void  ZoneClickPlaysButton(float h)
     dl->AddText(ImVec2(x + ui::IconRoom(), std::floor(p.y + (h - ImGui::GetTextLineHeight()) * 0.5f)), ink, "Click plays");
 }
 
-// "⚙ Options" (the gear, its badge: the options off their default) and its popup (the mockup's optsHTML): group
-// Editing (Click plays, Pre-roll / Tail overwrite edges dragged by hand), group New sounds (13-67b: the snap offset mode),
-// the foot.
-float ZoneOptionsWidth()
+// The Sound Edit options themselves: group Editing (Click plays, Pre-roll / Tail overwrite edges dragged by hand), group
+// New sounds (13-67b: the snap offset mode, 13-73: Left / Right). The one list both the Edit window's ⚙ Options popup
+// and the main menu (Library tab > Sound Edit) draw: an option added here shows in both. User prefs, no undo point.
+void SoundEditOptionItems()
 {
-    const int n = ZoneOptionsChanged();
-    return ui::ButtonWidth("Options") + ui::IconRoom() + (n > 0 ? ui::Dp(18.0f) : 0.0f);
-}
-
-void ZoneOptionsButton(float h)
-{
-    const ImVec2 p = ImGui::GetCursorScreenPos();
-    const float  w = ZoneOptionsWidth();
-    const bool   open = ui::SolidButton("##zopts", ImVec2(w, h));
-    ui::ItemTipText("Options: how editing behaves (yours, every project)");
-    const ImVec2 bmax = ImGui::GetItemRectMax();
-    ImDrawList*  dl = ImGui::GetWindowDrawList();
-    const float  is = ui::IconPx(), x = p.x + ImGui::GetStyle().FramePadding.x;
-    DrawToolGlyph(dl, ImVec2(x, std::floor(p.y + (h - is) * 0.5f)), is, kToolGear, ui::kText);
-    const float tx = x + ui::IconRoom();
-    dl->AddText(ImVec2(tx, std::floor(p.y + (h - ImGui::GetTextLineHeight()) * 0.5f)), ui::kText, "Options");
-    if (const int nb = ZoneOptionsChanged(); nb > 0) {
-        ImFont*           cf = ui::FontMonoTiny();
-        const std::string cs = std::to_string(nb);
-        const float       cw = ui::TextSizeIn(cf, cs.c_str()).x + ui::Dp(8.0f), ch = cf->FontSize + ui::Dp(4.0f);
-        const float       bx = tx + ImGui::CalcTextSize("Options").x + ui::Dp(5.0f), cy = p.y + h * 0.5f;
-        dl->AddRectFilled(ImVec2(bx, cy - ch * 0.5f), ImVec2(bx + cw, cy + ch * 0.5f), ui::kWarn, ch * 0.5f);
-        ui::AddTextIn(dl, cf, ImVec2(bx + ui::Dp(4.0f), std::floor(cy - cf->FontSize * 0.5f)), IM_COL32(0x10, 0x13, 0x1A, 0xFF), cs.c_str());
-    }
-    if (open) {
-        ImGui::OpenPopup("##zoptspop");
-        ImGui::SetNextWindowPos(ImVec2(bmax.x, bmax.y + ui::Dp(4.0f)), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
-    }
-    const float pw = std::min(ui::Dp(340.0f), std::max(ui::Dp(200.0f), ImGui::GetIO().DisplaySize.x - ui::Dp(32.0f)));
-    ImGui::SetNextWindowSizeConstraints(ImVec2(pw, 0.0f), ImVec2(pw, std::numeric_limits<float>::max()));
-    if (!ui::BeginPanelPopup("##zoptspop")) return;
-    {
-        const float side = ui::ControlH();
-        ui::FontScope fs(ui::FontSemibold());
-        FitText("\xE2\x9A\x99 Options \xC2\xB7 Sound Edit", ui::kText, std::max(1.0f, ImGui::GetContentRegionAvail().x - side - ImGui::GetStyle().ItemSpacing.x));
-    }
-    ImGui::SameLine();
-    ImGui::SetCursorScreenPos(ImVec2(std::max(ImGui::GetCursorScreenPos().x, ui::LineRight() - ui::ControlH()), ImGui::GetCursorScreenPos().y));
-    if (ui::IconOnlyButton("##zoptsclose", "\xE2\x9C\x95", "Close", ui::ControlH())) ImGui::CloseCurrentPopup();
     struct Opt {
         const char* id;
         const char* t;
@@ -5009,6 +4970,53 @@ void ZoneOptionsButton(float h)
         }
         ui::ToneText("For the sounds you make from now on.", ui::kMuted, true);
     }
+}
+
+// "⚙ Options" (the gear, its badge: the options off their default) and its popup (the mockup's optsHTML): group
+// Editing (Click plays, Pre-roll / Tail overwrite edges dragged by hand), group New sounds (13-67b: the snap offset mode),
+// the foot.
+float ZoneOptionsWidth()
+{
+    const int n = ZoneOptionsChanged();
+    return ui::ButtonWidth("Options") + ui::IconRoom() + (n > 0 ? ui::Dp(18.0f) : 0.0f);
+}
+
+void ZoneOptionsButton(float h)
+{
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float  w = ZoneOptionsWidth();
+    const bool   open = ui::SolidButton("##zopts", ImVec2(w, h));
+    ui::ItemTipText("Options: how editing behaves (yours, every project)");
+    const ImVec2 bmax = ImGui::GetItemRectMax();
+    ImDrawList*  dl = ImGui::GetWindowDrawList();
+    const float  is = ui::IconPx(), x = p.x + ImGui::GetStyle().FramePadding.x;
+    DrawToolGlyph(dl, ImVec2(x, std::floor(p.y + (h - is) * 0.5f)), is, kToolGear, ui::kText);
+    const float tx = x + ui::IconRoom();
+    dl->AddText(ImVec2(tx, std::floor(p.y + (h - ImGui::GetTextLineHeight()) * 0.5f)), ui::kText, "Options");
+    if (const int nb = ZoneOptionsChanged(); nb > 0) {
+        ImFont*           cf = ui::FontMonoTiny();
+        const std::string cs = std::to_string(nb);
+        const float       cw = ui::TextSizeIn(cf, cs.c_str()).x + ui::Dp(8.0f), ch = cf->FontSize + ui::Dp(4.0f);
+        const float       bx = tx + ImGui::CalcTextSize("Options").x + ui::Dp(5.0f), cy = p.y + h * 0.5f;
+        dl->AddRectFilled(ImVec2(bx, cy - ch * 0.5f), ImVec2(bx + cw, cy + ch * 0.5f), ui::kWarn, ch * 0.5f);
+        ui::AddTextIn(dl, cf, ImVec2(bx + ui::Dp(4.0f), std::floor(cy - cf->FontSize * 0.5f)), IM_COL32(0x10, 0x13, 0x1A, 0xFF), cs.c_str());
+    }
+    if (open) {
+        ImGui::OpenPopup("##zoptspop");
+        ImGui::SetNextWindowPos(ImVec2(bmax.x, bmax.y + ui::Dp(4.0f)), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+    }
+    const float pw = std::min(ui::Dp(340.0f), std::max(ui::Dp(200.0f), ImGui::GetIO().DisplaySize.x - ui::Dp(32.0f)));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(pw, 0.0f), ImVec2(pw, std::numeric_limits<float>::max()));
+    if (!ui::BeginPanelPopup("##zoptspop")) return;
+    {
+        const float side = ui::ControlH();
+        ui::FontScope fs(ui::FontSemibold());
+        FitText("\xE2\x9A\x99 Options \xC2\xB7 Sound Edit", ui::kText, std::max(1.0f, ImGui::GetContentRegionAvail().x - side - ImGui::GetStyle().ItemSpacing.x));
+    }
+    ImGui::SameLine();
+    ImGui::SetCursorScreenPos(ImVec2(std::max(ImGui::GetCursorScreenPos().x, ui::LineRight() - ui::ControlH()), ImGui::GetCursorScreenPos().y));
+    if (ui::IconOnlyButton("##zoptsclose", "\xE2\x9C\x95", "Close", ui::ControlH())) ImGui::CloseCurrentPopup();
+    SoundEditOptionItems();
     ImGui::Dummy(ImVec2(1.0f, ui::Dp(2.0f)));
     ui::ToneText("Your preferences, for every project. Not part of the sound: no undo point.", ui::kFaint, true);
     ui::EndPanelPopup();
@@ -6428,6 +6436,18 @@ void NodePanelWidgets()
 }
 
 }  // namespace
+
+// The main menu's Library tab: the Sound Edit options (the same rows as the Edit window's ⚙ Options popup).
+void DrawSoundEditMenuSection()
+{
+    static ui::Section sec;
+    if (ui::BeginSection(sec, "Sound Edit")) {
+        SoundEditOptionItems();
+        ImGui::Dummy(ImVec2(1.0f, ui::Dp(2.0f)));
+        ui::ToneText("Your preferences, for every project. Not part of the sound: no undo point.", ui::kFaint, true);
+    }
+    ui::EndSection(sec);
+}
 
 void DrawNodePanel()
 {

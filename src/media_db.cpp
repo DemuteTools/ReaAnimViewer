@@ -4,6 +4,7 @@
 // load, fallback folder index with its cache, favourites. No REAPER call, nothing throws.
 
 #include "media_db.h"
+#include "watchdog.h"  // freeze audit: breadcrumbs and scopes
 
 #include <algorithm>
 #include <chrono>
@@ -961,11 +962,15 @@ void LoadWorkerBody(const std::string& resource_path)
 // Thread entry: an exception escaping a std::thread would terminate REAPER.
 void LoadWorker(std::string resource_path)
 {
+    const int slot = RAV_WORKER_SLOT("Media database load", 0);  // freeze audit
+    (void)slot;
+    RAV_WORKER_BUSY(slot, "loading", resource_path);
     try {
         LoadWorkerBody(resource_path);
     } catch (...) {
         // the previous index stays; not ready
     }
+    RAV_WORKER_IDLE(slot);
 }
 
 }  // namespace

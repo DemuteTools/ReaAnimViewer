@@ -15,6 +15,7 @@
 // workers are joined by QuitLibraryMedia. No folder is ever walked here.
 
 #include "library_media_ui.h"
+#include "watchdog.h"  // freeze audit: breadcrumbs and scopes
 
 #ifdef _WIN32
 
@@ -97,6 +98,7 @@ public:
     int         PropertiesWindow(HWND) override { return 0; }
     void        GetSamples(PCM_source_transfer_t* block) override
     {
+        RAV_AUDIO_SCOPE("Media Explorer preview");  // freeze audit
         if (!block) return;
         const int    nch = std::max(1, block->nch);
         const int    want = std::max(0, block->length);
@@ -216,7 +218,10 @@ public:
 private:
     void Run()
     {
+        const int slot = RAV_WORKER_SLOT("Media Explorer disk", 0);  // freeze audit
+        (void)slot;
         for (;;) {
+            RAV_WORKER_IDLE(slot);
             Task t;
             {
                 std::unique_lock<std::mutex> lk(m_);
@@ -226,6 +231,7 @@ private:
                 q_.pop_front();
             }
             if (TaskStale(t)) continue;
+            RAV_WORKER_BUSY(slot, "checking", t.path);
             TaskResult r;
             r.kind = t.kind;
             r.path = t.path;
@@ -1615,6 +1621,7 @@ void QuitLibraryMedia()
 
 void DrawMediaExplorerPanel()
 {
+    RAV_QUIET_SCOPE("Media Explorer", nullptr);  // freeze audit
     if (!g.prefs_loaded) {
         g.prefs_loaded = true;
         g.autoplay = LoadPrefBool(kAutoPref, true);

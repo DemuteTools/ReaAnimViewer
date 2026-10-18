@@ -58,6 +58,7 @@
 #include "tagging_view_ui.h"   // Story 10-3: its curve strip and panel
 #include "tagging_populate_ui.h"  // 13-19: Populate runs from the window procedure, with its progress
 #include "busy_progress_ui.h"     // 13-59: the shared busy card of a long gesture (Populate's since 13-19)
+#include "watchdog.h"             // freeze audit: the heartbeat, the scopes, the last session's freeze report
 #include "texture_locate.h"    // issue #1: "Locate textures..." (folder picker + copy)
 #include "gpu_resources.h"    // Story 11-4: the Video view's render target
 #include "ui_theme.h"         // Story 11-4: the DM-XYZ-Pad theme over Dear ImGui
@@ -408,7 +409,9 @@ void ClearLoadMessage()
 // inside the frame where ImGui's Win32 clipboard hook is live.
 void CopyErrorLogToClipboard()
 {
-    std::string text = "ReaAnimViewer error log (version " RAV_DISPLAY_VERSION ")\n";
+    // Freeze audit: the report the watchdog left in the last session (it stalled, REAPER was killed), first.
+    std::string text = wd::FreezeReportFromLastSession();
+    text += "ReaAnimViewer error log (version " RAV_DISPLAY_VERSION ")\n";
     text += "OpenGL: " + g_gl_version + " on " + g_gl_renderer + "\n";
     text += HasRecentLog() ? RecentLogText() : std::string("(no errors logged)\n");
     ImGui::SetClipboardText(text.c_str());
@@ -694,6 +697,7 @@ static bool g_populate_running = false;
 
 void RenderTick()
 {
+    wd::MainBeat();  // freeze audit
     if (!g_hdc || !g_hglrc) return;
     if (g_populate_running) return;
     // 13-8 fix (Antho 2026-10-12, a Switch pick hung REAPER): a gesture run from this frame may
@@ -711,6 +715,7 @@ void RenderTick()
     struct LeaveTick {
         ~LeaveTick() { s_in_tick = false; }
     } leave_tick;
+    RAV_QUIET_SCOPE("RenderTick", nullptr);  // freeze audit
 
     // Re-assert OUR context every frame. This is Reaper's main thread, shared with other
     // GL-rendering plugins that make THEIR context current; ours then isn't current here
@@ -2747,7 +2752,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             // 13-59: the shared busy card (shown after ~150 ms); its end drops the clicks / keys made
             // on it (DropBusyInputs), so they reach neither the widgets below nor a second Populate.
             BusyScope busy("Populating sounds");
+            RAV_SCOPE("Populate run", nullptr);  // freeze audit
             RunPendingPopulate([&busy](const PopulateProgress& p) {
+                wd::MainBeat();  // freeze audit: a long Populate that moves on is not a freeze
                 busy.Item(p.item, p.items);
                 BusyStep(p.event, p.events);
             });

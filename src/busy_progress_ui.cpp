@@ -3,6 +3,7 @@
 // See busy_progress_ui.h.
 
 #include "busy_progress_ui.h"
+#include "watchdog.h"  // freeze audit: the heartbeat
 
 #ifdef _WIN32
 
@@ -115,6 +116,7 @@ void BusyScope::Phase(const char* phase)
 void BusyStep(int done, int total, const char* unit)
 {
     if (g_depth <= 0) return;
+    RAV_MAIN_BEAT();  // freeze audit: a long gesture that moves on (its progress) is not a freeze
     g_frame.step = done;
     g_frame.steps = total;
     g_frame.step_unit = unit ? unit : "event";

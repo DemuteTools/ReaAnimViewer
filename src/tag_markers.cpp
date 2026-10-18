@@ -3,6 +3,7 @@
 // See tag_markers.h.
 
 #include "tag_markers.h"
+#include "watchdog.h"  // freeze audit: breadcrumbs and scopes
 #include "sound_follow.h"
 #include "busy_progress_ui.h"  // 13-59: the busy card of a long gesture
 
@@ -1827,6 +1828,7 @@ ApplyResult CancelTaggingChanges()
 
 void MarkerMirrorTick()
 {
+    RAV_QUIET_SCOPE("MarkerMirrorTick", nullptr);  // freeze audit
     try {
         if (!MirrorApiReady()) return;
         // Which projects are open, and which of them changed since the mirror last ran.

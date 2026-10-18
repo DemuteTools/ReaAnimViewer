@@ -5,6 +5,7 @@
 // variation), run the mockup's algorithm on it, then store the zones back into their variations.
 
 #include "sound_zones.h"
+#include "watchdog.h"  // freeze audit: breadcrumbs and scopes
 
 #include <algorithm>
 #include <cmath>
@@ -704,6 +705,7 @@ bool AutoSnapHolds(const SoundData& d, const EditZone& z)
 // keeps every snap that still holds; one whose samples could not settle it (`tried`) is not read again until it changes.
 void MeasureAutoSnaps(SoundData& d, const PeakView* peaks, int tl, bool live = false)
 {
+    RAV_QUIET_SCOPE("MeasureAutoSnaps", d.frames.size());  // freeze audit (its variations)
     if (!HasPeaks(peaks)) return;
     const int ctl = NormTl(d, tl);
     for (size_t v = 0; v < d.frames.size(); ++v) {

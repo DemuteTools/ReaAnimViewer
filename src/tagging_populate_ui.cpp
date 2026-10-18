@@ -5,6 +5,7 @@
 // REAPER undo point (sound_populate.h); the decisions are sound_populate_plan.h's.
 
 #include "tagging_populate_ui.h"
+#include "watchdog.h"  // freeze audit: breadcrumbs and scopes
 
 #ifdef _WIN32
 
@@ -388,6 +389,7 @@ void PickSoundGesture(std::function<SoundReport()> gesture)
 // the line says what happened (Antho 2026-10-12: a Populate with nothing to do looked broken).
 static void RunPopulate(const std::vector<MediaItem*>& items, bool restore, const PopulateProgressFn& progress)
 {
+    RAV_SCOPE("Populate", items.size());  // freeze audit (its items)
     int               events = 0;
     PopulateCounts    counts;
     const SoundReport rep = PopulateItemsCounted(items, &events, &counts, restore, progress);

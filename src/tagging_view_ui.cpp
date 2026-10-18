@@ -3,6 +3,7 @@
 // See tagging_view_ui.h.
 
 #include "tagging_view_ui.h"
+#include "watchdog.h"  // freeze audit: breadcrumbs and scopes
 
 #ifdef _WIN32
 
@@ -229,6 +230,8 @@ void RunLater()
 {
     std::vector<std::function<void()>> run;
     run.swap(g_after);
+    if (run.empty()) return;
+    RAV_SCOPE("Tagging gestures", run.size());  // freeze audit
     for (const std::function<void()>& f : run) f();
 }
 
@@ -851,6 +854,7 @@ bool TaggingSelectedRuleBones(std::vector<int>* bones, unsigned int* colour)
 
 void DrawTaggingStrip(float x, float y, float w, float h)
 {
+    RAV_QUIET_SCOPE("Tagging strip", nullptr);  // freeze audit
     const TaggingModel& m = GetTaggingModel();
     if (m.item != g_sel_item) OnItemChanged(m.item);
     const ItemRules& rules = TaggingShownRules();
@@ -4706,6 +4710,7 @@ bool TaggingRolesWindowOpen()
 
 void DrawTaggingPanel(float x, float y, float w, float h)
 {
+    RAV_QUIET_SCOPE("Tagging panel", nullptr);  // freeze audit
     const TaggingModel& m = GetTaggingModel();
     if (m.item != g_sel_item) OnItemChanged(m.item);
     const ItemRules& rules = TaggingShownRules();

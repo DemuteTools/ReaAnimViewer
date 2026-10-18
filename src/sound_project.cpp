@@ -3,6 +3,7 @@
 // See sound_project.h.
 
 #include "sound_project.h"
+#include "watchdog.h"  // freeze audit: breadcrumbs and scopes
 
 #ifdef _WIN32
 
@@ -264,6 +265,7 @@ void SetSoundStoreEditHook(bool (*hook)(ReaProject* proj))
 
 bool ModifySoundStore(ReaProject* proj, const char* undo_desc, const std::function<bool(SoundStore&)>& edit)
 {
+    RAV_SCOPE("ModifySoundStore", undo_desc ? undo_desc : "");  // freeze audit
     try {
         proj = ProjectOrCurrent(proj);
         if (!proj || !edit) return false;

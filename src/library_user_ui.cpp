@@ -9,6 +9,7 @@
 // thread on first draw, after this module writes a file, and on Refresh (decision 2).
 
 #include "library_user_ui.h"
+#include "watchdog.h"  // freeze audit: breadcrumbs and scopes
 #include "busy_progress_ui.h"  // 13-59: the busy card of a long gesture
 
 #ifdef _WIN32
@@ -531,6 +532,9 @@ bool StartLocateJob(const std::vector<AssetIdentity>& missing, const AssetIdenti
     const std::string   self_path = picked.last_path;
     try {
         g_job.worker = std::thread([missing, has_self, self_id, self_path, search, resource]() {
+            const int slot = RAV_WORKER_SLOT("Locate", 0);  // freeze audit
+            (void)slot;
+            RAV_WORKER_BUSY(slot, "searching", self_path);
             LocateOutcome out;
             if (has_self) out.found.push_back({self_id, self_path});
             try {
@@ -544,6 +548,7 @@ bool StartLocateJob(const std::vector<AssetIdentity>& missing, const AssetIdenti
                 g_job.found = std::move(out.found);
                 g_job.ambiguous = out.ambiguous;
             }
+            RAV_WORKER_IDLE(slot);
             g_job.done = true;
         });
     } catch (...) {
@@ -809,6 +814,7 @@ void RunLocateFolderPick()
 
 void OnTimer()
 {
+    RAV_QUIET_SCOPE("User Library timer", nullptr);  // freeze audit
     if (g.in_timer) return;
     g.in_timer = true;
     try {

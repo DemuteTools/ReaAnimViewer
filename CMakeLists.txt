@@ -160,6 +160,7 @@ if(WIN32)
             src/asset_loader.cpp
             src/gltf_skin.cpp
             src/console_log.cpp
+            src/watchdog.cpp  # freeze audit: breadcrumbs, heartbeats, the freeze report
             src/pcm_source_anim.cpp
             src/asset_cache.cpp
             src/display_settings.cpp

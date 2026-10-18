@@ -3,6 +3,7 @@
 // See video_timeline.h.
 
 #include "video_timeline.h"
+#include "watchdog.h"  // freeze audit: breadcrumbs and scopes
 
 #ifdef _WIN32
 
@@ -166,6 +167,7 @@ std::shared_ptr<const VideoTimelineSnapshot> CurrentVideoTimeline()
 
 void VideoTimelineTick()
 {
+    RAV_QUIET_SCOPE("VideoTimelineTick", nullptr);  // freeze audit
     try {
         // Which projects are open, and has any of them changed since the last build?
         std::vector<std::pair<ReaProject*, int>> counts;

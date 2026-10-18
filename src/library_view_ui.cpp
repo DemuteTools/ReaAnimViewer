@@ -3,6 +3,7 @@
 // See library_view_ui.h.
 
 #include "library_view_ui.h"
+#include "watchdog.h"  // freeze audit: breadcrumbs and scopes
 
 #include "library_view_keys.h"
 
@@ -409,6 +410,7 @@ void SetLibraryMediaCollapsed(bool collapsed)
 
 void DrawLibraryView(float x, float y, float w, float h)
 {
+    RAV_QUIET_SCOPE("Library view", nullptr);  // freeze audit
     LoadPrefs();
     // The 3D view stays hidden behind the Library view (its gaps and margins included).
     ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0.0f, 0.0f), ImGui::GetIO().DisplaySize, ui::kBg);

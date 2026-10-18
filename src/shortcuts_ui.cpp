@@ -10,6 +10,7 @@
 // (it follows REAPER's keys for its action) or Own (its own key, or a REAPER action the user picked).
 
 #include "shortcuts_ui.h"
+#include "watchdog.h"  // freeze audit: breadcrumbs and scopes
 
 #ifdef _WIN32
 
@@ -1709,6 +1710,7 @@ void RequestOpenShortcutsPopup(const char* search)
 
 void DrawShortcutsButton(float right_x, float centre_y, ImTextureID icon)
 {
+    RAV_QUIET_SCOPE("Shortcuts", nullptr);  // freeze audit
     const float btn = ui::Dp(kIconSize + 2.0f * kIconPad);
     const bool  shown = ui::BeginOverlay("##keysbtn", ImVec2(right_x, centre_y - btn * 0.5f), ImVec2(1.0f, 0.0f));
     if (shown) {

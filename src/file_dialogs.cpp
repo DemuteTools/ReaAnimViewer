@@ -3,6 +3,7 @@
 // See file_dialogs.h.
 
 #include "file_dialogs.h"
+#include "watchdog.h"  // freeze audit: breadcrumbs and scopes
 
 #ifdef _WIN32
 
@@ -81,6 +82,7 @@ bool PickOpenFile(HWND__* owner, const wchar_t* title, const FileDialogFilter& f
 bool PickOpenFile(HWND__* owner, const wchar_t* title, const FileDialogFilter& filter, const std::string& folder_utf8,
                   std::string& out_utf8)
 {
+    RAV_SCOPE("File dialog", "open");  // freeze audit
     // Balanced: S_OK and S_FALSE both need a CoUninitialize. RPC_E_CHANGED_MODE (the thread
     // is already multithreaded) is used as it is, without one.
     const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
@@ -108,6 +110,7 @@ bool PickSaveFile(HWND__* owner, const wchar_t* title, const FileDialogFilter& f
 bool PickSaveFile(HWND__* owner, const wchar_t* title, const FileDialogFilter* filters, int filter_count,
                   int* type_index, const std::string& default_name_utf8, std::string& out_utf8)
 {
+    RAV_SCOPE("File dialog", "save");  // freeze audit
     const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     bool ok = false;
     IFileSaveDialog* dlg = nullptr;

@@ -11,6 +11,7 @@
 // sound_audition_plan.h (pure).
 
 #include "library_node_ui.h"
+#include "watchdog.h"  // freeze audit: breadcrumbs and scopes
 #include "busy_progress_ui.h"  // 13-59: the busy card's bar under Normalize while it measures
 #include "dash_plan.h"         // freeze audit #1: hatches only where seen
 
@@ -266,6 +267,7 @@ PickedGestures g_picks;
 // The write itself: one undo point and the toast. False when nothing changed.
 bool WriteNow(const std::string& name, const std::function<bool(SoundStore&)>& edit, const std::string& toast)
 {
+    RAV_SCOPE("Write", name);  // freeze audit
     const std::string desc = "RAV: " + name;
     if (!ModifySoundStore(nullptr, desc.c_str(), edit)) return false;
     ShowLibraryToast(toast.empty() ? name : toast, true, desc);
@@ -276,6 +278,7 @@ bool WriteNow(const std::string& name, const std::function<bool(SoundStore&)>& e
 void Gesture(const std::string& name, std::function<bool(SoundStore&)> edit, const std::string& toast = {})
 {
     if (!edit) return;
+    RAV_CRUMB("Gesture picked", name);  // freeze audit
     g_picks.Pick([name, edit, toast]() { WriteNow(name, edit, toast); });
 }
 
@@ -6240,6 +6243,7 @@ void DrawSourceLine(const SoundLibrary& lib, const SoundNode& n, const SoundMedi
 
 void DrawSoundPanel(const SoundLibrary& lib, const SoundNode& n)
 {
+    RAV_QUIET_SCOPE("Sound panel", n.name);  // freeze audit
     P.sound_frame = ImGui::GetFrameCount();
     const SoundMedia& m = MediaOf(n);
     const SoundData&  d = Shown(n);

@@ -29,6 +29,9 @@
 #include "video_shots.h"
 #include "shortcuts.h"
 #include "viewer_window.h"
+#include "watchdog.h"  // freeze audit: breadcrumbs, heartbeats, the freeze report
+
+#include "rav_version.h"
 
 #include <cstring>
 
@@ -128,9 +131,41 @@ HWND                    g_reaper_main     = nullptr;
 // Captured at load so the rec==nullptr unload path can deregister symmetrically.
 int (*g_register)(const char*, void*) = nullptr;
 
+// Freeze audit: one of RAV's actions (a crumb and a scope while it runs; REAPER's own are not noted).
+bool OurCommand(int c)
+{
+    for (int i = 0; i < kShortcutCount; ++i)
+        if (g_key_ids[i] != 0 && c == g_key_ids[i]) return true;
+    for (int id : {g_video_bg_id, g_command_id, g_full_screen_id, g_add_fx_id, g_pattern_id, g_add_shot_id, g_show_shots_id,
+                   g_output_angle_id, g_measure_detection_id, g_make_unique_id, g_spread_this_id, g_spread_all_id, g_stack_this_id,
+                   g_stack_all_id, g_sound_check_id})
+        if (id != 0 && c == id) return true;
+    return false;
+}
+
+bool OnHookCommandBody(int command);
+
 bool OnHookCommand(int command, int /*flag*/)
 {
-    if (command == 0) return false;
+    if (command == 0 || !OurCommand(command)) return false;
+    RAV_SCOPE("Command", command);
+    return OnHookCommandBody(command);
+}
+
+// Freeze audit: the main thread's heartbeat (REAPER's timer, ~30 Hz, also while no RAV window is open), and the
+// last session's freeze report pointed to once, a few seconds after the load.
+void WatchdogTimer()
+{
+    wd::MainBeat();
+    static int ticks = 0;
+    if (ticks < 1000) ++ticks;
+    if (ticks == 90 && wd::TakeFreezeToast())
+        ShowReaperToast("RAV saved a freeze report from the last session (REAPER had stopped answering):\n" + wd::FreezeReportPath() +
+                        "\nPlease send that file (Copy error log / Copy details also starts with it).");
+}
+
+bool OnHookCommandBody(int command)
+{
     for (int i = 0; i < kShortcutCount; ++i)  // 13-60b: a viewer key's action
         if (g_key_ids[i] != 0 && command == g_key_ids[i]) {
             RunViewerShortcut(i);
@@ -237,6 +272,9 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
     using namespace rav;
 
     if (!rec) {
+        // Freeze audit: the watchdog stops first (the unload below may take long: not a freeze), its timer goes.
+        wd::StopWatchdog();
+        if (g_register) g_register("-timer", reinterpret_cast<void*>(&WatchdogTimer));
         // Reaper is quitting. First swap in a newer Toolkit copy of our DLL, if
         // any (it is still mapped: renamed, not overwritten; see self_update.h).
         SelfUpdateOnQuit();
@@ -302,6 +340,12 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
 
     g_command_id = RegisterAction(rec, kCommandName, kActionDesc, &g_accel);
     if (g_command_id == 0) return 0;
+
+    // Freeze audit: the watchdog (its own thread; it never calls the REAPER API: the resource path is read here),
+    // started once the load can no longer fail. Armed by the first heartbeat of its timer: REAPER's own load is
+    // never taken for a freeze.
+    wd::StartWatchdog(GetResourcePath(), RAV_DISPLAY_VERSION);
+    rec->Register("timer", reinterpret_cast<void*>(&WatchdogTimer));
 
     // Story 6-5-9 -- the viewer full screen. A failure only loses that action (F11 and the
     // viewer's button still work).

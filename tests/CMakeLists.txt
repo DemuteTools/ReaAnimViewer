@@ -51,6 +51,12 @@ add_test(NAME live_draft_phase COMMAND live_draft_phase_test)
 add_executable(zone_gain_nudge_test zone_gain_nudge_test.cpp)
 target_include_directories(zone_gain_nudge_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME zone_gain_nudge COMMAND zone_gain_nudge_test)
+# Freeze audit -- the watchdog's breadcrumb ring, scope stack and report text (src/watchdog.cpp).
+add_executable(watchdog_test watchdog_test.cpp ../src/watchdog.cpp)
+target_include_directories(watchdog_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_compile_definitions(watchdog_test PRIVATE RAV_WATCHDOG_HOST)
+target_link_libraries(watchdog_test PRIVATE Threads::Threads)
+add_test(NAME watchdog COMMAND watchdog_test)
 # Freeze audit #1 -- dashes and hatches walk only their visible marks, capped (src/dash_plan.h).
 add_executable(dash_plan_test dash_plan_test.cpp)
 target_include_directories(dash_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)

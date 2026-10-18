@@ -4,6 +4,7 @@
 // voices are fixed once it plays and freed only after StopPreview has returned.
 
 #include "sound_audition.h"
+#include "watchdog.h"  // freeze audit: breadcrumbs and scopes
 
 #ifdef _WIN32
 
@@ -80,6 +81,7 @@ public:
 
     void GetSamples(PCM_source_transfer_t* block) override
     {
+        RAV_AUDIO_SCOPE("AuditionMix");  // freeze audit
         if (!block || !block->samples || block->length <= 0 || block->nch <= 0 || !(block->samplerate > 0.0)) {
             if (block) block->samples_out = 0;
             return;
@@ -189,6 +191,7 @@ void InitSoundAudition(void* (*get_func)(const char* name))
 void StopAudition()
 {
     if (!g_play.active) return;
+    RAV_CRUMB("StopAudition", nullptr);  // freeze audit
     if (f_stop) f_stop(&g_play.reg);
     DeleteCriticalSection(&g_play.reg.cs);
     g_play.reg = preview_register_t{};
@@ -269,6 +272,7 @@ double RawPosition()
 
 bool PlayVoices(const std::vector<PlayVoice>& voices, const std::string& tag, std::string* why, std::vector<int>* kept)
 {
+    RAV_SCOPE("PlayVoices", tag);  // freeze audit
     if (kept) kept->clear();
     StopAudition();
     StopMediaPreview();  // a tree audition and a Media Explorer preview never sound together (13-7c)
@@ -290,6 +294,7 @@ bool PlayVoices(const std::vector<PlayVoice>& voices, const std::string& tag, st
 bool PlayVoicesLooped(const std::vector<PlayVoice>& head, double head_s, const std::vector<PlayVoice>& loop, double loop_s,
                       const std::string& tag)
 {
+    RAV_SCOPE("PlayVoicesLooped", tag);  // freeze audit
     StopAudition();
     StopMediaPreview();
     if (!f_play || !f_stop || !f_create) return false;

@@ -13,6 +13,7 @@
 // wave_tiles_plan.h), kept in a small LRU.
 
 #include "sound_peaks.h"
+#include "watchdog.h"  // freeze audit: breadcrumbs and scopes
 
 #ifdef _WIN32
 
@@ -196,6 +197,7 @@ double MsSince(std::chrono::steady_clock::time_point t0)
 // The file's date and size (zero when it cannot be read).
 FileVersion VersionOf(const std::string& path)
 {
+    RAV_QUIET_SCOPE("VersionOf", path);  // freeze audit (main thread only: a disk call)
     FileVersion v;
     try {
         std::error_code             ec;
@@ -476,7 +478,11 @@ public:
 private:
     void Run()
     {
+        static std::atomic<int> s_next{0};  // freeze audit: each reader its slot
+        const int slot = RAV_WORKER_SLOT("Peak reader", s_next.fetch_add(1));
+        (void)slot;
         for (;;) {
+            RAV_WORKER_IDLE(slot);
             Job j;
             {
                 std::unique_lock<std::mutex> lk(m_);
@@ -501,6 +507,7 @@ private:
             };
             // Nothing may escape this thread (a throw would end REAPER): a failed read still answers.
             const auto t0 = std::chrono::steady_clock::now();
+            RAV_WORKER_BUSY(slot, j.kind == JobKind::Tiles ? "tiles" : "peaks", j.key);
             try {
                 if (j.kind == JobKind::Tiles) {
                     if (j.src) ReadTiles(j, &r.tiles);
@@ -664,6 +671,7 @@ bool HasPeakFile(const std::string& path)
 // Opens `path` on the UI thread (PCM_Source_CreateFromFile stays here); its time for the log.
 PCM_source* OpenSource(const std::string& path, double* ms)
 {
+    RAV_SCOPE("OpenSource", path);  // freeze audit
     const auto t0 = std::chrono::steady_clock::now();
     PCM_source* s = f_create ? f_create(path.c_str()) : nullptr;
     if (ms) *ms += MsSince(t0);
@@ -906,6 +914,7 @@ std::shared_ptr<const SampleMags> FineSamples(const std::string& key, double t0,
             m.used = ++g_fine_tick;
             return m.mags;
         }
+    RAV_SCOPE("FineSamples", key);  // freeze audit: a read of the file's samples on the UI thread
     PCM_source* s = FineSourceOf(key, en);
     if (!s) return nullptr;
     auto mags = std::make_shared<SampleMags>();

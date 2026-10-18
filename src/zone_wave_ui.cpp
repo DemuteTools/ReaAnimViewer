@@ -4,6 +4,7 @@
 // menu and key handlers, in Dear ImGui (ImDrawList), DM-XYZ-Pad theme (ui_theme.h).
 
 #include "zone_wave_ui.h"
+#include "watchdog.h"  // freeze audit: breadcrumbs and scopes
 
 #ifdef _WIN32
 
@@ -329,6 +330,7 @@ EditPlay LoopPlay(const ZoneWaveHost& h, const EditTransport& tp, PartListen* li
 
 bool StartPlay(const ZoneWaveHost& h, const EditTransport& tp, double from, double to, bool quiet = false)
 {
+    RAV_SCOPE("StartPlay", h.node ? h.node->name : std::string());  // freeze audit
     ZoneEditView& v = *h.view;
     SoundNode     shown = *h.node;
     shown.sound = Shown(h);
@@ -1661,6 +1663,7 @@ ThrDrag g_thr;
 
 ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
 {
+    RAV_QUIET_SCOPE("Sound Edit", h.node ? h.node->name : std::string());  // freeze audit
     ZoneWaveEvents ev;
     ZoneEditView&  v = *h.view;
     ImGui::PushID(id);

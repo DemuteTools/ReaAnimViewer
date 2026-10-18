@@ -58,8 +58,9 @@
 // from false or missed events. Steps: one row per labelled foot part (its chosen timing, the
 // leave-one-clip-out offsets: the gate's data) and the combined step. Events: event labels
 // ('# ref.<kind>_<side>=', kind lift, slide, pivot, grab or release; ref_labels.h; story 10-9a:
-// the sideless '# ref.jump=' and '# ref.land=', against JumpEvents, matching either foot's
-// events) match the events of their side (lift, grab, release, jump, land: +-150 ms; slide, pivot: the REF within [start -
+// the sideless '# ref.jump=' and '# ref.land=', matching either foot's events; since 2026-10-19
+// against the Jump / Land kinds' merged signatures, as Detect runs them (flight, push-off, free
+// fall; MergeSignatureEvents per foot), not the flight alone) match the events of their side (lift, grab, release, jump, land: +-150 ms; slide, pivot: the REF within [start -
 // 150 ms, end], err = start - REF). A clip counts for a kind only when it holds a REF of that
 // kind, and then every detection of that kind, on both sides, counts (an untagged side shows
 // as extra). Event labels are kept out of every other line (--single ignores them too).
@@ -89,6 +90,8 @@
 #include <string>
 #include <vector>
 
+#include "auto_detect.h"
+#include "auto_types.h"
 #include "bone_roles.h"
 #include "dump_clip.h"
 #include "event_bias.h"
@@ -104,6 +107,43 @@ using rav::dump::Split;
 using rav::dump::ToDouble;
 
 namespace {
+
+// Deferred 10-9a-2 (2026-10-19): the events a Jump / Land block finds on the Detect path, both
+// feet: every signature of the kind (AutoKindRow(k).sigs, each source run once), merged per foot
+// by MergeSignatureEvents (through the seam on a loop), as AutoEvents does before a block's
+// offset. Sorted by time. Used to score the '# ref.jump=' / '# ref.land=' REFs, so a jump only the
+// push-off (or free-fall) signature finds counts.
+std::vector<PhysicsEvent> MergedSignatureEvents(const PhysicsAnalysis& a, const PhysicsParams& p, AutoKind k)
+{
+    const AutoKindInfo&                    row = AutoKindRow(k);
+    const int                              nsig = AutoSignatureCount(row);
+    std::vector<std::vector<PhysicsEvent>> src(static_cast<size_t>(nsig));
+    for (int g = 0; g < nsig; ++g) {
+        int same = -1;  // an earlier signature with the same source: reuse its events
+        for (int h = 0; h < g && same < 0; ++h)
+            if (row.sigs[h].source == row.sigs[g].source) same = h;
+        src[static_cast<size_t>(g)] = same >= 0 ? src[static_cast<size_t>(same)] : row.sigs[g].source(a, p);
+    }
+    const double period = p.looping && a.looping && a.window_samples > 1
+                              ? static_cast<double>(a.window_samples - 1) / a.rate_hz
+                              : 0.0;
+    std::vector<PhysicsEvent> out;
+    for (char side : {'L', 'R'}) {
+        std::vector<std::vector<const PhysicsEvent*>> found(static_cast<size_t>(nsig));
+        std::vector<std::vector<double>>              times(static_cast<size_t>(nsig));
+        for (int g = 0; g < nsig; ++g)
+            for (const PhysicsEvent& e : src[static_cast<size_t>(g)]) {
+                if (e.side != side || !row.sigs[g].match(e, a, side)) continue;
+                found[static_cast<size_t>(g)].push_back(&e);
+                times[static_cast<size_t>(g)].push_back(e.time_s);
+            }
+        for (const AutoSigPick& pick : MergeSignatureEvents(times, period))
+            out.push_back(*found[static_cast<size_t>(pick.signature)][pick.index]);
+    }
+    std::stable_sort(out.begin(), out.end(),
+                     [](const PhysicsEvent& x, const PhysicsEvent& y) { return x.time_s < y.time_s; });
+    return out;
+}
 
 // --name=value into the params. False on an unknown name or a bad value.
 bool SetParam(const std::string& name, const std::string& value, FootstepsParams& p)
@@ -731,7 +771,11 @@ int RunPhysics(const std::vector<std::string>& files, const PhysicsParams& base)
                 switch (RefEventSourceOf(kind)) {
                 case RefEventSource::Foot: ev = FootEvents(pc.a, clip_params(ci)); break;
                 case RefEventSource::Hand: ev = HandEvents(pc.a, base); break;
-                case RefEventSource::Jump: ev = JumpEvents(pc.a, clip_params(ci)); break;
+                case RefEventSource::Jump:
+                    // Deferred 10-9a-2: the merged signatures (push-off and free-fall jumps count).
+                    ev = MergedSignatureEvents(pc.a, clip_params(ci),
+                                               kind == RefEventKind::Land ? AutoKind::Land : AutoKind::Jump);
+                    break;
                 }
             }
             const bool sideless = RefEventIsSideless(kind);

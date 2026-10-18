@@ -16,6 +16,8 @@
 # deleted and antho lines are never touched, except by the jump / land side, the sliding landing
 # and the part steps under a land (story 10-9a-3), which never touch an antho line either. Every decision is logged with its numbers in
 # fixtures/_bench/decisions.tsv.
+# Self-check (2026-10-19): tools/ref_draft/decide_check.py (the jump / land side rule and its tie,
+# the antho guard, the part steps under a land, the decisions.tsv append).
 #
 # Independent of the detector on purpose: it reads only the dump's joint positions, with the
 # rules below and ref_draft's reading helpers. It never calls, ports or copies motion_physics.*,
@@ -904,6 +906,25 @@ def clip_type(cid):
     return "other"
 
 
+def append_decisions(out, logs):
+    """Story 10-9a-3: writes the run's log rows to decisions.tsv (`out`): the earlier runs' rows
+    are kept, this run's appended (a row already logged is not repeated), under one header."""
+    old = []
+    if os.path.exists(out):
+        with open(out, encoding="utf-8") as f:
+            old = [l.rstrip("\n") for l in f if l.strip() and not l.startswith("#")]
+    seen = set(old)
+    with open(out, "w", encoding="utf-8", newline="\n") as f:
+        f.write("# clip\tkind\tside\tpart\ttime_s\tdisagreement\tdecision\treason\n")
+        for l in old:
+            f.write(l + "\n")
+        for r in logs:
+            row = "%s\t%s\t%s\t%s\t%.4f\t%s\t%s\t%s" % r
+            if row not in seen:
+                seen.add(row)
+                f.write(row + "\n")
+
+
 def main(argv):
     fixtures, review, dry, only, verbose = "fixtures", None, False, [], False
     for a in argv:
@@ -940,24 +961,8 @@ def main(argv):
         logs.extend(log)
         if not dry:
             write_ref(path, lines)
-    out = os.path.join(fixtures, "_bench", "decisions.tsv")
     if not dry and not only:
-        # Story 10-9a-3: the earlier runs' decisions are kept; this run's rows are appended (a row
-        # already logged is not repeated).
-        old = []
-        if os.path.exists(out):
-            with open(out, encoding="utf-8") as f:
-                old = [l.rstrip("\n") for l in f if l.strip() and not l.startswith("#")]
-        seen = set(old)
-        with open(out, "w", encoding="utf-8", newline="\n") as f:
-            f.write("# clip\tkind\tside\tpart\ttime_s\tdisagreement\tdecision\treason\n")
-            for l in old:
-                f.write(l + "\n")
-            for r in logs:
-                row = "%s\t%s\t%s\t%s\t%.4f\t%s\t%s\t%s" % r
-                if row not in seen:
-                    seen.add(row)
-                    f.write(row + "\n")
+        append_decisions(os.path.join(fixtures, "_bench", "decisions.tsv"), logs)
     per = {}
     for r in logs:
         c = per.setdefault(r[0], {})

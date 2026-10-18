@@ -121,8 +121,9 @@ add_test(NAME event_bias COMMAND event_bias_test)
 #   detection_eval [--param=value ...] [--json] file.csv...
 # Spike 10-7a step 1: --single measures Speed, Stillness and Relative drop alone per labelled bone.
 # Spike 10-8a: --physics scores the foot events of motion_physics.h against the labelled REFs.
-add_executable(detection_eval detection_eval.cpp ../src/bone_events.cpp ../src/footstep_measure.cpp
-               ../src/tagging_signal.cpp ../src/motion_physics.cpp)
+# Deferred 10-9a-2: the jump / land REFs are scored on the Detect path's merged signatures (auto sources).
+add_executable(detection_eval detection_eval.cpp ${RAV_AUTO_SRCS} ../src/bone_events.cpp ../src/footstep_measure.cpp
+               ../src/tagging_signal.cpp ../src/motion_physics.cpp ../src/rule_record.cpp ../src/event_list.cpp)
 target_include_directories(detection_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 
 # Story 10-8o -- the all-trigger bench (a tool, not a test): every auto type ticked, through Detect

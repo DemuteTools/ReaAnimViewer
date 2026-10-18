@@ -2146,6 +2146,31 @@ int main()
         for (const Event& e : DetectAutoEvents(sl, rig, nullptr, false)) CHECK(e.signature == 0);
     }
 
+    // Deferred 10-9a-2 (2026-10-19): the merge on the Detect path, read as a loop
+    // (DetectAutoEvents(..., true)): a take-off at the seam, found by the flight, the push-off and
+    // the free fall, gives one Jump, at the flight's time, just before the seam or just after it.
+    // Note: every signature times its take-off by the same last-foot lift-off (TakeOffAt, 10-8p),
+    // so the three agree to the sample here; the merge through the seam with differing times is
+    // checked on MergeSignatureEvents above.
+    for (const double t0 : {0.0, 0.01}) {
+        Options o;
+        o.dur = 2.0;
+        const std::vector<BoneTrack> rig = Rig(JumpFoot(-0.1, t0, 0.5), JumpFoot(0.1, t0, 0.5), o);
+        const PhysicsParams          jp = AutoPhysicsParams(AutoType::Jump, kAutoDefaultSens, true);
+        const PhysicsAnalysis        ja = AnalyseMotion(rig, jp);
+        CHECK(ja.ok && ja.looping);
+        CHECK(JumpPushOffEvents(ja, jp).size() == 1 && JumpFreeFallEvents(ja, jp).size() == 1);
+        AutoSettings s;
+        s.type[static_cast<int>(AutoType::Jump)].on = true;
+        const std::vector<Event> on = DetectAutoEvents(AutoBlocks(s), rig, nullptr, true);
+        CHECK(on.size() == 1);
+        if (on.size() == 1) {
+            CHECK(on[0].marker == "Jump L" && on[0].signature == 0);
+            // t0 = 0: the take-off reads just before the seam (T = 2 s); t0 = 10 ms: just after it.
+            CHECK(t0 == 0.0 ? on[0].time_s > 1.98 && on[0].time_s < 2.0 : on[0].time_s >= 0.0 && on[0].time_s < 0.02);
+        }
+    }
+
     if (g_fails) std::printf("%d check(s) failed\n", g_fails);
     else std::printf("auto_detect: all checks passed\n");
     return g_fails ? 1 : 0;

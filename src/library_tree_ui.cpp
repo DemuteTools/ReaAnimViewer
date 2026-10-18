@@ -76,9 +76,10 @@ struct TreeState {
     LibraryRow               r_row;
     char                     buf[256] = {};
     bool                     r_focus = false;
-    // Cut / paste.
+    // Cut / Copy / paste (13-70: `clip_copy` = the rows were copied, the paste keeps them).
     std::string              clip_lib;
     std::vector<LibraryRow>  clip;
+    bool                     clip_copy = false;
     // Drag.
     std::string              drag_lib;
     std::vector<LibraryRow>  drag_rows;
@@ -536,8 +537,19 @@ void DoCut(const std::string& lib_uid, const std::vector<LibraryRow>& rows)
 {
     g.clip_lib = lib_uid;
     g.clip = rows;
+    g.clip_copy = false;
     ShowLibraryToast(std::to_string(rows.size()) + (rows.size() > 1 ? " rows cut" : " row cut") +
                          ": select where they go and press Ctrl+V", false);
+}
+
+// 13-70: Copy (Ctrl+C): the rows stay; each Paste puts a full copy of them (any library).
+void DoCopy(const std::string& lib_uid, const std::vector<LibraryRow>& rows)
+{
+    g.clip_lib = lib_uid;
+    g.clip = rows;
+    g.clip_copy = true;
+    ShowLibraryToast(std::to_string(rows.size()) + (rows.size() > 1 ? " rows copied" : " row copied") +
+                         ": select where the copy goes and press Ctrl+V", false);
 }
 
 void DoPaste(const std::string& lib_uid, const LibraryRow* row)
@@ -548,8 +560,15 @@ void DoPaste(const std::string& lib_uid, const LibraryRow* row)
     const DropTarget to = PasteTarget(*lib, row);  // `lib` is stale once the gesture rewrote the store
     const std::string src = g.clip_lib;
     const std::vector<LibraryRow> rows = g.clip;
-    if (!CanDrop(GetSoundStore(nullptr), src, rows, to)) {
+    const bool copy = g.clip_copy;
+    if (!CanDrop(GetSoundStore(nullptr), src, rows, to, copy)) {
         ShowLibraryToast("Cannot paste there", false);
+        return;
+    }
+    if (copy) {  // 13-70: the clip stays, so the same rows can be pasted again elsewhere
+        std::vector<std::string> made;
+        if (Gesture("Paste", [&](SoundStore& s) { return CopyRows(s, src, rows, to, &made); }))
+            FocusNew(lib_uid, made, false);
         return;
     }
     std::vector<std::string> moved;
@@ -747,6 +766,7 @@ void RowMenu(const SoundLibrary& lib)
     if (ImGui::MenuItem("Rename", "F2", false, (has_node || is_value) && !StoreReplaced())) StartRowRename(lib, row);
     const bool movable = has_node && node_uid != root_uid;
     if (ImGui::MenuItem("Cut", "Ctrl+X", false, movable)) DoCut(lib_uid, rows);
+    if (ImGui::MenuItem("Copy", "Ctrl+C", false, movable)) DoCopy(lib_uid, rows);
     if (ImGui::MenuItem("Paste", "Ctrl+V", false, !g.clip.empty() && !StoreReplaced())) Later([lib_uid, row] { DoPaste(lib_uid, &row); });
     if (ImGui::MenuItem("Duplicate", "Ctrl+D", false, movable)) Later([rows] { DoDuplicate(rows); });
     if (is_value) {
@@ -952,6 +972,7 @@ void ToolbarHelp()
 {
     if (ui::HelpMark("##tbhelpmark", "What do Switch, Random, Blend and Sound do?\n\n"
                                      "Shortcuts: F2 rename, Delete remove, Ctrl+D duplicate, Ctrl+X / Ctrl+V move,\n"
+                                     "Ctrl+C / Ctrl+V copy, "
                                      "Ctrl+Z undo, Space play. Ctrl / Shift-click selects several rows."))
         ImGui::OpenPopup("##tbhelp");
     if (!ui::BeginMenuPopup("##tbhelp")) return;
@@ -1397,6 +1418,8 @@ void TreeKeys(const SoundLibrary& lib)
     else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D, false) && !g.sel.empty()) Later([rows = g.sel] { DoDuplicate(rows); });
     else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_X, false) && !g.sel.empty()) {
         DoCut(lib.uid, g.sel);
+    } else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_C, false) && !g.sel.empty()) {
+        DoCopy(lib.uid, g.sel);
     } else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_V, false)) {
         Later([lib_uid = lib.uid, has = first != nullptr, row = first ? *first : LibraryRow{}] {
             DoPaste(lib_uid, has ? &row : nullptr);

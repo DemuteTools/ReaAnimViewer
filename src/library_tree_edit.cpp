@@ -737,13 +737,14 @@ ResolvedDrop ResolveDrop(const SoundLibrary& dst, const DropTarget& to)
 }
 
 bool DropAllowed(const SoundLibrary& src, const std::vector<std::string>& nodes, const SoundLibrary& dst,
-                 const DropTarget& to, const ResolvedDrop& d)
+                 const DropTarget& to, const ResolvedDrop& d, bool copy)
 {
     if (!d.ok || nodes.empty()) return false;
     if (&src != &dst) return true;
     if (to.mode == DropMode::OntoValue && nodes.size() == 1)  // a value's content onto its own value
         if (const SoundNode* sw = FindNode(dst, d.container))
             if (CaseChild(*sw, to.row.key) == nodes.front()) return false;
+    if (copy) return true;  // 13-70: the copy is taken first, so into / next to itself is fine
     for (const std::string& n : nodes) {
         if (IsInSubtree(dst, d.container, n)) return false;  // into itself or a descendant
         if (n == d.sibling) return false;
@@ -754,17 +755,20 @@ bool DropAllowed(const SoundLibrary& src, const std::vector<std::string>& nodes,
 }  // namespace
 
 bool CanDrop(const SoundStore& store, const std::string& src_lib, const std::vector<LibraryRow>& rows,
-             const DropTarget& to)
+             const DropTarget& to, bool copy)
 {
     const SoundLibrary* src = FindLibrary(store, src_lib);
     const SoundLibrary* dst = FindLibrary(store, to.lib);
     if (!src || !dst) return false;
     std::vector<std::string> nodes = RowNodes(*src, rows, false);
-    return DropAllowed(*src, nodes, *dst, to, ResolveDrop(*dst, to));
+    return DropAllowed(*src, nodes, *dst, to, ResolveDrop(*dst, to), copy);
 }
 
-bool MoveRows(SoundStore& store, const std::string& src_lib, const std::vector<LibraryRow>& rows, const DropTarget& to,
-              std::vector<std::string>* moved)
+namespace {
+
+// MoveRows' body; `copy` = Copy / Paste (CopySubtree each row, the originals stay).
+bool PlaceRows(SoundStore& store, const std::string& src_lib, const std::vector<LibraryRow>& rows, const DropTarget& to,
+               bool copy, std::vector<std::string>* moved)
 {
     std::vector<std::string> out;
     bool ok = Transact(store, [&](SoundStore& s) {
@@ -773,7 +777,7 @@ bool MoveRows(SoundStore& store, const std::string& src_lib, const std::vector<L
         if (!src || !dst) return false;
         std::vector<std::string> nodes = RowNodes(*src, rows, false);
         ResolvedDrop d = ResolveDrop(*dst, to);
-        if (!DropAllowed(*src, nodes, *dst, to, d)) return false;
+        if (!DropAllowed(*src, nodes, *dst, to, d, copy)) return false;
         const bool same = src == dst;
 
         // Onto a value: what it held before (unless it is one of the moved rows).
@@ -781,15 +785,17 @@ bool MoveRows(SoundStore& store, const std::string& src_lib, const std::vector<L
         if (to.mode == DropMode::OntoValue) {
             const SoundNode* sw = FindNode(*dst, d.container);
             old = sw ? CaseChild(*sw, to.row.key) : std::string();
-            if (same && std::find(nodes.begin(), nodes.end(), old) != nodes.end()) old.clear();
+            if (!copy && same && std::find(nodes.begin(), nodes.end(), old) != nodes.end()) old.clear();
         }
         Slot from;
-        if (same && nodes.size() == 1) from = SlotOf(*src, nodes.front());
+        if (!copy && same && nodes.size() == 1) from = SlotOf(*src, nodes.front());
 
         // Take the moved nodes out (or copy them over).
         std::vector<std::string> placed;
         for (const std::string& n : nodes) {
-            if (same) {
+            if (copy) {  // 13-70: the original stays; the copy's top is placed below like a moved node
+                placed.push_back(CopySubtree(*src, n, *dst));
+            } else if (same) {
                 Detach(*src, n);
                 placed.push_back(n);
             } else {
@@ -865,6 +871,20 @@ bool MoveRows(SoundStore& store, const std::string& src_lib, const std::vector<L
     });
     if (ok && moved) *moved = out;
     return ok;
+}
+
+}  // namespace
+
+bool MoveRows(SoundStore& store, const std::string& src_lib, const std::vector<LibraryRow>& rows, const DropTarget& to,
+              std::vector<std::string>* moved)
+{
+    return PlaceRows(store, src_lib, rows, to, false, moved);
+}
+
+bool CopyRows(SoundStore& store, const std::string& src_lib, const std::vector<LibraryRow>& rows, const DropTarget& to,
+              std::vector<std::string>* created)
+{
+    return PlaceRows(store, src_lib, rows, to, true, created);
 }
 
 // ---- Wrap / group / duplicate -------------------------------------------------------------------

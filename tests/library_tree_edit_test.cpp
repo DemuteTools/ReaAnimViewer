@@ -662,6 +662,77 @@ static void TestUnwrap()
     CHECK(FindNode(*lb, "r1")->layer_roles.empty() && !FindNode(*lb, "r1")->layer_keep_offset);
 }
 
+// 13-70: Copy / Paste = a deep copy at the paste target (CopyRows), the originals stay.
+static void TestCopyPaste()
+{
+    SoundStore s = Store();
+    FindLibrary(s, "L")->nodes[2].volume_db = -6.0;  // "gr": a setting the copy keeps
+    // Across libraries: GrassR + G1 into M's root, new uids, L untouched.
+    DropTarget into_m;
+    into_m.lib = "M";
+    into_m.row = {"", "mr"};
+    into_m.mode = DropMode::Into;
+    std::vector<std::string> made;
+    CHECK(CanDrop(s, "L", {{"sw", "vgrass"}}, into_m, true));
+    CHECK(CopyRows(s, "L", {{"sw", "vgrass"}}, into_m, &made));
+    CHECK(made.size() == 1 && made[0] != "gr");
+    const SoundNode* c = N(s, "M", made[0]);
+    CHECK(c && c->parent == "mr" && c->type == SoundNodeType::Random && c->name == "GrassR" && c->volume_db == -6.0);
+    std::vector<const SoundNode*> ck = ChildrenOf(*FindLibrary(s, "M"), made[0]);
+    CHECK(ck.size() == 1 && ck[0]->uid != "g1" && ck[0]->name == "G1");
+    CHECK(Case(s, "L", "sw", "vgrass") == "gr" && N(s, "L", "g1")->parent == "gr");  // original kept
+    CHECK(FindLibrary(s, "L")->nodes.size() == 4);
+    // A Switch (cases, group, default) copied into another library's Random.
+    SoundNode ms = Node("ms", "mr", SoundNodeType::Switch, "Mat");
+    ms.group_uid = "gmat";
+    ms.cases = {{"vconc", "mc", {}}};
+    ms.default_value = "vconc";
+    FindLibrary(s, "M")->nodes.push_back(ms);
+    FindLibrary(s, "M")->nodes.push_back(Node("mc", "ms", SoundNodeType::Sound, "Conc"));
+    DropTarget into_gr;
+    into_gr.lib = "L";
+    into_gr.row = {"sw", "vgrass"};  // the value row playing GrassR: Into acts on its Random
+    into_gr.mode = DropMode::Into;
+    CHECK(CopyRows(s, "M", {{"mr", "ms"}}, into_gr, &made));
+    const SoundNode* cs = N(s, "L", made[0]);
+    CHECK(cs && cs->type == SoundNodeType::Switch && cs->parent == "gr" && cs->group_uid == "gmat" &&
+          cs->default_value == "vconc" && cs->cases.size() == 1);
+    const std::string cc = Case(s, "L", made[0].c_str(), "vconc");
+    CHECK(!cc.empty() && cc != "mc" && N(s, "L", cc)->name == "Conc" && N(s, "L", cc)->parent == made[0]);
+    CHECK(N(s, "M", "ms") && N(s, "M", "mc")->parent == "ms");  // original kept
+    // Into itself: refused for a move, a copy goes inside (taken before it is placed).
+    DropTarget self;
+    self.lib = "L";
+    self.row = {"sw", "vgrass"};
+    self.mode = DropMode::Into;
+    CHECK(!CanDrop(s, "L", {{"sw", "vgrass"}}, self));
+    const size_t before = FindLibrary(s, "L")->nodes.size();
+    CHECK(CopyRows(s, "L", {{"sw", "vgrass"}}, self, &made));
+    CHECK(N(s, "L", made[0])->parent == "gr" && FindLibrary(s, "L")->nodes.size() == before + 4);
+    // Next to itself: a copy right after the original.
+    DropTarget after;
+    after.lib = "L";
+    after.row = {"gr", "g1"};
+    after.mode = DropMode::After;
+    CHECK(CopyRows(s, "L", {{"gr", "g1"}}, after, &made));
+    std::vector<const SoundNode*> gk = ChildrenOf(*FindLibrary(s, "L"), "gr");
+    CHECK(gk.size() >= 2 && gk[0]->uid == "g1" && gk[1]->uid == made[0] && gk[1]->name == "G1");
+    // Onto a value: the copy plays it, what it played goes to Unassigned; onto its own value: refused.
+    DropTarget conc;
+    conc.lib = "L";
+    conc.row = {"sw", "vconc"};
+    conc.mode = DropMode::OntoValue;
+    CHECK(CopyRows(s, "L", {{"sw", "vwood"}}, conc, &made));
+    CHECK(Case(s, "L", "sw", "vconc") == made[0] && Case(s, "L", "sw", "vwood") == "y");
+    DropTarget wood = conc;
+    wood.row = {"sw", "vwood"};
+    CHECK(!CanDrop(s, "L", {{"sw", "vwood"}}, wood, true));
+    CHECK(!CopyRows(s, "L", {{"", "sw"}}, into_m, nullptr));  // the root is refused (as Cut)
+    std::set<std::string> uids;
+    for (const SoundNode& n : FindLibrary(s, "L")->nodes) uids.insert(n.uid);
+    CHECK(uids.size() == FindLibrary(s, "L")->nodes.size());
+}
+
 int main()
 {
     TestSortAndSearch();
@@ -683,6 +754,7 @@ int main()
     TestShiftRangeUpward();
     TestBatchSwitchOnNewGroup();
     TestUnwrap();
+    TestCopyPaste();
     if (g_fail) {
         std::printf("library_tree_edit_test: %d failure(s)\n", g_fail);
         return 1;

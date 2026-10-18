@@ -179,6 +179,7 @@ static void TestKeyClaim()
     CHECK(LibraryViewClaimsKey(on, 'D', true, false, false));     // Ctrl+D
     CHECK(LibraryViewClaimsKey(on, 'B', true, false, false));
     CHECK(LibraryViewClaimsKey(on, 'X', true, false, false));
+    CHECK(LibraryViewClaimsKey(on, 'C', true, false, false));     // 13-70: Ctrl+C copies
     CHECK(LibraryViewClaimsKey(on, 'V', true, false, false));
     CHECK(!LibraryViewClaimsKey(on, 'D', true, true, false));     // never Ctrl+Shift
     CHECK(!LibraryViewClaimsKey(on, 'Z', true, false, false));    // Ctrl+Z stays REAPER's undo

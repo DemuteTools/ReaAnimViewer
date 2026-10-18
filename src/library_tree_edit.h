@@ -97,14 +97,23 @@ struct DropTarget {
     DropMode    mode = DropMode::Into;
 };
 // Whether rows of `src_lib` may drop there (never a container into itself or a descendant).
+// 13-70: `copy` = a Copy / Paste (the originals stay): into itself, a descendant or next to itself
+// is allowed (the copy is taken before it is placed); onto its own value still is not.
 bool CanDrop(const SoundStore& store, const std::string& src_lib, const std::vector<LibraryRow>& rows,
-             const DropTarget& to);
+             const DropTarget& to, bool copy = false);
 // Moves the rows (drag and drop, Cut / Paste). Onto a value: one row swaps with what was there
 // (the old content takes the moved row's place; from another library or several rows: it goes
 // to Unassigned); several rows become a new Random there. Across libraries the subtrees get
 // new uids. `moved` gets the moved nodes' uids in the destination.
 bool MoveRows(SoundStore& store, const std::string& src_lib, const std::vector<LibraryRow>& rows, const DropTarget& to,
               std::vector<std::string>* moved);
+// 13-70: Copy / Paste. Places a deep copy of each row's subtree (CopySubtree, new uids: children,
+// sounds, settings, Switch cases) at `to` with MoveRows' placing rules; the originals stay. A Switch
+// keeps its Switch Group uid: the groups are the store's, shared by every library, so the group
+// always exists in the target library. Assignments do not follow (the copies' uids are new).
+// `created` gets the copies' top uids.
+bool CopyRows(SoundStore& store, const std::string& src_lib, const std::vector<LibraryRow>& rows, const DropTarget& to,
+              std::vector<std::string>* created);
 
 // Wraps each row's node in a new container taking its place (the root too).
 bool WrapRows(SoundStore& store, const std::string& lib_uid, const std::vector<LibraryRow>& rows, SoundNodeType type,

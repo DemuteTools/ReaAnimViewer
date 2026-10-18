@@ -2499,51 +2499,84 @@ void ZoneSelectPart(const ZoneWaveHost& h, const std::string& part)
     ShowLibraryToast(PartNameOf(h, part) + ": its " + std::to_string(h.view->sel.size()) + " zones selected", false);
 }
 
+// Sound Edit evening (B): the one "go to variation" (a V chip, Next / Previous variation): its zones selected alone, the
+// edit cursor at its start, its V chip on (the V filter); `fit` (the chip) zooms on it, else the zoom stays and the view
+// scrolls only when it is off screen (VariationView). A Takes-mode Sound: the take made active, its zones selected, the
+// cursor at its first zone (each take has its own time: no V filter, the view kept). View state, no undo point.
+bool ZoneGoToVariation(const ZoneWaveHost& h, int frame, bool fit)
+{
+    ZoneEditView&    v = *h.view;
+    const SoundData& d = Shown(h);
+    if (frame < 0 || static_cast<size_t>(frame) >= d.frames.size()) return false;
+    const ZoneSel zs = ZonesOfFrame(d, frame);
+    if (zs.empty()) return false;
+    double a = 0.0, b = 0.0;
+    if (!VariationEdges(d, frame, &a, &b)) return false;
+    v.sel = zs;
+    if (const EditZone* fz = ZoneOf(d, FirstZoneOf(d, frame)); fz && !fz->IsGap()) *h.part_sel = fz->part;
+    *h.cursor = a;  // its first zone's start
+    if (d.mode == DetectMode::Takes) {
+        if (v.cur_tl != frame) v.has_tsel = false;  // 13-62i: another take's time selection goes
+        v.cur_tl = frame;
+        v.var_focus = -1;
+        return true;
+    }
+    v.var_focus = frame;
+    if (h.view_start && h.view_len) {
+        const ZoneViewSpan s = VariationView(a, b, h.file_len, *h.view_start, *h.view_len, fit);
+        *h.view_start = s.start;
+        *h.view_len = s.len;
+    }
+    return true;
+}
+
+// Sound Edit evening (B): the All chip -- no V filter, the whole file shown, the edit cursor at the first item's start
+// (13-67a); the selection stays. View state.
+void ZoneShowAll(const ZoneWaveHost& h)
+{
+    const std::vector<ZoneVarBlock> blocks = ZoneVarBlocks(Shown(h), h.tl);
+    h.view->var_focus = -1;
+    if (h.view_start) *h.view_start = 0.0;
+    if (h.view_len) *h.view_len = 0.0;
+    if (!blocks.empty()) *h.cursor = blocks.front().a;
+}
+
 void ZoneStepVariation(const ZoneWaveHost& h, int dir)
 {
     // The mockup's stepVariation over the Variations strip's blocks (on variations with zones; an off one is out of
-    // the zone model): its first zone selected, the cursor at its start, the view centred on it, same zoom.
-    const SoundData&                d = Shown(h);
+    // the zone model), through ZoneGoToVariation (its zones selected, its V chip on, same zoom).
+    const SoundData& d = Shown(h);
+    const ZoneEditView& v = *h.view;
     if (d.mode == DetectMode::Takes) {  // 13-62i: each take is a variation on its own timeline: the next / previous take
         const int n = static_cast<int>(d.frames.size());
-        int       k = h.view->cur_tl < 0 ? (dir > 0 ? -1 : n) : h.view->cur_tl;
+        int       k = v.cur_tl < 0 ? (dir > 0 ? -1 : n) : v.cur_tl;
         for (k += dir; k >= 0 && k < n; k += dir)
             if (d.frames[static_cast<size_t>(k)].on && !d.frames[static_cast<size_t>(k)].zones.empty()) break;
-        if (k < 0 || k >= n) {
+        if (k < 0 || k >= n || !ZoneGoToVariation(h, k, false)) {
             ShowLibraryToast(dir > 0 ? "Already the last take" : "Already the first take", false);
             return;
-        }
-        h.view->cur_tl = k;
-        h.view->has_tsel = false;
-        const ZoneRef first = FirstZoneOf(d, k);
-        h.view->sel.clear();
-        if (const EditZone* fz = ZoneOf(d, first)) {
-            h.view->sel = {first};
-            if (!fz->IsGap()) *h.part_sel = fz->part;
-            *h.cursor = fz->a;
         }
         ShowLibraryToast("Take " + std::to_string(k + 1) + " of " + std::to_string(n), false);
         return;
     }
     const std::vector<ZoneVarBlock> blocks = ZoneVarBlocks(d);
     if (blocks.empty()) return;
-    const int i = ZoneStepBlock(blocks, ZoneStepRef(d, SelValid(d, h.view->sel), *h.cursor), dir);
-    if (i < 0) {
+    // From the selection, else the V filter's variation, else the edit cursor.
+    const ZoneSel sel = SelValid(d, v.sel);
+    double        ref = ZoneStepRef(d, sel, *h.cursor);
+    if (sel.empty())
+        for (const ZoneVarBlock& b : blocks)
+            if (b.frame == v.var_focus) ref = (b.a + b.b) / 2.0;
+    const int i = ZoneStepBlock(blocks, ref, dir);
+    if (i < 0 || !ZoneGoToVariation(h, blocks[static_cast<size_t>(i)].frame, false)) {
         ShowLibraryToast(dir > 0 ? "Already the last variation" : "Already the first variation", false);
         return;
     }
     const ZoneVarBlock& b = blocks[static_cast<size_t>(i)];
-    const ZoneRef       first = FirstZoneOf(d, b.frame);
-    h.view->sel.clear();
-    if (const EditZone* fz = ZoneOf(d, first)) {
-        h.view->sel = {first};
-        if (!fz->IsGap()) *h.part_sel = fz->part;
-    }
-    *h.cursor = b.a;  // its first zone's start
-    const double w = *h.view_len;
-    if (w > 0.0 && h.file_len > 0.0) *h.view_start = Clamp((b.a + b.b) / 2.0 - w / 2.0, 0.0, std::max(0.0, h.file_len - w));
-    // Numbered as the strip numbers it (the variation's own number), of the Sound's variations.
-    ShowLibraryToast("Variation " + std::to_string(b.frame + 1) + " of " + std::to_string(d.frames.size()) + ": centred (same zoom)", false);
+    // Numbered as its V chip (the Variations strip's order), of the Sound's variations.
+    ShowLibraryToast("V" + std::to_string(i + 1) + " of " + std::to_string(blocks.size()) + ": its " +
+                         std::to_string(ZonesOfFrame(d, b.frame).size()) + " zones selected, same zoom",
+                     false);
 }
 
 }  // namespace rav

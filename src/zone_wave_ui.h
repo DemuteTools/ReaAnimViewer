@@ -28,8 +28,11 @@
 //   ZoneSnapToCursor(h)       40541: the selected zone's snap offset at the edit cursor (one undo point)
 //   ZonePrevStop(h)           40172: the edit cursor back to the time selection / zone start before it, the file start last
 //   ZoneSelectAll(h)          40182 (Ctrl+A): every zone selected (the V filter's variation only; Takes: the active take)
-//   ZoneStepVariation(h, dir) next (+1) / previous (-1) block of the Variations strip: its first zone, cursor at its
-//                             start, view centred (same zoom)
+//   ZoneGoToVariation(h, f, fit)  Sound Edit evening (B): the one "go to variation": its zones selected alone, the
+//                             cursor at its start, its V chip on (var_focus); fit = zoom on it (a V chip), else the
+//                             same zoom, scrolled only when it is off screen (Next / Previous variation)
+//   ZoneShowAll(h)            the All chip: no V filter, the whole file, the cursor at the first item's start
+//   ZoneStepVariation(h, dir) next (+1) / previous (-1) block of the Variations strip, through ZoneGoToVariation
 //   ZoneClickPlays() / SetZoneClickPlays(on)   the Click plays pref (per user, ExtState, default on)
 //   ZoneTailWins() / SetZoneTailWins(on)       Pre-roll / Tail overwrite hand edges (per user, default on)
 //   ZoneEditView::sel / has_tsel, ts_a, ts_b / loop      the selection, the time selection, Loop
@@ -210,6 +213,8 @@ void ZoneTrimToTsel(const ZoneWaveHost& h);
 void ZoneGiveTo(const ZoneWaveHost& h, const std::string& part);
 void ZoneSelectPart(const ZoneWaveHost& h, const std::string& part);
 void ZoneStepVariation(const ZoneWaveHost& h, int dir);
+bool ZoneGoToVariation(const ZoneWaveHost& h, int frame, bool fit);  // false: no such variation (nothing changed)
+void ZoneShowAll(const ZoneWaveHost& h);
 void ZoneSnapToCursor(const ZoneWaveHost& h);  // 13-67a: REAPER 40541 on the selected zone (one undo point)
 void ZonePrevStop(const ZoneWaveHost& h);      // 13-67a: REAPER 40172, the cursor back one stop (view state)
 void ZoneSelectAll(const ZoneWaveHost& h);     // Sound Edit evening (A): REAPER 40182 on the zones (view state)

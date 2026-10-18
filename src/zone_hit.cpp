@@ -610,6 +610,25 @@ ZoneSel ZonesToSelectAll(const SoundData& d, int tl, int var_focus)
     return out.empty() ? all : out;
 }
 
+ZoneViewSpan VariationView(double a, double b, double file_len, double view_start, double view_len, bool fit)
+{
+    ZoneViewSpan out{view_start, view_len};
+    if (b < a) std::swap(a, b);
+    if (fit) {
+        const double a0 = std::max(0.0, a - 0.03), b0 = file_len > 0.0 ? std::min(file_len, b + 0.03) : b + 0.03;
+        out.start = a0;
+        out.len = file_len > 0.0 && b0 - a0 >= file_len ? 0.0 : b0 - a0;
+        if (out.len <= 0.0) out.start = 0.0;
+        return out;
+    }
+    if (!(view_len > 0.0)) return out;                              // the whole file is shown
+    if (a >= view_start - 1e-9 && b <= view_start + view_len + 1e-9) return out;  // on screen: no scroll
+    const double want = b - a <= view_len ? (a + b) / 2.0 - view_len / 2.0 : a - view_len * 0.1;
+    const double hi = file_len > 0.0 ? std::max(0.0, file_len - view_len) : std::max(0.0, want);
+    out.start = Clamp(want, 0.0, hi);
+    return out;
+}
+
 int HealCutCount(const SoundData& d, const ZoneSel& sel)
 {
     // HealZones' plan, played on the edges: each pair edge to edge merges the right one into the zone healed so

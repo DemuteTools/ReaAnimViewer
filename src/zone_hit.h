@@ -171,6 +171,14 @@ std::vector<int> SelFrames(const ZoneSel& sel);
 int ZoneStepBlock(const std::vector<ZoneVarBlock>& blocks, double ref, int dir);
 // The step's reference: the middle of the selection's first zone, else `cursor`.
 double ZoneStepRef(const SoundData& d, const ZoneSel& sel, double cursor);
+// Sound Edit evening (B): the view "go to variation" leaves for a variation over [a, b] (source seconds). `fit` (a V chip):
+// zoomed on it with 30 ms around it (len 0 = the whole file, when that is all of it). Else (Next / Previous variation)
+// the user's zoom kept: the view unchanged while [a, b] is all on screen (or the whole file is shown), else scrolled to
+// it -- centred, or its start at 10 % of the view when it is wider than the view -- inside the file.
+struct ZoneViewSpan {
+    double start = 0.0, len = 0.0;  // len 0 = the whole file
+};
+ZoneViewSpan VariationView(double a, double b, double file_len, double view_start, double view_len, bool fit);
 // How many cuts healing `sel` removes: each pair of selected zones edge to edge, a selected Gap counted once.
 int HealCutCount(const SoundData& d, const ZoneSel& sel);
 

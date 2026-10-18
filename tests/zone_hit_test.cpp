@@ -581,6 +581,34 @@ static void TestSelectAll()
     CHECK(ZonesToSelectAll(d, -1, -1).empty());
 }
 
+// Sound Edit evening (B): the view a "go to variation" leaves.
+static void TestVariationView()
+{
+    auto near = [](double x, double y) { return std::fabs(x - y) < 1e-9; };
+    // A V chip: zoomed on it, 30 ms around it, inside the file; all of the file: the whole file.
+    ZoneViewSpan s = VariationView(1.20, 1.60, 2.0, 0.0, 0.0, true);
+    CHECK(near(s.start, 1.17) && near(s.len, 0.46));
+    s = VariationView(0.01, 0.30, 2.0, 0.5, 0.2, true);
+    CHECK(near(s.start, 0.0) && near(s.len, 0.33));
+    s = VariationView(0.0, 2.0, 2.0, 0.5, 0.2, true);
+    CHECK(s.start == 0.0 && s.len == 0.0);
+    // Next / Previous: the zoom kept. On screen: no scroll; the whole file shown: nothing to scroll.
+    s = VariationView(1.20, 1.60, 2.0, 1.0, 0.8, false);
+    CHECK(near(s.start, 1.0) && near(s.len, 0.8));
+    s = VariationView(1.20, 1.60, 2.0, 0.0, 0.0, false);
+    CHECK(s.start == 0.0 && s.len == 0.0);
+    // Off screen (even partly): centred, same length; wider than the view: its start at 10 %.
+    s = VariationView(1.20, 1.60, 2.0, 0.0, 0.5, false);
+    CHECK(near(s.start, 1.15) && near(s.len, 0.5));
+    s = VariationView(1.20, 1.60, 2.0, 1.3, 0.5, false);
+    CHECK(near(s.start, 1.15));
+    s = VariationView(0.10, 0.90, 2.0, 1.0, 0.5, false);
+    CHECK(near(s.start, 0.05) && near(s.len, 0.5));
+    // Inside the file: near its end the view stops at the end.
+    s = VariationView(1.90, 1.98, 2.0, 0.0, 0.5, false);
+    CHECK(near(s.start, 1.5));
+}
+
 int main()
 {
     TestHitLane();
@@ -595,6 +623,7 @@ int main()
     TestItems();
     TestPrevStopAndMarquee();
     TestSelectAll();
+    TestVariationView();
     if (g_fails) {
         std::printf("zone_hit_test: %d failure(s)\n", g_fails);
         return 1;

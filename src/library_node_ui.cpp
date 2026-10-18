@@ -3558,26 +3558,18 @@ void EditLegend(const SoundStore& store, const SoundLibrary& lib, const SoundNod
         for (const ZoneVarBlock& b : vblocks) has_focus = has_focus || b.frame == P.zv.var_focus;
         if (!has_focus) P.zv.var_focus = -1;
         const bool all = P.zv.var_focus < 0;
-        if (ui::ToggleButton("All##zvall", all, ImVec2(0.0f, bh))) {
-            P.view_start = 0.0;
-            P.view_len = 0.0;
-            P.zv.var_focus = -1;  // Sound Edit evening (A): no V filter (Ctrl+A: every zone)
-            if (!vblocks.empty()) P.edit_cursor = vblocks.front().a;  // 13-67a: the cursor at the first item's start
-        }
+        if (ui::ToggleButton("All##zvall", all, ImVec2(0.0f, bh))) ZoneShowAll(ZoneHost(lib, n, m));  // Sound Edit evening (B)
+        ui::ItemTipText("The whole file, no variation filter (Select all: every zone); the selection stays");
         int vi = 0;
         for (const ZoneVarBlock& b : vblocks) {
             ++vi;
             const std::string lbl = "V" + std::to_string(vi) + "##zv" + std::to_string(vi);
-            const double      a0 = std::max(0.0, b.a - 0.03), b0 = std::min(len, b.b + 0.03);
             const bool        on = P.zv.var_focus == b.frame;
             next(ui::ButtonWidth(("V" + std::to_string(vi)).c_str()));
-            if (ui::ToggleButton(lbl.c_str(), on, ImVec2(0.0f, bh))) {
-                P.view_start = a0;
-                P.view_len = b0 - a0 >= len ? 0.0 : b0 - a0;
-                P.edit_cursor = b.a;  // 13-67a (Antho 2026-10-17): play starts on it right away (view state)
-                P.zv.var_focus = b.frame;  // Sound Edit evening (A): the V filter (Ctrl+A: its zones only)
-            }
-            ui::ItemTip("Zoom on variation %d, the edit cursor at its start (Select all: its zones only)", vi);
+            // Sound Edit evening (B): the same "go to variation" as Next / Previous variation (its zones selected, the
+            // cursor at its start), zoomed on it.
+            if (ui::ToggleButton(lbl.c_str(), on, ImVec2(0.0f, bh))) ZoneGoToVariation(ZoneHost(lib, n, m), b.frame, true);
+            ui::ItemTip("Variation %d: its zones selected, the edit cursor at its start, zoomed on it (Select all: its zones only)", vi);
         }
     }
     ImGui::Dummy(ImVec2(1.0f, ui::Dp(2.0f)));
@@ -5378,9 +5370,10 @@ void DrawEditOverlay()
                 ShowLibraryToast("Select a part first: click its lane (Lane view) or its chip (Combined)", false);
             }
         }
-        // 13-62F (F5): Next / Previous variation (REAPER's 40417 / 40416 keys): select it, the edit cursor at its
-        // start, the view centred on it at the same zoom. View state: no undo point, nothing written. At the
-        // last / first one nothing moves. Takes mode: the selection only (each take has its own time).
+        // 13-62F (F5): Next / Previous variation (REAPER's 40417 / 40416 keys). Sound Edit evening (B): the V chips'
+        // "go to variation" (ZoneGoToVariation): its zones selected, the edit cursor at its start, its V chip on, the
+        // zoom kept (scrolled only when it is off screen). View state: no undo point, nothing written. At the
+        // last / first one nothing moves. Takes mode: the take (each take has its own time).
         if (P.nav_request != 0 && zoned && !StoreReplaced()) {  // 13-62h: its first zone, the cursor at its start
             ZoneStepVariation(zh, std::exchange(P.nav_request, 0));
         }

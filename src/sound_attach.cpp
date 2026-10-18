@@ -67,7 +67,8 @@ std::string ReadChunk(MediaItem* item) { return ReadItemStateChunk(f_get_chunk, 
 using SelItem = SelectedSound;
 
 // The selected items: the eligible ones, and how many were skipped and why.
-void ReadSelection(std::vector<SelItem>* eligible, int* skipped, std::string* note, bool allow_folders = false)
+void ReadSelection(std::vector<SelItem>* eligible, int* skipped, std::string* note, bool allow_folders = false,
+                   bool take_placed = false)
 {
     *skipped = 0;
     std::vector<std::string> reasons;
@@ -80,7 +81,8 @@ void ReadSelection(std::vector<SelItem>* eligible, int* skipped, std::string* no
         s.tagged = ReadPlacedTag(it, &s.tag);
         const bool        rav = RavTakeOf(it) != nullptr;
         const bool        folder = !rav && IsFolderItem(it);
-        const std::string why = AttachSkipReason(rav, folder && !allow_folders, s.tagged, s.tag.own);
+        // 13-68 (Antho 2026-10-18): an item RAV placed is a sound like any other there (the gesture takes it over).
+        const std::string why = AttachSkipReason(rav, folder && !allow_folders, s.tagged && !take_placed, s.tag.own);
         s.folder = folder;
         if (!why.empty()) {
             ++*skipped;
@@ -329,9 +331,10 @@ std::string ItemSoundName(MediaItem* item)
     return TakeNameOf(item);
 }
 
-void ReadSelectedSounds(std::vector<SelectedSound>* eligible, int* skipped, std::string* skip_note, bool allow_folders)
+void ReadSelectedSounds(std::vector<SelectedSound>* eligible, int* skipped, std::string* skip_note, bool allow_folders,
+                        bool take_placed)
 {
-    ReadSelection(eligible, skipped, skip_note, allow_folders);
+    ReadSelection(eligible, skipped, skip_note, allow_folders, take_placed);
 }
 
 bool ItemRuleIds(MediaItem* anim, std::vector<std::string>* rids, std::string* err)

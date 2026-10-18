@@ -51,8 +51,9 @@ struct SelectedSound {
     bool       folder = false;  // a folder item (an NVK pile; only with `allow_folders`)
 };
 // `allow_folders` (13-68 v2, Spread selection only): a folder item is eligible too (its pile is one Sound).
+// `take_placed` (13-68, Antho 2026-10-18): an item RAV placed is eligible too (the gesture takes it over).
 void ReadSelectedSounds(std::vector<SelectedSound>* eligible, int* skipped, std::string* skip_note,
-                        bool allow_folders = false);
+                        bool allow_folders = false, bool take_placed = false);
 // 13-68: the rid of every rule of the animation item, giving the rules ids first (inside the
 // caller's undo scope). False (and `err`) when the rules cannot be read or written.
 bool ItemRuleIds(MediaItem* anim, std::vector<std::string>* rids, std::string* err);

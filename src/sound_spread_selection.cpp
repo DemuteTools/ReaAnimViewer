@@ -201,16 +201,16 @@ ReadSounds ReadSources(const std::vector<SelectedSound>& sel, const std::vector<
     return r;
 }
 
-// The selected items become the library's sources: an attached one leaves its event, none keeps a RAV tag.
+// The selected items become the library's sources: one RAV placed or attached leaves its event (its owner's record),
+// none keeps a RAV tag (Antho 2026-10-18: any selected sound is taken, whatever placed it).
 void LeaveOldPlaces(ReaProject* proj, const std::vector<SelectedSound>& sel)
 {
     for (const SelectedSound& s : sel) {
         if (!s.tagged) continue;
-        if (s.tag.own == Ownership::Attached)
-            if (MediaItem* owner = ScanItemByGuid(proj, s.tag.owner)) {
-                const std::string g = s.facts.guid;
-                ModifyItemSounds(owner, nullptr, [&g](ItemSounds& r) { return DetachFromRecord(r, g); });
-            }
+        if (MediaItem* owner = ScanItemByGuid(proj, s.tag.owner)) {
+            const std::string g = s.facts.guid;
+            ModifyItemSounds(owner, nullptr, [&g](ItemSounds& r) { return DetachFromRecord(r, g); });
+        }
         ClearPlacedTag(s.item);
     }
 }
@@ -353,7 +353,7 @@ std::string Run(SpreadScope scope)
     std::vector<SelectedSound> sel;
     int                        skipped = 0;
     std::string                skip;
-    ReadSelectedSounds(&sel, &skipped, &skip, true);
+    ReadSelectedSounds(&sel, &skipped, &skip, true, true);
     if (sel.empty()) return Finish("Select the sound items first" + (skip.empty() ? std::string() : " (" + skip + ")"));
     std::vector<AttachItem> facts;
     for (const SelectedSound& s : sel) facts.push_back(s.facts);
@@ -535,11 +535,17 @@ std::string RunStack()
     std::vector<SelectedSound> all_sel, sel;
     int                        skipped = 0;
     std::string                skip;
-    ReadSelectedSounds(&all_sel, &skipped, &skip, true);
-    for (const SelectedSound& s : all_sel)
-        if (!(s.tagged && SameGuid(s.tag.owner, ref.owner) && s.tag.rid == ref.rid &&
-              std::fabs(s.tag.t - ref.t) <= kEventMatchSeconds))
-            sel.push_back(s);
+    ReadSelectedSounds(&all_sel, &skipped, &skip, true, true);
+    // The new items: the selected sounds not already placed for this library (the stack item, the stack's other
+    // sounds, its copies on other markers); any other one, even one RAV placed, is taken over.
+    for (const SelectedSound& s : all_sel) {
+        bool in_stack = false;
+        if (s.tagged)
+            if (MediaItem* o = ScanItemByGuid(proj, s.tag.owner))
+                for (const RuleSounds& r : ReadItemSounds(o).rules)
+                    if (r.rid == s.tag.rid && r.library == lib_uid) in_stack = true;
+        if (!in_stack) sel.push_back(s);
+    }
     if (sel.empty()) return Finish("Select the items to add with one item of the stack");
     // The stack's event, in project time.
     AttachEvent ev;

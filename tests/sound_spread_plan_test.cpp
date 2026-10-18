@@ -122,6 +122,36 @@ int main()
         CHECK(SpreadLayerNodes({}, "FS L", &Uid).empty());
     }
 
+    // Antho 2026-10-18: the pile moved onto the selected marker records what it plays (its Sounds' variations,
+    // the Random's child on its path), so the copies avoid repeating it.
+    {
+        std::vector<SpreadSource> items;
+        for (int k = 0; k < 3; ++k) {
+            const double base = 200.0 + 2.0 * k;
+            items.push_back(Src(k == 0 ? "p1" : k == 1 ? "q1" : "r1", "L1", 3, base, 0.3, 0.05));
+            items.push_back(Src(k == 0 ? "p2" : k == 1 ? "q2" : "r2", "L2", 4, base + 0.02, 0.3, 0.01));
+        }
+        SoundLibrary lib;
+        lib.uid = "l";
+        SetLibraryContent(lib, SpreadLayerNodes(items, "FS L", &Uid));
+        const std::vector<SoundDraw> d = PlayedDraws(lib, {{"Q1", 2}, {"q2", 2}});  // any case
+        int sounds = 0, randoms = 0;
+        for (const SoundDraw& x : d) {
+            const SoundNode* n = FindNode(lib, x.node);
+            CHECK(n != nullptr);
+            if (!n) continue;
+            if (n->type == SoundNodeType::Sound) {
+                ++sounds;
+                CHECK(x.pick == 2 && (n->sound.source.item_guid == "q1" || n->sound.source.item_guid == "q2"));
+            } else if (n->type == SoundNodeType::Random) {
+                ++randoms;
+                CHECK(n->uid == lib.root && x.pick == 1);  // q's pile is the second in time
+            }
+        }
+        CHECK(sounds == 2 && randoms == 1 && d.size() == 3);
+        CHECK(PlayedDraws(lib, {{"zz", 0}}).empty());
+    }
+
     // The Attached library: found by type (attached only, not a User Library), content replaced on a re-run.
     {
         SoundStore st;

@@ -5,6 +5,7 @@
 #include "sound_spread_plan.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <utility>
 
@@ -197,6 +198,42 @@ double StackLayerOffset(double anchor, const std::vector<double>& markers)
         }
     }
     return best_d < 0.0 ? 0.0 : best;
+}
+
+std::vector<SoundDraw> PlayedDraws(const SoundLibrary& lib, const std::vector<std::pair<std::string, int>>& played)
+{
+    std::vector<SoundDraw> out;
+    auto add = [&out](const std::string& node, int pick) {
+        for (const SoundDraw& d : out)
+            if (d.node == node) return;
+        SoundDraw d;
+        d.node = node;
+        d.pick = pick;
+        out.push_back(d);
+    };
+    for (const SoundNode& n : lib.nodes) {
+        if (n.type != SoundNodeType::Sound || n.sound.source.kind != SoundSourceKind::Item) continue;
+        const auto hit = std::find_if(played.begin(), played.end(), [&](const std::pair<std::string, int>& p) {
+            const std::string& a = p.first;
+            const std::string& b = n.sound.source.item_guid;
+            return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+                       return std::toupper(static_cast<unsigned char>(x)) == std::toupper(static_cast<unsigned char>(y));
+                   });
+        });
+        if (hit == played.end()) continue;
+        if (hit->second >= 0) add(n.uid, hit->second);
+        std::string child = n.uid;
+        for (const SoundNode* up = FindNode(lib, n.parent); up; up = FindNode(lib, up->parent)) {
+            if (up->type == SoundNodeType::Random) {
+                const std::vector<const SoundNode*> kids = ChildrenOf(lib, up->uid);
+                for (size_t k = 0; k < kids.size(); ++k)
+                    if (kids[k]->uid == child) add(up->uid, static_cast<int>(k));
+            }
+            child = up->uid;
+            if (up->parent.empty()) break;
+        }
+    }
+    return out;
 }
 
 std::vector<double> SourceZonePositions(double project_end, const std::vector<double>& positions)

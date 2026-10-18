@@ -77,6 +77,12 @@ double StackLayerOffset(double anchor, const std::vector<double>& markers);
 // positions kept (PromoteCopyPosition from the earliest of `positions`).
 std::vector<double> SourceZonePositions(double project_end, const std::vector<double>& positions);
 
+// Antho 2026-10-18: the first pile of the selection is not copied: it moves onto the selected marker and stays
+// attached to that event (it follows it; Populate leaves that event alone and places copies on the others). Its
+// draws, so the copies avoid repeating it: for each Sound of `lib` whose source item is a key of `played` (item
+// GUID, any case), the variation that item plays; for each Random above it, the child on its path.
+std::vector<SoundDraw> PlayedDraws(const SoundLibrary& lib, const std::vector<std::pair<std::string, int>>& played);
+
 // What a run did, for its toast.
 struct SpreadRunCounts {
     std::string type;                  // the marker type (= the library's name)

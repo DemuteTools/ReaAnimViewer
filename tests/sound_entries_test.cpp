@@ -149,6 +149,40 @@ void TestTakeMarkers()
     e.slices.clear();
     fr = DetectFrames(e, DetectMode::TakeMarkers, SilenceParams{}, nullptr);
     CHECK(fr.size() == 1 && Near(fr[0].start, 0.5) && Near(fr[0].length, 2));
+
+    // An item playing one whole slice keeps the marker-to-marker slices.
+    e.slices = s;
+    e.start_offs = 1;
+    e.item_len = 1;
+    fr = DetectFrames(e, DetectMode::TakeMarkers, SilenceParams{}, nullptr);
+    CHECK(fr.size() == 4 && Near(fr[1].start, 1) && Near(fr[1].length, 1));
+
+    // 13-68, Antho's NVK items (sample\ReaAnimViewer - Export video test.rpp, 2026-10-18): the item plays a short
+    // window around take marker 1 (the sync point); each variation is that window around its own marker.
+    EntryFacts boots;  // FEETHmn_Boots Concrete Jump 01: SOFFS 0.047, LENGTH 0.208, TKM 0.105 / 2.555 / 4.833
+    boots.source_len = 7;
+    boots.start_offs = 0.047;
+    boots.item_len = 0.208;
+    boots.slices = SlicesFromTakeMarkers({{0.105, "1"}, {2.555, "2"}, {4.833, "3"}}, 7);
+    fr = DetectFrames(boots, DetectMode::TakeMarkers, SilenceParams{}, nullptr);
+    CHECK(fr.size() == 3);
+    if (fr.size() == 3) {
+        CHECK(Near(fr[0].start, 0.047) && Near(fr[1].start, 2.497) && Near(fr[2].start, 4.775));
+        for (const SoundFrame& f : fr) CHECK(Near(f.length, 0.208));
+    }
+    EntryFacts dress;  // FEETHmn_Dress Boots Concrete Grit Jump 01: playrate 1.3348, TKM 0.166 / 1.959 / 3.769
+    dress.source_len = 6;
+    dress.start_offs = 0.09925800729146;
+    dress.item_len = 0.16666666666669;
+    dress.playrate = 1.33483985417003;
+    dress.slices = SlicesFromTakeMarkers({{0.166, "1"}, {1.959, "2"}, {3.769, "3"}}, 6);
+    fr = DetectFrames(dress, DetectMode::TakeMarkers, SilenceParams{}, nullptr);
+    CHECK(fr.size() == 3);
+    if (fr.size() == 3) {
+        const double pre = 0.166 - 0.09925800729146;
+        CHECK(Near(fr[1].start, 1.959 - pre) && Near(fr[2].start, 3.769 - pre));
+        CHECK(Near(fr[0].length, 0.16666666666669 * 1.33483985417003));
+    }
 }
 
 void TestRpp()

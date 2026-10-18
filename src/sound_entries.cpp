@@ -248,7 +248,33 @@ std::vector<SoundFrame> DetectFramesAt0(const EntryFacts& facts, DetectMode mode
         }
         if (!out.empty()) return out;
         break;
-    case DetectMode::TakeMarkers:
+    case DetectMode::TakeMarkers: {
+        // 13-68 (Antho's NVK items, 2026-10-18): an item that plays a short window around ONE take marker
+        // (marker = the variation's sync point, e.g. 58 ms in, 208 ms long) says what a variation is: that
+        // same window around each marker. Marker-to-marker slices gave 2.4 s copies with the next variation's
+        // sound at their end. An item playing a whole slice (or several markers) keeps the slices.
+        int in_window = -1, n_in = 0;
+        for (size_t k = 0; k < facts.slices.size(); ++k)
+            if (facts.slices[k].start >= facts.start_offs && facts.slices[k].start < facts.start_offs + src_len) {
+                in_window = static_cast<int>(k);
+                ++n_in;
+            }
+        if (n_in == 1 && src_len > kMinLen) {
+            const Slice& cur = facts.slices[static_cast<size_t>(in_window)];
+            const double cur_len = cur.length < 0.0 ? facts.source_len - cur.start : cur.length;
+            if (facts.start_offs + src_len < cur.start + cur_len - kMinLen) {
+                const double pre = cur.start - facts.start_offs;
+                for (const Slice& s : facts.slices) {
+                    SoundFrame f;
+                    f.start = s.start - pre;
+                    f.length = src_len;
+                    out.push_back(f);
+                }
+                ClampFrames(out, facts.source_len);
+                if (out.size() >= 2) return out;
+                out.clear();
+            }
+        }
         for (const Slice& s : facts.slices) {
             SoundFrame f;
             f.start = s.start;
@@ -258,6 +284,7 @@ std::vector<SoundFrame> DetectFramesAt0(const EntryFacts& facts, DetectMode mode
         ClampFrames(out, facts.source_len);
         if (out.size() >= 2) return out;
         break;
+    }
     case DetectMode::Silence:
         if (peaks) {
             out = SplitOnSilence(*peaks, silence, facts.source_len);

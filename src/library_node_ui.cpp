@@ -5308,8 +5308,8 @@ void DrawEditOverlay()
             }
         }
         // 13-62F (F5): Next / Previous variation (REAPER's 40417 / 40416 keys). Sound Edit evening (B): the V chips'
-        // "go to variation" (ZoneGoToVariation): its zones selected, the edit cursor at its start, its V chip on, the
-        // zoom kept (scrolled only when it is off screen). View state: no undo point, nothing written. At the
+        // "go to variation" (ZoneGoToVariation): its zones selected, the edit cursor at its start, its span the time
+        // selection, its V chip on, the zoom kept (scrolled only when it is off screen). View state: no undo point, nothing written. At the
         // last / first one nothing moves. Takes mode: the take (each take has its own time).
         if (P.nav_request != 0 && zoned && !StoreReplaced()) {  // 13-62h: its first zone, the cursor at its start
             ZoneStepVariation(zh, std::exchange(P.nav_request, 0));

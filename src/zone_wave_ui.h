@@ -29,9 +29,11 @@
 //   ZonePrevStop(h)           40172: the edit cursor back to the time selection / zone start before it, the file start last
 //   ZoneSelectAll(h)          40182 (Ctrl+A): every zone selected (the V filter's variation only; Takes: the active take)
 //   ZoneGoToVariation(h, f, fit)  Sound Edit evening (B): the one "go to variation": its zones selected alone, the
-//                             cursor at its start, its V chip on (var_focus); fit = zoom on it (a V chip), else the
-//                             same zoom, scrolled only when it is off screen (Next / Previous variation)
-//   ZoneShowAll(h)            the All chip: no V filter, the whole file, the cursor at the first item's start
+//                             cursor at its start, its span the time selection (as its double-click), its V chip on
+//                             (var_focus); fit = zoom on it (a V chip), else the same zoom, scrolled only when it is
+//                             off screen (Next / Previous variation)
+//   ZoneShowAll(h)            the All chip: no V filter, no time selection, the whole file, the cursor at the first
+//                             item's start
 //   ZoneStepVariation(h, dir) next (+1) / previous (-1) block of the Variations strip, through ZoneGoToVariation
 //   ZoneClickPlays() / SetZoneClickPlays(on)   the Click plays pref (per user, ExtState, default on)
 //   ZoneTailWins() / SetZoneTailWins(on)       Pre-roll / Tail overwrite hand edges (per user, default on)

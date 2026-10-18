@@ -2645,9 +2645,13 @@ bool ZoneGoToVariation(const ZoneWaveHost& h, int frame, bool fit)
     v.sel = zs;
     if (const EditZone* fz = ZoneOf(d, FirstZoneOf(d, frame)); fz && !fz->IsGap()) *h.part_sel = fz->part;
     *h.cursor = a;  // its first zone's start
+    // Late fix (Antho 2026-10-19): its span becomes the time selection, as a double-click on it does (SetTsel: the
+    // TselVariation double-click), so Play plays the variation now worked on, never a time selection left elsewhere
+    // (one too short to be a time selection: none).
+    v.has_tsel = false;
+    SetTsel(h, a, b, std::string());
     if (d.mode == DetectMode::Takes) {
-        if (v.cur_tl != frame) v.has_tsel = false;  // 13-62i: another take's time selection goes
-        v.cur_tl = frame;
+        v.cur_tl = frame;  // 13-62i: the take's own time selection (another take's went above)
         v.var_focus = -1;
         return true;
     }
@@ -2661,11 +2665,13 @@ bool ZoneGoToVariation(const ZoneWaveHost& h, int frame, bool fit)
 }
 
 // Sound Edit evening (B): the All chip -- no V filter, the whole file shown, the edit cursor at the first item's start
-// (13-67a); the selection stays. View state.
+// (13-67a); the selection stays. Late fix (2026-10-19): the time selection goes (a V chip / Next / Previous left the
+// last variation's one: Play would play that variation alone, not the whole file now shown). View state.
 void ZoneShowAll(const ZoneWaveHost& h)
 {
     const std::vector<ZoneVarBlock> blocks = ZoneVarBlocks(Shown(h), h.tl);
     h.view->var_focus = -1;
+    h.view->has_tsel = false;
     if (h.view_start) *h.view_start = 0.0;
     if (h.view_len) *h.view_len = 0.0;
     if (!blocks.empty()) *h.cursor = blocks.front().a;

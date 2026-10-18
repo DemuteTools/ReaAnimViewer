@@ -1745,7 +1745,7 @@ std::vector<PhysicsEvent> JumpEvents(const PhysicsAnalysis& a, const PhysicsPara
         }
         if (!(HipsMeanAcc(a, lo, hi) <= -p.jump_fall_g * kGravity)) continue;
         PhysicsEvent best;
-        if (fs > 0 && TakeOffAt(a, p, fs, &best)) {  // the take-off: the last part to leave
+        if (fs > 0 && TakeOffAt(a, p, fs, &best)) {  // the take-off: the last foot's lift-off (10-8p)
             best.strength = HipsPeakSpeed(a, p, best.time_s, 1);
             ev.push_back(best);
         }

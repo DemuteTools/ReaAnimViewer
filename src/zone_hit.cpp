@@ -346,6 +346,21 @@ ZoneSel GainDragZones(const SoundData& d, const ZoneSel& sel, const ZoneRef& r)
     return out;
 }
 
+ZoneSel GroupDragZones(const SoundData& d, const ZoneSel& sel, const ZoneRef& r)
+{
+    if (!ZoneOf(d, r) || !SelHas(sel, r)) return {};
+    ZoneSel unit = ItemOf(d, r);
+    if (unit.empty()) unit = {r};
+    bool other = false;
+    for (const ZoneRef& q : sel)
+        if (ZoneOf(d, q) && !SelHas(unit, q)) other = true;
+    if (!other) return {};
+    ZoneSel out = {r};
+    for (const ZoneRef& q : sel)
+        if (ZoneOf(d, q) && !SelHas(out, q)) out.push_back(q);
+    return out;
+}
+
 std::string ZoneGainToast(const std::string& zone_name, const std::string& part_name, double db, double fader_db)
 {
     // The mockup's sgn(): "+" then the number as JavaScript prints it (one decimal at most here: "+1", "+1.5", "0").

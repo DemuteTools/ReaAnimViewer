@@ -998,6 +998,8 @@ void FuzzRun(uint64_t seed, int count, FuzzStats& st, int kind = 0)
         const int    side = r.I(2) ? 1 : -1;
         const std::string before = SerializeSoundStore(StoreOf(d));
         bool         ch = false;
+        ZoneContext  gc = ctx;  // fix 2026-10-19: a group drag runs on the dragged zone's timeline (the host it is drawn in)
+        if (TakesKind(kind) && ZoneOf(d, z)) gc.tl = ZoneTimeline(d, z.frame);
         switch (k) {
         case 0: ch = CutOut(d, t0, t1, ctx, &cur); break;
         case 1: {  // mostly inside a part zone (a real wormhole), else anywhere
@@ -1035,8 +1037,17 @@ void FuzzRun(uint64_t seed, int count, FuzzStats& st, int kind = 0)
         }
         case 8: ch = DeleteZones(d, sel, ctx); cur = sel; break;
         case 9: ch = GiveZonesPart(d, sel, part, ctx, &cur); break;
-        case 10: ch = MoveZone(d, z, r.U(-0.2, 0.2), ctx, &cur); break;
-        case 11: ch = DragZoneEdge(d, z, side, ZoneOf(d, z) && r.I(2) ? (side < 0 ? ZoneOf(d, z)->a : ZoneOf(d, z)->b) + r.U(-0.05, 0.05) : t0, ctx, &cur); break;
+        case 10:  // fix 2026-10-19: one in three a group move of the selection
+            if (i % 3 == 0) ch = MoveZones(d, sel, r.U(-0.2, 0.2), ctx, &cur);
+            else ch = MoveZone(d, z, r.U(-0.2, 0.2), ctx, &cur);
+            break;
+        case 11: {
+            const double et = ZoneOf(d, z) && r.I(2) ? (side < 0 ? ZoneOf(d, z)->a : ZoneOf(d, z)->b) + r.U(-0.05, 0.05) : t0;
+            const bool grp = i % 3 == 0;  // no draw: the fuzz keeps its stream
+            if (grp) ch = DragZonesEdge(d, sel, z, side, et, gc, &cur);  // fix 2026-10-19: the selection's edges
+            else ch = DragZoneEdge(d, z, side, et, ctx, &cur);
+            break;
+        }
         case 12: ch = DragCut(d, z, ZoneOf(d, z) ? ZoneOf(d, z)->b + r.U(-0.05, 0.05) : t0, ctx, &cur); break;
         case 13: {
             ZoneRef g = z;
@@ -1054,8 +1065,16 @@ void FuzzRun(uint64_t seed, int count, FuzzStats& st, int kind = 0)
             ch = DragGapXfade(d, g, side, q ? r.U(q->a, q->b) : t0, r.I(2) == 0, ctx, &cur);
             break;
         }
-        case 15: ch = SetZoneFade(d, z, side, r.U(0.0, 0.05), ctx, &cur); break;
-        case 16: ch = SetZoneSnap(d, z, ZoneOf(d, z) ? r.U(ZoneOf(d, z)->a - 0.05, ZoneOf(d, z)->b + 0.05) : t0, ctx, &cur); break;
+        case 15:
+            if (i % 3 == 0) ch = SetZonesFade(d, sel, side, r.U(0.0, 0.05), gc, &cur);  // fix 2026-10-19
+            else ch = SetZoneFade(d, z, side, r.U(0.0, 0.05), ctx, &cur);
+            break;
+        case 16: {
+            const double st = ZoneOf(d, z) ? r.U(ZoneOf(d, z)->a - 0.05, ZoneOf(d, z)->b + 0.05) : t0;
+            if (i % 3 == 0) ch = ShiftZonesSnap(d, sel, z, st, gc, &cur);  // fix 2026-10-19
+            else ch = SetZoneSnap(d, z, st, ctx, &cur);
+            break;
+        }
         case 17: ch = SetZoneDb(d, z, r.U(-30.0, 30.0), ctx, &cur); break;
         case 18: ch = ShiftZonesDb(d, sel, r.U(-6.0, 6.0), {}, ctx, &cur); break;
         case 19: ch = ResetZoneEdge(d, z, side, ctx, &cur); break;
@@ -1118,6 +1137,7 @@ void FuzzRun(uint64_t seed, int count, FuzzStats& st, int kind = 0)
         case 30: {  // bad numbers: nothing changes
             const double nan = std::nan("");
             ch = CutOut(d, nan, t1, ctx) || NewZone(d, part, t0, nan, ctx) || MoveZone(d, z, nan, ctx) || MoveChain(d, z, nan, ctx) ||
+                 MoveZones(d, sel, nan, ctx) || DragZonesEdge(d, sel, z, side, nan, ctx) || SetZonesFade(d, sel, side, nan, ctx) ||
                  DragZoneEdge(d, z, side, nan, ctx) || SetZoneDb(d, z, nan, ctx) || SplitZoneAt(d, nan, ctx) ||
                  SetPartFader(d, part, nan, ctx) || NewZone(d, part, t0, t0, ctx);
             if (ch || SerializeSoundStore(StoreOf(d)) != before) {
@@ -1378,6 +1398,71 @@ void TestTailCaps()
     CHECK(TailCapsText(TailCaps{2, 0, 0}) == "2 zones stopped by the next zone" && TailCapsText(TailCaps{}).empty());
 }
 
+// Fix 2026-10-19 (Antho: REAPER's several selected items): a move / an edge / a fade / a snap offset dragged on one of
+// several selected zones acts on all of them.
+void TestGroupGestures()
+{
+    // Heel 0.10-0.20, empty, Toe 0.30-0.40 | Heel 0.40-0.50 butted, empty, Toe 0.70-0.80.
+    const SoundData base = With({Z(kHeel, 0.10, 0.20), Z(kToe, 0.30, 0.40), Z(kHeel, 0.40, 0.50), Z(kToe, 0.70, 0.80)});
+    // Move: both by the same delta; the butted unselected Heel's start follows.
+    SoundData d = base;
+    ZoneSel   out;
+    CHECK(Near(MoveZonesRange(d, {{0, 0}, {0, 1}}, 0.05), 0.05));
+    CHECK(MoveZones(d, {{0, 0}, {0, 1}}, 0.05, {}, &out) && out.size() == 2);
+    CHECK(Near(At(d, 0, 0).a, 0.15) && Near(At(d, 0, 0).b, 0.25) && Near(At(d, 0, 1).a, 0.35) && Near(At(d, 0, 1).b, 0.45));
+    CHECK(Near(At(d, 0, 2).a, 0.45) && Near(At(d, 0, 2).b, 0.50) && Near(At(d, 0, 3).a, 0.70) && ZonesProblem(d, 3.0).empty());
+    // The group stops at its most constrained zone: Heel 0.10 at the file's start, the others keep their spacing.
+    d = base;
+    CHECK(Near(MoveZonesRange(d, {{0, 0}, {0, 3}}, -1.0), -0.10));
+    CHECK(MoveZones(d, {{0, 3}, {0, 0}}, -1.0) && Near(At(d, 0, 0).a, 0.0) && Near(At(d, 0, 3).a, 0.60));
+    // Right: the last Toe stops at the file's end (0.85), the Heel moves the same 0.05.
+    d = base;
+    CHECK(MoveZones(d, {{0, 0}, {0, 3}}, 1.0, {nullptr, 0.85}) && Near(At(d, 0, 3).b, 0.85) && Near(At(d, 0, 0).a, 0.15));
+    // Stopped by an unselected zone across empty space: Toe 0.30 cannot pass the Heel ending at 0.20.
+    d = base;
+    CHECK(Near(MoveZonesRange(d, {{0, 1}, {0, 3}}, -1.0), -0.10));
+    CHECK(Near(MoveZonesRange(d, {{0, 3}, {0, 1}}, -1.0), -0.10));
+    // Two selected zones butted move together (no shrink between them).
+    d = base;
+    CHECK(MoveZones(d, {{0, 1}, {0, 2}}, 0.10) && Near(At(d, 0, 1).a, 0.40) && Near(At(d, 0, 1).b, 0.50) &&
+          Near(At(d, 0, 2).a, 0.50) && Near(At(d, 0, 2).b, 0.60) && Near(At(d, 0, 3).a, 0.70));
+    // A selected part zone of an item brings its item.
+    SoundData it = With({Z(kHeel, 0.10, 0.30), G(0.30, 0.36, 0.005, 0.005), Z(kHeel, 0.36, 0.60), Z(kToe, 0.90, 1.00)});
+    CHECK(MoveZones(it, {{0, 3}, {0, 0}}, 0.05, {}, &out) && out.size() == 4);
+    CHECK(Near(At(it, 0, 0).a, 0.15) && Near(At(it, 0, 1).a, 0.35) && Near(At(it, 0, 2).b, 0.65) && Near(At(it, 0, 3).a, 0.95));
+    CHECK(ZonesProblem(it, 3.0).empty() && !MoveZones(it, {}, 0.05) && !MoveZones(it, {{0, 0}}, std::nan("")));
+
+    // Edges: the same edge of each by the same delta, each stopping at its own limit, the others going on.
+    d = base;
+    CHECK(DragZonesEdge(d, {{0, 0}, {0, 3}}, {0, 0}, 1, 0.25, {}, &out) && out.size() == 2);
+    CHECK(Near(At(d, 0, 0).b, 0.25) && Near(At(d, 0, 3).b, 0.85));
+    d = base;  // ends +0.15: the Heel stops on the Toe at 0.30, the last Toe goes on to 0.95
+    CHECK(DragZonesEdge(d, {{0, 0}, {0, 3}}, {0, 0}, 1, 0.35) && Near(At(d, 0, 0).b, 0.30) && Near(At(d, 0, 3).b, 0.95));
+    d = base;  // starts -0.15: the Heel stops at the file's start, the Toe 0.70 -> 0.55
+    CHECK(DragZonesEdge(d, {{0, 3}, {0, 0}}, {0, 3}, -1, 0.55) && Near(At(d, 0, 0).a, 0.0) && Near(At(d, 0, 3).a, 0.55));
+    CHECK(At(d, 0, 0).a_hand && At(d, 0, 3).a_hand && ZonesProblem(d, 3.0).empty());
+    // An edge held by a Gap stays; the dragged one held: nothing.
+    SoundData g = With({Z(kHeel, 0.10, 0.30), G(0.30, 0.36, 0.005, 0.005), Z(kHeel, 0.36, 0.60), Z(kToe, 0.90, 1.00)});
+    CHECK(DragZonesEdge(g, {{0, 3}, {0, 2}}, {0, 3}, -1, 0.85) && Near(At(g, 0, 3).a, 0.85) && Near(At(g, 0, 2).a, 0.36));
+    CHECK(!DragZonesEdge(g, {{0, 2}, {0, 3}}, {0, 2}, -1, 0.30));
+
+    // Fades: the same length on all, each within half its length; a Gap's side keeps its crossfade.
+    d = base;
+    CHECK(SetZonesFade(d, {{0, 0}, {0, 2}, {0, 3}}, -1, 0.03, {}, &out) && out.size() == 3);
+    CHECK(At(d, 0, 0).fade_in && Near(*At(d, 0, 0).fade_in, 0.03) && Near(*At(d, 0, 3).fade_in, 0.03) && !At(d, 0, 1).fade_in);
+    CHECK(SetZonesFade(d, {{0, 0}, {0, 2}}, 1, 0.08) && Near(*At(d, 0, 0).fade_out, 0.05) && Near(*At(d, 0, 2).fade_out, 0.05));
+    g = With({Z(kHeel, 0.10, 0.30), G(0.30, 0.36, 0.005, 0.005), Z(kHeel, 0.36, 0.60), Z(kToe, 0.90, 1.00)});
+    CHECK(SetZonesFade(g, {{0, 3}, {0, 0}}, 1, 0.02) && !At(g, 0, 0).fade_out && Near(*At(g, 0, 3).fade_out, 0.02));
+    CHECK(!SetZonesFade(g, {{0, 0}}, 1, 0.02));
+
+    // Snap offsets: each by the same delta from where it lands, clamped into its zone.
+    d = base;
+    d.frames[0].zones[0].snap = 0.12;
+    d.frames[0].zones[3].snap = 0.78;
+    CHECK(ShiftZonesSnap(d, {{0, 0}, {0, 3}}, {0, 0}, 0.15, {}, &out) && out.size() == 2);
+    CHECK(Near(*At(d, 0, 0).snap, 0.15) && Near(*At(d, 0, 3).snap, 0.80));
+}
+
 int main()
 {
     TestTailCaps();  // 13-67b
@@ -1393,6 +1478,7 @@ int main()
     TestReviewRows();
     TestReviewBC();
     TestItems();
+    TestGroupGestures();
     TestUndividedAndTakes();
     TestSampleAccurateSnap();  // fix 2026-10-19
     TestFuzz();

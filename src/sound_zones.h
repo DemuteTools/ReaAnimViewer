@@ -246,10 +246,23 @@ double MoveChainRange(const SoundData& d, const ZoneRef& r, double delta, double
 // edges by hand, their own snaps along; the Gaps keep their crossfades); a butted neighbour's edge follows. False when
 // r is in no item or it cannot move. `sel` gets every member.
 bool MoveChain(SoundData& d, const ZoneRef& r, double delta, const ZoneContext& ctx = {}, ZoneSel* sel = nullptr);
+// Fix 2026-10-19 (Antho: REAPER's several selected items): a move of several selected zones. Every zone of `sel` on its
+// first zone's timeline moves (a part zone of an item with its whole item; a Gap alone, its neighbours following), all by
+// the same delta; a butted neighbour that does not move follows (down to its 6 ms / a Gap's 4 ms), one across empty space
+// stops them, the file's edges. As REAPER keeps the items' spacing, the whole group stops at its most constrained zone
+// (MoveZonesRange: each run of zones moved together bounded as MoveChainRange). `out` gets the selection and the items'
+// members moved with it.
+double MoveZonesRange(const SoundData& d, const ZoneSel& sel, double delta, double file_len = 0.0);
+bool   MoveZones(SoundData& d, const ZoneSel& sel, double delta, const ZoneContext& ctx = {}, ZoneSel* out = nullptr);
 // One edge of a part zone (side < 0 start, > 0 end) to t, alone: it stops on its neighbour (opening empty space
 // backing off); by hand (▼). An edge held by a Gap: false (DragGapEdge).
 bool DragZoneEdge(SoundData& d, const ZoneRef& r, int side, double t, const ZoneContext& ctx = {},
     ZoneSel* sel = nullptr);
+// Fix 2026-10-19: the same edge of every selected part zone on r's timeline (and r, the one dragged, to t) moved by the delta r's edge
+// moves, each one stopping at its own limits (its neighbour, the file's edges, 4 ms) as DragZoneEdge, the others going
+// on (REAPER trims each selected item within its own limits); an edge held by a Gap stays. `out` = `sel` re-resolved.
+bool DragZonesEdge(SoundData& d, const ZoneSel& sel, const ZoneRef& r, int side, double t, const ZoneContext& ctx = {},
+    ZoneSel* out = nullptr);
 // The cut between part zone r and the part zone butted after it, to t: both edges.
 bool DragCut(SoundData& d, const ZoneRef& r, double t, const ZoneContext& ctx = {},
     ZoneSel* sel = nullptr);
@@ -266,6 +279,13 @@ bool SetGapXfade(SoundData& d, const ZoneRef& gap, double xl, double xr, const Z
 // A part zone's own fade (side < 0 in, > 0 out; s >= 0); a side held by a Gap: false.
 bool SetZoneFade(SoundData& d, const ZoneRef& r, int side, double s, const ZoneContext& ctx = {},
     ZoneSel* sel = nullptr);
+// Fix 2026-10-19: REAPER's fade drag on one of several selected items: every selected part zone's own fade on `side` set to
+// the same `s`, each within half its length; a side held by a Gap stays (its crossfade). `out` = `sel` re-resolved.
+bool SetZonesFade(SoundData& d, const ZoneSel& sel, int side, double s, const ZoneContext& ctx = {}, ZoneSel* out = nullptr);
+// Fix 2026-10-19: r's snap offset dragged to t (clamped into it) with the selection: every selected part zone's snap
+// offset moved by the same delta from where it lands now (ZoneSnap on ctx's peaks), each clamped into its zone, its own.
+bool ShiftZonesSnap(SoundData& d, const ZoneSel& sel, const ZoneRef& r, double t, const ZoneContext& ctx = {},
+    ZoneSel* out = nullptr);
 // A part zone's own snap offset (clamped into it).
 bool SetZoneSnap(SoundData& d, const ZoneRef& r, double t, const ZoneContext& ctx = {},
     ZoneSel* sel = nullptr);

@@ -977,6 +977,8 @@ void DragMove(const ZoneWaveHost& h, double t, float dx, float dy, double px_per
             if (g.sel.empty()) g.sel = {g.hit.z};
         } else if (std::fabs(dx) > 4.0f * dp) {
             g.kind = StartZoneDrag(Stored(h), g.hit, g.shift, g.alt);
+            if (g.kind == ZoneDragKind::Move || g.kind == ZoneDragKind::MoveChain)  // fix 2026-10-19: REAPER's selected items
+                g.group = GroupDragZones(Stored(h), SelValid(Stored(h), v.sel), g.hit.z);
             if (g.kind == ZoneDragKind::MkZone) g.part = NewZonePart(Stored(h), g.hit, *h.part_sel, h.tl);
             if (g.kind == ZoneDragKind::Swipe && g.hit.lane >= 0 && static_cast<size_t>(g.hit.lane) < Stored(h).divide_values.size())
                 g.part = Stored(h).divide_values[static_cast<size_t>(g.hit.lane)];
@@ -987,8 +989,20 @@ void DragMove(const ZoneWaveHost& h, double t, float dx, float dy, double px_per
     if (IsHandle(g.kind) && !g.moved) {
         if (std::fabs(dx) <= 2.0f * dp && std::fabs(dy) <= 2.0f * dp) return;
         g.moved = true;
+        if (g.kind == ZoneDragKind::Edge || g.kind == ZoneDragKind::Fade || g.kind == ZoneDragKind::Snap)
+            g.group = GroupDragZones(Stored(h), SelValid(Stored(h), v.sel), g.hit.z);  // fix 2026-10-19
     }
     const ZoneContext c = Ctx(h);
+    if (!g.group.empty() && (g.kind == ZoneDragKind::Move || g.kind == ZoneDragKind::MoveChain)) {
+        // Fix 2026-10-19: every selected zone (items whole) by the same delta, the group stopping at its most constrained.
+        g.moved = true;
+        SoundData& dr = h.live();
+        ZoneSel    out;
+        g.value = MoveZonesRange(Stored(h), g.group, t - g.hit.t, h.file_len);
+        g.changed = MoveZones(dr, g.group, t - g.hit.t, c, &out);
+        if (g.changed) g.sel = out;
+        return;
+    }
     switch (g.kind) {
     case ZoneDragKind::Gain: {
         g.moved = true;
@@ -1015,7 +1029,10 @@ void DragMove(const ZoneWaveHost& h, double t, float dx, float dy, double px_per
         if (g.changed) g.sel = out;
         return;
     }
-    case ZoneDragKind::Edge: g.changed = DragZoneEdge(h.live(), g.hit.z, g.hit.side, t, c, &(g.after = {g.hit.z})); return;
+    case ZoneDragKind::Edge:
+        if (!g.group.empty()) g.changed = DragZonesEdge(h.live(), g.group, g.hit.z, g.hit.side, t, c, &g.after);
+        else g.changed = DragZoneEdge(h.live(), g.hit.z, g.hit.side, t, c, &(g.after = {g.hit.z}));
+        return;
     case ZoneDragKind::Cut: g.changed = DragCut(h.live(), g.hit.z, t, c, &(g.after = {g.hit.z})); return;
     case ZoneDragKind::GapEdge: g.changed = DragGapEdge(h.live(), g.hit.z, g.hit.side, t, c, &(g.after = {g.hit.z})); return;
     case ZoneDragKind::Fade: {
@@ -1024,10 +1041,16 @@ void DragMove(const ZoneWaveHost& h, double t, float dx, float dy, double px_per
         const double len = z->b - z->a;
         const double s = Clamp(g.hit.side < 0 ? t - z->a : z->b - t, 0.0, len / 2.0);
         g.value = s;
-        g.changed = SetZoneFade(h.live(), g.hit.z, g.hit.side, std::round(s * 2000.0) / 2000.0, c, &(g.after = {g.hit.z}));
+        if (!g.group.empty())  // fix 2026-10-19: the same length on every selected zone (REAPER)
+            g.changed = SetZonesFade(h.live(), g.group, g.hit.side, std::round(s * 2000.0) / 2000.0, c, &g.after);
+        else
+            g.changed = SetZoneFade(h.live(), g.hit.z, g.hit.side, std::round(s * 2000.0) / 2000.0, c, &(g.after = {g.hit.z}));
         return;
     }
-    case ZoneDragKind::Snap: g.changed = SetZoneSnap(h.live(), g.hit.z, t, c, &(g.after = {g.hit.z})); return;
+    case ZoneDragKind::Snap:
+        if (!g.group.empty()) g.changed = ShiftZonesSnap(h.live(), g.group, g.hit.z, t, c, &g.after);
+        else g.changed = SetZoneSnap(h.live(), g.hit.z, t, c, &(g.after = {g.hit.z}));
+        return;
     case ZoneDragKind::Xf:
         g.changed = DragGapXfade(h.live(), g.hit.z, g.hit.side, t, !g.alt, c, &(g.after = {g.hit.z}));
         return;
@@ -1073,6 +1096,26 @@ void DragRelease(const ZoneWaveHost& h, double px_per_s)
         const std::string nm = NameOfZone(h, Stored(h), g.hit.z);
         std::string       name, toast;
         const EditZone*   z = ZoneOf(dr, g.hit.z);
+        if (!g.group.empty()) {  // fix 2026-10-19: the selection followed (one undo point)
+            const EditZone*   z0 = ZoneOf(Stored(h), g.hit.z);
+            const std::string n = std::to_string(SelValid(dr, g.after).size()) + " zones: ";
+            auto              by = [](double v) { return std::string(v > 0 ? "+" : "") + std::to_string(Ms(v)) + " ms"; };
+            if (g.kind == ZoneDragKind::Edge) {
+                const double dv = z && z0 ? (g.hit.side < 0 ? z->a - z0->a : z->b - z0->b) : 0.0;
+                name = "Zone edges";
+                toast = n + (g.hit.side < 0 ? "start " : "end ") + by(dv) + " each, by hand (each stops at its own limit)";
+            } else if (g.kind == ZoneDragKind::Fade) {
+                name = "Zone fades";
+                toast = n + "fade " + (g.hit.side < 0 ? "in " : "out ") + std::to_string(Ms(g.value)) + " ms each (their own)";
+            } else {
+                const double dv = z && z0 && z->snap ? *z->snap - ZoneSnap(Stored(h), g.hit.z, PeaksOf(h.path)).t : 0.0;
+                name = "Snap offsets";
+                toast = n + "snap offset " + by(dv) + " each (their own)";
+            }
+            v.sel = SelValid(dr, g.after);
+            Commit(h, name, toast);
+            return;
+        }
         switch (g.kind) {
         case ZoneDragKind::Edge:
             name = "Zone edge";
@@ -1143,6 +1186,20 @@ void DragRelease(const ZoneWaveHost& h, double px_per_s)
         Commit(h, "Zone gain", toast);
         return;
     }
+    case ZoneDragKind::Move:
+    case ZoneDragKind::MoveChain:
+        if (g.group.empty()) break;
+        if (!g.changed) {
+            h.cancel();
+            return;
+        }
+        v.sel = SelValid(Shown(h), g.sel);  // fix 2026-10-19: the selection moved together (one undo point)
+        Commit(h, "Move zones", std::to_string(v.sel.size()) + " zones moved " + (g.value > 0 ? "+" : "") + std::to_string(Ms(g.value)) +
+                                    " ms together (what touches them followed)");
+        return;
+    default: break;
+    }
+    switch (g.kind) {
     case ZoneDragKind::Move: {
         if (!g.changed) {
             h.cancel();

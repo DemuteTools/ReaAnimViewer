@@ -73,6 +73,9 @@ struct ZoneDrag {
     double       value = 0.0;   // Gain: the delta (dB); Move: the delta (s)
     std::string  part;          // MkZone / Swipe: the part made
     int          tl = -1;       // 13-62i: the host (a Takes-mode Sound's take) it was pressed in: only that one runs it
+    // Fix 2026-10-19: a Move / Edge / Fade / Snap pressed on a zone of a wider selection: the selection it acts on (the
+    // pressed zone first, base refs; GroupDragZones), empty = the pressed zone alone.
+    ZoneSel      group;
 };
 
 // 13-67a: a right-button press on the waveform: a drag from empty space past 4 px is a marquee (the zones it touches

@@ -108,6 +108,10 @@ double GainDragDb(float dy_px);
 // 13-62h (v5): the part zones a vertical drag on zone r moves: the selection's when r is selected (as before), else
 // all its item's (ItemOf), else r alone.
 ZoneSel GainDragZones(const SoundData& d, const ZoneSel& sel, const ZoneRef& r);
+// Fix 2026-10-19 (Antho: as REAPER with several selected items): the zones a drag on zone r (a move, an edge, a fade, a
+// snap offset) acts on together: when r is selected and the selection holds a zone outside r's own unit (its item,
+// ItemOf, else r alone), r first then the rest of the selection; else empty (the drag acts on r alone, as before).
+ZoneSel GroupDragZones(const SoundData& d, const ZoneSel& sel, const ZoneRef& r);
 // The single zone gain drag's toast (the mockup's): "Heel gain: +2.0 dB (+ Heel fader +1 dB = 2.0 dB)" -- the
 // fader is what it has applied to the zone's own gain (never added on top).
 std::string ZoneGainToast(const std::string& zone_name, const std::string& part_name, double db, double fader_db);

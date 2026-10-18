@@ -480,6 +480,12 @@ void TestItems()
     CHECK(GainDragZones(d, {}, {0, 2}) == (ZoneSel{{0, 0}, {0, 2}}));
     CHECK(GainDragZones(d, {{0, 2}, {1, 0}}, {0, 2}) == (ZoneSel{{0, 2}, {1, 0}}));
     CHECK((GainDragZones(d, {{1, 0}}, {0, 3}) == ZoneSel{{0, 3}}));
+    // Fix 2026-10-19: a move / edge / fade / snap drag acts on the selection when the dragged zone is in it and the
+    // selection reaches past its own item; else on it alone (empty).
+    CHECK((GroupDragZones(d, {{1, 0}, {0, 2}}, {0, 2}) == ZoneSel{{0, 2}, {1, 0}}));
+    CHECK(GroupDragZones(d, {{1, 0}}, {0, 2}).empty());                      // not selected: alone
+    CHECK(GroupDragZones(d, {{0, 0}, {0, 1}, {0, 2}}, {0, 1}).empty());      // its own item only
+    CHECK(GroupDragZones(d, {{1, 0}}, {1, 0}).empty());                      // itself only
     // The top of one of its zones moves the whole item; its Gap slides alone (v6 rule A); a zone alone moves alone.
     ZoneHit h;
     h.row = ZoneRow::Lane;

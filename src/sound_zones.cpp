@@ -2077,18 +2077,15 @@ bool MoveChain(SoundData& d, const ZoneRef& r, double delta, const ZoneContext& 
     return Finish(w, before, sel, ids);
 }
 
-bool DragZoneEdge(SoundData& d, const ZoneRef& r, int side, double t, const ZoneContext& ctx, ZoneSel* sel)
+namespace {
+
+// One part zone's edge (side < 0 start, > 0 end) to t in the work: it stops on its neighbour, the file's edges, 4 ms
+// of length; by hand. False when it has no room.
+bool EdgeTo(Work& w, int i, int side, double t)
 {
-    const EditZone* zz = LiveZone(d, r);
-    if (!UsesZones(d) || !zz || zz->IsGap() || !Valid(t) || side == 0) return false;
-    if (ZoneOf(d, side < 0 ? GapBefore(d, r) : GapAfter(d, r))) return false;  // held by a Gap
-    const Snap before = Take(d);
-    Work       w(d, ctx.peaks, ctx.file_len, ctx.tl);
-    const int  i = w.byId(IdOf(d, r));
-    if (i < 0) return false;
-    const int  pv = w.prevOf(i), nx = w.nextOf(i);  // 13-62i: on its timeline
+    const int    pv = w.prevOf(i), nx = w.nextOf(i);  // 13-62i: on its timeline
     const double T = w.T < kInf && w.onCtx(i) ? w.T : kInf;
-    EditZone& z = w.Z(i);
+    EditZone&    z = w.Z(i);
     if (side < 0) {
         const double lo = pv >= 0 ? w.Z(pv).b : 0.0;
         const double hi = z.b - kMinZone;
@@ -2105,7 +2102,177 @@ bool DragZoneEdge(SoundData& d, const ZoneRef& r, int side, double t, const Zone
         z.b_hand = true;
         if (z.b > z.slot_b) z.slot_b = z.b;
     }
+    return true;
+}
+
+// A part zone of an on variation whose `side` is free (no Gap holds it).
+bool FreeSide(const SoundData& d, const ZoneRef& r, int side)
+{
+    const EditZone* z = LiveZone(d, r);
+    return z && !z->IsGap() && !ZoneOf(d, side < 0 ? GapBefore(d, r) : GapAfter(d, r));
+}
+
+// The zones a group move moves (fix 2026-10-19): each zone of `sel` on the timeline of its first one, a part zone of an
+// item with its whole item (as MoveChain), a Gap alone; once each, in time order.
+std::vector<ZoneRef> GroupMoved(const SoundData& d, const ZoneSel& sel)
+{
+    std::vector<ZoneRef> m;
+    if (sel.empty() || !LiveZone(d, sel.front())) return m;
+    const int tl = ZoneTimeline(d, sel.front().frame);
+    for (const ZoneRef& r : sel) {
+        const EditZone* z = LiveZone(d, r);
+        if (!z || ZoneTimeline(d, r.frame) != tl) continue;
+        std::vector<ZoneRef> add = z->IsGap() ? std::vector<ZoneRef>() : ItemOf(d, r);
+        if (add.empty()) add = {r};
+        for (const ZoneRef& q : add)
+            if (std::find(m.begin(), m.end(), q) == m.end()) m.push_back(q);
+    }
+    std::vector<ZoneRef> out;
+    for (const ZoneRef& q : AllZones(d, tl))
+        if (std::find(m.begin(), m.end(), q) != m.end()) out.push_back(q);
+    return out;
+}
+
+// The runs of a group move: zones moved that follow one another in time order (no unmoved zone between them), with
+// the unmoved zone before / after each run ({-1, -1} = none).
+struct MoveRun {
+    ZoneRef first, last, pv, nx;
+};
+std::vector<MoveRun> MoveRuns(const SoundData& d, const std::vector<ZoneRef>& moved)
+{
+    std::vector<MoveRun> runs;
+    if (moved.empty()) return runs;
+    const std::vector<ZoneRef> L = AllZones(d, ZoneTimeline(d, moved.front().frame));
+    auto in = [&](const ZoneRef& q) { return std::find(moved.begin(), moved.end(), q) != moved.end(); };
+    for (size_t k = 0; k < L.size(); ++k) {
+        if (!in(L[k])) continue;
+        MoveRun run;
+        run.first = L[k];
+        run.pv = k > 0 ? L[k - 1] : ZoneRef{};
+        size_t e = k;
+        while (e + 1 < L.size() && in(L[e + 1])) ++e;
+        run.last = L[e];
+        run.nx = e + 1 < L.size() ? L[e + 1] : ZoneRef{};
+        runs.push_back(run);
+        k = e;
+    }
+    return runs;
+}
+
+}  // namespace
+
+double MoveZonesRange(const SoundData& d, const ZoneSel& sel, double delta, double file_len)
+{
+    if (!Valid(delta)) return 0.0;
+    const std::vector<MoveRun> runs = MoveRuns(d, GroupMoved(d, sel));
+    if (runs.empty()) return 0.0;
+    auto   minLen = [](const EditZone& z) { return z.IsGap() ? kMinZone : kMoveMinPart; };
+    double lo = -kInf, hi = kInf;
+    for (const MoveRun& run : runs) {  // each run as MoveChainRange; the group by the most constrained (REAPER)
+        const EditZone* f = ZoneOf(d, run.first);
+        const EditZone* l = ZoneOf(d, run.last);
+        const EditZone* pv = LiveZone(d, run.pv);
+        const EditZone* nx = LiveZone(d, run.nx);
+        double          rlo = -f->a, rhi = file_len > 0.0 ? file_len - l->b : kInf;
+        if (pv) rlo = std::fabs(pv->b - f->a) < kEps ? std::max(rlo, pv->a + minLen(*pv) - f->a) : std::max(rlo, pv->b - f->a);
+        if (nx) rhi = std::fabs(l->b - nx->a) < kEps ? std::min(rhi, nx->b - minLen(*nx) - l->b) : std::min(rhi, nx->a - l->b);
+        if (rhi < rlo) return 0.0;
+        lo = std::max(lo, rlo);
+        hi = std::min(hi, rhi);
+    }
+    if (hi < lo) return 0.0;
+    return Clamp(delta, std::min(lo, 0.0), std::max(hi, 0.0));
+}
+
+bool MoveZones(SoundData& d, const ZoneSel& sel, double delta, const ZoneContext& ctx, ZoneSel* out)
+{
+    if (!UsesZones(d)) return false;
+    const std::vector<ZoneRef> moved = GroupMoved(d, sel);
+    if (moved.empty()) return false;
+    const double dd = MoveZonesRange(d, sel, delta, ctx.file_len);
+    if (std::fabs(dd) < 1e-12) return false;
+    const std::vector<MoveRun> runs = MoveRuns(d, moved);
+    const Snap                 before = Take(d);
+    Work                       w(d, ctx.peaks, ctx.file_len, ctx.tl);
+    std::vector<int>           ids = IdsOf(d, sel);  // the selection kept (an item's members joined it)
+    for (int id : IdsOf(d, moved))
+        if (std::find(ids.begin(), ids.end(), id) == ids.end()) ids.push_back(id);
+    struct Follow {
+        int pv = -1, fi = -1, li = -1, nx = -1;
+        bool pb = false, nb = false;
+    };
+    std::vector<Follow> fol;  // each run's neighbours, taken before anything moves
+    for (const MoveRun& run : runs) {
+        Follow f;
+        f.fi = w.byId(IdOf(d, run.first));
+        f.li = w.byId(IdOf(d, run.last));
+        f.pv = LiveZone(d, run.pv) ? w.byId(IdOf(d, run.pv)) : -1;
+        f.nx = LiveZone(d, run.nx) ? w.byId(IdOf(d, run.nx)) : -1;
+        f.pb = f.pv >= 0 && f.fi >= 0 && w.butted(f.pv, f.fi);
+        f.nb = f.nx >= 0 && f.li >= 0 && w.butted(f.li, f.nx);
+        fol.push_back(f);
+    }
+    for (int id : IdsOf(d, moved)) {  // every zone by the same amount (as MoveZone / MoveChain move theirs)
+        const int i = w.byId(id);
+        if (i < 0) continue;
+        EditZone& z = w.Z(i);
+        z.a += dd;
+        z.b += dd;
+        z.slot_a = z.a;
+        z.slot_b = z.b;
+        if (!z.IsGap()) {
+            z.a_hand = z.b_hand = true;
+            z.a_auto_cut = false;
+            if (z.snap) *z.snap += dd;
+        }
+    }
+    for (const Follow& f : fol) {  // a butted neighbour's edge follows
+        if (f.pb) {
+            EditZone& p = w.Z(f.pv);
+            p.b = p.slot_b = w.Z(f.fi).a;
+            if (!p.IsGap()) p.b_hand = true;
+        }
+        if (f.nb) {
+            EditZone& n = w.Z(f.nx);
+            n.a = n.slot_a = w.Z(f.li).b;
+            if (!n.IsGap()) {
+                n.a_hand = true;
+                n.a_auto_cut = false;
+            }
+        }
+    }
+    return Finish(w, before, out, ids);
+}
+
+bool DragZoneEdge(SoundData& d, const ZoneRef& r, int side, double t, const ZoneContext& ctx, ZoneSel* sel)
+{
+    if (!UsesZones(d) || !Valid(t) || side == 0 || !FreeSide(d, r, side)) return false;  // held by a Gap: false
+    const Snap before = Take(d);
+    Work       w(d, ctx.peaks, ctx.file_len, ctx.tl);
+    const int  i = w.byId(IdOf(d, r));
+    if (i < 0 || !EdgeTo(w, i, side, t)) return false;
     return FinishKeep(w, before, sel, sel);
+}
+
+bool DragZonesEdge(SoundData& d, const ZoneSel& sel, const ZoneRef& r, int side, double t, const ZoneContext& ctx, ZoneSel* out)
+{
+    if (!UsesZones(d) || !Valid(t) || side == 0 || !FreeSide(d, r, side)) return false;
+    const EditZone* z0 = ZoneOf(d, r);
+    const double    delta = t - (side < 0 ? z0->a : z0->b);
+    const Snap      before = Take(d);
+    Work            w(d, ctx.peaks, ctx.file_len, ctx.tl);
+    ZoneSel         all = {r};
+    for (const ZoneRef& q : sel)
+        if (std::find(all.begin(), all.end(), q) == all.end()) all.push_back(q);
+    bool any = false;
+    for (const ZoneRef& q : all) {  // each one's same edge by the same delta, each stopping at its own limits
+        if (!FreeSide(d, q, side) || ZoneTimeline(d, q.frame) != ZoneTimeline(d, r.frame)) continue;  // r's timeline only
+        const EditZone* z = ZoneOf(d, q);
+        const int       i = w.byId(IdOf(d, q));
+        if (i >= 0 && EdgeTo(w, i, side, (side < 0 ? z->a : z->b) + delta)) any = true;
+    }
+    if (!any) return false;
+    return FinishKeep(w, before, &sel, out);
 }
 
 bool SetZoneEdge(SoundData& d, const ZoneRef& r, int side, double t, const ZoneContext& ctx, ZoneSel* sel)
@@ -2209,6 +2376,41 @@ bool SetZoneFade(SoundData& d, const ZoneRef& r, int side, double s, const ZoneC
     const Snap before = Take(d);
     (side < 0 ? z->fade_in : z->fade_out) = std::max(s, 0.0);
     Relay(d, ctx, sel, &before);
+    return !Same(before, d);
+}
+
+bool SetZonesFade(SoundData& d, const ZoneSel& sel, int side, double s, const ZoneContext& ctx, ZoneSel* out)
+{
+    if (!UsesZones(d) || !Valid(s) || side == 0) return false;
+    const Snap before = Take(d);
+    for (const ZoneRef& q : sel) {  // REAPER: the same length on every selected item, each within half its own length
+        if (!FreeSide(d, q, side)) continue;  // a Gap's crossfade
+        EditZone* z = ZoneOf(d, q);
+        (side < 0 ? z->fade_in : z->fade_out) = Clamp(s, 0.0, (z->b - z->a) / 2.0);
+    }
+    if (out) *out = sel;
+    Relay(d, ctx, out, &before);
+    return !Same(before, d);
+}
+
+bool ShiftZonesSnap(SoundData& d, const ZoneSel& sel, const ZoneRef& r, double t, const ZoneContext& ctx, ZoneSel* out)
+{
+    const EditZone* z0 = LiveZone(d, r);
+    if (!UsesZones(d) || !z0 || z0->IsGap() || !Valid(t)) return false;
+    const double delta = Clamp(t, z0->a, z0->b) - ZoneSnap(d, r, ctx.peaks).t;
+    ZoneSel      all = {r};
+    for (const ZoneRef& q : sel)
+        if (std::find(all.begin(), all.end(), q) == all.end()) all.push_back(q);
+    std::vector<double> base;  // where each one lands now, read before any changes
+    for (const ZoneRef& q : all) base.push_back(LiveZone(d, q) && !ZoneOf(d, q)->IsGap() ? ZoneSnap(d, q, ctx.peaks).t : 0.0);
+    const Snap before = Take(d);
+    for (size_t k = 0; k < all.size(); ++k) {
+        EditZone* z = LiveZone(d, all[k]);
+        if (!z || z->IsGap()) continue;
+        z->snap = Clamp(base[k] + delta, z->a, z->b);
+    }
+    if (out) *out = sel;
+    Relay(d, ctx, out, &before);
     return !Same(before, d);
 }
 

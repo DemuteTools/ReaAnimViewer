@@ -7,11 +7,14 @@
 #ifdef _WIN32
 
 #include <algorithm>
+#include <map>
 #include <cctype>
 #include <cmath>
 #include <set>
 #include <vector>
 
+#include "auto_detect.h"  // IsActiveAutoBlock
+#include "bone_events.h"  // IsAutoBlock
 #include "busy_progress_ui.h"
 #include "console_log.h"
 #include "event_list.h"
@@ -190,7 +193,15 @@ std::string Run(SpreadScope scope, bool add_layer)
         if (MarkersOfType(mk.item, type, &evs))
             for (const AttachEvent& e : evs) marker_times.push_back(e.project_t);
     }
-    if (marker_times.empty()) return Finish("No " + type + " marker on this animation");
+    if (marker_times.empty()) {
+        // A rule of the type this build no longer runs (an auto block from an older RAV, such as a sideless Land).
+        ItemRulesRead rr;
+        if (ReadItemRules(mk.item, &rr) && rr.valid)
+            for (const Block& b : rr.rules.blocks)
+                if (b.enabled && SameMarkerType(b.marker, type) && IsAutoBlock(b) && !IsActiveAutoBlock(b))
+                    return Finish("The " + type + " rule is from an older RAV: press Detect on this animation");
+        return Finish("No " + type + " marker on this animation");
+    }
     const bool   stack = add_layer && FindAttachedLibrary(GetSoundStore(proj), type) != nullptr;
     const double layer_offset = stack ? StackLayerOffset(PileAnchor(facts[static_cast<size_t>(top)]), marker_times) : 0.0;
 
@@ -314,12 +325,48 @@ std::string Run(SpreadScope scope, bool add_layer)
                 break;
             }
     }
+    // The Spread / Attached sounds already on the events of the library's rules go first (an earlier spread or
+    // attach): Populate keeps an event holding one, so it would draw nothing new there.
+    {
+        std::map<std::string, MediaItem*> by_guid;
+        for (int i = 0, n = CountMediaItems(proj); i < n; ++i)
+            if (MediaItem* it = GetMediaItem(proj, i)) by_guid[GuidKey(ItemGuidOf(it))] = it;
+        for (MediaItem* m : WithPoolMembers(targets)) {
+            ItemSounds            rec = ReadItemSounds(m);
+            std::set<std::string> rids;
+            for (const RuleSounds& r : rec.rules)
+                if (r.library == lib_uid && !r.none) rids.insert(r.rid);
+            if (rids.empty()) continue;
+            std::vector<std::string> drop;
+            for (const EventSounds& e : rec.events)
+                if (rids.count(e.rid))
+                    for (const SoundPlacement& p : e.placed)
+                        if (p.own == Ownership::Attached || p.own == Ownership::Spread) drop.push_back(p.item_guid);
+            if (drop.empty()) continue;
+            for (const std::string& g : drop) {
+                const std::string key = GuidKey(g);
+                if (!moving_guids.count(key)) {
+                    auto hit = by_guid.find(key);
+                    if (hit != by_guid.end() && RemovePlacedAny(proj, hit->second)) {
+                        by_guid.erase(hit);
+                        ++counts.replaced;
+                    }
+                }
+            }
+            ModifyItemSounds(m, nullptr, [&drop](ItemSounds& r) {
+                bool any = false;
+                for (const std::string& g : drop) any = DetachFromRecord(r, g) || any;
+                return any;
+            });
+        }
+    }
+
     PopulateCounts    pc;
     int               events = 0;
     const SoundReport rep = PopulateItemsCounted(targets, &events, &pc);
     counts.events = events;
     counts.placed = pc.placed;
-    counts.replaced = pc.replaced;
+    counts.replaced += pc.replaced;
     counts.kept = pc.kept;
     std::string text = SpreadRunReport(counts);
     for (const ReportLine& l : rep.lines)

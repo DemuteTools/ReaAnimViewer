@@ -477,7 +477,8 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
         const std::string key = L.uid + "/" + n.uid;
         auto              hit = track_paths.find(key);
         if (hit == track_paths.end()) {
-            SoundTracks      st;
+            SoundTracks st;
+            if (L.attached) return track_paths.emplace(key, st).first->second;  // 13-68 v2: its sources' own tracks
             const BlendLayer layer = LayerOf(L, n.uid);
             st.in_blend = layer.in_blend;
             st.path = SoundTrackPath(layout == TrackLayout::Off ? std::vector<SwitchStep>() : SwitchPathOf(store, L, n.uid),
@@ -866,6 +867,21 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                 req.track_mark = track_mark;
             } else if (req.track && file && req.track == file->track) {
                 req.track_mark = TrackMarkOf(req.track);  // 13-11's "layer N" track: RAV's, it spills too (B6)
+            }
+            if (lib->attached && n->sound.source.kind == SoundSourceKind::Item) {
+                // 13-68 v2: an Attached library's sounds land on their source items' own tracks, overlaps
+                // spilling to their child tracks (13-11 B6); a folder pile's members on their own tracks.
+                if (MediaItem* src = FindItemByGuid(n->sound.source.item_guid)) {
+                    if (!IsFolderItem(src)) {
+                        req.track = GetMediaItem_Track(src);
+                        req.track_mark = TrackMarkOf(req.track);
+                    } else {
+                        req.pile_track = [](MediaTrack* src_track, std::string* mark) -> MediaTrack* {
+                            if (mark) *mark = TrackMarkOf(src_track);
+                            return src_track;
+                        };
+                    }
+                }
             }
             if (pile_layer) {
                 const std::string layer_mark = track_mark;

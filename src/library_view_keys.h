@@ -16,7 +16,8 @@ struct LibraryKeyState {
 
 // Decision 7 (13-7a): a key down goes to the viewer only while the view is focused, never with Alt:
 // Delete, F2, Space, Esc; Ctrl+B / D / X / V (never with Shift); Up / Down for the Media Explorer,
-// the four arrows for the tree. Ctrl+Z and everything else stay REAPER's.
+// the four arrows for the tree; 13-69: Ctrl+A while the Media Explorer's list takes the arrows.
+// Ctrl+Z and everything else stay REAPER's.
 inline bool LibraryViewClaimsKey(const LibraryKeyState& s, unsigned vk, bool ctrl, bool shift, bool alt)
 {
     if (!s.focused || alt) return false;
@@ -24,6 +25,7 @@ inline bool LibraryViewClaimsKey(const LibraryKeyState& s, unsigned vk, bool ctr
     constexpr unsigned kLeft = 0x25, kUp = 0x26, kDown = 0x28;
     if (!ctrl && !shift && (vk == kUp || vk == kDown) && s.media_takes_arrows) return true;
     if (!ctrl && !shift && vk >= kLeft && vk <= kDown && s.tree_takes_arrows) return true;
+    if (ctrl && !shift && vk == 'A' && s.media_takes_arrows) return true;  // 13-69: every result selected
     if (ctrl) return !shift && (vk == 'B' || vk == 'D' || vk == 'X' || vk == 'V');
     return vk == kDelete || vk == kF2 || vk == kSpace || vk == kEscape;
 }

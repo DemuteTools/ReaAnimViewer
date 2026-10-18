@@ -134,8 +134,10 @@ bool MediaUseLabel(const SoundStore& store, const std::string& lib_uid, const Li
 }
 
 bool UseMediaAt(SoundStore& store, const std::string& lib_uid, const LibraryRow* row, const std::vector<MediaPick>& picks,
-                std::vector<std::string>* created, std::string* toast, std::string* why)
+                std::vector<std::string>* created, std::string* toast, std::string* why, bool as_random,
+                std::string* new_random)
 {
+    if (new_random) new_random->clear();
     if (why) why->clear();
     const SoundLibrary* clib = FindLibrary(store, lib_uid);
     if (!clib) {
@@ -154,6 +156,8 @@ bool UseMediaAt(SoundStore& store, const std::string& lib_uid, const LibraryRow*
     for (const MediaPick& p : picks) specs.push_back(SoundSpecFor(p));
     const int k = static_cast<int>(specs.size());
     const std::string label = SlotLabel(store, *clib, r);
+    // 13-69: the target's type, read now (`n` may not outlive the writes below).
+    const SoundNodeType target_type = n ? n->type : SoundNodeType::Switch;
 
     SoundStore before = store;
     std::vector<std::string> made;
@@ -190,10 +194,102 @@ bool UseMediaAt(SoundStore& store, const std::string& lib_uid, const LibraryRow*
     if (const SoundLibrary* lib = FindLibrary(store, lib_uid))
         for (const SoundNode& m : lib->nodes)
             if (m.type == SoundNodeType::Sound && !FindNode(*old_lib, m.uid)) sounds.push_back(m.uid);
+    // 13-69: the new Sounds as ONE new Random (the holder the use made, else a group of them).
+    if (as_random && sounds.size() >= 2) {
+        const SoundLibrary* lib = FindLibrary(store, lib_uid);
+        const SoundNode*    first = lib ? FindNode(*lib, sounds.front()) : nullptr;
+        std::string         holder;
+        if (first && !first->parent.empty() && !FindNode(*old_lib, first->parent)) {
+            size_t kids = 0;
+            for (const SoundNode& m : lib->nodes)
+                if (m.parent == first->parent) ++kids;
+            const SoundNode* hp = FindNode(*lib, first->parent);
+            if (kids == sounds.size() && hp && hp->type == SoundNodeType::Random) holder = first->parent;
+        }
+        if (holder.empty()) {
+            std::vector<LibraryRow> rows;
+            for (const std::string& u : sounds) rows.push_back(RowOfNode(*lib, u));
+            if (!GroupRows(store, lib_uid, rows, SoundNodeType::Random, std::string(), &holder)) holder.clear();
+        }
+        if (holder.empty()) {
+            store = std::move(before);
+            if (why) *why = "Could not make a Random there";
+            return false;
+        }
+        // Named on the node itself: RenameRow on a value's content would rename the value.
+        SoundNode* hn = FindNode(*FindLibrary(store, lib_uid), holder);
+        const std::string stem = MediaCommonStem(picks);
+        if (hn && !stem.empty()) hn->name = stem;
+        const std::string hname = hn ? hn->name : std::string("Random");
+        if (target_type == SoundNodeType::Random || target_type == SoundNodeType::Blend)
+            msg = "New Random " + hname + " of " + Plural(k, "sound") + " in the " + TypeWord(target_type) + " " + label;
+        else if (target_type == SoundNodeType::Sound)
+            msg = label + " is now a Random of the old sound + a new Random " + hname + " of " + Plural(k, "sound");
+        else
+            msg = label + " is now a Random " + hname + " of " + Plural(k, "sound");
+        if (new_random) *new_random = holder;
+    }
     if (created) *created = sounds;
     if (toast) *toast = msg;
     if (why) why->clear();
     return true;
+}
+
+std::string MediaCommonStem(const std::vector<MediaPick>& picks)
+{
+    if (picks.empty()) return {};
+    std::string pre = MediaFileStem(picks.front().path);
+    auto lower = [](char c) { return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c; };
+    for (size_t i = 1; i < picks.size() && !pre.empty(); ++i) {
+        const std::string s = MediaFileStem(picks[i].path);
+        size_t k = 0;
+        while (k < pre.size() && k < s.size() && lower(pre[k]) == lower(s[k])) ++k;
+        pre.resize(k);
+    }
+    while (!pre.empty()) {
+        const char c = pre.back();
+        if (c == ' ' || c == '_' || c == '-' || c == '.' || c == '(' || (c >= '0' && c <= '9')) pre.pop_back();
+        else break;
+    }
+    return pre.size() >= 2 ? pre : std::string();
+}
+
+std::string MediaDropHint(const SoundStore& store, const std::string& lib_uid, const LibraryRow* row, int n_picks,
+                          bool variations, bool as_random)
+{
+    const SoundLibrary* lib = FindLibrary(store, lib_uid);
+    if (!lib || n_picks <= 0) return {};
+    const LibraryRow r = RowOrRoot(*lib, row);
+    const SoundNode* n = FindNode(*lib, RowNode(*lib, r));
+    if (n && n->type == SoundNodeType::Switch) return {};
+    const std::string what = Plural(n_picks, variations ? "variation" : "file");
+    const std::string label = SlotLabel(store, *lib, r);
+    const bool        grouped = as_random && n_picks >= 2;
+    if (n && (n->type == SoundNodeType::Random || n->type == SoundNodeType::Blend))
+        return what + (grouped ? " -> new Random in the " : " -> added to the ") + TypeWord(n->type) + " " + label;
+    if (n && n->type == SoundNodeType::Sound)
+        return what + " -> " + label + " becomes a Random: the old sound + " +
+               (grouped ? "a new Random of " + std::to_string(n_picks) : std::to_string(n_picks) + " new");
+    return what + " -> " + (n_picks >= 2 ? "a new Random for " : "plays for ") + label;
+}
+
+std::vector<size_t> MediaRangeRows(int anchor, int clicked, size_t n, size_t cap)
+{
+    std::vector<size_t> out;
+    if (clicked < 0 || static_cast<size_t>(clicked) >= n || cap == 0) return out;
+    if (anchor < 0 || static_cast<size_t>(anchor) >= n) anchor = clicked;
+    size_t lo = static_cast<size_t>(std::min(anchor, clicked)), hi = static_cast<size_t>(std::max(anchor, clicked));
+    if (hi - lo + 1 > cap) {  // the cap nearest the clicked row
+        if (static_cast<size_t>(clicked) == hi) lo = hi + 1 - cap;
+        else hi = lo + cap - 1;
+    }
+    for (size_t i = lo; i <= hi; ++i) out.push_back(i);
+    return out;
+}
+
+std::string MediaSelectedLabel(size_t n)
+{
+    return n >= 2 ? std::to_string(n) + " selected" : std::string();
 }
 
 std::string FormatMediaFormat(const DbFile& f)

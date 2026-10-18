@@ -444,6 +444,103 @@ int main()
         }
         CHECK(sent == 100 * 30);  // one screen per answered batch, not 30000 queued checks
     }
+    // 13-69: Alt held at the drop / "Make a Random of the selection": ONE new Random of the Sounds.
+    {  // into a Random (the value row playing "cr"): one new child Random named after the stem
+        SoundStore s = Store();
+        LibraryRow r{"sw", "vconc"};
+        std::vector<std::string> created;
+        std::string toast, rnd;
+        CHECK(UseMediaAt(s, "L", &r, {Whole("/a/Wood_Step_01.wav", 1, 0), Whole("/a/wood_step_02.wav", 1, 0),
+                                      Whole("/a/Wood_Step_10.wav", 1, 0)},
+                         &created, &toast, nullptr, true, &rnd));
+        const SoundLibrary& lib = *FindLibrary(s, "L");
+        std::vector<const SoundNode*> kids = ChildrenOf(lib, "cr");
+        CHECK(kids.size() == 2);  // x + the new Random
+        const SoundNode* nr = FindNode(lib, rnd);
+        CHECK(nr && nr->type == SoundNodeType::Random && nr->parent == "cr" && nr->name == "Wood_Step");
+        CHECK(kids.size() == 2 && kids[0]->uid == "x" && kids[1]->uid == rnd);
+        std::vector<const SoundNode*> in = ChildrenOf(lib, rnd);
+        CHECK(in.size() == 3 && created.size() == 3);
+        if (in.size() == 3) CHECK(in[0]->name == "Wood_Step_01" && in[2]->name == "Wood_Step_10");
+        CHECK(toast == "New Random Wood_Step of 3 sounds in the Random Concrete");
+    }
+    {  // into a Blend: one new child too (as one layer)
+        SoundStore s = Store();
+        FindLibrary(s, "M")->nodes[0].type = SoundNodeType::Blend;
+        std::string rnd;
+        CHECK(UseMediaAt(s, "M", nullptr, {Whole("/a/a1.wav", 1, 0), Whole("/a/b1.wav", 1, 0)}, nullptr, nullptr, nullptr,
+                         true, &rnd));
+        const SoundLibrary& lib = *FindLibrary(s, "M");
+        CHECK(ChildrenOf(lib, "mr").size() == 1 && ChildrenOf(lib, rnd).size() == 2);
+        const SoundNode* nr = FindNode(lib, rnd);
+        CHECK(nr && nr->name == "Random");  // no common stem: the type's name
+    }
+    {  // onto a Sound: Random [X, Random [a, b]]
+        SoundStore s = Store();
+        LibraryRow r{"cr", "x"};
+        std::string rnd, toast;
+        CHECK(UseMediaAt(s, "L", &r, {Whole("/a/hit_a.wav", 1, 0), Whole("/a/hit_b.wav", 1, 0)}, nullptr, &toast, nullptr,
+                         true, &rnd));
+        const SoundLibrary& lib = *FindLibrary(s, "L");
+        const SoundNode* x = FindNode(lib, "x");
+        const SoundNode* w = x ? FindNode(lib, x->parent) : nullptr;
+        CHECK(w && w->parent == "cr" && w->type == SoundNodeType::Random);
+        std::vector<const SoundNode*> kids = ChildrenOf(lib, w ? w->uid : "");
+        CHECK(kids.size() == 2 && kids[0]->uid == "x" && kids[1]->uid == rnd);
+        CHECK(ChildrenOf(lib, rnd).size() == 2 && FindNode(lib, rnd)->name == "hit");
+        CHECK(toast == "X is now a Random of the old sound + a new Random hit of 2 sounds");
+    }
+    {  // on an empty value: the Random the use makes anyway (not nested), renamed
+        SoundStore s = Store();
+        LibraryRow r{"sw", "vwood"};
+        std::string rnd;
+        CHECK(UseMediaAt(s, "L", &r, {Whole("/a/crack 1.wav", 1, 0), Whole("/a/crack 2.wav", 1, 0)}, nullptr, nullptr,
+                         nullptr, true, &rnd));
+        const SoundLibrary& lib = *FindLibrary(s, "L");
+        CHECK(!rnd.empty() && Case(s, "L", "sw", "vwood") == rnd);
+        CHECK(ChildrenOf(lib, rnd).size() == 2 && FindNode(lib, rnd)->name == "crack");
+    }
+    {  // one pick: the plain use, no Random
+        SoundStore s = Store();
+        std::string rnd = "x";
+        CHECK(UseMediaAt(s, "M", nullptr, {Whole("/a/a.wav", 1, 0)}, nullptr, nullptr, nullptr, true, &rnd));
+        CHECK(rnd.empty() && ChildrenOf(*FindLibrary(s, "M"), "mr").size() == 1);
+    }
+    {  // refused on a Switch, store unchanged
+        SoundStore s = Store();
+        const std::string before = SerializeSoundStore(s);
+        LibraryRow r{"", "sw"};
+        std::string why;
+        CHECK(!UseMediaAt(s, "L", &r, {Whole("/a/a.wav", 1, 0), Whole("/a/b.wav", 1, 0)}, nullptr, nullptr, &why, true));
+        CHECK(SerializeSoundStore(s) == before && why == "Pick a value row of this Switch first");
+    }
+    // The common stem.
+    CHECK(MediaCommonStem({Whole("/a/FS_Gravel_01.wav", 1, 0), Whole("/b/fs_gravel_02.wav", 1, 0)}) == "FS_Gravel");
+    CHECK(MediaCommonStem({Whole("/a/Impact (1).wav", 1, 0), Whole("/a/Impact (2).wav", 1, 0)}) == "Impact");
+    CHECK(MediaCommonStem({Whole("/a/a.wav", 1, 0), Whole("/a/b.wav", 1, 0)}).empty());
+    CHECK(MediaCommonStem({}).empty());
+    // The drag tooltip.
+    {
+        const SoundStore s = Store();
+        LibraryRow conc{"sw", "vconc"}, x{"cr", "x"}, wood{"sw", "vwood"}, swr{"", "sw"};
+        CHECK(MediaDropHint(s, "L", &conc, 12, false, false) == "12 files -> added to the Random Concrete");
+        CHECK(MediaDropHint(s, "L", &conc, 12, false, true) == "12 files -> new Random in the Random Concrete");
+        CHECK(MediaDropHint(s, "L", &x, 2, false, false) == "2 files -> X becomes a Random: the old sound + 2 new");
+        CHECK(MediaDropHint(s, "L", &x, 2, false, true) == "2 files -> X becomes a Random: the old sound + a new Random of 2");
+        CHECK(MediaDropHint(s, "L", &wood, 3, true, true) == "3 variations -> a new Random for Wood");
+        CHECK(MediaDropHint(s, "L", &wood, 1, false, true) == "1 file -> plays for Wood");
+        CHECK(MediaDropHint(s, "L", &swr, 2, false, false).empty());
+        CHECK(MediaDropHint(s, "nolib", nullptr, 2, false, false).empty());
+    }
+    // Shift+click ranges and the count.
+    CHECK((MediaRangeRows(2, 5, 10, 100) == std::vector<size_t>{2, 3, 4, 5}));
+    CHECK((MediaRangeRows(5, 2, 10, 100) == std::vector<size_t>{2, 3, 4, 5}));
+    CHECK((MediaRangeRows(-1, 3, 10, 100) == std::vector<size_t>{3}));
+    CHECK((MediaRangeRows(20, 3, 10, 100) == std::vector<size_t>{3}));
+    CHECK((MediaRangeRows(0, 9, 10, 3) == std::vector<size_t>{7, 8, 9}));
+    CHECK((MediaRangeRows(9, 0, 10, 3) == std::vector<size_t>{0, 1, 2}));
+    CHECK(MediaRangeRows(0, 10, 10, 3).empty());
+    CHECK(MediaSelectedLabel(12) == "12 selected" && MediaSelectedLabel(1).empty());
     if (g_fail) {
         std::printf("%d failure(s)\n", g_fail);
         return 1;

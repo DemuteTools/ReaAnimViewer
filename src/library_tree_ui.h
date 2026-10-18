@@ -62,6 +62,9 @@ struct LibraryTreeHooks {
     // A drag payload type the tree accepts (13-7c: Media Explorer files), and what a drop does.
     std::string                                                                          media_payload_type;
     std::function<void(const std::string& lib, const LibraryRow& row, const void* data, int size)> media_drop;
+    // 13-69: called every frame a media drag is over a target that takes it (before the drop), with
+    // that target's row, so the drag's tooltip says what the drop makes there.
+    std::function<void(const std::string& lib, const LibraryRow& row)> media_hover;
 };
 void SetLibraryTreeHooks(const LibraryTreeHooks& hooks);
 // 13-17d: the tree has the focus (its rows walk with the arrow keys; REAPER must not take them).

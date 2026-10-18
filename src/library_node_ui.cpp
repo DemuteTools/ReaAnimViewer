@@ -2645,6 +2645,7 @@ bool MediaDropTarget(ImGuiID id, ImVec2 a, ImVec2 b, const SoundLibrary& lib, co
         // The innermost target under the mouse takes the drag (ImGui keeps the smallest one).
         const ImGuiPayload* pl = ImGui::AcceptDragDropPayload(
             h.media_payload_type.c_str(), ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect);
+        if (pl && kind == MediaDropKind::Use && h.media_hover) h.media_hover(lib.uid, RowOfNode(lib, n.uid));  // 13-69
         if (pl) {
             // Drawn on the foreground: the frame shows over the panel's children too.
             ImDrawList* dl = ImGui::GetForegroundDrawList();

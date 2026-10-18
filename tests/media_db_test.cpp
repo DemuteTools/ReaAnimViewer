@@ -537,6 +537,68 @@ static void TestFavourites()
     fs::remove_all(res, ec);
 }
 
+
+static std::string BaseName_(const std::string& p)
+{
+    const size_t k = p.find_last_of("/\\");
+    return k == std::string::npos ? p : p.substr(k + 1);
+}
+
+// 13-69: the search covers the folders, the name and every DATA field, known or not.
+static void TestSearchEverything()
+{
+    std::vector<DbFile> f;
+    const std::string text =
+        "FILE \"D:\\Libraries\\BOOM Library\\Wood Impacts\\impact_01.wav\" 1000 0 0 0\n"
+        "DATA \"d:Heavy hit\" \"g:Destruction\" \"u:crunchy splinter\" \"UCS_CATEGORY:WOOD\" \"l:0.5\" \"s:48000\"\n"
+        "FILE \"D:\\Libraries\\Sonniss Footsteps\\Gravel\\fs_gravel_02.wav\" 2000 0 0 0\n"
+        "DATA \"b:GDC 2020\" \"t:Gravel walk\" \"MyTag:sneaky\"\n"
+        "FILE \"C:\\x\\wood_creak.wav\" 3000 0 0 0\n"
+        "FILE \"C:\\Libraries\\misc.wav\" 4000 0 0 0\n";
+    CHECK(ParseReaperFileList(text, "Bank", &f, nullptr));
+    CHECK(f.size() == 4);
+    if (f.size() != 4) return;
+    CHECK(f[0].extra.find("g\x1e" "Destruction\x1f") != std::string::npos);
+    CHECK(f[0].extra.find("UCS_CATEGORY\x1eWOOD") != std::string::npos);
+    CHECK(f[0].extra.find("l\x1e") == std::string::npos && f[0].extra.find("s\x1e") == std::string::npos);
+    MediaDbIndex idx;
+    for (auto& x : f) idx.Add(std::move(x));
+    CHECK(idx.Files()[0].extra.empty());  // folded into the search text, not kept twice
+    auto names = [&](const std::string& q) {
+        std::string r;
+        for (const DbFile* p : idx.Search(q, "", 100)) r += BaseName_(p->path) + ";";
+        return r;
+    };
+    // A folder hit: the library's name is only in the path.
+    CHECK(names("boom") == "impact_01.wav;");
+    CHECK(names("sonniss footsteps") == "fs_gravel_02.wav;");
+    // A tag hit (REAPER's genre), an unknown key's value, another unknown key.
+    CHECK(names("destruction") == "impact_01.wav;");
+    CHECK(names("splinter") == "impact_01.wav;");
+    CHECK(names("sneaky") == "fs_gravel_02.wav;");
+    CHECK(names("gdc") == "fs_gravel_02.wav;");
+    // Words across fields: folder + tag, folder + name.
+    CHECK(names("boom crunchy") == "impact_01.wav;");
+    CHECK(names("gravel sonniss") == "fs_gravel_02.wav;");
+    CHECK(names("boom gravel").empty());
+    // The drive is not a folder: "d:" never lists every file of D:.
+    CHECK(names("d:").empty());
+    // Name hits first: "wood" is in wood_creak's name, in impact_01's folder and UCS category.
+    CHECK(names("wood") == "wood_creak.wav;impact_01.wav;");
+    CHECK(idx.Search("wood", "", 1).size() == 1 && idx.Search("wood", "", 1)[0]->path == "C:\\x\\wood_creak.wav");
+    // "libraries" is in three folders; the root file's folder too.
+    CHECK(idx.Search("libraries", "", 100).size() == 3);
+    // Where the words were found.
+    const DbFile* imp = &idx.Files()[0];
+    CHECK((idx.MatchedFields(imp, "boom splinter") == std::vector<std::string>{"folder", "u"}));
+    CHECK((idx.MatchedFields(imp, "destruction heavy") == std::vector<std::string>{"description", "genre"}));
+    CHECK((idx.MatchedFields(imp, "impact wood") == std::vector<std::string>{"name", "folder", "ucs_category"}));
+    CHECK((idx.MatchedFields(&idx.Files()[1], "gdc walk") == std::vector<std::string>{"library", "title"}));
+    CHECK(idx.MatchedFields(imp, " ").empty());
+    DbFile outside;
+    CHECK(idx.MatchedFields(&outside, "boom").empty());
+}
+
 static void Bench()
 {
     MediaDbIndex idx;
@@ -546,7 +608,11 @@ static void Bench()
         std::snprintf(name, sizeof(name), "D:/Bank/F%03d/snd_%d.wav", i % 500, i % 150000);
         DbFile f = F(name, 1000 + i, 0.5 + (i % 1000) * 0.01);
         f.description = (i % 7) ? "footstep dirt" : "sword whoosh";
-        idx.Add(f);
+        // 13-69: a realistic folder depth and a few DATA fields per file.
+        f.path = std::string("D:/Libraries/Vendor ") + std::to_string(i % 40) + "/Category " + std::to_string(i % 500) + "/" + (name + 3);
+        f.library = "Vendor Library " + std::to_string(i % 40);
+        f.extra = std::string("g\x1e" "Foley\x1f" "t\x1eTake ") + std::to_string(i) + "\x1fUCS_CATEGORY\x1e" "FOLEY\x1f";
+        idx.Add(std::move(f));
     }
     auto t0 = std::chrono::steady_clock::now();
     int found = 0;
@@ -561,6 +627,20 @@ static void Bench()
     const double sms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     std::printf("  bench: %d entries, Find avg %.4f ms (%d/1000 found), Search %.1f ms (%zu hits)\n", N, avg, found,
                 sms, hits);
+    // 13-69: the search text's memory and a capped search the panel runs (1001 results), a miss
+    // (the whole index scanned) and a folder hit.
+    t0 = std::chrono::steady_clock::now();
+    const size_t capped = idx.Search("foley", "", 1001).size();
+    const double cms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    t0 = std::chrono::steady_clock::now();
+    const size_t none = idx.Search("zzznothing", "", 1001).size();
+    const double nms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    t0 = std::chrono::steady_clock::now();
+    const size_t vend = idx.Search("vendor 7 whoosh", "", 1001).size();
+    const double vms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    std::printf("  bench 13-69: search text %.1f MB, capped %.1f ms (%zu), miss %.1f ms (%zu), folder+desc %.1f ms (%zu)\n",
+                idx.SearchTextBytes() / 1048576.0, cms, capped, nms, none, vms, vend);
+    CHECK(capped == 1001 && none == 0 && vend > 0);
     CHECK(avg < 1.0);
     CHECK(found == 1000);
 }
@@ -583,6 +663,7 @@ int main(int argc, char** argv)
     TestIni();
     TestFind();
     TestSearch();
+    TestSearchEverything();
     TestRelocateAndScan();
     TestLocateUnderRoot();
     TestLocateOutcome();

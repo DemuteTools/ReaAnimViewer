@@ -36,6 +36,7 @@
 #include <system_error>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <imgui.h>
@@ -405,7 +406,15 @@ struct State {
     std::set<std::string>               fav_keys;  // lowercase
     bool                                favs_loaded = false;
     MediaExistsCache                    exists;     // per path, for the session (the rows on screen)
-    std::vector<DbFile>                 sel;        // selected files (copies)
+    std::vector<DbFile>                 sel;        // selected files (copies; set through SelSet / SelToggle)
+    std::unordered_set<std::string>     sel_keys;   // 13-69: their paths (IsSelected in O(1) after Ctrl+A)
+    int                                 anchor_row = -1;  // 13-69: results index a Shift+click ranges from
+    std::string                         searched;   // 13-69: the query of the results (the matched-field tooltip)
+    bool                                drag_alt = false;  // 13-69: Alt held during the drag (the drop's frame included)
+    std::string                         hover_lib;  // 13-69: the drop target under a media drag (media_hover)
+    LibraryRow                          hover_row;
+    int                                 hover_frame = -10;
+    bool                                pend_as_random = false;  // 13-69: the waiting use makes one new Random
     bool                                has_cur = false;
     DbFile                              cur;        // the previewed file
     std::vector<int>                    vsel;       // its selected variations
@@ -493,7 +502,9 @@ void RunSearch()
     g.index = MediaDbGet();
     g.results.clear();
     g.capped = false;
+    g.anchor_row = -1;  // 13-69: the rows moved
     const std::string q = g.query;
+    g.searched = q;
     const int         ndb = static_cast<int>(g.info.databases.size());
     const bool        favs = g.filter == ndb + 1;
     bool              blank = true;
@@ -522,9 +533,42 @@ void RunSearch()
 
 bool IsSelected(const std::string& path)
 {
-    for (const DbFile& f : g.sel)
-        if (f.path == path) return true;
-    return false;
+    return g.sel_keys.count(path) != 0;
+}
+
+// 13-69: the selection, its keys kept with it.
+void SelSet(std::vector<DbFile> files)
+{
+    g.sel = std::move(files);
+    g.sel_keys.clear();
+    for (const DbFile& f : g.sel) g.sel_keys.insert(f.path);
+}
+
+// Ctrl+click: false when the file was selected (now un-selected).
+bool SelToggle(const DbFile& f)
+{
+    if (g.sel_keys.erase(f.path)) {
+        g.sel.erase(std::remove_if(g.sel.begin(), g.sel.end(), [&](const DbFile& s) { return s.path == f.path; }),
+                    g.sel.end());
+        return false;
+    }
+    g.sel.push_back(f);
+    g.sel_keys.insert(f.path);
+    return true;
+}
+
+// 13-69: Shift+click (Ctrl+Shift adds to the selection) and Ctrl+A: results rows, at most
+// kMaxResults files (a blank search lists the whole database).
+void SelRows(const std::vector<size_t>& rows, bool add)
+{
+    std::vector<DbFile> files = add ? g.sel : std::vector<DbFile>{};
+    std::unordered_set<std::string> keys = add ? g.sel_keys : std::unordered_set<std::string>{};
+    for (size_t i : rows) {
+        if (i >= g.results.size()) continue;
+        const DbFile& f = *g.results[i];
+        if (keys.insert(f.path).second) files.push_back(f);
+    }
+    SelSet(std::move(files));
 }
 
 // The previewed file's peaks (read, or failed to open / read).
@@ -685,19 +729,22 @@ std::vector<MediaPick> UsedPicks(bool* variations)
 
 // The Sounds of every pick, one undo point. `suffix` names the files that could not be read.
 void ApplyPicks(const std::string& lib, const LibraryRow* row, const std::vector<MediaPick>& picks,
-                const std::string& suffix)
+                const std::string& suffix, bool as_random)
 {
     if (picks.empty()) return;
-    std::string toast, why;
+    std::string toast, why, rnd;
     std::vector<std::string> created;
     const char* desc = MediaUseAddsInside(GetSoundStore(nullptr), lib, row) ? "RAV: Add sounds"
                                                                              : "RAV: Set sound from Media Explorer";
     bool ok = ModifySoundStore(nullptr, desc, [&](SoundStore& s) {
-        return UseMediaAt(s, lib, row, picks, &created, &toast, &why);
+        return UseMediaAt(s, lib, row, picks, &created, &toast, &why, as_random, &rnd);
     });
     if (ok) {
         ShowLibraryToast(toast + suffix, true, desc);
         g.vsel.clear();
+        // 13-69: the new Random is selected in the tree.
+        if (!rnd.empty())
+            if (const SoundLibrary* l = FindLibrary(GetSoundStore(nullptr), lib)) SelectLibraryRow(lib, RowOfNode(*l, rnd));
     } else if (!why.empty()) {
         ShowLibraryToast(why, false);
     }
@@ -720,6 +767,7 @@ void CommitPending()
     const std::string lib = g.pend_lib;
     const LibraryRow  row = g.pend_row;
     const bool        has_row = g.pend_has_row;
+    const bool        as_random = g.pend_as_random;
     ReaProject* const proj = g.pend_proj;
     CancelPending();
     if (EnumProjects(-1, nullptr, 0) != proj) {  // another project tab since the use
@@ -733,22 +781,24 @@ void CommitPending()
         ShowLibraryToast("Nothing added" + suffix, false);
         return;
     }
-    ApplyPicks(lib, has_row ? &row : nullptr, used, suffix);
+    ApplyPicks(lib, has_row ? &row : nullptr, used, suffix, as_random);
 }
 
 // A use: every whole file whose variations are not known yet is read first ("Reading N
 // files..."), then all the Sounds are made at once. A new use replaces a waiting one.
-void UsePicks(const std::string& lib, const LibraryRow* row, const std::vector<MediaPick>& picks)
+void UsePicks(const std::string& lib, const LibraryRow* row, const std::vector<MediaPick>& picks,
+              bool as_random = false)
 {
     CancelPending();
     if (picks.empty()) return;
     MediaBatch b = StartMediaBatch(picks);
     const std::vector<std::string> paths = MediaBatchPathsToRead(b);
     if (paths.empty()) {
-        ApplyPicks(lib, row, b.picks, std::string());
+        ApplyPicks(lib, row, b.picks, std::string(), as_random);
         return;
     }
     g.pending = true;
+    g.pend_as_random = as_random;
     g.batch = std::move(b);
     g.pend_lib = lib;
     g.pend_has_row = row != nullptr;
@@ -766,7 +816,7 @@ void UsePicks(const std::string& lib, const LibraryRow* row, const std::vector<M
 }
 
 // Decision 13: the tree's single selected row, else the library root.
-void UseAtTarget(const std::vector<MediaPick>& picks)
+void UseAtTarget(const std::vector<MediaPick>& picks, bool as_random = false)
 {
     const std::vector<LibraryRow>& rows = SelectedLibraryRows();
     LibraryRow row;
@@ -776,7 +826,7 @@ void UseAtTarget(const std::vector<MediaPick>& picks)
         rp = &row;
     }
     std::string lib = SelectedLibraryUid();
-    UsePicks(lib, rp, picks);
+    UsePicks(lib, rp, picks, as_random);
 }
 
 void OnMediaDrop(const std::string& lib, const LibraryRow& row, const void* data, int size)
@@ -787,7 +837,15 @@ void OnMediaDrop(const std::string& lib, const LibraryRow& row, const void* data
     if (gen != g.drag_gen || g.drag_picks.empty()) return;  // a stale drag
     std::vector<MediaPick> picks = std::move(g.drag_picks);
     g.drag_picks.clear();
-    UsePicks(lib, &row, picks);
+    UsePicks(lib, &row, picks, g.drag_alt);  // 13-69: Alt held at the drop = one new Random
+}
+
+// 13-69: the drop target under the drag (LibraryTreeHooks::media_hover), for the drag's tooltip.
+void OnMediaHover(const std::string& lib, const LibraryRow& row)
+{
+    g.hover_lib = lib;
+    g.hover_row = row;
+    g.hover_frame = ImGui::GetFrameCount();
 }
 
 void BeginDrag(const std::vector<MediaPick>& picks, const std::string& what)
@@ -797,10 +855,21 @@ void BeginDrag(const std::vector<MediaPick>& picks, const std::string& what)
         if (g.drag_frame != ImGui::GetFrameCount() - 1 && g.drag_frame != ImGui::GetFrameCount()) ++g.drag_gen;
         g.drag_frame = ImGui::GetFrameCount();
         g.drag_picks = picks;
+        g.drag_alt = ImGui::GetIO().KeyAlt;
         ImGui::SetDragDropPayload(kPayload, &g.drag_gen, sizeof g.drag_gen);
-        ImGui::TextUnformatted(what.c_str());
-        ui::ToneText("Drop on a container, a value row or empty space in the tree,\n"
-                     "or on a Sound's waveform to replace its audio");
+        // 13-69: what the drop makes on the target under the mouse (set by it last frame or this one).
+        std::string hint;
+        if (g.hover_frame >= ImGui::GetFrameCount() - 1) {
+            bool variations = false;
+            for (const MediaPick& p : picks) variations = variations || p.slice;
+            hint = MediaDropHint(GetSoundStore(nullptr), g.hover_lib, &g.hover_row, static_cast<int>(picks.size()),
+                                 variations, g.drag_alt);
+        }
+        ImGui::TextUnformatted(hint.empty() ? what.c_str() : hint.c_str());
+        if (hint.empty())
+            ui::ToneText("Drop on a container, a value row or empty space in the tree,\n"
+                         "or on a Sound's waveform to replace its audio");
+        if (picks.size() >= 2 && !g.drag_alt) ui::ToneText("Hold Alt at the drop: one new Random of them");
         ImGui::EndDragDropSource();
     }
 }
@@ -857,10 +926,11 @@ void ApplyHooks()
         SetNodePanelHooks(nh);
     }
     const LibraryTreeHooks& h = GetLibraryTreeHooks();
-    if (h.media_payload_type == kPayload && h.media_drop) return;
+    if (h.media_payload_type == kPayload && h.media_drop && h.media_hover) return;
     LibraryTreeHooks n = h;
     n.media_payload_type = kPayload;
     n.media_drop = &OnMediaDrop;
+    n.media_hover = &OnMediaHover;
     SetLibraryTreeHooks(n);
 }
 
@@ -1095,6 +1165,39 @@ void DrawSearch()
     }
 }
 
+// 13-69: the results' right-click menu: the footer's use, "Make a Random of the selection" (at the
+// tree's selected row, as the footer's use), and select all.
+bool g_open_ctx = false;
+
+void DrawResultsMenu()
+{
+    if (g_open_ctx) {
+        g_open_ctx = false;
+        ImGui::OpenPopup("##mectx");
+    }
+    if (!ui::BeginMenuPopup("##mectx")) return;
+    std::vector<MediaPick> picks;
+    for (const DbFile& f : g.sel)
+        if (!IsMissing(f.path)) picks.push_back(WholePick(f));
+    const std::vector<LibraryRow>& rows = SelectedLibraryRows();
+    const LibraryRow*              rp = rows.size() == 1 ? &rows.front() : nullptr;
+    const std::string              lib = SelectedLibraryUid();
+    std::string                    label;
+    const bool can = !picks.empty() && !g.pending &&
+                     MediaUseLabel(GetSoundStore(nullptr), lib, rp, static_cast<int>(picks.size()), false, &label);
+    if (ImGui::MenuItem(can ? label.c_str() : "Use the selection", nullptr, false, can)) UseAtTarget(picks);
+    if (ImGui::MenuItem("Make a Random of the selection", nullptr, false, can && picks.size() >= 2))
+        UseAtTarget(picks, true);
+    ui::MenuSeparator();
+    if (ImGui::MenuItem("Select all results", "Ctrl+A", false, !g.results.empty())) {
+        SelRows(MediaRangeRows(0, static_cast<int>(std::min(g.results.size(), kMaxResults)) - 1, g.results.size(),
+                               kMaxResults),
+                false);
+        g.vsel.clear();
+    }
+    ui::EndMenuPopup();
+}
+
 // A result row's height (.frow.res: pad 3 8 4 around a 12 px line), rows flush.
 float ResultRowH()
 {
@@ -1168,16 +1271,16 @@ void DrawResults(float h)
                 UseAtTarget({WholePick(f)});
             } else if (clicked) {
                 bool added = true;
-                if (ImGui::GetIO().KeyCtrl) {
-                    auto it = std::find_if(g.sel.begin(), g.sel.end(), [&](const DbFile& s) { return s.path == f.path; });
-                    if (it != g.sel.end()) {
-                        g.sel.erase(it);
-                        added = false;  // un-selected: neither shown nor played
-                    } else {
-                        g.sel.push_back(f);
-                    }
+                const ImGuiIO& io = ImGui::GetIO();
+                if (io.KeyShift) {  // 13-69: a range from the anchor (Ctrl+Shift adds it)
+                    SelRows(MediaRangeRows(g.anchor_row, i, g.results.size(), kMaxResults), io.KeyCtrl);
+                    if (g.anchor_row < 0) g.anchor_row = i;
+                } else if (io.KeyCtrl) {
+                    added = SelToggle(f);  // un-selected: neither shown nor played
+                    g.anchor_row = i;
                 } else {
-                    g.sel.assign(1, f);
+                    SelSet({f});
+                    g.anchor_row = i;
                 }
                 g.vsel.clear();
                 if (added) {
@@ -1197,6 +1300,23 @@ void DrawResults(float h)
                 }
                 BeginDrag(picks, picks.size() > 1 ? std::to_string(picks.size()) + " files" : MediaFileName(f.path));
             }
+            // 13-69: right-click = the selection's menu (an unselected row becomes the selection).
+            if (hov && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
+                if (!IsSelected(f.path)) {
+                    SelSet({f});
+                    g.anchor_row = i;
+                }
+                g_open_ctx = true;  // opened at the list's ID level (DrawResultsMenu)
+            }
+            // 13-69: where the search's words were found (a hit from a folder or a tag is understood).
+            if (hov && !on_star && !ImGui::GetDragDropPayload() && g.index) {
+                const std::vector<std::string> where = g.index->MatchedFields(&f, g.searched);
+                if (!where.empty()) {
+                    std::string tip = "Found in: ";
+                    for (size_t k = 0; k < where.size(); ++k) tip += (k ? ", " : "") + where[k];
+                    ui::ItemTipText(tip.c_str());
+                }
+            }
             DrawStar(dl, ImVec2(p.x + star_x, std::floor(p.y + rh * 0.5f) + 0.5f), ui::Dp(5.0f), IsFav(f.path),
                      hov && on_star ? ui::kWarn : ui::kFaint);
             {
@@ -1208,6 +1328,7 @@ void DrawResults(float h)
         }
     }
     ImGui::PopStyleVar();
+    DrawResultsMenu();
     ui::EndListPane();
 }
 
@@ -1411,6 +1532,12 @@ void DrawFooter(const ui::Section& s)
         return;
     }
     if (ui::SolidButton(label.c_str())) UseAtTarget(picks);
+    // 13-69: the selection counted, after the button (ellipsized when the column is narrow).
+    const std::string count = variations ? std::string() : MediaSelectedLabel(g.sel.size());
+    if (!count.empty()) {
+        ImGui::SameLine();
+        line_text(count.c_str());
+    }
 }
 
 void HandleKeys()
@@ -1422,6 +1549,13 @@ void HandleKeys()
         return;
     }
     if (io.WantTextInput) return;
+    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_A, false) && !g.results.empty()) {  // 13-69: every result
+        SelRows(MediaRangeRows(0, static_cast<int>(std::min(g.results.size(), kMaxResults)) - 1, g.results.size(),
+                               kMaxResults),
+                false);
+        g.vsel.clear();
+        return;
+    }
     const bool up = ImGui::IsKeyPressed(ImGuiKey_UpArrow), down = ImGui::IsKeyPressed(ImGuiKey_DownArrow);
     if ((up || down) && !g.results.empty()) {  // the keyboard row = the previewed file
         int at = -1;
@@ -1438,7 +1572,8 @@ void HandleKeys()
         const int to = at < 0 ? 0 : std::clamp(at + (down ? 1 : -1), 0, n - 1);
         if (to != at) {
             const DbFile& f = *g.results[static_cast<size_t>(to)];
-            g.sel.assign(1, f);
+            SelSet({f});
+            g.anchor_row = to;
             g.vsel.clear();
             SetCurrent(f);
             g.cur_row = to;

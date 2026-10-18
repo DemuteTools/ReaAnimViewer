@@ -16,6 +16,7 @@
 #include <map>
 #include <mutex>
 #include <sstream>
+#include <string_view>
 #include <system_error>
 #include <thread>
 #include <unordered_map>
@@ -282,6 +283,12 @@ void ParseLine(std::string line, const std::string& db, std::vector<DbFile>* out
                 f.bits = ParseIntOr(v, -1);
             } else if (key == "s") {
                 f.rate = ParseIntOr(v, -1);
+            } else if (!v.empty()) {
+                // 13-69: every other field is kept as written, searched without being known.
+                f.extra += key;
+                f.extra += '\x1e';
+                f.extra += v;
+                f.extra += '\x1f';
             }
         }
         return;
@@ -407,11 +414,37 @@ std::vector<DbEntry> ListMediaDatabases(const std::string& resource_path, const 
 
 void MediaDbIndex::Add(const DbFile& f)
 {
+    Add(DbFile(f));
+}
+
+void MediaDbIndex::Add(DbFile&& f)
+{
     const uint32_t i = static_cast<uint32_t>(files_.size());
-    files_.push_back(f);
     const std::string name = BaseName(f.path);
     by_name_[Lower(name)].push_back(i);
-    hay_.push_back(Lower(name + " " + f.description));
+    // 13-69: one lowercase text per file: name, folders (no drive), then every DATA field, each
+    // ended by \x1f (a query word never spans two of them; words hold no control character).
+    std::string h;
+    h.reserve(f.path.size() + f.description.size() + f.library.size() + f.extra.size() + 12);
+    h += name;
+    const uint32_t name_end = static_cast<uint32_t>(h.size());
+    h += '\x1f';
+    size_t from = 0;
+    if (f.path.size() >= 2 && f.path[1] == ':') from = 2;  // "C:" is not a folder
+    const size_t base = f.path.size() - name.size();
+    while (from < base && (f.path[from] == '\\' || f.path[from] == '/')) ++from;
+    if (from < base) h.append(f.path, from, base - from);
+    h += '\x1f';
+    if (!f.description.empty()) h += std::string("d\x1e") + f.description + '\x1f';
+    if (!f.library.empty()) h += std::string("b\x1e") + f.library + '\x1f';
+    h += f.extra;
+    for (char& c : h) c = LowerC(c);
+    h.shrink_to_fit();
+    hay_.push_back(std::move(h));
+    name_end_.push_back(name_end);
+    f.extra.clear();
+    f.extra.shrink_to_fit();
+    files_.push_back(std::move(f));
 }
 
 void MediaDbIndex::Clear()
@@ -419,6 +452,7 @@ void MediaDbIndex::Clear()
     files_.clear();
     by_name_.clear();
     hay_.clear();
+    name_end_.clear();
 }
 
 size_t MediaDbIndex::Size() const
@@ -464,27 +498,111 @@ LookupResult MediaDbIndex::Find(const AssetIdentity& id) const
     return r;
 }
 
+namespace {
+
+std::vector<std::string> QueryWords(const std::string& query)
+{
+    std::vector<std::string> words;
+    std::istringstream in(Lower(query));
+    std::string w;
+    while (in >> w) words.push_back(w);
+    return words;
+}
+
+// REAPER's one-letter DATA keys, as the Media Explorer names its columns; others as written.
+std::string FieldLabel(const std::string& key)
+{
+    static const char* const kNames[][2] = {{"d", "description"}, {"b", "library"}, {"t", "title"},
+                                            {"a", "artist"},      {"g", "genre"},   {"c", "comment"},
+                                            {"y", "date"},        {"k", "key"},     {"p", "BPM"}};
+    for (const auto& n : kNames)
+        if (key == n[0]) return n[1];
+    return key;
+}
+
+}  // namespace
+
 std::vector<const DbFile*> MediaDbIndex::Search(const std::string& query, const std::string& db_filter,
                                                 size_t max) const
 {
-    std::vector<std::string> words;
-    {
-        std::istringstream in(Lower(query));
-        std::string w;
-        while (in >> w) words.push_back(w);
-    }
-    std::vector<const DbFile*> out;
-    for (size_t i = 0; i < files_.size() && out.size() < max; ++i) {
+    const std::vector<std::string> words = QueryWords(query);
+    // 13-69: name hits first; the scan stops once `max` name hits are found.
+    std::vector<const DbFile*> named, other;
+    for (size_t i = 0; i < files_.size() && named.size() < max; ++i) {
         if (!db_filter.empty() && files_[i].db != db_filter) continue;
-        bool ok = true;
-        for (const std::string& w : words)
-            if (hay_[i].find(w) == std::string::npos) {
+        const std::string& h = hay_[i];
+        bool ok = true, in_name = true;
+        for (const std::string& w : words) {
+            const size_t at = h.find(w);
+            if (at == std::string::npos) {
                 ok = false;
                 break;
             }
-        if (ok) out.push_back(&files_[i]);
+            if (at + w.size() > name_end_[i]) in_name = false;  // the first hit is past the name
+        }
+        if (!ok) continue;
+        if (in_name) named.push_back(&files_[i]);
+        else if (other.size() < max) other.push_back(&files_[i]);
+    }
+    for (const DbFile* f : other) {
+        if (named.size() >= max) break;
+        named.push_back(f);
+    }
+    return named;
+}
+
+std::vector<std::string> MediaDbIndex::MatchedFields(const DbFile* f, const std::string& query) const
+{
+    std::vector<std::string> out;
+    if (!f || files_.empty() || f < files_.data() || f >= files_.data() + files_.size()) return out;
+    const size_t i = static_cast<size_t>(f - files_.data());
+    const std::vector<std::string> words = QueryWords(query);
+    if (words.empty()) return out;
+    const std::string& h = hay_[i];
+    auto add = [&](const std::string& label) {
+        if (std::find(out.begin(), out.end(), label) == out.end()) out.push_back(label);
+    };
+    // The fields, each [b, e): name, folders, then key\x1evalue.
+    size_t b = 0;
+    int    n = 0;
+    while (b <= h.size()) {
+        size_t e = h.find('\x1f', b);
+        if (e == std::string::npos) e = h.size();
+        if (e == b && n >= 2) break;
+        std::string label;
+        size_t      vb = b;
+        if (n == 0) {
+            label = "name";
+        } else if (n == 1) {
+            label = "folder";
+        } else {
+            const size_t k = h.find('\x1e', b);
+            if (k == std::string::npos || k > e) {
+                vb = b;
+                label = "data";
+            } else {
+                vb = k + 1;
+                label = FieldLabel(h.substr(b, k - b));
+            }
+        }
+        const std::string_view v(h.data() + vb, e - vb);
+        for (const std::string& w : words)
+            if (v.find(w) != std::string_view::npos) {
+                add(label);
+                break;
+            }
+        ++n;
+        if (e >= h.size()) break;
+        b = e + 1;
     }
     return out;
+}
+
+size_t MediaDbIndex::SearchTextBytes() const
+{
+    size_t n = 0;
+    for (const std::string& h : hay_) n += h.capacity();
+    return n;
 }
 
 LookupResult LocateFolder(const AssetIdentity& id, const std::string& folder,
@@ -813,9 +931,9 @@ void LoadWorkerBody(const std::string& resource_path)
         ParseReaperFileList(in, e.name, &files, &bad, &s.cancel);
         if (s.cancel.load()) return;
         size_t added = 0;
-        for (const DbFile& f : files) {
+        for (DbFile& f : files) {
             if ((++added & 4095) == 0 && s.cancel.load()) return;
-            idx->Add(f);
+            idx->Add(std::move(f));  // 13-69: no copy of the search fields
         }
         info.unparsed += bad;
         info.databases.push_back(e);

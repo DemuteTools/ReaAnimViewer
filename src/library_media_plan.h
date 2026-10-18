@@ -50,8 +50,32 @@ bool MediaUseAddsInside(const SoundStore& store, const std::string& lib_uid, con
 // Decision 13: adds the picks' Sounds at `row` (null / empty key = the library root), one
 // transaction: false and the store unchanged when refused (`why` says why). `created` gets the
 // new Sounds' uids, `toast` the message.
+// 13-69 `as_random` (Alt held at the drop, "Make a Random of the selection"): 2+ picks always become
+// ONE new Random holding their Sounds, named after the files' common stem: inside a Random / Blend
+// as one new child, onto a Sound as a child of the Random that wraps it, on a value / empty slot the
+// Random the use makes anyway. `new_random` gets its uid ("" when no Random was made). One pick: the
+// plain use.
 bool UseMediaAt(SoundStore& store, const std::string& lib_uid, const LibraryRow* row, const std::vector<MediaPick>& picks,
-                std::vector<std::string>* created, std::string* toast, std::string* why);
+                std::vector<std::string>* created, std::string* toast, std::string* why, bool as_random = false,
+                std::string* new_random = nullptr);
+
+// 13-69: the name of a Random made of these files: their stems' longest common start (ignoring
+// case, the first file's spelling), without trailing spaces, '_', '-', '.', digits or "(";
+// "" when shorter than 2 characters (the type's own name is used).
+std::string MediaCommonStem(const std::vector<MediaPick>& picks);
+
+// 13-69: what a drop of `n_picks` files / variations at `row` makes (the drag tooltip), e.g.
+// "12 files -> added to the Random Wood", "12 files -> new Random in the Random Wood",
+// "Step -> a Random of 2 sounds (with Step)"; "" when refused there.
+std::string MediaDropHint(const SoundStore& store, const std::string& lib_uid, const LibraryRow* row, int n_picks,
+                          bool variations, bool as_random);
+
+// 13-69: the results rows a Shift+click selects, from the anchor row to the clicked one (both
+// included, in list order); with more than `cap` rows, the `cap` nearest the clicked row. An anchor
+// outside [0, n) = the clicked row alone.
+std::vector<size_t> MediaRangeRows(int anchor, int clicked, size_t n, size_t cap);
+// "12 selected" ("" under 2).
+std::string MediaSelectedLabel(size_t n);
 
 // "2ch · 24b · 96k" (unknown parts omitted, "" when none known).
 std::string FormatMediaFormat(const DbFile& f);

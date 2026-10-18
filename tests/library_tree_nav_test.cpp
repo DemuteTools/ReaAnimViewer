@@ -183,11 +183,14 @@ static void TestKeyClaim()
     CHECK(!LibraryViewClaimsKey(on, 'D', true, true, false));     // never Ctrl+Shift
     CHECK(!LibraryViewClaimsKey(on, 'Z', true, false, false));    // Ctrl+Z stays REAPER's undo
     CHECK(!LibraryViewClaimsKey(on, 'A', false, false, false));
+    CHECK(!LibraryViewClaimsKey(on, 'A', true, false, false));    // Ctrl+A: REAPER's unless the media list has the keys
     CHECK(!LibraryViewClaimsKey(on, 0x28, false, false, false));  // arrows: only when a list takes them
     on.media_takes_arrows = true;
     CHECK(LibraryViewClaimsKey(on, 0x28, false, false, false));
     CHECK(!LibraryViewClaimsKey(on, 0x25, false, false, false));  // the Media Explorer takes Up / Down only
     CHECK(!LibraryViewClaimsKey(on, 0x28, false, true, false));   // not with Shift
+    CHECK(LibraryViewClaimsKey(on, 'A', true, false, false));     // 13-69: Ctrl+A selects every result
+    CHECK(!LibraryViewClaimsKey(on, 'A', true, true, false));
     on.media_takes_arrows = false;
     on.tree_takes_arrows = true;
     CHECK(LibraryViewClaimsKey(on, 0x25, false, false, false));

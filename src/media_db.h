@@ -38,6 +38,10 @@ struct DbFile {
     int         channels = -1;  // DATA n:
     int         bits = -1;      // DATA i:
     int         rate = -1;      // DATA s:
+    // 13-69: every other DATA field (title, artist, genre, comment, tags, UCS, custom columns, keys
+    // this code does not know), each "key\x1evalue\x1f", in file order. Searched, never interpreted.
+    // MediaDbIndex::Add folds it into its search text and drops it from its own copy (memory).
+    std::string extra;
 };
 
 enum class LookupStatus { Found, Ambiguous, Missing };
@@ -64,19 +68,33 @@ bool ParseDbLength(const std::string& v, double* seconds);
 class MediaDbIndex {
 public:
     void   Add(const DbFile& f);
+    void   Add(DbFile&& f);
     void   Clear();
     size_t Size() const;
     // By identity: name (ignoring case), size, length +-1.5 ms, then the trailing path
     // components of last_path / rel_path; mtime ignored. Unknown fields are wildcards.
     LookupResult Find(const AssetIdentity& id) const;
-    // Every query word in name + description (ignoring case); db_filter "" = all databases.
+    // 13-69: every query word (ignoring case) somewhere in what is known of a file: its file name,
+    // its folders (not the drive), the description, the library and every other DATA field (one
+    // word may match one field and the next word another). db_filter "" = all databases. Files
+    // whose name holds every word come first (each group in index order); at most `max`.
     std::vector<const DbFile*> Search(const std::string& query, const std::string& db_filter, size_t max) const;
+    // 13-69: where the query's words were found in `f` (one of Files()), each place once, in this
+    // order: "name", "folder", "description", "library", then the other fields ("title", "artist",
+    // "genre", "comment", "date", "key", "BPM" for REAPER's one-letter keys, else the key in lowercase as
+    // written). {} when `f` is not in this index or the query is blank.
+    std::vector<std::string> MatchedFields(const DbFile* f, const std::string& query) const;
+    // The search text's size in bytes (13-69 memory measure).
+    size_t SearchTextBytes() const;
     const std::vector<DbFile>& Files() const { return files_; }
 
 private:
     std::vector<DbFile>                                    files_;
     std::unordered_map<std::string, std::vector<uint32_t>> by_name_;  // lowercase file name -> files_
-    std::vector<std::string>                               hay_;      // lowercase "name description"
+    // 13-69: per file, lowercase "name\x1f folders\x1f d\x1e desc\x1f b\x1e lib\x1f key\x1e value\x1f..."
+    // (no spaces around the separators); name_end_ = the name's length (the name-first ranking).
+    std::vector<std::string>                               hay_;
+    std::vector<uint32_t>                                  name_end_;
 };
 
 // Finds the identity in a folder the user picked (`list_folder` lists one folder's files).

@@ -802,8 +802,10 @@ void MediaDropOn(const std::string& lib_uid, const LibraryRow& row, ImVec2 p0, I
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(p0, p1, ui::kAccentSoft, ui::kRadiusSm);
     dl->AddRect(ImVec2(p0.x + 1.0f, p0.y + 1.0f), ImVec2(p1.x - 1.0f, p1.y - 1.0f), ui::kAccent, ui::kRadiusSm, 0, 2.0f);
-    if (const ImGuiPayload* mp = ImGui::AcceptDragDropPayload(h.media_payload_type.c_str(),
-                                                              ImGuiDragDropFlags_AcceptNoDrawDefaultRect)) {
+    const ImGuiPayload* mp = ImGui::AcceptDragDropPayload(
+        h.media_payload_type.c_str(), ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect);
+    if (mp && h.media_hover) h.media_hover(lib_uid, row);  // 13-69: the drag's tooltip
+    if (mp && mp->IsDelivery()) {
         const auto        drop = h.media_drop;  // the hook may replace the hooks
         const char*       d = static_cast<const char*>(mp->Data);
         std::vector<char> data(d, d ? d + mp->DataSize : d);  // the payload lives only this frame

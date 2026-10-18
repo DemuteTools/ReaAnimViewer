@@ -563,6 +563,24 @@ static void TestPrevStopAndMarquee()
     CHECK(sel.empty());
 }
 
+// Sound Edit evening (A): Ctrl+A -- every zone, or the V filter's variation's.
+static void TestSelectAll()
+{
+    SoundData d = Sample();
+    ZoneSel   all = ZonesToSelectAll(d, -1, -1);
+    CHECK(all.size() == 5 && all.front() == (ZoneRef{0, 0}) && all.back() == (ZoneRef{1, 0}));
+    ZoneSel v2 = ZonesToSelectAll(d, -1, 1);
+    CHECK(v2.size() == 1 && v2[0] == (ZoneRef{1, 0}));
+    ZoneSel v1 = ZonesToSelectAll(d, -1, 0);
+    CHECK(v1.size() == 4 && SelHas(v1, ZoneRef{0, 1}));
+    CHECK(ZonesToSelectAll(d, -1, 7).size() == 5);  // a filter on no variation: All
+    // Takes mode: the active take's zones only (its own timeline); no take: nothing.
+    d.mode = DetectMode::Takes;
+    CHECK(ZonesToSelectAll(d, 1, -1).size() == 1 && ZonesToSelectAll(d, 1, -1)[0].frame == 1);
+    CHECK(ZonesToSelectAll(d, 0, -1).size() == 4);
+    CHECK(ZonesToSelectAll(d, -1, -1).empty());
+}
+
 int main()
 {
     TestHitLane();
@@ -576,6 +594,7 @@ int main()
     TestSelection();
     TestItems();
     TestPrevStopAndMarquee();
+    TestSelectAll();
     if (g_fails) {
         std::printf("zone_hit_test: %d failure(s)\n", g_fails);
         return 1;

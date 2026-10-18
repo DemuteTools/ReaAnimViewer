@@ -186,6 +186,12 @@ ZoneSel ZonesInSpan(const SoundData& d, int tl, double t0, double t1, const std:
 // 13-67a: the marquee's result: `hits` replace the selection, or with `add` (Ctrl held) join it (once each).
 void SelMarquee(ZoneSel& sel, const ZoneSel& hits, bool add);
 
+// Sound Edit evening (A): Ctrl+A (REAPER 40182 "Item: Select all items") in the Sound Edit window: every zone of
+// timeline `tl` (NormTl: a Takes-mode Sound's active take; none for -1 there), or, with the V filter on (`var_focus`, a
+// variation's frame shown by its V chip), every zone of that variation (a filter on a variation with no zone of that
+// timeline: every zone of it, as All). Time order.
+ZoneSel ZonesToSelectAll(const SoundData& d, int tl, int var_focus);
+
 // Selection helpers (view state: refs into the Sound's zones).
 bool    SelHas(const ZoneSel& sel, const ZoneRef& r);
 // Ctrl / Shift+click: adds r, or takes it out.

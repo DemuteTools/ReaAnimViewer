@@ -1092,6 +1092,38 @@ int main()
         CHECK(!used[kShortcutEditSnapOffset] && !used[kShortcutEditPrevStop] && !used[kShortcutEditExclSolo]);
     }
 
+    // Sound Edit evening (A): Select all zones, on REAPER's 40182 (Item: Select all items), Ctrl+A while REAPER lists no
+    // key for it; Library Edit only (REAPER's own Ctrl+A everywhere else).
+    {
+        CHECK(ShortcutReaperActionId(kShortcutEditSelectAll) == "40182");
+        CHECK(std::string(kShortcutTable[kShortcutEditSelectAll].id) == "edit_select_all");
+        CHECK(std::string(kShortcutTable[kShortcutEditSelectAll].reaper_name) == "Item: Select all items");
+        CHECK(ShortcutDefaultFollowsReaper(kShortcutEditSelectAll));
+        CHECK(kShortcutTable[kShortcutEditSelectAll].action == nullptr && kShortcutTable[kShortcutEditSelectAll].def.vk == 0);
+        CHECK(kShortcutTable[kShortcutEditSelectAll].context == ShortcutContext::LibraryEdit);
+        CHECK(ShortcutReaperFallback(kShortcutEditSelectAll) == (KeyBinding{'A', true, false, false}));
+        bool on_reaper[kShortcutCount] = {};
+        for (int i = kShortcutEditTrimLeft; i <= kShortcutEditLoop; ++i) on_reaper[i] = true;
+        ShortcutBindings sb = DefaultShortcutBindings();
+        CHECK(SanitizeShortcuts(sb, nullptr, nullptr, on_reaper).empty());
+        // REAPER lists no key for 40182: Ctrl+A runs it in Edit only.
+        ShortcutKeyLists lk;
+        bool             used[kShortcutCount] = {};
+        ApplyReaperFallbacks(lk, on_reaper, used);
+        CHECK(used[kShortcutEditSelectAll]);
+        ShortcutKeymap m = ResolveShortcutKeys(sb, lk, on_reaper);
+        CHECK(ShortcutActionFor(m, 'A', true, false, false, false, false, true) == kShortcutEditSelectAll);
+        CHECK(ShortcutActionFor(m, 'A', true, false, false, false, false, false) == -1);
+        // REAPER gives it Ctrl+Shift+A: that key, not the fallback.
+        ShortcutKeyLists lk2;
+        lk2[kShortcutEditSelectAll] = {KeyBinding{'A', true, true, false}};
+        bool used2[kShortcutCount] = {};
+        ApplyReaperFallbacks(lk2, on_reaper, used2);
+        m = ResolveShortcutKeys(sb, lk2, on_reaper);
+        CHECK(ShortcutActionFor(m, 'A', true, true, false, false, false, true) == kShortcutEditSelectAll);
+        CHECK(ShortcutActionFor(m, 'A', true, false, false, false, false, true) == -1);
+    }
+
     // 13-62: the selected part's Solo / Mute in the Sound Edit window -- on REAPER's 40281 / 40280 (track
     // Solo/unsolo, Mute/unmute) by default; no RAV action, no key of their own, no fallback.
     {
@@ -1173,7 +1205,7 @@ int main()
     // 13-62h: Heal / Loop in the Sound Edit window -- on REAPER's 40548 (Item: Heal splits in items) / 1068
     // (Transport: Toggle repeat) by default, H / R while REAPER lists no key for them; 40508 retargeted.
     {
-        CHECK(kShortcutCount == 32 && kShortcutEditHeal == 21 && kShortcutEditLoop == 22);  // 13-67a: renumbered; 13-73: +7; 13-74: +2
+        CHECK(kShortcutCount == 33 && kShortcutEditHeal == 22 && kShortcutEditLoop == 23);  // 13-67a: renumbered; 13-73: +7; 13-74: +2; A: +1
         // 13-73: Mono on REAPER's take channel mode keys; Left / Right as RAV actions with no default key.
         CHECK(ShortcutReaperActionId(kShortcutEditMonoOff) == "40176" && ShortcutReaperActionId(kShortcutEditMonoSum) == "40178");
         CHECK(ShortcutReaperActionId(kShortcutEditMonoLeft) == "40179" && ShortcutReaperActionId(kShortcutEditMonoRight) == "40180");

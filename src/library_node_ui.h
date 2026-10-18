@@ -113,6 +113,7 @@ bool LibraryEditKeysActive();
 // 13-67a: kShortcutEditExclSolo solos the selected part alone (again on the only soloed part: unsolo; view state),
 // kShortcutEditSnapOffset sets the selected zone's snap offset at the edit cursor (one undo point),
 // kShortcutEditPrevStop moves the edit cursor back one stop (time selection / zone start, file start last).
+// Sound Edit evening (A): kShortcutEditSelectAll selects every zone (the V filter's variation only; view state).
 // 13-74: kShortcutEditGainUp / Down move the selected zones' gain one notch (1 dB; notches in a row: one undo point).
 void RequestLibraryEditKey(int shortcut_id);
 // 13-74: the Edit waveform was under the mouse last frame and this wheel (Ctrl / Shift / Alt) is a gain row's

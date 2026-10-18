@@ -1173,6 +1173,7 @@ void RequestLibraryEditKey(int shortcut_id)
         P.nav_request = shortcut_id == kShortcutEditNextVar ? 1 : -1;
     else if (shortcut_id == kShortcutEditHeal || shortcut_id == kShortcutEditLoop ||  // 13-62h (Lot D; Lot E does them)
              shortcut_id == kShortcutEditSnapOffset || shortcut_id == kShortcutEditPrevStop ||  // 13-67a
+             shortcut_id == kShortcutEditSelectAll ||                                         // Sound Edit evening (A)
              (shortcut_id >= kShortcutEditMonoOff && shortcut_id <= kShortcutEditSideRule))  // 13-73: Mono, Left / Right
         P.zone_request = shortcut_id;
     else if (shortcut_id == kShortcutEditGainUp || shortcut_id == kShortcutEditGainDown)  // 13-74
@@ -3551,11 +3552,16 @@ void EditLegend(const SoundStore& store, const SoundLibrary& lib, const SoundNod
     if (len > 0.0 && d.mode != DetectMode::Takes) {
         const float bh = ui::Dp(22.0f);
         next(ui::ButtonWidth("All"));
-        const bool all = P.view_len <= 0.0;
         const std::vector<ZoneVarBlock> vblocks = ZoneVarBlocks(d);
+        // Sound Edit evening (A): the chips show the V filter (Ctrl+A's), not the zoom: a variation gone, All again.
+        bool has_focus = false;
+        for (const ZoneVarBlock& b : vblocks) has_focus = has_focus || b.frame == P.zv.var_focus;
+        if (!has_focus) P.zv.var_focus = -1;
+        const bool all = P.zv.var_focus < 0;
         if (ui::ToggleButton("All##zvall", all, ImVec2(0.0f, bh))) {
             P.view_start = 0.0;
             P.view_len = 0.0;
+            P.zv.var_focus = -1;  // Sound Edit evening (A): no V filter (Ctrl+A: every zone)
             if (!vblocks.empty()) P.edit_cursor = vblocks.front().a;  // 13-67a: the cursor at the first item's start
         }
         int vi = 0;
@@ -3563,14 +3569,15 @@ void EditLegend(const SoundStore& store, const SoundLibrary& lib, const SoundNod
             ++vi;
             const std::string lbl = "V" + std::to_string(vi) + "##zv" + std::to_string(vi);
             const double      a0 = std::max(0.0, b.a - 0.03), b0 = std::min(len, b.b + 0.03);
-            const bool        on = P.view_len > 0.0 && std::fabs(P.view_start - a0) < 1e-6 && std::fabs(P.view_len - (b0 - a0)) < 1e-6;
+            const bool        on = P.zv.var_focus == b.frame;
             next(ui::ButtonWidth(("V" + std::to_string(vi)).c_str()));
             if (ui::ToggleButton(lbl.c_str(), on, ImVec2(0.0f, bh))) {
                 P.view_start = a0;
                 P.view_len = b0 - a0 >= len ? 0.0 : b0 - a0;
                 P.edit_cursor = b.a;  // 13-67a (Antho 2026-10-17): play starts on it right away (view state)
+                P.zv.var_focus = b.frame;  // Sound Edit evening (A): the V filter (Ctrl+A: its zones only)
             }
-            ui::ItemTip("Zoom on variation %d, the edit cursor at its start", vi);
+            ui::ItemTip("Zoom on variation %d, the edit cursor at its start (Select all: its zones only)", vi);
         }
     }
     ImGui::Dummy(ImVec2(1.0f, ui::Dp(2.0f)));

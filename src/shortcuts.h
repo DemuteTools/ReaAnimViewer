@@ -124,23 +124,26 @@ enum ShortcutId : int {
     // 13-67a: REAPER's 40172 "Markers: Go to previous marker/project start": the edit cursor back to the nearest
     // earlier time selection start / zone start, the file start last (view state). No 40173 (Antho 2026-10-17).
     kShortcutEditPrevStop  = 20,
+    // Sound Edit evening (A, Antho 2026-10-19): REAPER's 40182 "Item: Select all items" (Ctrl+A while REAPER gives it
+    // none): every zone selected (the V filter's variation only; a Takes-mode Sound's active take). View state.
+    kShortcutEditSelectAll = 21,
     // 13-62h: zone editing, on REAPER's 40548 / 1068 keys (H / R while REAPER gives them none).
-    kShortcutEditHeal      = 21,  // the selected zones that are edge to edge healed into one
-    kShortcutEditLoop      = 22,  // Loop on / off (view state, never saved)
+    kShortcutEditHeal      = 22,  // the selected zones that are edge to edge healed into one
+    kShortcutEditLoop      = 23,  // Loop on / off (view state, never saved)
     // 13-73 (Antho 2026-10-19): the Channels > Mono selector on REAPER's take channel mode keys (one undo point).
-    kShortcutEditMonoOff   = 23,  // 40176 normal
-    kShortcutEditMonoSum   = 24,  // 40178 mono (downmix)
-    kShortcutEditMonoLeft  = 25,  // 40179 mono (left)
-    kShortcutEditMonoRight = 26,  // 40180 mono (right)
+    kShortcutEditMonoOff   = 24,  // 40176 normal
+    kShortcutEditMonoSum   = 25,  // 40178 mono (downmix)
+    kShortcutEditMonoLeft  = 26,  // 40179 mono (left)
+    kShortcutEditMonoRight = 27,  // 40180 mono (right)
     // 13-73: Left / Right on the selected variations (RAV actions, no key by default; one undo point).
-    kShortcutEditSideLeft  = 27,
-    kShortcutEditSideRight = 28,
-    kShortcutEditSideRule  = 29,
+    kShortcutEditSideLeft  = 28,
+    kShortcutEditSideRight = 29,
+    kShortcutEditSideRule  = 30,
     // 13-74 (Antho 2026-10-19): the selected zones' gain +1 / -1 dB (RAV actions; Ctrl+Shift+wheel up / down over the
     // waveform by default; notches in a row = one undo point, zone_gain_nudge.h).
-    kShortcutEditGainUp    = 30,
-    kShortcutEditGainDown  = 31,
-    kShortcutCount       = 32,
+    kShortcutEditGainUp    = 31,
+    kShortcutEditGainDown  = 32,
+    kShortcutCount       = 33,
 };
 
 inline const ShortcutDef kShortcutTable[kShortcutCount] = {
@@ -196,6 +199,9 @@ inline const ShortcutDef kShortcutTable[kShortcutCount] = {
     // 13-67a (Antho 2026-10-17): REAPER's previous marker, on the time selection start, the zone starts, the file start.
     {"edit_prev_stop", "Go to previous zone start / file start", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr,
      nullptr, "40172", "Markers: Go to previous marker/project start"},
+    // Sound Edit evening (A, Antho 2026-10-19): REAPER's select all items, on the zones (Ctrl+A when REAPER gives none).
+    {"edit_select_all", "Select all zones", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+     "40182", "Item: Select all items", {'A', true, false, false}},
     // 13-62h (decisions "Keys / playback"): REAPER's heal splits on the selected zones (H while REAPER gives
     // 40548 no key), and its repeat toggle on the Edit window's Loop (R while REAPER gives 1068 no key).
     {"edit_heal", "Heal selected zones", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,

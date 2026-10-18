@@ -600,6 +600,16 @@ double ZoneStepRef(const SoundData& d, const ZoneSel& sel, double cursor)
     return cursor < 0.0 ? -1.0 : cursor;
 }
 
+ZoneSel ZonesToSelectAll(const SoundData& d, int tl, int var_focus)
+{
+    const ZoneSel all = AllZones(d, tl);
+    if (var_focus < 0) return all;
+    ZoneSel out;
+    for (const ZoneRef& r : all)
+        if (r.frame == var_focus) out.push_back(r);
+    return out.empty() ? all : out;
+}
+
 int HealCutCount(const SoundData& d, const ZoneSel& sel)
 {
     // HealZones' plan, played on the edges: each pair edge to edge merges the right one into the zone healed so

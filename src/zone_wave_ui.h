@@ -27,6 +27,7 @@
 //   ZoneSelectPart(h, part)   every zone of a part selected (double-click a lane header / part chip)
 //   ZoneSnapToCursor(h)       40541: the selected zone's snap offset at the edit cursor (one undo point)
 //   ZonePrevStop(h)           40172: the edit cursor back to the time selection / zone start before it, the file start last
+//   ZoneSelectAll(h)          40182 (Ctrl+A): every zone selected (the V filter's variation only; Takes: the active take)
 //   ZoneStepVariation(h, dir) next (+1) / previous (-1) block of the Variations strip: its first zone, cursor at its
 //                             start, view centred (same zoom)
 //   ZoneClickPlays() / SetZoneClickPlays(on)   the Click plays pref (per user, ExtState, default on)
@@ -133,6 +134,9 @@ struct ZoneEditView {
     // -1 = none yet) and the take the zone audition plays.
     int           cur_tl = -1;
     int           play_tl = -1;
+    // Sound Edit evening (A / B): the V filter -- the variation (its frame) whose V chip is on, -1 = All. Ctrl+A selects
+    // its zones only; Next / Previous variation and the V chips set it (ZoneGoToVariation).
+    int           var_focus = -1;
 };
 
 // Clears the view state (a new Sound shown).
@@ -208,6 +212,7 @@ void ZoneSelectPart(const ZoneWaveHost& h, const std::string& part);
 void ZoneStepVariation(const ZoneWaveHost& h, int dir);
 void ZoneSnapToCursor(const ZoneWaveHost& h);  // 13-67a: REAPER 40541 on the selected zone (one undo point)
 void ZonePrevStop(const ZoneWaveHost& h);      // 13-67a: REAPER 40172, the cursor back one stop (view state)
+void ZoneSelectAll(const ZoneWaveHost& h);     // Sound Edit evening (A): REAPER 40182 on the zones (view state)
 // 13-73: the selected variations Left ('L') / Right ('R') by hand, or back to the rule (0): one undo point (a toast when
 // Left / Right is off or nothing is selected). Their parts follow them.
 void ZoneSetSide(const ZoneWaveHost& h, char side);

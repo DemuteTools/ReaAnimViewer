@@ -2045,6 +2045,7 @@ void ZoneEditRequest(const ZoneWaveHost& h, int id)
     case kShortcutEditPrevVar: ZoneStepVariation(h, -1); return;
     case kShortcutEditSnapOffset: ZoneSnapToCursor(h); return;  // 13-67a
     case kShortcutEditPrevStop: ZonePrevStop(h); return;        // 13-67a
+    case kShortcutEditSelectAll: ZoneSelectAll(h); return;      // Sound Edit evening (A)
     case kShortcutEditSideLeft: ZoneSetSide(h, 'L'); return;    // 13-73
     case kShortcutEditSideRight: ZoneSetSide(h, 'R'); return;
     case kShortcutEditSideRule: ZoneSetSide(h, 0); return;
@@ -2420,6 +2421,31 @@ void ZonePrevStop(const ZoneWaveHost& h)
     const double vl = *h.view_len;
     if (vl > 0.0 && (*h.cursor < *h.view_start || *h.cursor > *h.view_start + vl))
         *h.view_start = std::max(0.0, std::min(*h.cursor - vl * 0.1, std::max(0.0, h.file_len - vl)));
+}
+
+// Sound Edit evening (A): REAPER's 40182 "Item: Select all items" on the zones: every zone of the host's timeline (a
+// Takes-mode Sound's active take), only the V filter's variation while a V chip is on. View state (no undo point).
+void ZoneSelectAll(const ZoneWaveHost& h)
+{
+    ZoneEditView&    v = *h.view;
+    const SoundData& d = Shown(h);
+    const int        tl = d.mode == DetectMode::Takes ? v.cur_tl : h.tl;
+    const bool       focus = d.mode != DetectMode::Takes && v.var_focus >= 0 && !ZonesOfFrame(d, v.var_focus).empty();
+    v.sel = ZonesToSelectAll(d, tl, focus ? v.var_focus : -1);
+    if (v.sel.empty()) {
+        ShowLibraryToast(d.mode == DetectMode::Takes && tl < 0 ? "Click a take first: Select all acts on one take" : "No zone to select", false);
+        return;
+    }
+    for (const ZoneRef& r : v.sel)
+        if (const EditZone* z = ZoneOf(d, r); z && !z->IsGap()) {
+            *h.part_sel = z->part;
+            break;
+        }
+    const std::string n = std::to_string(v.sel.size()) + (v.sel.size() == 1 ? " zone" : " zones");
+    ShowLibraryToast(focus ? "Variation " + std::to_string(v.var_focus + 1) + ": its " + n + " selected (All: every zone)"
+                     : d.mode == DetectMode::Takes ? "Take " + std::to_string(tl + 1) + ": its " + n + " selected"
+                                                   : "All " + n + " selected",
+                     false);
 }
 
 void ZoneTrimAt(const ZoneWaveHost& h, int side)

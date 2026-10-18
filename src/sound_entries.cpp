@@ -1909,9 +1909,6 @@ bool FrameSideByHand(const SoundData& d, const std::vector<char>& rule, int i)
     return (h == 'L' || h == 'R') && h != rule[static_cast<size_t>(i)];
 }
 
-namespace {
-
-// Every frame's rule side written (what FrameRuleSides gives now); a hand side equal to it cleared. True when changed.
 bool LockSides(SoundData& d)
 {
     const std::vector<char> rule = FrameRuleSides(d);
@@ -1933,8 +1930,6 @@ bool LockSides(SoundData& d)
     }
     return changed;
 }
-
-}  // namespace
 
 bool SetSidesOn(SoundData& d, bool on)
 {
@@ -2018,7 +2013,12 @@ void CarrySides(std::vector<SoundFrame>& now, const std::vector<SoundFrame>& old
     bool any = sides_on;
     for (const SoundFrame& f : old) any = any || f.side != 0 || f.side_hand != 0;
     for (SoundFrame& f : now) f.side = f.side_hand = 0;
-    if (!any || old.empty()) return;
+    if (!any) return;
+    if (old.empty()) {  // 13-73 review: a first detection with Left / Right on: the Pattern written at once
+        const std::vector<char> first = FrameRuleSides(now, p);
+        for (size_t i = 0; i < now.size(); ++i) now[i].side = first[i];
+        return;
+    }
     const std::vector<char> rule = FrameRuleSides(old, p);
     for (size_t i = 0; i < now.size(); ++i) {
         int best = -1;

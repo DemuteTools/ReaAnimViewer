@@ -3485,9 +3485,11 @@ void EditLegend(const SoundStore& store, const SoundLibrary& lib, const SoundNod
 void MonoControl(const SoundLibrary& lib, const SoundNode& n)
 {
     static const char* const kLabels[4] = {"Off", "Left", "Right", "Sum"};
-    static const char* const kTips[4] = {"As the file: a stereo file stays stereo",
-                                         "The left channel alone, on both sides",
-                                         "The right channel alone, on both sides", "Left + right mixed into one channel"};
+    // 13-73 review (mockup MONO_TIPS): each segment says the REAPER action whose key it follows.
+    static const char* const kTips[4] = {"As the file: a stereo file stays stereo. REAPER's \"Set take channel mode to normal\" (40176): its key works here too",
+                                         "The left channel alone, on both sides. REAPER's \"Set take channel mode to mono (left)\" (40179): its key works here too",
+                                         "The right channel alone, on both sides. REAPER's \"Set take channel mode to mono (right)\" (40180): its key works here too",
+                                         "Left + right mixed into one channel. REAPER's \"Set take channel mode to mono (downmix)\" (40178): its key works here too"};
     static const char* const kWords[4] = {"off (as the file)", "left", "right", "sum L+R"};
     ui::LabelRow("Mono", ui::Dp(160.0f), ui::Dp(70.0f));
     int        sel = static_cast<int>(n.sound.mono);

@@ -847,6 +847,25 @@ static std::string SidesOf(const SoundData& d)
     for (char c : FrameSides(d)) s += c ? c : '0';
     return s;
 }
+// 13-73 review: a Sound made with Left / Right on (New sounds pref): its first detection writes the Pattern, and a zone
+// edit (LockSides first) deleting a variation never shifts the sides of the ones after it.
+static void TestSidesFirstDetection()
+{
+    std::vector<SoundFrame> now;
+    for (int i = 0; i < 4; ++i) now.push_back(SideFrame(i * 1.0, 0.4));
+    CarrySides(now, {}, SidePattern::AltLR, true);
+    CHECK(now[0].side == 'L' && now[1].side == 'R' && now[2].side == 'L' && now[3].side == 'R');
+    std::vector<SoundFrame> off = now;
+    CarrySides(off, {}, SidePattern::AltLR, false);
+    CHECK(off[0].side == 0 && off[3].side == 0);  // Left / Right off, nothing known: nothing written
+    SoundData d;
+    d.sides = true;
+    for (int i = 0; i < 4; ++i) d.frames.push_back(SideFrame(i * 1.0, 0.4));  // never written (sides 0)
+    CHECK(LockSides(d) && SidesOf(d) == "LRLR");
+    d.frames.erase(d.frames.begin() + 1);  // V2 deleted
+    CHECK(SidesOf(d) == "LLR");            // V3 stays Left, V4 Right
+}
+
 static void TestSides()
 {
     SoundData d;
@@ -935,6 +954,7 @@ static void TestSides()
 int main()
 {
     TestSides();  // 13-73
+    TestSidesFirstDetection();  // 13-73 review
     TestSwitchDetectMode();  // 13-67b
     TestPartSettings();  // 13-62
     TestPartRowHelpers();

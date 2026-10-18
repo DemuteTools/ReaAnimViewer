@@ -229,6 +229,9 @@ std::vector<char> FrameRuleSides(const std::vector<SoundFrame>& frames, SidePatt
 std::vector<char> FrameSides(const SoundData& d);
 // Whether frame `i`'s side was set by hand (a hand side that differs from its rule side).
 bool FrameSideByHand(const SoundData& d, const std::vector<char>& rule, int i);
+// Every frame's rule side written (what FrameRuleSides gives now, so deleting or adding a variation never shifts the
+// others); a hand side equal to it cleared. True when something changed. 13-73 review: run before every zone edit.
+bool LockSides(SoundData& d);
 // Left / Right on or off. On: every frame's rule side is written (locked, so a later re-detection keeps it). False when
 // nothing changed.
 bool SetSidesOn(SoundData& d, bool on);

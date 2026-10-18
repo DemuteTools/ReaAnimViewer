@@ -36,6 +36,9 @@ struct ResolveHooks {
     // 13-68 (Antho 2026-10-18): how many full rounds of its variations a Sound has drawn (for that part) before
     // its current pick (a Blend shifts its other layers by it: LinkedVariation). Null = 0.
     std::function<int(const SoundNode&, const std::string& part_value)> rounds;
+    // 13-73 review: the variations of a Sound the event's side draws from (Left / Right on and narrowing them), in
+    // order; empty = no narrowing (every one). A Blend's linked layer pairs inside it (the n-th Left with the n-th Left).
+    std::function<std::vector<int>(const SoundNode&, const std::string& part_value)> side_pool;
 };
 
 struct ResolvedSound {

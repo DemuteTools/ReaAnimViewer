@@ -183,7 +183,7 @@ struct Walker {
             text_open = false;
             // 13-68 v2, every Blend since Antho 2026-10-18 ("a global rule"): its Sound layers play the first one's
             // variation number, then mix once its variations are used up (LinkedVariation).
-            int lead = -1;  // the first Sound child's pick
+            int lead = -1, lead_rank = -1;  // the first Sound child's pick (13-73 review: and its rank on its side)
             int round = 0, layer = 0;  // its full rounds drawn before (Antho 2026-10-18), the other child's rank
             for (const SoundNode* c : play) {
                 const size_t before = res.sounds.size();
@@ -194,8 +194,18 @@ struct Walker {
                 if (lead < 0) {
                     lead = rs.variation;
                     round = hooks.rounds ? hooks.rounds(*c, rs.part_value) : 0;
+                    // 13-73 review: drawn among one side's variations, the lead's number is its rank on that side.
+                    lead_rank = lead;
+                    const std::vector<int> pool = hooks.side_pool ? hooks.side_pool(*c, rs.part_value) : std::vector<int>{};
+                    const auto             it = std::find(pool.begin(), pool.end(), lead);
+                    if (it != pool.end()) lead_rank = static_cast<int>(it - pool.begin());
                 } else {
-                    rs.variation = LinkedVariation(lead, static_cast<int>(c->sound.frames.size()), rs.variation, round, ++layer);
+                    // 13-73 review: a layer with Left / Right on pairs inside the event's side (never the other foot).
+                    const std::vector<int> pool = hooks.side_pool ? hooks.side_pool(*c, rs.part_value) : std::vector<int>{};
+                    if (!pool.empty())
+                        rs.variation = pool[static_cast<size_t>(LinkedVariation(lead_rank, static_cast<int>(pool.size()), 0, round, ++layer))];
+                    else
+                        rs.variation = LinkedVariation(lead, static_cast<int>(c->sound.frames.size()), rs.variation, round, ++layer);
                 }
             }
             break;

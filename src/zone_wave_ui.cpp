@@ -220,18 +220,25 @@ bool Write(const ZoneWaveHost& h, const std::string& name, const ZoneFn& f, cons
     SoundData        probe = st;
     ZoneEditView&    v = *h.view;
     ZoneSel          out = v.sel;  // in / out: the gestures re-resolve it (or put their new zone there)
-    if (!f(probe, Ctx(h), &out)) return false;
+    // 13-73 review: with Left / Right on, every variation's side is written before a zone edit, so a variation deleted,
+    // healed or added never shifts the sides of the others (a first detection may have left them to the Pattern).
+    const ZoneFn f0 = f;
+    const ZoneFn g = [f0](SoundData& x, const ZoneContext& c, ZoneSel* s) {
+        if (x.sides) LockSides(x);
+        return f0(x, c, s);
+    };
+    if (!g(probe, Ctx(h), &out)) return false;
     v.sel = own_sel ? SelValid(probe, out) : SelFollow(st, v.sel, probe);
     const std::string msg = toast ? toast(probe, out) : name;
     const std::string path = h.path;
     const double      len = h.file_len;
     const int         tl = h.tl;
     MarkOwn(v);
-    h.edit(name, [f, path, len, tl](SoundData& x) {
+    h.edit(name, [g, path, len, tl](SoundData& x) {
         PeakData   pk;
         const bool has = !path.empty() && RequestPeaks(path, &pk) == PeakState::Ready;
         ZoneSel    s;
-        return f(x, ZoneContext{has ? &pk : nullptr, len, tl}, &s);
+        return g(x, ZoneContext{has ? &pk : nullptr, len, tl}, &s);
     }, msg);
     return true;
 }
@@ -1304,6 +1311,7 @@ void SideMenu(const ZoneWaveHost& h)
     ui::ItemTipText("Every selected variation plays for right events (its parts with it)");
     if (ui::MenuEntry("Follow rule##zsf", key(kShortcutEditSideRule).c_str(), false, on && any_hand)) ZoneSetSide(h, 0);
     ui::ItemTipText((std::string("Back to the Pattern (") + SidePatternLabel(d.side_pattern) + ")").c_str());
+    ui::MenuSeparator();
     if (ui::MenuEntry("Shortcuts\xE2\x80\xA6##zskeys")) RequestOpenShortcutsPopup("Left / Right");
     ui::ItemTipText("Shortcuts window: Set Left, Set Right, Follow rule (none by default)");
 }
@@ -2035,8 +2043,7 @@ void ZoneSplit(const ZoneWaveHost& h)
         ShowLibraryToast("Too close to the zone's edge", false);
 }
 
-// 13-67a: REAPER's 40541 "Item: Set snap offset to cursor": the selected part zones holding the edit cursor (none
-// selected: the part zone under it) get their own snap offset there (a hand snap offset), one undo point.
+// 13-73: Set Left / Set Right / Follow rule (side 0) on the selected variations, one undo point.
 void ZoneSetSide(const ZoneWaveHost& h, char side)
 {
     const SoundData& d = Shown(h);
@@ -2069,6 +2076,8 @@ void ZoneSetMono(const ZoneWaveHost& h, MonoMode m)
         ShowLibraryToast(toast + " already", false);
 }
 
+// 13-67a: REAPER's 40541 "Item: Set snap offset to cursor": the selected part zones holding the edit cursor (none
+// selected: the part zone under it) get their own snap offset there (a hand snap offset), one undo point.
 void ZoneSnapToCursor(const ZoneWaveHost& h)
 {
     const double t = *h.cursor;

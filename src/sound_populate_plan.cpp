@@ -206,10 +206,25 @@ ResolveHooks MakeDrawHooks(PopulateDrawState& state, EventDraw& ev, std::functio
         const std::vector<int> pool = SideVariations(n.sound, active, e->side);  // 13-73: its parts follow its side
         return Draw(*st, *e, n, pool, n.avoid_repeat, part, pool.size() != active.size());
     };
-    h.rounds = [st](const SoundNode& n, const std::string& part) -> int {  // 13-68: after its pick (held by the history)
+    // 13-73 review: the variations the event's side narrows a Sound to (empty: none narrowed), as `variation` draws.
+    auto side_pool = [e](const SoundNode& n, const std::string& part) -> std::vector<int> {
+        const std::vector<int> active = part.empty() ? ActiveVariations(n.sound) : ActiveVariationsFor(n.sound, part);
+        std::vector<int>       pool = SideVariations(n.sound, active, e->side);
+        if (pool.size() == active.size()) pool.clear();
+        return pool;
+    };
+    h.side_pool = side_pool;
+    h.rounds = [st, side_pool](const SoundNode& n, const std::string& part) -> int {  // 13-68: after its pick (held by the history)
         const auto   it = st->history.find(part.empty() ? n.uid : n.uid + "|" + part);  // Draw's key
         const size_t count = part.empty() ? ActiveVariations(n.sound).size() : ActiveVariationsFor(n.sound, part).size();
         if (it == st->history.end() || it->second.empty() || count == 0) return 0;
+        // 13-73 review: drawn on one side, its rounds are that side's (its picks among that side's variations).
+        const std::vector<int> pool = side_pool(n, part);
+        if (!pool.empty()) {
+            size_t mine = 0;
+            for (int x : it->second) mine += std::find(pool.begin(), pool.end(), x) != pool.end() ? 1 : 0;
+            return mine == 0 ? 0 : static_cast<int>((mine - 1) / pool.size());
+        }
         return static_cast<int>((it->second.size() - 1) / count);
     };
     h.is_missing = std::move(is_missing);

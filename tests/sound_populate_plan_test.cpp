@@ -948,6 +948,49 @@ static void TestLinkedBlend()
     CHECK(LinkedVariation(0, 3, -1, 1, 2) == 2);  // a third layer shifts twice as far
 }
 
+// 13-73 review: a Blend of two Sounds with Left / Right on (6 variations, Alternate L R): every layer of a left event plays
+// a Left variation (the second pairs by rank on that side, then mixes by that side's rounds), never the other foot.
+static void TestSidesLinkedBlend()
+{
+    SoundLibrary lib;
+    lib.uid = "L";
+    lib.root = "b";
+    lib.nodes.push_back(Node("b", "", SoundNodeType::Blend));
+    for (const char* uid : {"x", "y"}) {
+        SoundNode s = Leaf(uid, "b", 6);
+        s.sound.mode = DetectMode::TakeMarkers;
+        s.sound.sides = true;
+        lib.nodes.push_back(s);
+    }
+    const SoundStore              empty;
+    PopulateDrawState             ps;
+    ps.lib = &lib;
+    ps.seed = 7;
+    std::set<std::pair<int, int>> pairs;
+    bool                          ok = true;
+    for (int e = 0; e < 18; ++e) {
+        EventDraw ed;
+        ed.rid = "r1";
+        ed.t = 1.0 + e;
+        ed.side = e % 2 == 0 ? 'L' : 'R';
+        const Resolution res = ResolveEvent(empty, lib, ValueLayers(), MakeDrawHooks(ps, ed, nullptr));
+        if (res.sounds.size() != 2) {
+            ok = false;
+            continue;
+        }
+        const int want = ed.side == 'L' ? 0 : 1, a = res.sounds[0].variation, b2 = res.sounds[1].variation;
+        ok = ok && a % 2 == want && b2 % 2 == want;
+        // the left events' n-th round: the second layer's rank on its side = the first's + round
+        if (ed.side == 'L') {
+            const int round = (e / 2) / 3;
+            ok = ok && (b2 / 2) == ((a / 2) + round) % 3;
+            pairs.insert({a, b2});
+        }
+    }
+    CHECK(ok);
+    CHECK(pairs.size() == 9);  // the 3 x 3 left pairs over three rounds
+}
+
 // 13-73 (Left / Right): an event with a side draws only that side's variations (Alternate L R: even = L, odd = R) when the
 // Sound has Left / Right on, with Avoid repeat on that side's picks; no side or Left / Right off: all; a side with none: all.
 static void TestSidesDraw()
@@ -1031,6 +1074,7 @@ static void TestSidesDraw()
 int main()
 {
     TestSidesDraw();  // 13-73
+    TestSidesLinkedBlend();  // 13-73 review
     SetNewSoundSyncMode(SyncMode::Attack);  // 13-67b: these fixtures were written for the old default (Attack)
     TestLinkedBlend();  // 13-68 v2
     TestPopulatePlanHelpers();  // 13-62i (D review)

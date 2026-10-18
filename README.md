@@ -337,6 +337,8 @@ Each action in the list shows its keys. Click one to check it (its name, and the
 | **E** | Add event at playhead | Tagging view |
 | **Delete** | Suppress / delete event | Tagging view |
 | your REAPER keys | Trims, split (**B**), heal (**H**), solo / mute the selected part, next / previous variation, Loop (**R**), snap offset at the cursor, previous zone start / file start, Mono off / sum / left / right | Sound Edit |
+| **Ctrl+Shift+wheel up** | Gain of the selected zones: +1 dB per notch (notches in a row = one undo point) | Sound Edit waveform |
+| **Ctrl+Shift+wheel down** | Gain of the selected zones: -1 dB per notch | Sound Edit waveform |
 | your REAPER bindings | Scroll and zoom (wheel, Alt+wheel, Ctrl+wheel, +, -, Up, Down by default) | Timelines |
 
 A key you bind is taken from REAPER while the viewer has the focus: bind Space, for example, and Space no longer starts or stops playback from the viewer. Hold Ctrl, Shift or Alt with it to keep REAPER's own key free. The key caps and tooltips in the viewer show your keys, custom ones in the accent colour. On AZERTY and other layouts with an AltGr key, Windows treats Ctrl+Alt+key as AltGr+key, so a Ctrl+Alt binding may type a character instead.

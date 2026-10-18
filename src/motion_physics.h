@@ -185,6 +185,16 @@
 // (L), at its own last part to leave / its own step: one event. Looping clips: as the other
 // events.
 //
+// Running strides (story 10-9a-4): a run's flights (both feet off each stride, longer as it
+// speeds up: Treadmill Running's sprint flies 154-162 ms at -1 g, which Detect's raise of the
+// minimum flight to 150 ms read as jumps) are no jumps. A both-feet-off run is a stride's flight
+// when the flight before or after it lies one single-foot stance away (only one foot touches in
+// between, jump_stride_stance_s at most: running alternates single supports and flights) and lasts
+// at least this one / jump_stride_ratio: it does not stand out from the clip's own cadence. Each
+// jump source (flight, free fall, push-off) skips them, so no Jump and no Land there. A jump taken
+// while running flies 3.4x its neighbours or more; a lone flight (no neighbour) is judged as
+// before. Limit: a jump among strides as long as itself (a run of long bounds) is not found.
+//
 // Clip start (story 10-9a-3, not looping, feet only): a take-off whose push the clip starts in
 // has a contact too short for the Viterbi. A foot part free at sample 0 that stays within
 // slide_height x leg of its lowest height over the clip from sample 0, and comes to rest within
@@ -407,7 +417,8 @@ struct PhysicsParams {
     // both-feet-off run that falls at -0.5 g or more elsewhere is Climbing Ladder's, 129 ms
     // (-0.67 g, the hands holding); Left Strafe (221, 258 ms) and Climbing (621 ms) do not fall
     // (> -0.25 g). 300 ms sits between, and the sensitivity (/ f) keeps it there: 150 ms at 100 %
-    // (so Detect's raise never reaches the ladder, nor a run's ~100 ms flights), 600 ms at 0 %.
+    // (so Detect's raise never reaches the ladder; a sprint's 150-160 ms flights it reaches are left
+    // to the stride rule, story 10-9a-4), 600 ms at 0 %.
     // Limits: a hop under 300 ms (11 cm of hips rise) needs a higher sensitivity; Jumping (a leap
     // onto a ledge, one foot to the other) is both feet off for 58 ms only, under a run's flight:
     // no jump there.
@@ -421,6 +432,15 @@ struct PhysicsParams {
     // Attack, Jump_Small, Standing Jump), staggered ones 60 ms or more (Standing Jump02, Jump
     // Away); landings 13 ms or more apart. Not moved by the sensitivity.
     double     jump_tie_s = 0.010;
+    // Story 10-9a-4: a running stride's flight is no jump (see "Running strides" above): a
+    // neighbouring flight one single-foot stance away (the stance this long at most, s) lasting at
+    // least this flight / jump_stride_ratio. Measured (240 Hz dumps): consecutive stride flights
+    // differ by 1.8x at most (Unarmed Run Back 142 / 79 ms; Treadmill Running 92-162 ms as it
+    // speeds up, 1.3x between neighbours), stances 117-296 ms, always one foot; a jump's flight is
+    // 3.4x its neighbours at least (JumpingOverObstacle 588 / 175 ms; Run Strafing Jump 488 / 100,
+    // Running Jump Over Hole 400 / 46). Not moved by the sensitivity.
+    double     jump_stride_ratio = 2.5;
+    double     jump_stride_stance_s = 0.400;
     // Story 10-9a-2: the push-off jumps (see "Push-off jumps" above). The hips' upward
     // acceleration peak (g) a push must reach while a foot is on the ground (the sensitivity
     // divides it), and how soon after that peak both feet must leave (s). Chosen on the fixtures

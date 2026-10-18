@@ -2019,6 +2019,57 @@ int main()
         shorter.jump_min_flight_s = 0.08;
         CHECK(Of(JumpEvents(a, shorter), PhysicsKind::Jump).size() == 1);
     }
+    // Story 10-9a-4: a run's stride flights are no jumps. The feet alternate single-foot stances of
+    // 150 ms and 150 ms flights (each foot flies a ballistic arc between its contacts, so the hips
+    // fall at -1 g in every flight), as Treadmill Running's sprint: even with the minimum flight
+    // under them (Detect's raise), no Jump and no Land from any source. Without the stride rule
+    // (no stance counts as one) each flight is a jump (flight, push-off; the free fall's 300 ms
+    // head reaches the landing in most). A flight lengthened to 500 ms among them (a
+    // jump taken while running, 3.3x its neighbours) is one Jump and one Land.
+    {
+        auto arcs = [](std::vector<std::pair<double, double>> c, double x) {
+            return FootFn([c, x](double t) {
+                FootPose f;
+                f.ball = Vec3d{x, 0.02, 0.0};
+                for (size_t k = 0; k + 1 < c.size(); ++k)
+                    if (t >= c[k].second && t < c[k + 1].first)
+                        f.ball.y += 0.5 * 9.81 * (t - c[k].second) * (c[k + 1].first - t);
+                return f;
+            });
+        };
+        auto run = [&](double jump_at, double extra) {  // contacts 150 ms, the feet 300 ms apart
+            std::vector<std::pair<double, double>> c[2];
+            for (int k = -2; k < 12; ++k) {
+                double s = 0.3 * k;
+                if (jump_at > 0.0 && s > jump_at) s += extra;
+                c[k & 1].push_back({s, s + 0.15});
+            }
+            Options o;
+            o.dur = 3.0;
+            return Rig(arcs(c[0], -0.1), arcs(c[1], 0.1), o);
+        };
+        PhysicsParams raised;
+        raised.jump_min_flight_s = 0.1;
+        raised.jump_impulse_g = 0.2;
+        raised.jump_impulse_max_speed = 100.0;  // in place: the push-off's running check never says
+        const PhysicsAnalysis a = AnalyseMotion(run(0.0, 0.0), raised);
+        CHECK(a.ok);
+        CHECK(JumpEvents(a, raised).empty() && JumpFreeFallEvents(a, raised).empty() &&
+              JumpPushOffEvents(a, raised).empty());
+        PhysicsParams no_rule = raised;
+        no_rule.jump_stride_stance_s = 0.0;
+        CHECK(Of(JumpEvents(a, no_rule), PhysicsKind::Jump).size() >= 8);
+        CHECK(!JumpFreeFallEvents(a, no_rule).empty() && JumpPushOffEvents(a, no_rule).size() >= 8);
+        // The running jump: the flight after the contact starting at 1.2 s lasts 500 ms.
+        const PhysicsAnalysis b = AnalyseMotion(run(1.2, 0.35), raised);
+        const std::vector<PhysicsEvent> ev = JumpEvents(b, raised);
+        CHECK(Of(ev, PhysicsKind::Jump).size() == 1 && Of(ev, PhysicsKind::Land).size() == 1);
+        if (Of(ev, PhysicsKind::Jump).size() == 1 && Of(ev, PhysicsKind::Land).size() == 1) {
+            CHECK(std::fabs(Of(ev, PhysicsKind::Jump)[0].time_s - 1.35) < 0.04 && Of(ev, PhysicsKind::Jump)[0].side == 'L');
+            CHECK(std::fabs(Of(ev, PhysicsKind::Land)[0].time_s - 1.85) < 0.04 && Of(ev, PhysicsKind::Land)[0].side == 'R');
+        }
+        CHECK(JumpFreeFallEvents(b, raised).size() == 1);
+    }
     // Looping: a jump across the seam (take-off at 1.8 s of a 2 s cycle, landing at 0.3 s) is read
     // whole: one Jump and one Land, in clip time.
     {

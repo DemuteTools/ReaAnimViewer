@@ -1683,6 +1683,42 @@ bool FeetOnMask(const PhysicsAnalysis& a, std::vector<char>& on)
     return true;
 }
 
+// Story 10-9a-4: whether the both-feet-off run [fs, fe) is a running stride's flight, not a jump:
+// a neighbouring flight (the run before or after it, 2 samples at least) lies one single-foot
+// stance away (only one foot touches between them, for p.jump_stride_stance_s at most) and lasts
+// at least (fe - fs) / p.jump_stride_ratio. A run's flights repeat at its cadence, one foot per
+// stance; a jump's flight stands out from the flights around it (or has none).
+bool StrideFlight(const PhysicsAnalysis& a, const PhysicsParams& p, const std::vector<char>& on, int fs, int fe)
+{
+    const int    n = static_cast<int>(on.size());
+    const double rate = a.rate_hz;
+    const double need = static_cast<double>(fe - fs) / p.jump_stride_ratio;
+    const int    max_stance = static_cast<int>(std::floor(p.jump_stride_stance_s * rate + 1e-9));
+    auto single = [&](int lo, int hi) {  // only one foot touches during [lo, hi)
+        bool d[2] = {false, false};
+        for (int i = lo; i < hi; ++i)
+            for (int s = 0; s < 2; ++s) d[s] = d[s] || FootDown(a.foot[s], i);
+        return d[0] != d[1];
+    };
+    // The flight before: the stance [ss, fs) and the run [ps, ss).
+    int ss = fs;
+    while (ss > 0 && on[static_cast<size_t>(ss - 1)]) --ss;
+    if (ss > 0 && fs - ss <= max_stance && single(ss, fs)) {
+        int ps = ss;
+        while (ps > 0 && !on[static_cast<size_t>(ps - 1)]) --ps;
+        if (ss - ps >= 2 && static_cast<double>(ss - ps) >= need - 1e-9) return true;
+    }
+    // The flight after: the stance [fe, se) and the run [se, ne).
+    int se = fe;
+    while (se < n && on[static_cast<size_t>(se)]) ++se;
+    if (se < n && se - fe <= max_stance && single(fe, se)) {
+        int ne = se;
+        while (ne < n && !on[static_cast<size_t>(ne)]) ++ne;
+        if (ne - se >= 2 && static_cast<double>(ne - se) >= need - 1e-9) return true;
+    }
+    return false;
+}
+
 // The take-off before a both-feet-off run starting at sample `fs`: the latest foot lift-off
 // (FootLiftOff, story 10-8p: heel / ball, without p.lift_offset_s: measured on the 12 jump
 // references, the take-off's median signed error is +1.6 ms without it, -6.4 ms with it) of the
@@ -1788,6 +1824,7 @@ std::vector<PhysicsEvent> JumpEvents(const PhysicsAnalysis& a, const PhysicsPara
             hi -= edge;
         }
         if (!(HipsMeanAcc(a, lo, hi) <= -p.jump_fall_g * kGravity)) continue;
+        if (StrideFlight(a, p, on, fs, fe)) continue;  // story 10-9a-4: a running stride
         PhysicsEvent best;
         if (fs > 0 && TakeOffAt(a, p, fs, &best)) {  // the take-off: the last foot's lift-off (10-8p)
             best.strength = HipsPeakSpeed(a, p, best.time_s, 1);
@@ -1871,6 +1908,7 @@ std::vector<PhysicsEvent> JumpFreeFallEvents(const PhysicsAnalysis& a, const Phy
             hi = std::min(fe - 1, fs + head);
         }
         if (hi <= lo || !(HipsMeanAcc(a, lo, hi) <= -p.jump_fall_g * kGravity)) continue;
+        if (StrideFlight(a, p, on, fs, fe)) continue;  // story 10-9a-4: a running stride
         PhysicsEvent best;
         if (!TakeOffAt(a, p, fs, &best)) continue;
         best.strength = HipsPeakSpeed(a, p, best.time_s, 1);
@@ -1929,7 +1967,7 @@ std::vector<PhysicsEvent> JumpPushOffEvents(const PhysicsAnalysis& a, const Phys
         }
         const int fs = i;  // both feet leave here: the run [fs, fe)
         while (i < n && !on[static_cast<size_t>(i)]) ++i;
-        if (i - fs < 2) continue;
+        if (i - fs < 2 || StrideFlight(a, p, on, fs, i)) continue;  // story 10-9a-4: a running stride
         // The push: the peak upward acceleration with a foot down within the window before the run.
         int peak = -1;
         for (int k = std::max(0, fs - win); k < fs; ++k)

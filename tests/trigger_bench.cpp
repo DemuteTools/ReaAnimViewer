@@ -18,7 +18,8 @@
 // 10-9a-3: lift-off, jump and land Separate). Detect's
 // raise of silent blocks (ApplyAutoSensSearch) runs on a copy of each configuration's blocks:
 // the raised blocks and their events are listed in their own section and never count in a
-// matrix. Matching (ref_file.h ScoreRow): per clip x kind x side, one-to-one, smallest |err|
+// matrix (story 10-9a-4: one on a clip whose reference has no line of its kind is marked "no
+// reference" and counted: a raise the reference says is false). Matching (ref_file.h ScoreRow): per clip x kind x side, one-to-one, smallest |err|
 // first, +-kMatchWindowS, inside '# visible' only; confirmed / draft counted apart.
 //
 // The run is saved to <out>/last.tsv (the previous one read first), and every row that changed
@@ -222,9 +223,15 @@ struct Found {
     double      t = 0.0;
 };
 
+struct Raised {
+    std::string text;    // "grab L 50→72: 3 events"
+    std::string target;  // its row kind word (FoundTarget)
+    int         events = 0;
+};
+
 struct ConfigRun {
-    std::vector<Found>       found;
-    std::vector<std::string> raised;  // "grab L 50→72: 3 events"
+    std::vector<Found>  found;
+    std::vector<Raised> raised;
 };
 
 ConfigRun RunConfig(BenchConfig cfg, const std::vector<BoneTrack>& role_tracks, const std::vector<int>& role_bone)
@@ -250,7 +257,7 @@ ConfigRun RunConfig(BenchConfig cfg, const std::vector<BoneTrack>& role_tracks, 
             char buf[160];
             std::snprintf(buf, sizeof(buf), "%s %c %g\xE2\x86\x92%g: %d event%s", blocks[i].auto_type.c_str(),
                           blocks[i].auto_side, blocks[i].sens, res[i].sens, n, n == 1 ? "" : "s");
-            r.raised.push_back(buf);
+            r.raised.push_back({buf, FoundTarget(blocks[i].auto_type), n});
         }
     }
     return r;
@@ -555,17 +562,31 @@ int main(int argc, char** argv)
         for (const std::string& k : kinds) std::printf("  %-12s %s\n", k.c_str(), RowText(sum[k]).c_str());
     }
 
+    // Story 10-9a-4: a raised block on a clip whose reference holds no line of its kind (in that
+    // configuration, either side) found what the reference says is not there: "no reference", and
+    // counted per kind below (a clip with a full reference and no jump, such as Treadmill Running,
+    // is a negative reference for the raise too).
     std::printf("\n--- Raise of silent blocks (Detect's search, on a copy; never in a matrix) ---\n");
-    bool any_raise = false;
+    bool                       any_raise = false;
+    std::map<std::string, int> false_events, false_blocks;
     for (const ClipResult& c : clips) {
         if (!c.read) continue;
         for (int cfg = 0; cfg < 2; ++cfg)
-            for (const std::string& r : c.run[cfg].raised) {
-                std::printf("  %s [%s]  %s\n", c.src.id.c_str(), BenchConfigName(static_cast<BenchConfig>(cfg)), r.c_str());
+            for (const Raised& r : c.run[cfg].raised) {
+                bool none = c.has_ref;
+                for (const RefLine& l : c.refs)
+                    if (l.status != "deleted" && RefTarget(l, static_cast<BenchConfig>(cfg)) == r.target) none = false;
+                std::printf("  %s [%s]  %s%s\n", c.src.id.c_str(), BenchConfigName(static_cast<BenchConfig>(cfg)),
+                            r.text.c_str(), none ? "  (no reference)" : "");
+                if (none) false_events[r.target] += r.events, ++false_blocks[r.target];
                 any_raise = true;
             }
     }
     if (!any_raise) std::printf("  (no block raised)\n");
+    std::printf("Raised against a reference with none of the kind (events / blocks):");
+    for (const char* k : {"jump", "land"}) std::printf(" %s %d / %d,", k, false_events[k], false_blocks[k]);
+    std::printf(" every kind %d / %d\n", [&] { int n = 0; for (const auto& kv : false_events) n += kv.second; return n; }(),
+                [&] { int n = 0; for (const auto& kv : false_blocks) n += kv.second; return n; }());
 
     std::printf("\n--- Not benched ---\n");
     bool any_fail = false;

@@ -47,9 +47,12 @@ struct PopulateCounts {
 // 13-19: `progress` (optional) is told where the work is: once before any work, then before each item and
 // each of its events (the caller paces its frames, populate_progress.h ProgressPacer). It must not touch
 // the project.
+// 13-68 (Antho 2026-10-18): `only_rids` (not empty) = only the events of these rules are placed; the other
+// rules' events are left as they are (Attach selected items places one marker type, never the other libraries).
 using PopulateProgressFn = std::function<void(const PopulateProgress&)>;
 SoundReport PopulateItemsCounted(const std::vector<MediaItem*>& items, int* events, PopulateCounts* counts = nullptr,
-                                 bool revive_deleted = false, const PopulateProgressFn& progress = nullptr);
+                                 bool revive_deleted = false, const PopulateProgressFn& progress = nullptr,
+                                 const std::vector<std::string>& only_rids = {});
 // The items Populate acts on: the RAV items of `items` plus every other member of their pools.
 std::vector<MediaItem*> PopulateTargets(const std::vector<MediaItem*>& items);
 // The selected items that are RAV animation items.

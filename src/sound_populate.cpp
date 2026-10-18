@@ -1392,7 +1392,8 @@ std::vector<MediaItem*> PopulateTargets(const std::vector<MediaItem*>& items)
 }
 
 SoundReport PopulateItemsCounted(const std::vector<MediaItem*>& items, int* events, PopulateCounts* counts,
-                                 bool revive_deleted, const PopulateProgressFn& progress)
+                                 bool revive_deleted, const PopulateProgressFn& progress,
+                                 const std::vector<std::string>& only_rids)
 {
     SoundReport rep;
     if (events) *events = 0;
@@ -1411,6 +1412,7 @@ SoundReport PopulateItemsCounted(const std::vector<MediaItem*>& items, int* even
             PopOpts o;
             o.counts = counts;
             o.revive_deleted = revive_deleted;
+            o.rids = only_rids;  // 13-68: only these rules (empty = every rule)
             std::map<std::string, std::vector<int>> carried;  // 13-68: avoid-repeat across the items
             o.carry = &carried;
             // 13-15: a rule that only inherits its sound (Project / Character) has no id until now: given first,

@@ -454,7 +454,15 @@ std::string Run(SpreadScope scope, bool add_layer)
 
     PopulateCounts    pc;
     int               events = 0;
-    const SoundReport rep = PopulateItemsCounted(targets, &events, &pc);
+    // Antho 2026-10-18: only the rules given this library are placed, never the project's other libraries.
+    std::vector<std::string> type_rids;
+    for (MediaItem* m : WithPoolMembers(targets))
+        for (const RuleSounds& r : ReadItemSounds(m).rules)
+            if (r.library == lib_uid && !r.none && !r.rid.empty() &&
+                std::find(type_rids.begin(), type_rids.end(), r.rid) == type_rids.end())
+                type_rids.push_back(r.rid);
+    if (type_rids.empty()) return Finish("No " + type + " rule holds the library " + type + ": nothing placed");
+    const SoundReport rep = PopulateItemsCounted(targets, &events, &pc, false, nullptr, type_rids);
     counts.events = events;
     counts.placed = pc.placed;
     counts.replaced += pc.replaced;

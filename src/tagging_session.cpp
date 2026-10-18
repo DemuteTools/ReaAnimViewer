@@ -27,6 +27,7 @@
 #include "pcm_source_anim.h"
 #include "role_map_store.h"
 #include "tag_markers.h"  // the marker option (markers up to date)
+#include "watchdog.h"     // freeze audit
 
 namespace rav {
 namespace {
@@ -831,6 +832,7 @@ ItemDetection DetectItem(MediaItem* item)
         }
         out.rules = rd.rules;
         const std::string path = AnimPathOf(take);
+        RAV_SCOPE("DetectItem", wd::PathTail(path));  // freeze audit
         // The file: the session's parse when it is the same one, else the cache's.
         const bool                      session_file = path == g.asset_path && g.asset;
         AssetFileStamp                  used_stamp = g.asset_stamp;

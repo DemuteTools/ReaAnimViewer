@@ -44,6 +44,7 @@
 #include "tagging_signal.h"
 #include "ui_flow.h"
 #include "ui_theme.h"
+#include "watchdog.h"  // freeze audit
 
 namespace rav {
 
@@ -671,6 +672,7 @@ bool SoundFollowTick(ReaProject* proj)
                 misses.size(), kDetectBudgetMs,
                 [&](size_t k) {
                     const size_t   i = misses[k];
+                    RAV_SCOPE("Follow detect", wd::PathTail(anims[i].path));  // freeze audit: one detection to run
                     AssetFileStamp used;
                     DetectedEvents d = RunDetection(anims[i].item, &used);
                     // Kept only for the file's version it ran on (the parse cache may still hold the
@@ -791,6 +793,7 @@ bool SoundFollowTick(ReaProject* proj)
         std::set<std::string>   owners_now;
         for (size_t ai = 0; ai < anims.size(); ++ai) {
             const Anim& an = anims[ai];
+            RAV_QUIET_SCOPE("Follow item", wd::PathTail(an.path));  // freeze audit: every item each pass (no crumb)
             try {
                 MediaItem* const   item = an.item;
                 const std::string& guid = an.guid;

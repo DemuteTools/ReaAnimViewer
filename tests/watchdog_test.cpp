@@ -152,6 +152,17 @@ int main()
         CHECK(wd::FormatReport(nullptr, 0, h) == 0);
     }
 
+    // Freeze fix #1: a long path's crumb keeps its end (the file name), without a copy.
+    {
+        const std::string shortp = "C:\\a\\walk.fbx";
+        CHECK(wd::PathTail(shortp) == shortp.c_str());
+        const std::string longp = std::string(200, 'x') + "\\character_walk_cycle_final.fbx";
+        const char* t = wd::PathTail(longp);
+        CHECK(std::strlen(t) == static_cast<size_t>(wd::kArgLen) - 1 && t + std::strlen(t) == longp.c_str() + longp.size());
+        CHECK(std::strstr(t, "character_walk_cycle_final.fbx") != nullptr);
+        CHECK(*wd::PathTail(std::string()) == '\0');
+    }
+
     if (g_fails == 0) std::printf("watchdog: all checks passed\n");
     return g_fails == 0 ? 0 : 1;
 }

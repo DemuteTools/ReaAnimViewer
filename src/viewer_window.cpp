@@ -761,6 +761,7 @@ void RenderTick()
             // Tag the loader's warnings (texture / skin lines name no file) with this path in
             // the copyable log; cleared before the load-failed line, which names it itself.
             SetLogContext(item_path);
+            RAV_SCOPE("LoadAsset", wd::PathTail(item_path));  // freeze audit: the viewer's item change
             // Freeze fix #2: the parse comes from the shared cache (asset_cache.h), for the file's
             // version on disk now: the Tagging view, the follow and the video FX use that same one,
             // so the file is parsed once per version (and not again when coming back to an item).

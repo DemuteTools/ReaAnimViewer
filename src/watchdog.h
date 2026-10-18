@@ -33,6 +33,13 @@ constexpr int kWorkers = 8;
 void Crumb(const char* what, const char* arg = nullptr);
 inline void Crumb(const char* what, const std::string& arg) { Crumb(what, arg.c_str()); }
 void CrumbNum(const char* what, long long n);
+// The end of a file path that fits an argument (its file name, the folders before it as room allows): the
+// pointer into `path` itself, no copy. Freeze fix #1: the crumbs of the file loads name the file.
+inline const char* PathTail(const std::string& path)
+{
+    const size_t keep = static_cast<size_t>(kArgLen) - 1;
+    return path.size() > keep ? path.c_str() + (path.size() - keep) : path.c_str();
+}
 inline void Crumb(const char* what, long long n) { CrumbNum(what, n); }
 inline void Crumb(const char* what, int n) { CrumbNum(what, n); }
 inline void Crumb(const char* what, size_t n) { CrumbNum(what, static_cast<long long>(n)); }

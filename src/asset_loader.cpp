@@ -60,6 +60,7 @@
 #include "gl_loader.h"  // modern-GL upload entry points (glGenBuffers/glBufferData)
 #include "gltf_skin.h"  // direct glTF skin-weight read (assimp 6.0.5 Windows bug work-around)
 #include "texture_locate.h"  // TextureFileName: the by-name lookup beside the model (issue #1)
+#include "watchdog.h"  // freeze audit: the parse and the probe leave a crumb
 
 namespace rav {
 namespace {
@@ -500,8 +501,9 @@ GpuImage UploadTexture(const unsigned char* rgba, int w, int h, GLint internal_f
     glGenTextures(1, tex.addr());
     if (tex.get() == 0) return {};
 
-    // Drain stale errors so the post-upload check observes only THIS upload.
-    while (glGetError() != GL_NO_ERROR) {}
+    // Drain stale errors so the post-upload check observes only THIS upload. Capped (freeze fix
+    // #7): a lost context can report an error at every call, which never ended this loop.
+    for (int i = 0; i < 16 && glGetError() != GL_NO_ERROR; ++i) {}
 
     glBindTexture(GL_TEXTURE_2D, tex.get());
     // RGBA rows are 4-byte aligned anyway, but set 1 defensively so a future RGB
@@ -516,7 +518,7 @@ GpuImage UploadTexture(const unsigned char* rgba, int w, int h, GLint internal_f
     glBindTexture(GL_TEXTURE_2D, 0);
 
     bool gl_failed = false;
-    while (glGetError() != GL_NO_ERROR) gl_failed = true;
+    for (int i = 0; i < 16 && glGetError() != GL_NO_ERROR; ++i) gl_failed = true;  // capped (#7)
     if (gl_failed) return {};  // free the partial texture (RAII) → flat fallback
     return tex;
 }
@@ -1049,8 +1051,9 @@ bool UploadMesh(const PendingMesh& pm, SceneMesh& out)
 
     // Drain any pre-existing error so the post-upload check observes only THIS
     // upload (glGetError reports the oldest error and clears one flag — a stale one
-    // would otherwise mask a real GL_OUT_OF_MEMORY from glBufferData below).
-    while (glGetError() != GL_NO_ERROR) {}
+    // would otherwise mask a real GL_OUT_OF_MEMORY from glBufferData below). Capped (freeze fix
+    // #7): a lost context can report an error at every call, which never ended this loop.
+    for (int i = 0; i < 16 && glGetError() != GL_NO_ERROR; ++i) {}
 
     glBindBuffer(GL_ARRAY_BUFFER, out.vb.get());
     glBufferData(GL_ARRAY_BUFFER,
@@ -1069,7 +1072,7 @@ bool UploadMesh(const PendingMesh& pm, SceneMesh& out)
     // anything else) is a GPU failure; drain the whole queue so nothing leaks into
     // the next frame's error state.
     bool gl_failed = false;
-    while (glGetError() != GL_NO_ERROR) gl_failed = true;
+    for (int i = 0; i < 16 && glGetError() != GL_NO_ERROR; ++i) gl_failed = true;  // capped (#7)
     if (gl_failed)
         return false;
 
@@ -1163,6 +1166,7 @@ CpuLoadResult LoadCpuAsset(const std::string& path)
 
 CpuLoadResult LoadCpuAsset(const std::string& path, const CpuLoadOptions& options)
 {
+    RAV_SCOPE("LoadCpuAsset", wd::PathTail(path));  // freeze audit: the parse (any thread)
     // assimp throws std::exception-derived on some malformed inputs; the whole body
     // is wrapped so nothing escapes this function (AR18). Catch std::bad_alloc as
     // OutOfMemory specifically, then any other std::exception as ParseFailed.
@@ -1547,6 +1551,7 @@ LoadResult UploadParsedAsset(CpuLoadResult parsed)
 
 double ProbeAnimationDuration(const std::string& path)
 {
+    RAV_SCOPE("ProbeAnimationDuration", wd::PathTail(path));  // freeze audit (any thread)
     // Same no-throw envelope as LoadAsset (AR18): assimp throws on some malformed
     // inputs and this runs from a Reaper-driven boundary (the PCM_source ctor /
     // SetFileName on a file drop). Any escape -> 0.0, which the source maps to the

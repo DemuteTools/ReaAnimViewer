@@ -266,9 +266,9 @@ std::vector<PhysicsParams> AutoParamSets(const std::vector<Block>& blocks, bool 
 // analysis failed, has none). Sorted by time (then block). Story 10-9a: a Land event replaces the
 // step blocks' events (combined, heel, toe) within kAutoReplaceS of it, a Jump event the lift-off
 // blocks' events, both on their physics times (before the blocks' offsets); story 10-8r: a part
-// kind (role key heel / toe) only those of a kind with the same role key or a whole-foot kind. Story 10-9a-2: every
-// signature of a block's kind runs (AutoKindInfo::sigs), merged per block by
-// MergeSignatureEvents; Event::signature = the signature that found it.
+// kind (role key heel / toe) only those of a kind with the same role key or a whole-foot kind.
+// Story 10-9a-2: every signature of a block's kind runs (AutoKindInfo::sigs), merged per block
+// by MergeSignatureEvents; Event::signature = the signature that found it.
 constexpr double kAutoReplaceS = 0.030;
 // Story 10-9a-2: the merge window of a kind's signatures (wider than kAutoReplaceS: two
 // signatures time the same take-off from different signals).

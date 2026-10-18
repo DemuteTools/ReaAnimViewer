@@ -57,6 +57,7 @@
 #include "ui_flow.h"
 #include "library_icons.h"
 #include "ui_theme.h"
+#include "wave_draw_ui.h"  // 13-71: the one waveform drawer
 
 namespace rav {
 
@@ -969,11 +970,9 @@ void DrawMediaWaveform(ImDrawList* dl, ImVec2 p0, ImVec2 p1, const Analysis& an,
                        double playhead, int hover = -1)
 {
     dl->AddRectFilled(p0, p1, ui::kBg, ui::kRadiusSm);
-    const float  w = p1.x - p0.x, h = p1.y - p0.y, mid = (p0.y + p1.y) * 0.5f;
-    // 13-14 (C7.5): a stereo file draws two lanes (L above R), each half the height with its own
-    // zero line and a 1 px stroke-strong line between them; a mono one, one lane.
-    const int    lanes = PeakChannels(an.peaks);
-    const float  lane_h = h / static_cast<float>(lanes);
+    const float  w = p1.x - p0.x, mid = (p0.y + p1.y) * 0.5f;
+    // 13-14 (C7.5) / 13-71: a lane per channel (L above R), each its share of the height, a 1 px
+    // stroke-strong line between them (DrawWaveLanes).
     const double len = an.length;
     if (!(len > 0.0) || w < 4.0f) {
         dl->AddRect(p0, p1, ui::kStroke, ui::kRadiusSm);
@@ -991,46 +990,21 @@ void DrawMediaWaveform(ImDrawList* dl, ImVec2 p0, ImVec2 p1, const Analysis& an,
                           ui::WithAlpha(ui::kAccent, a), r3);
     }
     if (an.ready && an.peaks.rate > 0.0 && !an.peaks.max_abs.empty()) {
-        const float hh = lane_h * 0.5f - ui::Dp(lanes > 1 ? 2.0f : 4.0f);
         // 13-57: one column per pixel read at the panel's resolution from the samples (sharp, its true
         // shape: signed min / max), the read peaks meanwhile; the samples as a line for a file so short
         // a pixel is shorter than a sample.
         const int   ncols = std::max(1, static_cast<int>(w));
         WaveColumns wc;
         if (!ReadWaveColumns(an.path, 0.0, len, ncols, &wc)) ColumnsFromPeaks(an.peaks, 0.0, len, ncols, &wc);
-        auto SeriesOf = [&](int l) {
-            return wc.series == kWaveSeries && lanes == 2 ? (l == 0 ? kWaveLeft : kWaveRight) : kWaveAll;
-        };
-        auto ColOf = [&](double t, double peak) {
-            const int fi = FrameAt(an.frames, t);
-            return peak > 1.0 ? kLibMissing : (fi >= 0 && Sel(fi)) ? ui::kAccent : ui::kMuted;
-        };
-        for (int l = 0; l < lanes; ++l) {
-            const int                 s = SeriesOf(l);
-            const float               lm = p0.y + lane_h * (static_cast<float>(l) + 0.5f);
-            auto Y = [&](double v) { return lm - static_cast<float>(std::clamp(v, -1.0, 1.0)) * hh; };
-            if (wc.line) {
-                for (size_t k = 0; k + 1 < wc.pt_x.size() && k + 1 < wc.pt_v[s].size(); ++k) {
-                    const double v0 = wc.pt_v[s][k], v1 = wc.pt_v[s][k + 1];
-                    const double t = (wc.pt_x[k] + wc.pt_x[k + 1]) * 0.5 / ncols * len;
-                    dl->AddLine(ImVec2(p0.x + static_cast<float>(wc.pt_x[k]), Y(v0)),
-                                ImVec2(p0.x + static_cast<float>(wc.pt_x[k + 1]), Y(v1)),
-                                ColOf(t, std::max(std::fabs(v0), std::fabs(v1))), ui::Dp(1.5f));
-                }
-                continue;
-            }
-            for (int x = 0; x < ncols; ++x) {
-                if (!WaveColumnHas(wc, s, static_cast<size_t>(x))) continue;
-                const double hi = wc.hi[s][static_cast<size_t>(x)], lo = wc.lo[s][static_cast<size_t>(x)];
-                const ImU32  col = ColOf(len * (x + 0.5) / ncols, std::max(hi, -lo));
-                const float  px = std::floor(p0.x) + static_cast<float>(x);
-                dl->AddRectFilled(ImVec2(px, std::floor(Y(hi))), ImVec2(px + 1.0f, std::floor(Y(lo)) + 1.0f), col);
-            }
-        }
-        for (int l = 1; l < lanes; ++l) {
-            const float y = std::floor(p0.y + lane_h * static_cast<float>(l));
-            dl->AddRectFilled(ImVec2(p0.x, y), ImVec2(p1.x, y + 1.0f), ui::kStrokeStrong);
-        }
+        WaveDrawStyle st;
+        st.pad = ui::Dp(WaveLanesFor(MonoMode::Off, wc.series).n > 1 ? 2.0f : 4.0f);
+        st.line_w = ui::Dp(1.5f);
+        st.split = ui::kStrokeStrong;
+        DrawWaveLanes(dl, wc, MonoMode::Off, std::floor(p0.x), p0.y, p1.y, st, [&](double pos, double peak, bool, WaveInk* out) {
+            const int fi = FrameAt(an.frames, pos / ncols * len);
+            out[0].col = peak > 1.0 ? kLibMissing : (fi >= 0 && Sel(fi)) ? ui::kAccent : ui::kMuted;
+            return 1;
+        });
     } else {
         const char*  t = an.ready ? "No audio" : "Reading...";
         ImFont*      sf = ui::FontSmall();

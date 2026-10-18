@@ -4,7 +4,8 @@
 // a view up to kWaveDetailMaxSpan long is drawn from the file's samples, read in tiles of
 // kWaveTileColumns columns at a column rate of a power of two just above the view's pixel rate
 // (capped at the file's sample rate: one column per sample). A tile keeps, per column, the signed min
-// and max of each series (all channels, L, R, (L + R) / 2), so the waveform shows its true shape.
+// and max of each series (all channels, L, R, (L + R) / 2, then 13-71: each further channel), so the
+// waveform shows its true shape, one lane per channel (WaveLanesFor).
 // Tiles are kept in a small LRU (WaveTileLru) keyed on (file, rate, index): panning reuses them,
 // a zoom step inside one power of two reuses them, a zoom step across reuses the level next to it
 // until its own tiles are read (no flicker back to the coarse peaks).
@@ -38,11 +39,55 @@ namespace rav {
 
 constexpr int    kWaveTileColumns = 512;
 constexpr double kWaveDetailMaxSpan = 60.0;  // a view up to this long (s) is drawn from its samples
-constexpr int    kWaveSeries = 4;            // 0 all channels, 1 L, 2 R, 3 (L + R) / 2
-constexpr size_t kWaveTileCacheTiles = 384;  // ~16 KB a stereo tile: ~6 MB at most
+constexpr int    kWaveMaxLanes = kPeakMaxLanes;  // 13-71: one lane per channel, at most this many
+constexpr int    kWaveSeries = 2 + kWaveMaxLanes;  // 0 all channels, 1 ch 1 (L), 2 ch 2 (R), 3 (L + R) / 2, 4.. ch 3..
+constexpr size_t kWaveTileCacheTiles = 384;  // ~16 KB a stereo tile: ~6 MB at most (~40 KB an 8-channel one)
 
 // The series a lane draws: a mono file has series 0 only.
 enum WaveSeries { kWaveAll = 0, kWaveLeft = 1, kWaveRight = 2, kWaveSum = 3 };
+
+// 13-71: the series of channel `c` (0-based; c past kWaveMaxLanes folds to c % kWaveMaxLanes).
+inline int WaveChannelSeries(int c)
+{
+    c = ((c % kWaveMaxLanes) + kWaveMaxLanes) % kWaveMaxLanes;
+    return c == 0 ? kWaveLeft : c == 1 ? kWaveRight : 2 + c;
+}
+
+// 13-71: the series a file of `nch` channels is read into: 1 for a mono file, else 2 + its channels
+// (at most kWaveSeries; a stereo file 4, as before).
+inline int WaveSeriesCount(int nch)
+{
+    return nch >= 2 ? 2 + std::min(nch, kWaveMaxLanes) : 1;
+}
+
+// 13-71: the channels (lanes) `series` series hold (WaveSeriesCount's inverse; 1 = mono).
+inline int WaveSeriesChannels(int series)
+{
+    return series >= 4 ? std::min(series - 2, kWaveMaxLanes) : 1;
+}
+
+// 13-71 (Antho: "the number of channels shows in every waveform"): the lanes a waveform draws, top to
+// bottom, and the series each lane reads. Every channel of the file its own lane (stereo = L above R, as
+// REAPER), unless the Sound is forced to mono: one lane, the channel (or (L + R) / 2) heard. A mono file
+// (or one read without its channels) one lane of series 0. The one rule every waveform drawer uses.
+struct WaveLanes {
+    int n = 1;
+    int series[kWaveMaxLanes] = {kWaveAll};
+};
+
+inline WaveLanes WaveLanesFor(MonoMode mono, int series)
+{
+    WaveLanes w;
+    const int ch = WaveSeriesChannels(series);
+    if (ch < 2) return w;
+    if (mono != MonoMode::Off) {
+        w.series[0] = mono == MonoMode::Right ? kWaveRight : mono == MonoMode::Sum ? kWaveSum : kWaveLeft;
+        return w;
+    }
+    w.n = ch;
+    for (int l = 0; l < ch; ++l) w.series[l] = WaveChannelSeries(l);
+    return w;
+}
 
 // The column rate (columns per second) a view of `view_len` seconds over `columns` pixels is read at
 // from a file sampled at `sample_rate`: the power of two at or above the pixel rate, capped at the
@@ -82,7 +127,7 @@ inline bool WaveTilesFor(double view_start, double view_len, double rate, double
 struct WaveTile {
     double             rate = 0.0;
     int64_t            index = 0;
-    int                series = 1;  // 1 (a mono file) or kWaveSeries
+    int                series = 1;  // WaveSeriesCount of the file's channels
     std::vector<float> lo[kWaveSeries], hi[kWaveSeries];
     FileVersion        file;  // the file's date + size it was read from
 };
@@ -91,7 +136,7 @@ inline void WaveTileInit(WaveTile* t, double rate, int64_t index, int nch)
 {
     t->rate = rate;
     t->index = index;
-    t->series = nch >= 2 ? kWaveSeries : 1;
+    t->series = WaveSeriesCount(nch);
     for (int s = 0; s < kWaveSeries; ++s) {
         if (s < t->series) {
             t->lo[s].assign(kWaveTileColumns, std::numeric_limits<float>::max());
@@ -104,8 +149,8 @@ inline void WaveTileInit(WaveTile* t, double rate, int64_t index, int nch)
 }
 
 // Folds the frame of sample `n` (`nch` interleaved values, the file at `sample_rate`) into its column.
-// L = the even channels, R = the odd ones (as PeakAddFrame's lanes); the sum = (ch 0 + ch 1) / 2. A
-// sample outside the tile is ignored.
+// 13-71: each channel into its own series (WaveChannelSeries; a channel past the tile's folds as
+// PeakAddFrame's lanes); the sum = (ch 0 + ch 1) / 2. A sample outside the tile is ignored.
 template <typename Sample>
 inline void WaveTileAddFrame(WaveTile* t, int64_t n, double sample_rate, const Sample* frame, int nch)
 {
@@ -120,10 +165,11 @@ inline void WaveTileAddFrame(WaveTile* t, int64_t n, double sample_rate, const S
         t->lo[s][c] = std::min(t->lo[s][c], v);
         t->hi[s][c] = std::max(t->hi[s][c], v);
     };
+    const int nl = WaveSeriesChannels(t->series);
     for (int k = 0; k < nch; ++k) {
         const float v = static_cast<float>(frame[k]);
         put(kWaveAll, v);
-        if (t->series > 1) put(k & 1 ? kWaveRight : kWaveLeft, v);
+        if (t->series > 1) put(WaveChannelSeries(k % nl), v);
     }
     if (t->series > 1) put(kWaveSum, static_cast<float>((frame[0] + frame[1]) * 0.5));
 }
@@ -158,11 +204,13 @@ inline void WaveColumnsInit(WaveColumns* w, int columns, int series)
 }
 
 // The coarse peaks (max |sample| per bin, from 0 s at p.rate) over the view: symmetric columns
-// (-max..+max), the sum series as 13-41 drew it ((L + R) / 2 of the lanes' peaks).
+// (-max..+max), the sum series as 13-41 drew it ((L + R) / 2 of the lanes' peaks), each lane its
+// channel's series (13-71).
 inline void ColumnsFromPeaks(const PeakData& p, double view_start, double view_len, int columns, WaveColumns* out)
 {
-    const int stereo = PeakChannels(p) == 2;
-    WaveColumnsInit(out, columns, stereo ? kWaveSeries : 1);
+    const int  nl = PeakChannels(p);
+    const bool stereo = nl >= 2;
+    WaveColumnsInit(out, columns, WaveSeriesCount(nl));
     if (!(p.rate > 0.0) || !(view_len > 0.0) || p.max_abs.empty()) return;
     const int64_t nb = static_cast<int64_t>(p.max_abs.size());
     for (int c = 0; c < out->columns; ++c) {
@@ -173,24 +221,24 @@ inline void ColumnsFromPeaks(const PeakData& p, double view_start, double view_l
         k1 = std::min(k1, nb);
         if (k1 <= k0) continue;
         const size_t i = static_cast<size_t>(c);
-        float        m[3] = {0.0f, 0.0f, 0.0f};
+        float        m = 0.0f, ml[kWaveMaxLanes] = {};
         for (int64_t k = k0; k < k1; ++k) {
             const size_t b = static_cast<size_t>(k);
-            m[0] = std::max(m[0], p.max_abs[b]);
-            if (stereo) {
-                m[1] = std::max(m[1], p.lanes[0][b]);
-                m[2] = std::max(m[2], p.lanes[1][b]);
-            }
+            m = std::max(m, p.max_abs[b]);
+            if (stereo)
+                for (int l = 0; l < nl; ++l) ml[l] = std::max(ml[l], p.lanes[l][b]);
         }
-        out->lo[0][i] = -m[0];
-        out->hi[0][i] = m[0];
+        out->lo[0][i] = -m;
+        out->hi[0][i] = m;
         if (stereo) {
-            const float sum = (m[1] + m[2]) * 0.5f;
-            const float v[4] = {m[0], m[1], m[2], sum};
-            for (int s = 1; s < kWaveSeries; ++s) {
-                out->lo[s][i] = -v[s];
-                out->hi[s][i] = v[s];
+            for (int l = 0; l < nl; ++l) {
+                const int s = WaveChannelSeries(l);
+                out->lo[s][i] = -ml[l];
+                out->hi[s][i] = ml[l];
             }
+            const float sum = (ml[0] + ml[1]) * 0.5f;
+            out->lo[kWaveSum][i] = -sum;
+            out->hi[kWaveSum][i] = sum;
         }
     }
 }
@@ -201,7 +249,7 @@ using WaveTileLookup = std::function<const WaveTile*(double rate, int64_t index)
 // The view folded from the tiles: each pixel from the first rate of `rates` (the wanted one first)
 // whose tile holding it is read; a pixel no tile holds keeps the `coarse` column (pass it already
 // filled by ColumnsFromPeaks, or empty). `out->detail` = every pixel came from a tile at rates[0].
-// `series`: the tiles' (1 for a mono file, else kWaveSeries); a coarse of other lanes or width is not
+// `series`: the tiles' (WaveSeriesCount of the file's channels); a coarse of other lanes or width is not
 // used. `sample_rate`: when rates[0] is it and a pixel is shorter than a sample, and every tile is
 // there, the samples are given as a line (`line`). 13-57 review: `source_len` (the file's length, 0 =
 // unknown): a pixel entirely before 0 s or past the file's end has nothing to draw and needs no tile

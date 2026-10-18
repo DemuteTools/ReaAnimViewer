@@ -46,6 +46,7 @@
 #include "shortcuts.h"
 #include "view_nav.h"  // 13-45: Edit's wheel and zoom keys, as every timeline's
 #include "zone_wave_ui.h"  // 13-62h (Lot E1): a zoned Sound's waveform
+#include "wave_draw_ui.h"  // 13-71: the one waveform drawer
 #include "sound_assign.h"  // RoleKeyLabel (13-23 role maps)
 #include "sound_audition.h"
 #include "sound_audition_plan.h"
@@ -950,21 +951,11 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
     }
     auto X = [&](double t) { return static_cast<float>(a.x + (t - vs) / vl * w); };
     auto T = [&](float x) { return vs + static_cast<double>(x - a.x) / w * vl; };
-    // 13-14 (C5.4): a stereo source draws two lanes (L above R); 13-41: a Sound forced to mono one lane, the
-    // channel (or L + R) heard. 13-57: one column per pixel, or the samples as a line when a pixel is shorter.
+    // 13-14 (C5.4) / 13-71: a lane per channel (L above R); 13-41: a Sound forced to mono one lane, the channel
+    // (or L + R) heard. 13-57: one column per pixel, or the samples as a line when a pixel is shorter.
     const int   ncols = std::max(1, static_cast<int>(std::floor(w)));
     WaveColumns wc;
     const bool  have_peaks = ReadWaveColumns(path, vs, vl, ncols, &wc);
-    const bool  stereo = have_peaks && wc.series == kWaveSeries;
-    const bool  mono = o.mono != MonoMode::Off && stereo;
-    const int   lanes = mono ? 1 : stereo ? 2 : 1;
-    auto SeriesOf = [&](int l) {
-        if (!stereo) return static_cast<int>(kWaveAll);
-        if (mono) return static_cast<int>(o.mono == MonoMode::Right ? kWaveRight : o.mono == MonoMode::Sum ? kWaveSum : kWaveLeft);
-        return static_cast<int>(l == 0 ? kWaveLeft : kWaveRight);
-    };
-    const float lane_h = (b.y - a.y) / static_cast<float>(lanes), hh = std::max(1.0f, lane_h * 0.5f - 3.0f);
-    auto LaneMid = [&](int l) { return a.y + lane_h * (static_cast<float>(l) + 0.5f); };
     const ImVec2 m = io.MousePos;
     const int    under = hovered ? FrameAt(frames, T(m.x)) : -1;
     const int    playing_frame = playhead_s >= 0.0 ? FrameAt(frames, playhead_s) : -1;
@@ -1010,49 +1001,17 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
                 }
             return r;
         };
-        const float px = w / static_cast<float>(ncols);
-        if (wc.line) {
-            for (int l = 0; l < lanes; ++l) {
-                const int                 s = SeriesOf(l);
-                const std::vector<float>& v = wc.pt_v[s];
-                const float               mid = LaneMid(l);
-                for (size_t k = 0; k + 1 < wc.pt_x.size() && k + 1 < v.size(); ++k) {
-                    const float  x = a.x + static_cast<float>(wc.pt_x[k]) * px, x2 = a.x + static_cast<float>(wc.pt_x[k + 1]) * px;
-                    const Own    r = OwnAt(vs + (wc.pt_x[k] + wc.pt_x[k + 1]) * 0.5 / ncols * vl);
-                    const double amp = v[k] * r.g, amp2 = v[k + 1] * r.g;
-                    const float  y = mid - static_cast<float>(std::clamp(amp, -1.0, 1.0)) * hh;
-                    const float  y2 = mid - static_cast<float>(std::clamp(amp2, -1.0, 1.0)) * hh;
-                    const bool   clip = r.in && (std::fabs(amp) > 1.0 || std::fabs(amp2) > 1.0);
-                    dl->AddLine(ImVec2(x, y), ImVec2(x2, y2), clip ? ui::kBad : r.in ? ui::kAccent : ui::kMuted, ui::Dp(1.5f));
-                }
-            }
-        }
-        for (int i = 0; i < ncols && !wc.line; ++i) {
-            const double t = vs + (static_cast<double>(i) + 0.5) / ncols * vl;
-            const Own    r = OwnAt(t);
-            const float  x = std::floor(a.x + static_cast<float>(i) * px);
-            for (int l = 0; l < lanes; ++l) {
-                const int s = SeriesOf(l);
-                if (!WaveColumnHas(wc, s, static_cast<size_t>(i))) continue;
-                const float  mid = LaneMid(l);
-                const double hi = wc.hi[s][static_cast<size_t>(i)] * r.g, lo = wc.lo[s][static_cast<size_t>(i)] * r.g;
-                const float  y0 = mid - static_cast<float>(std::clamp(hi, -1.0, 1.0)) * hh;
-                const float  y1 = mid - static_cast<float>(std::clamp(lo, -1.0, 1.0)) * hh;
-                dl->AddRectFilled(ImVec2(x, std::floor(y0)), ImVec2(x + 1.0f, std::floor(y1) + 1.0f), r.in ? ui::kAccent : ui::kMuted);
-                if (r.in && hi > 1.0) {
-                    const float over = std::min(hh, static_cast<float>(hi - 1.0) * hh);
-                    dl->AddRectFilled(ImVec2(x, std::floor(mid - hh)), ImVec2(x + 1.0f, std::floor(mid - hh + over) + 1.0f), ui::kBad);
-                }
-                if (r.in && lo < -1.0) {
-                    const float over = std::min(hh, static_cast<float>(-lo - 1.0) * hh);
-                    dl->AddRectFilled(ImVec2(x, std::floor(mid + hh - over)), ImVec2(x + 1.0f, std::floor(mid + hh) + 1.0f), ui::kBad);
-                }
-            }
-        }
-        for (int l = 1; l < lanes; ++l) {
-            const float y = std::floor(a.y + lane_h * static_cast<float>(l));
-            dl->AddRectFilled(ImVec2(a.x, y), ImVec2(b.x, y + 1.0f), ui::kStrokeStrong);
-        }
+        WaveDrawStyle st;
+        st.px = w / static_cast<float>(ncols);
+        st.line_w = ui::Dp(1.5f);
+        st.split = ui::kStrokeStrong;
+        DrawWaveLanes(dl, wc, o.mono, a.x, a.y, b.y, st, [&](double pos, double, bool, WaveInk* out) {
+            const Own r = OwnAt(vs + pos / ncols * vl);
+            out[0].col = r.in ? ui::kAccent : ui::kMuted;
+            out[0].g = r.g;
+            out[0].clip = r.in ? ui::kBad : 0;
+            return 1;
+        });
     } else {
         ev.reading = RequestPeaks(path, nullptr) == PeakState::Building;
         dl->AddText(ImVec2(a.x + ui::Dp(8.0f), text_y), ui::kMuted, ev.reading ? "Reading waveform\xE2\x80\xA6" : "Waveform unavailable");
@@ -3757,12 +3716,13 @@ void ZoneHeardBlock(const SoundData& d, const ZoneRef& r, const ZoneWaveHost& zh
     dl->AddRectFilled(p, ImVec2(p.x + W, p.y + H), ui::kBg, ui::Dp(ui::kRadiusSm));
     dl->AddRect(p, ImVec2(p.x + W, p.y + H), ui::kStroke, ui::Dp(ui::kRadiusSm));
     if (!(total > 0.0)) return;
-    const float mid = std::floor(p.y + H * 0.5f) + 0.5f;
-    const float hh = std::max(1.0f, H * 0.5f - ui::Dp(3.0f));
-    dl->AddLine(ImVec2(p.x, mid), ImVec2(p.x + W, mid), ui::kStroke);
     // 13-62h (Antho): each piece drawn as the waveform above draws the file (ReadWaveColumns: one column per pixel
     // from the detail tiles, the samples as a line when zoomed past them), its zone's gain and fades / crossfade on.
+    // 13-71: a lane per channel (DrawWaveLanes); their zero lines under the pieces, across the whole strip.
     dl->PushClipRect(p, ImVec2(p.x + W, p.y + H), true);
+    dl->ChannelsSplit(2);
+    dl->ChannelsSetCurrent(1);
+    int lanes = 1;
     for (const Placed& q : placed) {
         const EditZone* z = ZoneOf(d, q.q.z);
         const double    len = q.q.b - q.q.a;
@@ -3772,32 +3732,23 @@ void ZoneHeardBlock(const SoundData& d, const ZoneRef& r, const ZoneWaveHost& zh
         const int   cols = std::max(1, static_cast<int>(std::floor(xb - xa)));
         WaveColumns wc;
         if (!ReadWaveColumns(path, q.q.a, len, cols, &wc)) continue;
-        const int    series = ZoneWaveSeries(d.mono, wc.series);
         const double g = std::pow(10.0, z->db / 20.0);
         const ImU32  col = WithAlpha(PartColor(PartIndex(d, z->part)), 0xCC);
-        auto         tof = [&](double px) { return q.q.a + px / static_cast<double>(cols) * len; };
-        if (wc.line && wc.pt_x.size() >= 2 && series < kWaveSeries && wc.pt_v[series].size() == wc.pt_x.size()) {
-            for (size_t i = 0; i + 1 < wc.pt_x.size(); ++i) {
-                const double e = g * ZoneEnv(d, q.q.z, tof((wc.pt_x[i] + wc.pt_x[i + 1]) * 0.5));
-                const float  ya = mid - static_cast<float>(std::clamp(wc.pt_v[series][i] * e, -1.0, 1.0)) * hh;
-                const float  yb = mid - static_cast<float>(std::clamp(wc.pt_v[series][i + 1] * e, -1.0, 1.0)) * hh;
-                dl->AddLine(ImVec2(xa + static_cast<float>(wc.pt_x[i]), ya), ImVec2(xa + static_cast<float>(wc.pt_x[i + 1]), yb), col);
-            }
-            continue;
-        }
-        for (int i = 0; i < wc.columns; ++i) {
-            if (!WaveColumnHas(wc, series, static_cast<size_t>(i))) continue;
-            const double e = g * ZoneEnv(d, q.q.z, tof(i + 0.5));
-            float        ya = mid - static_cast<float>(std::clamp(wc.hi[series][static_cast<size_t>(i)] * e, -1.0, 1.0)) * hh;
-            float        yb = mid - static_cast<float>(std::clamp(wc.lo[series][static_cast<size_t>(i)] * e, -1.0, 1.0)) * hh;
-            if (yb - ya < 1.0f) {
-                const float c = (ya + yb) * 0.5f;
-                ya = c - 0.5f;
-                yb = c + 0.5f;
-            }
-            dl->AddRectFilled(ImVec2(xa + static_cast<float>(i), ya), ImVec2(xa + static_cast<float>(i) + 1.0f, yb), col);
-        }
+        WaveDrawStyle st;
+        st.pad = ui::Dp(3.0f);
+        st.split = ui::kStrokeStrong;
+        lanes = DrawWaveLanes(dl, wc, d.mono, xa, p.y, p.y + H, st, [&](double pos, double, bool, WaveInk* out) {
+            out[0].col = col;
+            out[0].g = g * ZoneEnv(d, q.q.z, q.q.a + pos / static_cast<double>(cols) * len);
+            return 1;
+        });
     }
+    dl->ChannelsSetCurrent(0);
+    for (int l = 0; l < lanes; ++l) {
+        const float y = std::floor(p.y + H * (static_cast<float>(l) + 0.5f) / static_cast<float>(lanes)) + 0.5f;
+        dl->AddLine(ImVec2(p.x, y), ImVec2(p.x + W, y), ui::kStroke);
+    }
+    dl->ChannelsMerge();
     dl->PopClipRect();
     for (size_t k = 1; k < placed.size(); ++k) {  // the joins
         const float x = std::floor(p.x + static_cast<float>(placed[k].at / total) * W) + 0.5f;

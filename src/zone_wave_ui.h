@@ -204,9 +204,6 @@ SyncMode ZoneNewSnapMode();
 void     SetZoneNewSnapMode(SyncMode m);
 void     LoadZoneNewSnapMode();
 
-// The peaks' series a zoned Sound's waveform draws (its mono, else every channel) of a WaveColumns with `series`.
-int ZoneWaveSeries(MonoMode m, int series);
-
 }  // namespace rav
 
 #endif  // _WIN32

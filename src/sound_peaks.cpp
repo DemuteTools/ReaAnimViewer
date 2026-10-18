@@ -301,7 +301,7 @@ bool ReadPeakInfo(PCM_source* s, const Job& j, double rate, PeakData* out)
 {
     const size_t n = PeakBins(j.length, rate);
     out->rate = rate;
-    PeakInit(out, j.nch, n);  // lanes: stereo only
+    PeakInit(out, j.nch, n);  // lanes: one per channel (13-71)
     const size_t           per = static_cast<size_t>(kPeakChunk) * static_cast<size_t>(j.nch);
     std::vector<ReaSample> mx(per), mn(per);
     bool any = false;
@@ -353,7 +353,7 @@ bool ReadSamples(PCM_source* s, const Job& j, double rate, PeakData* out)
 {
     const int64_t total = static_cast<int64_t>(std::ceil(j.length * j.sr));
     out->rate = rate;
-    PeakInit(out, j.nch, PeakBins(j.length, rate));  // lanes: stereo only
+    PeakInit(out, j.nch, PeakBins(j.length, rate));  // lanes: one per channel (13-71)
     std::vector<ReaSample> buf;
     return ForEachFrame(s, j, 0, total, buf, [&](int64_t n, const ReaSample* f) {
         PeakAddFrame(out, static_cast<size_t>(static_cast<double>(n) * rate / j.sr), f, j.nch);
@@ -929,10 +929,10 @@ bool ReadPeaks(const std::string& path, double start, double length, double rate
         for (int64_t k = std::max<int64_t>(0, lo); k < hi && k < static_cast<int64_t>(p.max_abs.size()); ++k)
             m = std::max(m, p.max_abs[static_cast<size_t>(k)]);
         out->max_abs[i] = m;
-        if (lanes == 2) {
+        if (lanes >= 2) {
             const size_t k0 = static_cast<size_t>(std::max<int64_t>(0, lo));
             const size_t k1 = static_cast<size_t>(std::max<int64_t>(0, hi));
-            for (int l = 0; l < 2; ++l) out->lanes[l][i] = PeakLaneMax(p, l, k0, k1);
+            for (int l = 0; l < lanes; ++l) out->lanes[l][i] = PeakLaneMax(p, l, k0, k1);
         }
     }
     return true;
@@ -1030,7 +1030,7 @@ bool ReadWaveColumns(const std::string& path, double view_start, double view_len
                 return i >= lv.a && i - lv.a < static_cast<int64_t>(lv.t.size()) ? lv.t[static_cast<size_t>(i - lv.a)] : nullptr;
         return nullptr;
     };
-    FoldWaveColumns(look, rates, e.sr, e.nch >= 2 ? kWaveSeries : 1, view_start, view_len, columns, coarse, out, e.length);
+    FoldWaveColumns(look, rates, e.sr, WaveSeriesCount(e.nch), view_start, view_len, columns, coarse, out, e.length);
     if (!out->line) JoinWaveColumns(out);
     memo->wc = *out;
     Feed();  // the tiles just asked may go to a free reader now

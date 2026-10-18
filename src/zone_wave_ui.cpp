@@ -25,6 +25,7 @@
 #include "sound_project.h"  // SoundStoreGeneration
 #include "ui_flow.h"
 #include "ui_theme.h"
+#include "wave_draw_ui.h"  // 13-71: the one waveform drawer
 #include "wave_tiles_plan.h"
 
 namespace rav {
@@ -523,19 +524,6 @@ const LookCache& LooksNow(const ZoneWaveHost& h)
     return g_lc;
 }
 
-// The peaks' series drawn (the Sound's mono, else every channel).
-int SeriesFor(MonoMode m, int series)
-{
-    if (series <= 1) return kWaveAll;
-    switch (m) {
-    case MonoMode::Left: return kWaveLeft;
-    case MonoMode::Right: return kWaveRight;
-    case MonoMode::Sum: return kWaveSum;
-    case MonoMode::Off: break;
-    }
-    return kWaveAll;
-}
-
 // Everything one frame of drawing needs.
 struct Frame {
     const ZoneWaveHost*   h = nullptr;
@@ -549,7 +537,6 @@ struct Frame {
     const PeakView*       peaks = nullptr;
     WaveColumns           wc;
     bool                  have_cols = false;
-    int                   series = kWaveAll;
     const std::vector<ZoneLook>& Looks() const { return lc->looks; }
     float X(double t) const { return cx0 + static_cast<float>((t - v0) / vl * cw); }
     double T(float x) const { return v0 + static_cast<double>(x - cx0) / cw * vl; }
@@ -709,7 +696,7 @@ void DrawLane(const Frame& F, const Row& row)
     dl->AddRectFilled(ImVec2(left, row.y0), ImVec2(right, row.y1), ui::kBg);
     if (lane >= 0 && static_cast<size_t>(lane) < d.divide_values.size() && *h.part_sel == d.divide_values[static_cast<size_t>(lane)])
         dl->AddRectFilled(ImVec2(left, row.y0), ImVec2(right, row.y1), Alpha(ui::kAccent, 0.05f));
-    dl->AddLine(ImVec2(left, mid + 0.5f), ImVec2(right, mid + 0.5f), ui::kStroke);
+    if (!F.have_cols) dl->AddLine(ImVec2(left, mid + 0.5f), ImVec2(right, mid + 0.5f), ui::kStroke);  // else each channel's
     const double v1 = F.v0 + F.vl;
     // Bodies.
     for (const ZoneLook& z : F.Looks()) {
@@ -722,18 +709,8 @@ void DrawLane(const Frame& F, const Row& row)
         }
     }
     // Peaks: a zone's audio in its part's colour (fades, Gap crossfades and its gain applied); elsewhere the file, grey.
+    // 13-71: a lane per channel of the file (the Sound's mono: one), drawn by DrawWaveLanes.
     if (F.have_cols) {
-        const float hh = std::max(1.0f, H * 0.5f - 6.0f * dp);
-        auto        bar = [&](float x, float lo, float hi, ImU32 col, float al, double e, double g) {
-            const float top = static_cast<float>(Clamp(hi * g, -1.0, 1.0) * e), bot = static_cast<float>(Clamp(lo * g, -1.0, 1.0) * e);
-            float       ya = mid - top * hh, yb = mid - bot * hh;
-            if (yb - ya < 1.0f) {
-                const float c = (ya + yb) * 0.5f;
-                ya = c - 0.5f;
-                yb = c + 0.5f;
-            }
-            dl->AddRectFilled(ImVec2(x, ya), ImVec2(x + 1.0f, yb), Alpha(col, al));
-        };
         size_t zi = 0;
         auto   zone_at = [&](double t) -> const ZoneLook* {
             while (zi < F.Looks().size() && F.Looks()[zi].b <= t) ++zi;
@@ -741,70 +718,46 @@ void DrawLane(const Frame& F, const Row& row)
                 if (t >= F.Looks()[k].a && t < F.Looks()[k].b) return &F.Looks()[k];
             return nullptr;
         };
-        auto column = [&](float x, double t, float lo, float hi) {
+        WaveDrawStyle st;
+        st.pad = 6.0f * dp;
+        st.zero = ui::kStroke;
+        st.split = ui::kStrokeStrong;
+        // A column: the file grey where no zone of this lane plays; a zone's audio in its part's colour (its gain,
+        // its fades: the grey under a fade); a Gap's crossfading neighbours of this lane over its grey. A pixel shorter
+        // than a sample (`line`): the samples joined by a line, each segment coloured as its column.
+        DrawWaveLanes(dl, F.wc, F.d->mono, F.cx0, row.y0, row.y1, st, [&](double pos, double, bool line, WaveInk* out) {
+            const double    t = F.T(F.cx0 + static_cast<float>(pos));  // grows with pos: zone_at walks on
             const ZoneLook* z = zone_at(t);
-            if (!z) {
-                bar(x, lo, hi, kGapCol, 0.16f, 1.0, 1.0);
-                return;
-            }
-            if (z->gap) {
-                bar(x, lo, hi, kGapCol, 0.2f, 1.0, 1.0);
+            int             n = 0;
+            auto put = [&](ImU32 col, float al, double g, double e) {
+                if (n < kWaveMaxInks) out[n++] = WaveInk{Alpha(col, al), g, e, 0};
+            };
+            auto heard = [&](const ZoneLook& L) {
+                const std::string& part = ZoneOf(d, L.ref)->part;
+                return std::make_pair(PartColOf(h, d, part), PartHeardNow(h, part) ? 0.92f : 0.28f);
+            };
+            if (z && z->gap) {
+                put(kGapCol, line ? 0.5f : 0.2f, 1.0, 1.0);
                 for (const ZoneLook* L : GapSides(F, *z)) {
                     if (!L || !Mine(*L, lane)) continue;
                     const double e = EnvOf(*L, t);
-                    const std::string& part = ZoneOf(d, L->ref)->part;
-                    if (e > 0.001) bar(x, lo, hi, PartColOf(h, d, part), PartHeardNow(h, part) ? 0.92f : 0.28f, e, L->gain);
-                }
-                return;
-            }
-            if (Mine(*z, lane)) {
-                const double       e = EnvOf(*z, t);
-                const std::string& part = ZoneOf(d, z->ref)->part;
-                if (e < 0.999) bar(x, lo, hi, kGapCol, 0.14f, 1.0, z->gain);
-                bar(x, lo, hi, PartColOf(h, d, part), PartHeardNow(h, part) ? 0.92f : 0.28f, e, z->gain);
-            } else {
-                bar(x, lo, hi, kGapCol, 0.26f, 1.0, 1.0);
-            }
-        };
-        const WaveColumns& wc = F.wc;
-        if (wc.line && wc.pt_x.size() >= 2 && F.series < kWaveSeries && wc.pt_v[F.series].size() == wc.pt_x.size()) {
-            // A pixel shorter than a sample: the samples joined by a line, each segment coloured as its column.
-            for (size_t i = 0; i + 1 < wc.pt_x.size(); ++i) {
-                const float  xa = F.cx0 + static_cast<float>(wc.pt_x[i]), xb = F.cx0 + static_cast<float>(wc.pt_x[i + 1]);
-                const double t = F.T((xa + xb) * 0.5f);  // grows with i: zone_at walks on
-                const ZoneLook* z = zone_at(t);
-                auto seg = [&](ImU32 col, double g) {
-                    const float ya = mid - static_cast<float>(Clamp(wc.pt_v[F.series][i] * g, -1.0, 1.0)) * hh;
-                    const float yb = mid - static_cast<float>(Clamp(wc.pt_v[F.series][i + 1] * g, -1.0, 1.0)) * hh;
-                    dl->AddLine(ImVec2(xa, ya), ImVec2(xb, yb), col);
-                };
-                if (z && z->gap) {  // as the columns: the file grey, each crossfading neighbour of this lane on it
-                    seg(Alpha(kGapCol, 0.5f), 1.0);
-                    for (const ZoneLook* L : GapSides(F, *z)) {
-                        if (!L || !Mine(*L, lane)) continue;
-                        const double e = EnvOf(*L, t);
-                        const std::string& part = ZoneOf(d, L->ref)->part;
-                        if (e > 0.001) seg(Alpha(PartColOf(h, d, part), PartHeardNow(h, part) ? 0.92f : 0.28f), L->gain * e);
+                    if (e > 0.001) {
+                        const auto c = heard(*L);
+                        put(c.first, c.second, L->gain, e);
                     }
-                    continue;
                 }
-                ImU32  col = Alpha(kGapCol, 0.5f);
-                double g = 1.0;
-                if (z && Mine(*z, lane)) {
-                    const std::string& part = ZoneOf(d, z->ref)->part;
-                    col = Alpha(PartColOf(h, d, part), PartHeardNow(h, part) ? 0.92f : 0.28f);
-                    g = z->gain * EnvOf(*z, t);
-                }
-                seg(col, g);
+                return n;
             }
-        } else {
-            for (int i = 0; i < wc.columns; ++i) {
-                if (!WaveColumnHas(wc, F.series, static_cast<size_t>(i))) continue;
-                const float  x = F.cx0 + static_cast<float>(i);
-                const double t = F.T(x + 0.5f);
-                column(x, t, wc.lo[F.series][static_cast<size_t>(i)], wc.hi[F.series][static_cast<size_t>(i)]);
+            if (z && Mine(*z, lane)) {
+                const double e = EnvOf(*z, t);
+                const auto   c = heard(*z);
+                if (!line && e < 0.999) put(kGapCol, 0.14f, z->gain, 1.0);
+                put(c.first, c.second, z->gain, e);
+                return n;
             }
-        }
+            put(kGapCol, line ? 0.5f : z ? 0.26f : 0.16f, 1.0, 1.0);
+            return n;
+        });
     }
     ImFont* fb = ui::FontCaptionBold();
     // Gaps: hatched on every lane, their crossfade lines and two square handles.
@@ -1365,11 +1318,6 @@ void ZoneMenu(const ZoneWaveHost& h)
 
 }  // namespace
 
-int ZoneWaveSeries(MonoMode m, int series)
-{
-    return SeriesFor(m, series);
-}
-
 // ---- prefs ------------------------------------------------------------------------------------------------------
 
 bool ZoneClickPlays()
@@ -1694,7 +1642,6 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
     if (v.playing && v.play_tl == h.tl && AuditionPlaying() && AuditionTag() == PlayTag(h)) F.heads = HeardHeads(v.map, AuditionPosition());
     const int ncols = std::max(1, static_cast<int>(std::floor(cw)));
     F.have_cols = ReadWaveColumns(h.path, vs, vl, ncols, &F.wc);
-    F.series = SeriesFor(F.d->mono, F.wc.series);
     ImDrawList* dl = F.dl;
     dl->PushClipRect(ImVec2(p0.x, p0.y), ImVec2(p0.x + W, bottom), true);
     for (const Row& r : rows) {

@@ -231,6 +231,7 @@ if(WIN32)
             src/library_node_ui.cpp
             src/zone_hit.cpp  # 13-62h (Lot E1)
             src/zone_wave_ui.cpp  # 13-62h (Lot E1)
+            src/wave_draw_ui.cpp  # 13-71: the one waveform drawer
             src/sound_peaks.cpp
             src/reaper_view_keys.cpp
             src/view_nav.cpp  # 13-45: every timeline's scroll / zoom

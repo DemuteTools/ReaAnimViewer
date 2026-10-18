@@ -76,12 +76,22 @@ void TestManyChannels()
 {
     PeakData p;
     PeakInit(&p, 6, 1);
-    CHECK(PeakChannels(p) == 2);
+    CHECK(PeakChannels(p) == 6);  // 13-71: one lane per channel
     const double f[] = {0.1, 0.2, 0.7, 0.3, 0.4, 0.6};  // L R C LFE Ls Rs
     PeakAddFrame(&p, 0, f, 6);
     CHECK(p.max_abs[0] == 0.7f);
-    CHECK(p.lanes[0][0] == 0.7f);  // channels 0, 2, 4
-    CHECK(p.lanes[1][0] == 0.6f);  // channels 1, 3, 5
+    CHECK(p.lanes[0][0] == 0.1f && p.lanes[1][0] == 0.2f && p.lanes[2][0] == 0.7f);
+    CHECK(p.lanes[3][0] == 0.3f && p.lanes[4][0] == 0.4f && p.lanes[5][0] == 0.6f);
+    CHECK(&PeakLane(p, 5) == &p.lanes[5] && &PeakLane(p, 6) == &p.max_abs);
+    CHECK(p.lanes[6].empty() && p.lanes[7].empty());
+    // More channels than kPeakMaxLanes: capped, the extra channels folded (c % kPeakMaxLanes).
+    PeakData q;
+    PeakInit(&q, 10, 1);
+    CHECK(PeakChannels(q) == kPeakMaxLanes);
+    double g[10] = {};
+    g[9] = 0.9;  // channel 10 -> lane index 1 (9 % 8)
+    PeakAddFrame(&q, 0, g, 10);
+    CHECK(q.lanes[1][0] == 0.9f && q.lanes[0][0] == 0.0f);
 }
 
 void TestNaN()

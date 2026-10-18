@@ -77,7 +77,7 @@ int main()
     {
         WaveTile t;
         WaveTileInit(&t, 1000.0, 0, 2);
-        CHECK(t.series == kWaveSeries && t.lo[3].size() == static_cast<size_t>(kWaveTileColumns));
+        CHECK(t.series == WaveSeriesCount(2) && t.series == 4 && t.lo[3].size() == static_cast<size_t>(kWaveTileColumns));
         const float f1[2] = {0.5f, -0.25f}, f2[2] = {-0.75f, 0.25f};
         WaveTileAddFrame(&t, 0, 48000.0, f1, 2);
         WaveTileAddFrame(&t, 47, 48000.0, f2, 2);  // still column 0 (47 * 1000 / 48000 < 1)
@@ -186,8 +186,8 @@ int main()
             return rate == 1024.0 && it != tiles.end() ? &it->second : nullptr;
         };
         WaveColumns coarse, out;
-        FoldWaveColumns(look, {1024.0}, sr, kWaveSeries, 0.0, 0.1, 100, coarse, &out);
-        CHECK(out.series == kWaveSeries && out.detail);
+        FoldWaveColumns(look, {1024.0}, sr, WaveSeriesCount(2), 0.0, 0.1, 100, coarse, &out);
+        CHECK(out.series == 4 && out.detail);
         CHECK(Near(out.hi[kWaveLeft][5], 0.5) && Near(out.lo[kWaveRight][5], -0.5));
         CHECK(Near(out.hi[kWaveSum][5], 0.0) && Near(out.lo[kWaveAll][5], -0.5) && Near(out.hi[kWaveAll][5], 0.5));
     }
@@ -231,7 +231,7 @@ int main()
         p.lanes[0][500] = 0.9f;
         WaveColumns w;
         ColumnsFromPeaks(p, 0.0, 1.0, 100, &w);
-        CHECK(w.series == kWaveSeries && !w.detail);
+        CHECK(w.series == 4 && !w.detail);
         CHECK(Near(w.hi[0][50], 0.9) && Near(w.lo[0][50], -0.9) && Near(w.hi[0][49], 0.5));
         CHECK(Near(w.hi[kWaveRight][10], 0.25) && Near(w.hi[kWaveSum][10], 0.375));
         PeakData mono;
@@ -333,6 +333,58 @@ int main()
         CHECK(lru.generation() == g1);  // nothing erased
         lru.EraseFile("a");
         CHECK(lru.generation() > g1 && lru.size() == 0 && lru.Of("a") == nullptr);
+    }
+
+    // ---- 13-71: one lane per channel (WaveLanesFor), the series per channel ----
+    {
+        CHECK(WaveSeriesCount(0) == 1 && WaveSeriesCount(1) == 1 && WaveSeriesCount(2) == 4 && WaveSeriesCount(6) == 8);
+        CHECK(WaveSeriesCount(8) == kWaveSeries && WaveSeriesCount(32) == kWaveSeries);  // capped
+        CHECK(WaveSeriesChannels(1) == 1 && WaveSeriesChannels(4) == 2 && WaveSeriesChannels(8) == 6);
+        CHECK(WaveChannelSeries(0) == kWaveLeft && WaveChannelSeries(1) == kWaveRight && WaveChannelSeries(2) == 4);
+        CHECK(WaveChannelSeries(7) == 9 && WaveChannelSeries(8) == kWaveLeft);  // past the cap: folds
+        // Mono file: one lane, series 0, whatever the Sound's mono mode.
+        for (MonoMode m : {MonoMode::Off, MonoMode::Left, MonoMode::Right, MonoMode::Sum}) {
+            const WaveLanes w = WaveLanesFor(m, 1);
+            CHECK(w.n == 1 && w.series[0] == kWaveAll);
+        }
+        // Stereo: two lanes L above R; forced mono: one lane, the channel (or the sum) heard.
+        WaveLanes w = WaveLanesFor(MonoMode::Off, WaveSeriesCount(2));
+        CHECK(w.n == 2 && w.series[0] == kWaveLeft && w.series[1] == kWaveRight);
+        w = WaveLanesFor(MonoMode::Left, 4);
+        CHECK(w.n == 1 && w.series[0] == kWaveLeft);
+        w = WaveLanesFor(MonoMode::Right, 4);
+        CHECK(w.n == 1 && w.series[0] == kWaveRight);
+        w = WaveLanesFor(MonoMode::Sum, 4);
+        CHECK(w.n == 1 && w.series[0] == kWaveSum);
+        // 6 channels: six lanes, in channel order; forced mono still one.
+        w = WaveLanesFor(MonoMode::Off, WaveSeriesCount(6));
+        CHECK(w.n == 6 && w.series[0] == kWaveLeft && w.series[1] == kWaveRight && w.series[2] == 4 && w.series[5] == 7);
+        CHECK(WaveLanesFor(MonoMode::Sum, WaveSeriesCount(6)).n == 1);
+        CHECK(WaveLanesFor(MonoMode::Off, WaveSeriesCount(20)).n == kWaveMaxLanes);
+
+        // A 6-channel tile: each channel in its own series, the sum of ch 1 and 2.
+        WaveTile t;
+        WaveTileInit(&t, 1000.0, 0, 6);
+        CHECK(t.series == 8 && t.lo[7].size() == static_cast<size_t>(kWaveTileColumns) && t.lo[8].empty());
+        const float f[6] = {0.1f, -0.2f, 0.7f, 0.3f, -0.4f, 0.6f};  // L R C LFE Ls Rs
+        WaveTileAddFrame(&t, 0, 48000.0, f, 6);
+        CHECK(Near(t.hi[kWaveAll][0], 0.7) && Near(t.lo[kWaveAll][0], -0.4));
+        CHECK(Near(t.hi[kWaveLeft][0], 0.1) && Near(t.lo[kWaveRight][0], -0.2));
+        CHECK(Near(t.hi[WaveChannelSeries(2)][0], 0.7) && Near(t.hi[WaveChannelSeries(3)][0], 0.3));
+        CHECK(Near(t.lo[WaveChannelSeries(4)][0], -0.4) && Near(t.hi[WaveChannelSeries(5)][0], 0.6));
+        CHECK(Near(t.hi[kWaveSum][0], -0.05));
+
+        // The coarse peaks of 3 channels: three lanes.
+        PeakData p;
+        PeakInit(&p, 3, 4);
+        p.rate = 4.0;
+        const float fr[3] = {0.5f, 0.25f, 0.75f};
+        for (size_t i = 0; i < 4; ++i) PeakAddFrame(&p, i, fr, 3);
+        WaveColumns c;
+        ColumnsFromPeaks(p, 0.0, 1.0, 4, &c);
+        CHECK(c.series == 5 && WaveLanesFor(MonoMode::Off, c.series).n == 3);
+        CHECK(Near(c.hi[kWaveLeft][1], 0.5) && Near(c.hi[kWaveRight][1], 0.25) && Near(c.hi[WaveChannelSeries(2)][1], 0.75));
+        CHECK(Near(c.lo[WaveChannelSeries(2)][1], -0.75) && Near(c.hi[kWaveSum][1], 0.375) && Near(c.hi[kWaveAll][1], 0.75));
     }
 
     // ---- PeakBlockFrames (13-57 review) ----

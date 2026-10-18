@@ -51,6 +51,10 @@ add_test(NAME live_draft_phase COMMAND live_draft_phase_test)
 add_executable(zone_gain_nudge_test zone_gain_nudge_test.cpp)
 target_include_directories(zone_gain_nudge_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME zone_gain_nudge COMMAND zone_gain_nudge_test)
+# Freeze audit #1 -- dashes and hatches walk only their visible marks, capped (src/dash_plan.h).
+add_executable(dash_plan_test dash_plan_test.cpp)
+target_include_directories(dash_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME dash_plan COMMAND dash_plan_test)
 # The same rule in the Library view: its lists, menus, rename fields and drops pick their
 # gestures over a real sound store (src/library_tree_edit.h), run after the loop.
 add_executable(library_picked_gestures_test library_picked_gestures_test.cpp ../src/library_tree_edit.cpp ../src/sound_switch.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp)

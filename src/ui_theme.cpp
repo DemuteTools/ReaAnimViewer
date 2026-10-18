@@ -2128,6 +2128,21 @@ void DashedRect(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col, float radius, flo
     if (!dl || b.x <= a.x || b.y <= a.y) return;
     dash = std::max(1.0f, Dp(dash));
     gap = std::max(1.0f, Dp(gap));
+    // Freeze audit #1: a rectangle reaching far past the clip rect (a variation at deep zoom on a long file) is cut
+    // first to the clip rect plus a margin, each cut a whole number of dash periods (the visible dashes keep their
+    // phase): its outline used to be walked over its whole length, millions of dashes, and past ~1.3e8 px a float
+    // step stopped moving at all.
+    {
+        const ImVec2 c0 = dl->GetClipRectMin(), c1 = dl->GetClipRectMax();
+        if (!(b.x >= c0.x && a.x <= c1.x && b.y >= c0.y && a.y <= c1.y)) return;  // also NaN
+        const double per = static_cast<double>(dash) + gap, m = 64.0 + std::max(0.0f, radius);
+        auto cut = [&](float& lo, float& hi, float clo, float chi) {
+            if (lo < clo - m) lo = static_cast<float>(lo + std::floor((clo - m - lo) / per) * per);
+            if (hi > chi + m) hi = static_cast<float>(lo + std::ceil((chi + m - lo) / per) * per);  // steady while it scrolls
+        };
+        cut(a.x, b.x, c0.x, c1.x);
+        cut(a.y, b.y, c0.y, c1.y);
+    }
     // The rounded rectangle's outline as a polyline (ImGui's own path), then walked in dashes.
     dl->PathRect(ImVec2(a.x + 0.5f, a.y + 0.5f), ImVec2(b.x - 0.5f, b.y - 0.5f), radius);
     ImVector<ImVec2> pts = dl->_Path;
@@ -2136,14 +2151,16 @@ void DashedRect(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col, float radius, flo
     pts.push_back(pts[0]);
     bool  on = true;
     float left = dash;
-    for (int i = 0; i + 1 < pts.Size; ++i) {
+    int   budget = 20000;  // hard cap on the steps walked (a screen's outline is a few thousand)
+    for (int i = 0; i + 1 < pts.Size && budget > 0; ++i) {
         const ImVec2 p = pts[i], q = pts[i + 1];
         const float  dx = q.x - p.x, dy = q.y - p.y;
         const float  len = std::sqrt(dx * dx + dy * dy);
         if (len <= 0.0f) continue;
         float t = 0.0f;
-        while (t < len) {
+        while (t < len && --budget > 0) {
             const float stp = std::min(left, len - t);
+            if (!(stp > 0.0f) || t + stp == t) break;
             if (on)
                 dl->AddLine(ImVec2(p.x + dx * t / len, p.y + dy * t / len), ImVec2(p.x + dx * (t + stp) / len, p.y + dy * (t + stp) / len),
                             col, thickness);

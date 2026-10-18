@@ -12,6 +12,7 @@
 
 #include "library_node_ui.h"
 #include "busy_progress_ui.h"  // 13-59: the busy card's bar under Normalize while it measures
+#include "dash_plan.h"         // freeze audit #1: hatches only where seen
 
 #ifdef _WIN32
 
@@ -908,7 +909,13 @@ int AvoidControl(const char* id, int stored)
 void Hatch(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col)
 {
     dl->PushClipRect(a, b, true);
-    for (float x = a.x - (b.y - a.y); x < b.x; x += 6.0f) dl->AddLine(ImVec2(x, b.y), ImVec2(x + (b.y - a.y), a.y), col);
+    // Freeze audit #1: only the strokes inside the clip rect, on the hatch's own phase, never more than a cap.
+    const float     H = b.y - a.y;
+    const dash::Run r = dash::Visible(a.x - H, b.x, 6.0, H, dl->GetClipRectMin().x, dl->GetClipRectMax().x);
+    for (int i = 0; i < r.count; ++i) {
+        const float x = static_cast<float>(r.first + i * r.step);
+        dl->AddLine(ImVec2(x, b.y), ImVec2(x + H, a.y), col);
+    }
     dl->PopClipRect();
 }
 
@@ -955,7 +962,8 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
         ImGui::PopID();
         return ev;
     }
-    auto X = [&](double t) { return static_cast<float>(a.x + (t - vs) / vl * w); };
+    // Freeze audit #1: kept within 4096 px of the waveform (deep zoom on a long file).
+    auto X = [&](double t) { return dash::ClampCoord(a.x + (t - vs) / vl * w, a.x, static_cast<double>(a.x) + w); };
     auto T = [&](float x) { return vs + static_cast<double>(x - a.x) / w * vl; };
     // 13-14 (C5.4) / 13-71: a lane per channel (L above R); 13-41: a Sound forced to mono one lane, the channel
     // (or L + R) heard. 13-57: one column per pixel, or the samples as a line when a pixel is shorter.

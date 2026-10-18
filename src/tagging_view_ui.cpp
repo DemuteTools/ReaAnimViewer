@@ -23,6 +23,7 @@
 #include "auto_detect.h"
 #include "auto_types.h"  // story 10-9-0: the types' and kinds' rows
 #include "bone_roles.h"
+#include "dash_plan.h"  // freeze audit #1
 #include "event_list.h"
 #include "file_dialogs.h"
 #include "item_clear.h"  // 13-26: Clear item data
@@ -730,7 +731,13 @@ void OnItemChanged(MediaItem* item)
 
 void DashedHLine(ImDrawList* dl, float x0, float x1, float y, ImU32 col)
 {
-    for (float x = x0; x < x1; x += ui::Dp(7.0f)) dl->AddLine(ImVec2(x, y), ImVec2(std::min(x + ui::Dp(4.0f), x1), y), col, 1.0f);
+    // Freeze audit #1: only the dashes inside the clip rect, never more than a cap.
+    const float     d = ui::Dp(4.0f);
+    const dash::Run r = dash::Visible(x0, x1, ui::Dp(7.0f), d, dl->GetClipRectMin().x, dl->GetClipRectMax().x);
+    for (int i = 0; i < r.count; ++i) {
+        const double x = r.first + i * r.step;
+        dl->AddLine(ImVec2(static_cast<float>(x), y), ImVec2(static_cast<float>(std::min(x + d, static_cast<double>(x1))), y), col, 1.0f);
+    }
 }
 
 // Centred message lines over a rect.

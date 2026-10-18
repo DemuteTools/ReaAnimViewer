@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "dash_plan.h"        // freeze audit #1: dashes / hatches only where seen
 #include "library_view_ui.h"  // ShowLibraryToast
 #include "shortcuts.h"        // LoadPrefBool, ShortcutKeyLabel, kShortcutEdit*
 #include "shortcuts_ui.h"     // 13-73: RequestOpenShortcutsPopup
@@ -65,12 +66,21 @@ std::string Signed(double v, const char* fmt = "%.1f")
 
 void DashedV(ImDrawList* dl, float x, float y0, float y1, ImU32 col, float dash, float gap, float th = 1.0f)
 {
-    for (float y = y0; y < y1; y += dash + gap) dl->AddLine(ImVec2(x, y), ImVec2(x, std::min(y + dash, y1)), col, th);
+    // Freeze audit #1: only the dashes inside the clip rect, on the line's own phase, never more than a cap.
+    const dash::Run r = dash::Visible(y0, y1, static_cast<double>(dash) + gap, dash, dl->GetClipRectMin().y, dl->GetClipRectMax().y);
+    for (int i = 0; i < r.count; ++i) {
+        const double y = r.first + i * r.step;
+        dl->AddLine(ImVec2(x, static_cast<float>(y)), ImVec2(x, static_cast<float>(std::min(y + dash, static_cast<double>(y1)))), col, th);
+    }
 }
 
 void DashedH(ImDrawList* dl, float x0, float x1, float y, ImU32 col, float dash, float gap, float th = 1.0f)
 {
-    for (float x = x0; x < x1; x += dash + gap) dl->AddLine(ImVec2(x, y), ImVec2(std::min(x + dash, x1), y), col, th);
+    const dash::Run r = dash::Visible(x0, x1, static_cast<double>(dash) + gap, dash, dl->GetClipRectMin().x, dl->GetClipRectMax().x);
+    for (int i = 0; i < r.count; ++i) {
+        const double x = r.first + i * r.step;
+        dl->AddLine(ImVec2(static_cast<float>(x), y), ImVec2(static_cast<float>(std::min(x + dash, static_cast<double>(x1))), y), col, th);
+    }
 }
 
 void DashedRect(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col, float dash, float gap, float th = 1.0f)
@@ -86,7 +96,11 @@ void HatchRect(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col)
     if (b.x <= a.x || b.y <= a.y) return;
     dl->PushClipRect(a, b, true);
     const float H = b.y - a.y;
-    for (float x = a.x - H; x < b.x; x += 6.0f) dl->AddLine(ImVec2(x, b.y), ImVec2(x + H, a.y), col);
+    const dash::Run r = dash::Visible(a.x - H, b.x, 6.0, H, dl->GetClipRectMin().x, dl->GetClipRectMax().x);
+    for (int i = 0; i < r.count; ++i) {
+        const float x = static_cast<float>(r.first + i * r.step);
+        dl->AddLine(ImVec2(x, b.y), ImVec2(x + H, a.y), col);
+    }
     dl->PopClipRect();
 }
 
@@ -613,7 +627,9 @@ struct Frame {
     std::vector<char>     sides, rule;
     std::vector<TailCapAt> caps;  // 13-74: the zones the Tail does not reach (TailCappedZones, every part)
     const std::vector<ZoneLook>& Looks() const { return lc->looks; }
-    float X(double t) const { return cx0 + static_cast<float>((t - v0) / vl * cw); }
+    // Freeze audit #1: kept within 4096 px of the canvas, so a zone at deep zoom on a long file never hands the
+    // drawing a coordinate of 1e8 px (where float steps stop moving).
+    float X(double t) const { return dash::ClampCoord(cx0 + (t - v0) / vl * cw, cx0, static_cast<double>(cx0) + cw); }
     double T(float x) const { return v0 + static_cast<double>(x - cx0) / cw * vl; }
 };
 

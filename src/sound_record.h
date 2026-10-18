@@ -123,6 +123,8 @@ SoundNode* FindNode(SoundLibrary& lib, const std::string& uid);
 std::vector<const SoundNode*> ChildrenOf(const SoundLibrary& lib, const std::string& uid);
 const SwitchGroup* FindGroup(const SoundStore& store, const std::string& uid);
 SwitchGroup* FindGroup(SoundStore& store, const std::string& uid);
+// 13-68 v3: a group's name wherever it is shown: "RAV - <name>" for a group RAV made and manages (rav_owned).
+inline std::string GroupDisplayName(const SwitchGroup& g) { return g.rav_owned ? "RAV - " + g.name : g.name; }
 // The event of rule `rid` nearest to clip time `t` within `window` s, nullptr when none.
 const EventSounds* FindEventSounds(const ItemSounds& item, const std::string& rid, double t,
                                    double window = kEventMatchSeconds);

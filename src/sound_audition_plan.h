@@ -27,6 +27,10 @@ struct AuditionPicker {
     // 13-23: a Sound's variation for a part (a value uid, "" = the whole variation; -1 = none). Used
     // instead of pick_variation when set: a variation with nothing of that part is never picked.
     std::function<int(const SoundNode& node, const std::string& part_value)> pick_part_variation;
+    // 13-68 v3 (audition = placement): a Blend's lead Sound's full rounds of its variations drawn before its pick (null = 0),
+    // and a linked layer's pick made `linked` (recorded in its history; null = nothing recorded): as ResolveHooks.
+    std::function<int(const SoundNode& node, const std::string& part_value)>             rounds;
+    std::function<void(const SoundNode& node, const std::string& part_value, int linked)> link;
 };
 
 // The session's picks per node, so each press draws anew while avoiding repeats (decision 5).
@@ -42,6 +46,7 @@ private:
     uint64_t                                seed_;
     uint64_t                                press_ = 0;
     std::map<std::string, std::vector<int>> hist_;
+    std::map<std::string, int>              drawn_;  // 13-68 v3: picks per key, uncapped (a Blend's rounds)
 };
 
 struct AuditionVoice {

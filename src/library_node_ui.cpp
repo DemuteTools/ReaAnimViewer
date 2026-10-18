@@ -724,7 +724,7 @@ std::string NodeName(const SoundStore& store, const SoundNode& n)
     if (!n.name.empty()) return n.name;
     if (n.type == SoundNodeType::Switch) {
         const SwitchGroup* g = FindGroup(store, n.group_uid);
-        return std::string("Switch on ") + (g ? g->name : std::string("?"));
+        return std::string("Switch on ") + (g ? GroupDisplayName(*g) : std::string("?"));
     }
     return TypeName(n.type);
 }
@@ -2919,7 +2919,7 @@ void PartsControls(const SoundLibrary& lib, const SoundNode& n, const SoundMedia
         auto glabel = [](const SwitchGroup& g) {
             std::string vals;
             for (const SwitchValue& v : g.values) vals += (vals.empty() ? "" : ", ") + v.name;
-            return g.name + " (" + vals + ")";
+            return GroupDisplayName(g) + " (" + vals + ")";  // 13-68 v3
         };
         const float       w = ui::LabelRow("Divide by", ui::Dp(140.0f), label_col);
         const std::string preview = !IsDivided(d) ? std::string("None (combined)") : cg ? glabel(*cg) : std::string("?");
@@ -2930,19 +2930,22 @@ void PartsControls(const SoundLibrary& lib, const SoundNode& n, const SoundMedia
             std::string gid, gname;
             std::vector<std::string> vals, names;
             if (ImGui::Selectable("None (combined)", !IsDivided(d)) && IsDivided(d)) picked = true;
-            for (const SwitchGroup& g : store.groups) {
-                if (g.values.empty()) continue;
+            bool any_group = false;  // 13-68 v3
+            for (const SwitchGroup* gp : GroupsInListOrder(store)) {
+                const SwitchGroup& g = *gp;
+                if (g.values.empty() || g.rav_owned) continue;  // 13-68 v3 review: RAV's groups are never a user's pick
+                any_group = true;                               // 13-68 v3
                 if (ImGui::Selectable((glabel(g) + "##" + g.uid).c_str(), IsDivided(d) && d.divide_group == g.uid)) {
                     picked = true;
                     gid = g.uid;
-                    gname = g.name;
+                    gname = GroupDisplayName(g);
                     for (const SwitchValue& v : g.values) {
                         vals.push_back(v.uid);
                         names.push_back(v.name);
                     }
                 }
             }
-            if (store.groups.empty()) ImGui::TextDisabled("No Switch Group yet");
+            if (!any_group) ImGui::TextDisabled("No Switch Group yet");  // 13-68 v3: any_group
             ui::EndComboStyled();
             if (picked) {
                 std::string toast = "Combined: each event gets the whole variation (the zones stay where they are)";
@@ -2966,7 +2969,7 @@ void PartsControls(const SoundLibrary& lib, const SoundNode& n, const SoundMedia
         }
     }
     if (DivideStale(store, d))
-        RichText({{cg ? cg->name + " changed: choose it again to re-divide" : std::string("Its Switch Group is gone: choose one again to re-divide"),
+        RichText({{cg ? GroupDisplayName(*cg) + " changed: choose it again to re-divide" : std::string("Its Switch Group is gone: choose one again to re-divide"),
                    ui::kWarn}});
     if (IsDivided(d)) {
         bool                                        own = false;
@@ -5526,17 +5529,21 @@ void DrawTypeRows(const SoundStore& store, const SoundLibrary& lib, const SoundN
     }
     if (ui::BeginMenuPopup("##switchon")) {
         ui::MenuCaption("Switch on");
-        if (store.groups.empty()) ImGui::TextDisabled("No Switch Group yet");
-        for (const SwitchGroup& g : store.groups) {
-            if (ImGui::MenuItem(g.name.c_str(), nullptr, n.type == SoundNodeType::Switch && n.group_uid == g.uid)) {
+        bool any_group = false;  // 13-68 v3
+        for (const SwitchGroup* gp : GroupsInListOrder(store)) {
+            const SwitchGroup& g = *gp;
+            if (g.rav_owned) continue;  // 13-68 v3 review: RAV's groups are never a user's pick
+            any_group = true;           // 13-68 v3
+            if (ImGui::MenuItem((GroupDisplayName(g) + "##" + g.uid).c_str(), nullptr, n.type == SoundNodeType::Switch && n.group_uid == g.uid)) {
                 const std::string gid = g.uid;
                 ImGui::CloseCurrentPopup();
                 ui::EndMenuPopup();
-                Gesture("Switch on " + g.name,
+                Gesture("Switch on " + GroupDisplayName(g),
                         [lib_uid, row, gid](SoundStore& s) { return SetRowsType(s, lib_uid, {row}, SoundNodeType::Switch, gid); });
                 return;
             }
         }
+        if (!any_group) ImGui::TextDisabled("No Switch Group yet");  // 13-68 v3: below (was above, any group)
         ui::EndMenuPopup();
     }
     if (n.type != SoundNodeType::Switch) return;
@@ -5555,8 +5562,10 @@ void DrawTypeRows(const SoundStore& store, const SoundLibrary& lib, const SoundN
         // 13-18 D4: a node with no valid default of its own follows its group's ("Group default (X)").
         const bool        own = GroupHasValue(*g, n.default_value);
         const std::string glabel = "Group default (" + value_name(GroupDefaultValue(*g)) + ")";
+        if (g->rav_owned) ImGui::BeginDisabled();  // 13-68 v3: a RAV group's default is RAV's
         const bool        open = ui::BeginComboStyled("##default", own ? value_name(def).c_str() : glabel.c_str(),
                                                       std::min(w, std::max(combo_min, ui::Dp(180.0f))));
+        if (g->rav_owned) ImGui::EndDisabled();  // 13-68 v3
         ui::ItemTipText("Plays when the event's value is not set, or when a value has no sound of its own");
         if (open) {
             // First, follow the group's default (clears the node's own, a stale one too).
@@ -6331,7 +6340,7 @@ void DrawSoundPanel(const SoundLibrary& lib, const SoundNode& n)
         // 13-49 review: what a placed copy leaves out of its source item (read with the media, once per
         // project change): it plays its file plain, as RAV hears it. A folder pile is copied as it is.
         if (m.ok && d.source.kind == SoundSourceKind::Item && !FolderSourced(d)) {
-            const std::string drops = PlacementDropsText(m.drops_take_fx, m.drops_pitch, m.drops_rate, m.drops_pan);
+            const std::string drops = PlacementDropsText(m.drops_take_fx, m.drops_pitch && !d.keep_rate, m.drops_rate && !d.keep_rate, m.drops_pan);  // 13-68 v3: keep_rate keeps both
             if (!drops.empty()) {
                 FitText(drops, ui::kMuted);
                 ui::ItemTipText("RAV hears the file itself, so a placed copy plays it plain: the source item's take FX, "

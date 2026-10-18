@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //
-// Host test of src/sound_spread_plan.h (13-68 v2): the selection's piles, the library nodes (Random /
+// Host test of src/sound_spread_plan.h (13-68 v2 / v3): the selection's piles, the library nodes (Random /
 // Sound / Takes Sound / Blend + offsets, sync from the item snap), the Attached library (found, replaced,
 // Add to stack), the source zone, the report and the attached flag in the store text.
 
@@ -324,6 +324,10 @@ int main()
         c.events = 24;
         c.placed = 24;
         CHECK(SpreadRunReport(c) == "FS L (this animation): new library FS L, 3 variations (6 items), 3 animations, 24 sounds placed");
+        c.to_source = 1;
+        CHECK(SpreadRunReport(c) == "FS L (this animation): new library FS L, 3 variations (6 items), 3 animations, 24 sounds placed, "
+                                    "1 earlier sound to the source zone");
+        c.to_source = 0;
         c.all_instances = true;
         c.reused = true;
         c.selected_markers = 2;
@@ -332,7 +336,7 @@ int main()
         c.kept = 1;
         c.skip_note = "1 skipped: placed by RAV";
         CHECK(SpreadRunReport(c)
-              == "Used FS L (2 markers selected)\nFS L (all instances): library FS L, 3 variations, 3 animations, 24 sounds placed, "
+              == "Used FS L (2 markers selected)\nFS L (all animations with this marker): library FS L, 3 variations, 3 animations, 24 sounds placed, "
                  "2 changed, 1 already in place, 1 skipped: placed by RAV");
         SpreadRunCounts a;
         a.type = "FS L";
@@ -340,7 +344,200 @@ int main()
         a.variations = 1;
         a.layers = 1;
         a.animations = 1;
-        CHECK(SpreadRunReport(a) == "FS L: layer added to library FS L, 1 variation, 1 animation, no marker to place on");
+        CHECK(SpreadRunReport(a) == "FS L (this animation): layer added to library FS L for this animation, 1 variation, 1 animation, "
+                                    "no marker to place on");
+        a.all_instances = true;
+        a.type = "FS";
+        a.marker = "FS R";
+        a.selected_markers = 3;
+        CHECK(SpreadRunReport(a) == "Used FS R (3 markers selected)\nFS (all animations with this marker): layer added to library FS, "
+                                    "1 variation, 1 animation, no marker to place on");
+    }
+
+    // 13-68 v3, both sides by default: the kind from the rule (an auto block's key without its side, its side-free
+    // marker word), never the marker's name; a user rule is its marker type alone.
+    {
+        const SpreadKind l = SpreadKindOf("step:L", "FS", "FS L");
+        const SpreadKind r = SpreadKindOf("step:R", "FS", "Pas droit");  // a renamed marker: still the kind
+        CHECK(l.key == "auto:step" && l.key == r.key && l.name == "FS" && r.name == "FS");
+        CHECK(SpreadKindOf("hand_pivot:L", "Hand Pivot", "Hand Pivot L").key == "auto:hand_pivot");
+        CHECK(SpreadKindOf("heel:L", "Heel", "Heel L").key != l.key);  // separate parts: another kind
+        CHECK(SpreadKindOf("jump:B", "Jump", "Jump").key == "auto:jump");
+        const SpreadKind u = SpreadKindOf("", "", " Cloth L ");  // a user rule has no side: that kind alone
+        CHECK(u.key == "Cloth L" && u.name == "Cloth L" && u.key != SpreadKindOf("", "", "Cloth R").key);
+        CHECK(SpreadKindOf("step:L", "", "FS L").name == "FS L");  // no side-free word: the marker
+        CHECK(SpreadKindOf("", "", "  ").key.empty());
+        CHECK(RuleOfMarker({"Body", "FS L", "FS R"}, "FS R") == 2);
+        CHECK(RuleOfMarker({"Body", "FS L", "FS R"}, "FS L - Preview") == 1);
+        CHECK(RuleOfMarker({"Body"}, "FS L") == -1);
+        // One side-free Attached library per kind, found by its key.
+        SoundStore   st;
+        SoundLibrary a;
+        a.uid = "a";
+        a.name = "FS";
+        a.attached = true;
+        a.attached_type = l.key;
+        st.libraries.push_back(a);
+        CHECK(FindAttachedLibrary(st, r.key) == &st.libraries[0] && FindAttachedLibrary(st, u.key) == nullptr);
+    }
+
+    // 13-68 v3, Add to stack: stack items of several markers are refused; the in-stack items never become a layer.
+    {
+        PlacedTag a, b;
+        a.owner = "{ABC}";
+        a.rid = "r1";
+        a.t = 1.0;
+        b = a;
+        b.owner = "{abc}";
+        b.t = 1.02;  // the same event (case, +-30 ms)
+        CHECK(!SeveralStackEvents({}) && !SeveralStackEvents({a}) && !SeveralStackEvents({a, b}));
+        PlacedTag c = a;
+        c.t = 1.5;
+        CHECK(SeveralStackEvents({a, b, c}));
+        PlacedTag d = a;
+        d.rid = "r2";  // the other side's rule at the same time
+        CHECK(SeveralStackEvents({a, d}));
+        PlacedTag e = a;
+        e.owner = "{DEF}";  // another animation item
+        CHECK(SeveralStackEvents({e, a}));
+
+        SoundLibrary lib;
+        SetLibraryContent(lib, SpreadLayerNodes({Src("{SRC1}", "A", 1, 0.0, 0.2, 0.0), Src("{src2}", "B", 1, 1.0, 0.2, 0.0)}, "FS", &Uid));
+        CHECK(IsStackItem(lib, "{new}", true, false));     // placed for the library
+        CHECK(IsStackItem(lib, "{fold}", false, true));    // the attached pile's folder item
+        CHECK(IsStackItem(lib, "{src1}", false, false));   // the library's own source (any case)
+        CHECK(IsStackItem(lib, "{SRC2}", false, false));
+        CHECK(!IsStackItem(lib, "{new}", false, false));   // a new item
+        CHECK(!IsStackItem(lib, "", false, false));
+    }
+
+    // 13-68 v3, Add to stack (this animation): the layer under the library's RAV-owned per-animation Switch.
+    {
+        SoundStore   st;
+        SoundLibrary lib;
+        lib.uid = "L";
+        lib.name = "FS";
+        lib.attached = true;
+        SetLibraryContent(lib, SpreadLayerNodes({Src("s1", "A", 1, 0.0, 0.2, 0.0), Src("s2", "B", 1, 1.0, 0.2, 0.0)}, "FS", &Uid));
+        const std::string old_root = lib.root;
+        st.libraries.push_back(lib);
+        const ValueSet v = AddAnimationLayer(st, "L", SpreadLayerNodes({Src("n1", "N", 2, 0.0, 0.1, 0.0)}, "Layer", &Uid), 20.0, "Walk",
+                                             {}, "FS", &Uid);
+        const SoundLibrary& L = st.libraries[0];
+        CHECK(!v.group_uid.empty() && !v.value_uid.empty() && st.groups.size() == 1);
+        const SwitchGroup& g = st.groups[0];
+        CHECK(g.uid == v.group_uid && g.rav_owned && g.name == "FS layers" && g.values.size() == 2);
+        CHECK(g.default_value == g.values[0].uid && g.values[0].name == "Other animations");  // the default adds nothing
+        CHECK(g.values[1].uid == v.value_uid && g.values[1].name == "Walk");
+        const SoundNode* root = FindNode(L, L.root);
+        CHECK(root && root->type == SoundNodeType::Blend && L.root != old_root);  // the old root wrapped
+        const SoundNode* o = FindNode(L, old_root);
+        CHECK(o && o->parent == L.root);
+        const SoundNode* sw = nullptr;
+        for (const SoundNode& n : L.nodes)
+            if (n.type == SoundNodeType::Switch) sw = &n;
+        CHECK(sw && sw->parent == L.root && sw->group_uid == g.uid && sw->cases.size() == 1);
+        CHECK(sw && sw->cases[0].value_uid == v.value_uid);  // no case for the default value
+        const SoundNode* ab = sw ? FindNode(L, sw->cases[0].child_uid) : nullptr;
+        CHECK(ab && ab->type == SoundNodeType::Blend && ab->parent == sw->uid && ab->name == "Walk");
+        int layers = 0;
+        for (const SoundNode& n : L.nodes)
+            if (ab && n.parent == ab->uid) {
+                ++layers;
+                CHECK(n.type == SoundNodeType::Random && Near(n.offset_ms, 20.0) && n.layer_keep_offset);
+            }
+        CHECK(layers == 1);
+        // A second layer for that animation (its value set at animation level): joins its Blend, no new group / Switch.
+        const size_t   nodes_before = L.nodes.size();
+        const ValueSet v2 = AddAnimationLayer(st, "L", SpreadLayerNodes({Src("n2", "M", 2, 0.0, 0.1, 0.0)}, "Layer", &Uid), -5.0,
+                                              "Walk renamed", {v}, "FS", &Uid);
+        CHECK(v2.group_uid == v.group_uid && v2.value_uid == v.value_uid && st.groups.size() == 1 && st.groups[0].values.size() == 2);
+        CHECK(st.libraries[0].nodes.size() == nodes_before + 2);
+        // Another animation: a new value and its own Blend under the same Switch.
+        const ValueSet v3 = AddAnimationLayer(st, "L", SpreadLayerNodes({Src("n3", "K", 2, 0.0, 0.1, 0.0)}, "Layer", &Uid), 0.0, "Run",
+                                              {}, "FS", &Uid);
+        CHECK(v3.group_uid == v.group_uid && v3.value_uid != v.value_uid && st.groups[0].values.size() == 3);
+        int switches = 0;
+        for (const SoundNode& n : st.libraries[0].nodes)
+            if (n.type == SoundNodeType::Switch) {
+                ++switches;
+                CHECK(n.cases.size() == 2);
+            }
+        CHECK(switches == 1);
+        // The store round-trips; nothing for an unknown library or an empty layer.
+        SoundStore back;
+        CHECK(ParseSoundStore(SerializeSoundStore(st), &back) && back.groups.size() == 1 && back.groups[0].rav_owned);
+        CHECK(AddAnimationLayer(st, "nope", SpreadLayerNodes({Src("x", "X", 1, 0.0, 0.1, 0.0)}, "L", &Uid), 0.0, "W", {}, "FS", &Uid)
+                  .group_uid.empty());
+        CHECK(AddAnimationLayer(st, "L", {}, 0.0, "W", {}, "FS", &Uid).group_uid.empty());
+    }
+
+    // 13-68 v3 review: an orphan RAV group of that name is reused (no second "FS layers"); a value held by an item
+    // outside the pool (another animation of that name) is never reused: "Walk 2"; the Switch's own default counts.
+    {
+        SoundStore  st;
+        SwitchGroup og;
+        og.uid = "gold";
+        og.name = "FS layers";
+        og.rav_owned = true;
+        og.values = {{"vo", "Other animations", {}}, {"vw", "Walk", {}}};
+        og.default_value = "vo";
+        st.groups.push_back(og);
+        SoundLibrary lib;
+        lib.uid = "L";
+        lib.name = "FS";
+        SetLibraryContent(lib, SpreadLayerNodes({Src("s1", "A", 1, 0.0, 0.2, 0.0)}, "FS", &Uid));
+        st.libraries.push_back(lib);
+        const ValueSet v = AddAnimationLayer(st, "L", SpreadLayerNodes({Src("n1", "N", 2, 0.0, 0.1, 0.0)}, "Layer", &Uid), 0.0,
+                                             "Walk", {}, "FS", &Uid);
+        CHECK(st.groups.size() == 1 && v.group_uid == "gold" && v.value_uid == "vw");  // the orphan and its "Walk"
+        const SoundNode* sw = nullptr;
+        for (const SoundNode& n : st.libraries[0].nodes)
+            if (n.type == SoundNodeType::Switch) sw = &n;
+        CHECK(sw && sw->group_uid == "gold" && sw->name == "FS layers");
+        const std::string sw_uid = sw ? sw->uid : std::string();  // the nodes move as they grow
+        // Another (unlinked) item named Walk: "vw" is held by the first one's pool: a new value "Walk 2", its own Blend.
+        ValueSet held;
+        held.group_uid = "gold";
+        held.value_uid = "vw";
+        const ValueSet v2 = AddAnimationLayer(st, "L", SpreadLayerNodes({Src("n2", "M", 2, 0.0, 0.1, 0.0)}, "Layer", &Uid), 0.0,
+                                              "Walk", {held}, "FS", &Uid, {"vw"});
+        CHECK(v2.group_uid == "gold" && v2.value_uid != "vw" && st.groups[0].values.size() == 3 &&
+              st.groups[0].values[2].uid == v2.value_uid && st.groups[0].values[2].name == "Walk 2");
+        int blends = 0;
+        for (const SoundNode& n : st.libraries[0].nodes)
+            if (n.parent == sw_uid && n.type == SoundNodeType::Blend) ++blends;
+        CHECK(blends == 2);
+        // Its own value is reused when only its pool holds it.
+        const ValueSet v3 = AddAnimationLayer(st, "L", SpreadLayerNodes({Src("n3", "K", 2, 0.0, 0.1, 0.0)}, "Layer", &Uid), 0.0,
+                                              "Walk", {v2}, "FS", &Uid, {"vw"});
+        CHECK(v3.value_uid == v2.value_uid && st.groups[0].values.size() == 3);
+        // The Switch's own default (here "vw") is never an animation's value: a third "Walk 3".
+        for (SoundNode& n : st.libraries[0].nodes)
+            if (n.type == SoundNodeType::Switch) n.default_value = "vw";
+        const ValueSet v4 = AddAnimationLayer(st, "L", SpreadLayerNodes({Src("n4", "J", 2, 0.0, 0.1, 0.0)}, "Layer", &Uid), 0.0,
+                                              "Walk", {held}, "FS", &Uid);
+        CHECK(v4.value_uid != "vw" && v4.value_uid != v2.value_uid && st.groups[0].values.back().name == "Walk 3");
+    }
+
+    // 13-68 v3 review: an NVK folder pile moved onto the marker records its draw: the library Sound's source is the
+    // folder item (its children are what is attached), keyed by the folder's GUID at its top child's variation.
+    {
+        SpreadSource folder = Src("{FOLD}", "Steps", 1, 20.0, 0.5, 0.02);
+        folder.folder = true;
+        folder.sound = PileSoundData("{FOLD}", 1, 0.5, {{0.0, 0.3, "1"}, {1.0, 0.3, "2"}, {2.0, 0.3, "3"}});
+        SoundLibrary lib;
+        SetLibraryContent(lib, SpreadLayerNodes({Src("kid1", "K1", 2, 20.0, 0.4, 0.0), folder, Src("other", "O", 2, 30.0, 0.4, 0.0)},
+                                                "FS", &Uid));
+        const std::vector<SoundDraw> d = PlayedDraws(lib, {{"{fold}", 1}});
+        CHECK(d.size() == 2);
+        for (const SoundDraw& x : d) {
+            const SoundNode* n = FindNode(lib, x.node);
+            CHECK(n != nullptr);
+            if (n && n->type == SoundNodeType::Sound) CHECK(n->sound.source.item_guid == "{FOLD}" && x.pick == 1);
+            if (n && n->type == SoundNodeType::Random) CHECK(n->uid == lib.root && x.pick == 0);
+        }
+        CHECK(PlayedDraws(lib, {{"kid1", 1}}).empty());  // a child's GUID is no Sound of the library
     }
 
     if (g_fail) {

@@ -351,7 +351,7 @@ constexpr const char kNoRolesMark[] = "-";
 bool ToggleSoundRole(const SoundStore& store, SoundData& data, const std::string& value_uid, const std::string& role);
 // Toggles `role` on a value of a Switch Group (Switch Groups > Roles): off when it has it, else on and
 // off every other value of the group. `moved_from` gets the value uid it left ("" = none). False for an
-// unknown group / value or an empty role.
+// unknown group / value, an empty role or a RAV-owned group (13-68 v3).
 bool ToggleGroupRole(SoundStore& store, const std::string& group_uid, const std::string& value_uid, const std::string& role,
                      std::string* moved_from = nullptr);
 

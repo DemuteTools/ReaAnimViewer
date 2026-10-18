@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <cmath>
 #include <functional>
 #include <string>
 #include <vector>
@@ -96,12 +97,20 @@ MonoMode MonoForChanMode(int chan_mode);
 // 13-49 review: a placed copy plays at playrate 1, its active take's rate folded into the item: the item's
 // length and snap in source seconds (as the variation was measured). A rate that is not > 0 or not finite
 // reads 1 (nothing folded).
+// 13-68 v3: `keep` (SoundData::keep_rate: a copy tuned by ear keeps its take's rate, pitch and preserve-pitch):
+// nothing folded, `reset` false, the length and snap stay in item seconds at that rate.
 struct PlayrateFold {
     double rate = 1.0;    // the rate folded (sanitized)
     double length = 0.0;  // the item's new D_LENGTH
     double snap = 0.0;    // its new D_SNAPOFFSET
+    bool   reset = true;  // the takes go to playrate 1 / pitch 0
 };
-PlayrateFold FoldPlayrate(double rate, double item_len, double snap);
+PlayrateFold FoldPlayrate(double rate, double item_len, double snap, bool keep = false);
+// 13-68 v3: a take at `rate` (not > 0 or not finite reads 1) plays `item_s` item seconds of its source as item_s x rate
+// source seconds, and a source span `source_s` (a variation, a sync) over source_s / rate item seconds.
+inline double SaneRate(double rate) { return (std::isfinite(rate) && rate > 0.0) ? rate : 1.0; }
+inline double SourceSecondsOf(double item_s, double rate) { return item_s * SaneRate(rate); }
+inline double ItemSecondsOf(double source_s, double rate) { return source_s / SaneRate(rate); }
 // 13-49 review: an item chunk as a placed copy that plays its file plain gets it: every take's <TAKEFX
 // block (with its nested blocks), TAKE_FX_HAVE lines and stretch markers (SM lines) removed at the item
 // level; every other line byte-identical (no plugin is loaded for a copy). A chunk without them is unchanged.

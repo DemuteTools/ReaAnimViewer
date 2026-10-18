@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <string>
 
+#include "sound_entries.h"  // ToggleGroupRole
 #include "sound_record.h"
 #include "sound_switch.h"
 
@@ -169,6 +170,54 @@ static void TestRemoveSubtree()
     CHECK(N(s, "L", "sw")->cases.size() == 1);
     CHECK(!RemoveRows(s, "L", {{"", "sw"}}));  // root refused
     CHECK(N(s, "L", "sw") != nullptr);
+}
+
+// 13-68 v3: a RAV-owned group: shown "RAV - <name>", listed after the user's, and every hand gesture on it (rename,
+// delete, add / rename / remove a value, a value row's rename, a value's roles) refuses it, the store unchanged.
+static void TestRavOwnedGroup()
+{
+    SoundStore s = Store();
+    SwitchGroup side;
+    side.uid = "gside";
+    side.name = "Side";
+    side.rav_owned = true;
+    side.values = {{"vl", "L", {}}, {"vr", "R", {}}};
+    s.groups.insert(s.groups.begin(), side);  // stored first: still listed after the user's
+    SwitchGroup user;
+    user.uid = "guser";
+    user.name = "Mood";
+    s.groups.push_back(user);
+    CHECK(GroupDisplayName(s.groups[0]) == "RAV - Side" && GroupDisplayName(s.groups[1]) == "Material");
+    const std::vector<const SwitchGroup*> order = GroupsInListOrder(s);
+    CHECK(order.size() == 3 && order[0]->uid == "gmat" && order[1]->uid == "guser" && order[2]->uid == "gside");
+    SoundLibrary* l = FindLibrary(s, "L");
+    l->nodes[0].group_uid = "gside";  // the Switch on Side: its value rows are RAV's
+    l->nodes[0].cases = {{"vl", "y", {}}, {"vr", "gr", {}}};
+    l->nodes[0].default_value = l->nodes[0].preview_value = "vl";
+    const SoundStore before = s;
+    std::string      uid = "x";
+    CHECK(!RenameGroup(s, "gside", "Sides"));
+    CHECK(!DeleteGroup(s, "gside"));
+    CHECK(!AddValue(s, "gside", "Middle", &uid) && uid == "x");
+    CHECK(!RenameValue(s, "gside", "vl", "Left"));
+    CHECK(!DeleteValue(s, "gside", "vr"));
+    CHECK(!RenameRow(s, "L", {"sw", "vl"}, "Left") && !RenameRow(s, "L", {"sw", "vr"}, "Right"));
+    CHECK(!ToggleGroupRole(s, "gside", "vl", "heel"));
+    // 13-68 v3 review: its default is RAV's too (the group's, a Switch's own, following the group's).
+    CHECK(!SetGroupDefault(s, "gside", "vr", false) && !SetGroupDefault(s, "gside", "vr", true));
+    CHECK(!MakeDefault(s, "L", {{"sw", "vr"}}) && N(s, "L", "sw")->default_value == "vl");
+    CHECK(!FollowGroupDefault(s, "L", "sw") && N(s, "L", "sw")->default_value == "vl");
+    CHECK(s.groups.size() == 3 && s.groups[0].name == "Side" && s.groups[0].values.size() == 2 &&
+          s.groups[0].values[0].name == "L" && s.groups[0].values[1].name == "R" && s.groups[0].values[0].roles.empty());
+    CHECK(N(s, "L", "sw")->type == SoundNodeType::Switch && N(s, "L", "gr")->name == "GrassR" &&
+          N(s, "L", "sw")->cases.size() == 2 && SerializeSoundStore(s) == SerializeSoundStore(before));
+    // The user's groups are untouched by the rule.
+    CHECK(RenameGroup(s, "guser", "Mood 2") && AddValue(s, "guser", "Calm", &uid) && RenameValue(s, "guser", uid, "Quiet") &&
+          DeleteValue(s, "guser", uid) && DeleteGroup(s, "guser"));
+    // 13-68 v3 review: a RAV group no Switch uses any more (an orphan) can be deleted.
+    l = FindLibrary(s, "L");
+    l->nodes[0].group_uid = "gmat";
+    CHECK(DeleteGroup(s, "gside") && !FindGroup(s, "gside") && N(s, "L", "sw")->type == SoundNodeType::Switch);
 }
 
 static void TestDeleteGroupInUse()
@@ -969,6 +1018,7 @@ int main()
     TestWrapEachAndValueContents();
     TestOrphanStoryAndPutBack();
     TestPasteOnto();
+    TestRavOwnedGroup();
     if (g_fail) {
         std::printf("library_tree_edit_test: %d failure(s)\n", g_fail);
         return 1;

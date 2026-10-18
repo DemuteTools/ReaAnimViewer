@@ -140,6 +140,9 @@ std::string RowTypeNode(const SoundLibrary& lib, const LibraryRow& row);
 bool SetRowsType(SoundStore& store, const std::string& lib_uid, const std::vector<LibraryRow>& rows, SoundNodeType type,
                  const std::string& group_uid);
 // A value row becomes its Switch's default (one per Switch).
+// 13-68 v3: a Switch on a RAV-owned group keeps its default: MakeDefault leaves it, FollowGroupDefault and
+// SetGroupDefault return false on it (IsRavGroup: the group is rav_owned).
+bool IsRavGroup(const SoundStore& store, const std::string& group_uid);
 bool MakeDefault(SoundStore& store, const std::string& lib_uid, const std::vector<LibraryRow>& rows);
 // 13-18 D4: the Switch's own default is cleared (it plays its group's default). False when none was set.
 bool FollowGroupDefault(SoundStore& store, const std::string& lib_uid, const std::string& switch_uid);
@@ -181,9 +184,15 @@ bool PasteOnto(SoundStore& store, const std::string& src_lib, const std::string&
                const std::string& dst_uid, PasteOntoWhat what);
 
 // ---- Switch Groups (column 1) -------------------------------------------------------------------
+// 13-68 v3: a RAV-owned group (SwitchGroup::rav_owned) is never renamed, deleted (but as an orphan), nor given / stripped of / renamed
+// values by hand: RenameGroup, DeleteGroup, AddValue, RenameValue and DeleteValue (and a value row's RenameRow)
+// return false on it. RAV's own code writes such a group directly.
+// The store's groups as listed: the user's first, then RAV's (rav_owned), each in store order.
+std::vector<const SwitchGroup*> GroupsInListOrder(const SoundStore& store);
 bool AddGroup(SoundStore& store, const std::string& name, std::string* uid);
 bool RenameGroup(SoundStore& store, const std::string& group_uid, const std::string& name);
-// Every Switch on the group becomes a Random keeping all its children.
+// Every Switch on the group becomes a Random keeping all its children. 13-68 v3: a RAV-owned group only when no
+// Switch of any library uses it (an orphan).
 bool DeleteGroup(SoundStore& store, const std::string& group_uid);
 bool AddValue(SoundStore& store, const std::string& group_uid, const std::string& name, std::string* uid);
 bool RenameValue(SoundStore& store, const std::string& group_uid, const std::string& value_uid, const std::string& name);

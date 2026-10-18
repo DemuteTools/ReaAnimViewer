@@ -1708,7 +1708,7 @@ bool ToggleGroupRole(SoundStore& store, const std::string& group_uid, const std:
 {
     if (moved_from) moved_from->clear();
     SwitchGroup* g = FindGroup(store, group_uid);
-    if (!g || role.empty() || role == kNoRolesMark) return false;
+    if (!g || g->rav_owned || role.empty() || role == kNoRolesMark) return false;  // 13-68 v3: RAV's values are its own
     SwitchValue* target = nullptr;
     for (SwitchValue& v : g->values)
         if (v.uid == value_uid) target = &v;
@@ -1832,7 +1832,7 @@ std::string DividedByText(const SoundStore& store, const SoundData& data)
                 if (x.uid == v) name = x.name;
         vals += (vals.empty() ? "" : " / ") + name;
     }
-    return "Divided by " + (g ? g->name : std::string("?")) + " (" + vals + ")";
+    return "Divided by " + (g ? GroupDisplayName(*g) : std::string("?")) + " (" + vals + ")";
 }
 
 // ---- 13-62 (E2): the part rows' pure helpers ----

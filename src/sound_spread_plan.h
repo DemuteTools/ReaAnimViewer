@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //
-// Spread selection to marker type (13-68 v2, pure): the selection turned into a library that Populate
+// Spread selection to marker type (13-68 v2 / v3, pure): the selection turned into a library that Populate
 // places. The selected items are read in blocks like NVK (items overlapping in time = one pile = one
 // variation with its layers; piles apart or touching = variations); the library (category Attached,
 // named after the marker type) gets a Random root of the piles: a one-item pile = a Sound (an item of
@@ -13,6 +13,7 @@
 #pragma once
 
 #include <functional>
+#include <set>  // 13-68 v3
 #include <string>
 #include <vector>
 
@@ -27,8 +28,8 @@ struct SpreadSource {
     std::string name;
     SoundData   sound;
     bool        folder = false;  // a folder item (an NVK pile): its pile is this one Sound (PileSoundData)
-    // Its active take's playrate: its snap (item seconds) is snap x playrate into the source, where its copy (played
-    // at rate 1, as auditioned) is synced (Antho 2026-10-18: a 1.335 layer's copies landed 16.7 ms late).
+    // Its active take's playrate: its snap (item seconds) is snap x playrate into the source, where its copy (13-68 v3:
+    // keep_rate, played at this same rate) is synced (Antho 2026-10-18: a 1.335 layer's copies landed 16.7 ms late).
     double      playrate = 1.0;
 };
 
@@ -55,8 +56,21 @@ SoundData PileSoundData(const std::string& folder_guid, int takes, double len, c
 std::vector<SoundNode> SpreadLayerNodes(const std::vector<SpreadSource>& items, const std::string& name,
                                         const std::function<std::string()>& new_uid);
 
-// The Attached library of a marker type: the first with the attached flag and that `attached_type`
-// (SameMarkerType), or, for one with no stored type, that name. Null when none.
+// 13-68 v3 (both sides by default): a marker kind with its sides. `key` = its identity, side-free: "auto:<word>" for
+// an auto block (its AutoSoundKey "<word>:<side>" without the side: FS L and FS R are one kind), else the rule's
+// marker type (a user rule has no side: that kind alone); `name` = the side-free name ("FS", the kind's marker word
+// `side_free`; a user rule's marker type). Read from the rule (`sound_key` = AutoSoundKeyOf, "" for a rule), never
+// by parsing a marker name. Empty key: no marker.
+struct SpreadKind {
+    std::string key;
+    std::string name;
+};
+SpreadKind SpreadKindOf(const std::string& sound_key, const std::string& side_free, const std::string& marker);
+// The rule (index into `rule_markers`) writing the marker `name` (also as a preview marker); -1 when none.
+int RuleOfMarker(const std::vector<std::string>& rule_markers, const std::string& name);
+
+// The Attached library of a marker kind: the first with the attached flag and that `attached_type`
+// (SameMarkerType: a SpreadKind key), or, for one with no stored type, that name. Null when none.
 SoundLibrary*       FindAttachedLibrary(SoundStore& store, const std::string& type);
 const SoundLibrary* FindAttachedLibrary(const SoundStore& store, const std::string& type);
 
@@ -67,6 +81,29 @@ void SetLibraryContent(SoundLibrary& lib, std::vector<SoundNode> nodes);
 // that is not a Blend is wrapped first: a new Blend root `blend_uid` named after the library holding
 // the old root (offset 0) then the layer. No root: the layer becomes the root (its offset 0).
 void AddStackLayer(SoundLibrary& lib, std::vector<SoundNode> layer, double offset_ms, const std::string& blend_uid);
+
+// 13-68 v3, Add to stack (this animation): `layer` goes under the library's RAV-owned per-animation Switch, in the
+// root Blend (a root that is not a Blend is wrapped first, as AddStackLayer). The Switch's group (rav_owned, named
+// "<kind_name> layers", one per library, reused) has a default value "Other animations" with no sound (adds
+// nothing); the animation's value (`item_values`' value of that group when it has one, else the value named
+// `anim_name`, else a new one) holds a Blend named after the animation, the layer at `offset_ms` in it (a later
+// add for that animation joins it). Returns the value to set at animation level on the item and its linked copies;
+// empty group_uid when the library is not in `store` or `layer` is empty. 13-68 v3 review: a new Switch takes a
+// RAV group of that name when one is left (an orphan) before making one; the Switch's own default counts as the
+// default; a value in `held_elsewhere` (held by RAV items outside the item's pool) is never reused: a new value
+// then, named "<anim_name>", "<anim_name> 2"... (unique in the group).
+ValueSet AddAnimationLayer(SoundStore& store, const std::string& lib_uid, std::vector<SoundNode> layer, double offset_ms,
+                           const std::string& anim_name, const std::vector<ValueSet>& item_values,
+                           const std::string& kind_name, const std::function<std::string()>& new_uid,
+                           const std::set<std::string>& held_elsewhere = {});
+
+// 13-68 v3, Add to stack: the selected stack items' tags (items placed on an event of an Attached library) are on
+// several events (owner, rule, clip time within kEventMatchSeconds): the gesture refuses.
+bool SeveralStackEvents(const std::vector<PlacedTag>& tags);
+// 13-68 v3, Add to stack: a selected item that is already the stack's, never a new layer: placed for the library
+// (`placed_for_library`: its tag's rule holds it), a folder item one of whose children is (`child_in_stack`: the
+// attached pile's folder item), or one of the library's own sources (a Sound's source item, any case).
+bool IsStackItem(const SoundLibrary& lib, const std::string& guid, bool placed_for_library, bool child_in_stack);
 
 // Add to stack: the name of the next layer: "Layer 2" when the root is not a Blend (the existing content
 // is layer 1), "Layer k+1" when it is a Blend of k children.
@@ -92,8 +129,9 @@ int NearestPile(const std::vector<AttachItem>& items, const std::vector<std::vec
 
 // What a run did, for its toast.
 struct SpreadRunCounts {
-    std::string type;                  // the marker type (= the library's name)
-    bool        all_instances = false;
+    std::string type;                  // the marker kind's side-free name (= the library's name)
+    std::string marker;                // 13-68 v3: the selected marker's type ("" = `type`), for "Used ..."
+    bool        all_instances = false; // all animations with this marker
     bool        add_layer = false;     // Add to stack
     bool        reused = false;        // the type's Attached library existed
     int         selected_markers = 1;  // RAV markers selected (the first in time is used)
@@ -103,9 +141,11 @@ struct SpreadRunCounts {
     int         events = 0;            // events Populate handled
     int         placed = 0, replaced = 0, kept = 0;  // Populate's counts
     std::string skip_note;             // "2 skipped: placed by RAV" ("" = none)
+    int         to_source = 0;         // 13-68 v3: an earlier run's sounds on the library's events moved to the source zone
 };
-// The report: "Used FS L (2 markers selected)" first when several, then e.g. "FS L (this animation):
-// library FS L, 3 variations (6 items), 2 animations, 16 sounds placed" (zero counts left out).
+// The report: "Used FS L (2 markers selected)" first when several, then e.g. "FS (this animation):
+// library FS, 3 variations (6 items), 2 animations, 16 sounds placed" (zero counts left out); the scope reads
+// "(all animations with this marker)"; Add to stack: "layer added to library FS" (this animation: "for this animation").
 std::string SpreadRunReport(const SpreadRunCounts& c);
 
 }  // namespace rav

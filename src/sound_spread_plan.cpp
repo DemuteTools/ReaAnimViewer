@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //
-// See sound_spread_plan.h (13-68 v2).
+// See sound_spread_plan.h (13-68 v2 / v3).
 
 #include "sound_spread_plan.h"
 
@@ -9,6 +9,8 @@
 #include <cmath>
 #include <utility>
 
+#include "sound_place_plan.h"  // SourceSecondsOf
+#include "event_list.h"    // kPreviewSuffix
 #include "sound_record.h"  // FindNode
 
 namespace rav {
@@ -33,6 +35,38 @@ void SyncFromSnap(SoundData& d, double snap_s)
 
 namespace {
 
+// A GUID compared without case.
+std::string GuidUpper(std::string g)
+{
+    for (char& c : g) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    return g;
+}
+
+// A group's default value (its own when it holds it, else the first; GroupDefaultValue, kept here: no sound_switch).
+std::string GroupDefaultValueOf(const SwitchGroup& g)
+{
+    for (const SwitchValue& v : g.values)
+        if (!g.default_value.empty() && v.uid == g.default_value) return v.uid;
+    return g.values.empty() ? std::string() : g.values.front().uid;
+}
+
+// 13-68 v3 review: a value's name ("" when the group lacks it).
+std::string FindValueName(const SwitchGroup& g, const std::string& uid)
+{
+    for (const SwitchValue& v : g.values)
+        if (v.uid == uid) return v.name;
+    return std::string();
+}
+
+// 13-68 v3 review: a Switch's default value (its own when its group holds it, else the group's: DefaultValue, kept
+// here: no sound_switch).
+std::string SwitchDefaultOf(const SwitchGroup& g, const SoundNode& sw)
+{
+    for (const SwitchValue& v : g.values)
+        if (!sw.default_value.empty() && v.uid == sw.default_value) return v.uid;
+    return GroupDefaultValueOf(g);
+}
+
 SoundNode SoundOf(const SpreadSource& s, const std::string& uid, const std::string& parent)
 {
     SoundNode n;
@@ -41,7 +75,10 @@ SoundNode SoundOf(const SpreadSource& s, const std::string& uid, const std::stri
     n.type = SoundNodeType::Sound;
     n.name = s.name.empty() ? std::string("Sound") : s.name;
     n.sound = s.sound;
-    SyncFromSnap(n.sound, s.facts.snap * (std::isfinite(s.playrate) && s.playrate > 0.0 ? s.playrate : 1.0));
+    // 13-68 v3: its copies play at its take's rate (keep_rate, plain and folder piles); the sync in source seconds, which
+    // the copy reads back over 1 / rate (ApplyPiece), so its snap lands on the marker.
+    n.sound.keep_rate = true;
+    SyncFromSnap(n.sound, SourceSecondsOf(s.facts.snap, s.playrate));
     return n;
 }
 
@@ -115,6 +152,31 @@ std::vector<SoundNode> SpreadLayerNodes(const std::vector<SpreadSource>& items, 
     return out;
 }
 
+SpreadKind SpreadKindOf(const std::string& sound_key, const std::string& side_free, const std::string& marker)
+{
+    SpreadKind k;
+    const std::string m = MarkerTypeName(marker);
+    if (!sound_key.empty()) {
+        k.key = "auto:" + sound_key.substr(0, sound_key.rfind(':'));
+        k.name = MarkerTypeName(side_free).empty() ? m : MarkerTypeName(side_free);
+    } else {
+        k.key = m;
+        k.name = m;
+    }
+    if (k.name.empty()) k.key.clear();
+    return k;
+}
+
+int RuleOfMarker(const std::vector<std::string>& rule_markers, const std::string& name)
+{
+    const std::string n = MarkerTypeName(name);
+    for (size_t i = 0; i < rule_markers.size(); ++i) {
+        const std::string t = MarkerTypeName(rule_markers[i]);
+        if (!t.empty() && (t == n || t + kPreviewSuffix == n)) return static_cast<int>(i);
+    }
+    return -1;
+}
+
 namespace {
 
 bool ServesType(const SoundLibrary& l, const std::string& type)
@@ -145,34 +207,163 @@ void SetLibraryContent(SoundLibrary& lib, std::vector<SoundNode> nodes)
     lib.root = lib.nodes.empty() ? std::string() : lib.nodes[0].uid;
 }
 
+namespace {
+
+// The library's root Blend: a root that is not a Blend is wrapped in a new Blend `blend_uid` named after the library
+// (the old root its first child, offset 0); no root: that Blend alone becomes the root.
+std::string RootBlend(SoundLibrary& lib, const std::string& blend_uid)
+{
+    const SoundNode* root = lib.root.empty() ? nullptr : FindNode(lib, lib.root);
+    if (root && root->type == SoundNodeType::Blend) return lib.root;
+    SoundNode b;
+    b.uid = blend_uid;
+    b.type = SoundNodeType::Blend;
+    b.name = lib.name;
+    if (SoundNode* old = root ? FindNode(lib, lib.root) : nullptr) {
+        old->parent = b.uid;
+        old->offset_ms = 0.0;
+        old->layer_keep_offset = true;
+    }
+    lib.nodes.insert(lib.nodes.begin(), b);
+    lib.root = b.uid;
+    return b.uid;
+}
+
+}  // namespace
+
 void AddStackLayer(SoundLibrary& lib, std::vector<SoundNode> layer, double offset_ms, const std::string& blend_uid)
 {
     if (layer.empty()) return;
-    const SoundNode* root = lib.root.empty() ? nullptr : FindNode(lib, lib.root);
-    if (!root) {
+    if (lib.root.empty() || !FindNode(lib, lib.root)) {
         layer[0].offset_ms = 0.0;
         SetLibraryContent(lib, std::move(layer));
         return;
     }
-    std::string blend = lib.root;
-    if (root->type != SoundNodeType::Blend) {
-        SoundNode b;
-        b.uid = blend_uid;
-        b.type = SoundNodeType::Blend;
-        b.name = lib.name;
-        if (SoundNode* old = FindNode(lib, lib.root)) {
-            old->parent = b.uid;
-            old->offset_ms = 0.0;
-            old->layer_keep_offset = true;
-        }
-        lib.nodes.insert(lib.nodes.begin(), b);
-        lib.root = b.uid;
-        blend = b.uid;
-    }
+    const std::string blend = RootBlend(lib, blend_uid);
     layer[0].parent = blend;
     layer[0].offset_ms = offset_ms;
     layer[0].layer_keep_offset = true;
     for (SoundNode& n : layer) lib.nodes.push_back(std::move(n));
+}
+
+ValueSet AddAnimationLayer(SoundStore& store, const std::string& lib_uid, std::vector<SoundNode> layer, double offset_ms,
+                           const std::string& anim_name, const std::vector<ValueSet>& item_values,
+                           const std::string& kind_name, const std::function<std::string()>& new_uid,
+                           const std::set<std::string>& held_elsewhere)
+{
+    ValueSet out;
+    SoundLibrary* lib = nullptr;
+    for (SoundLibrary& l : store.libraries)
+        if (l.uid == lib_uid) lib = &l;
+    if (!lib || layer.empty()) return out;
+    const std::string blend = RootBlend(*lib, new_uid());
+    // The library's RAV-owned Switch in the root Blend (one per library), else a new one and its group.
+    SoundNode*   sw = nullptr;
+    SwitchGroup* g = nullptr;
+    for (SoundNode& n : lib->nodes)
+        if (n.parent == blend && n.type == SoundNodeType::Switch)
+            if (SwitchGroup* ng = FindGroup(store, n.group_uid); ng && ng->rav_owned) {
+                sw = &n;
+                g = ng;
+                break;
+            }
+    if (!sw) {
+        const std::string gname = (kind_name.empty() ? lib->name : kind_name) + " layers";
+        for (SwitchGroup& og : store.groups)  // 13-68 v3 review: a RAV group of that name (left by an earlier Switch) reused
+            if (!g && og.rav_owned && og.name == gname) g = &og;
+        if (!g) {  // 13-68 v3: else a new one
+            SwitchGroup ng;
+            ng.uid = new_uid();
+            ng.name = gname;  // 13-68 v3
+            ng.rav_owned = true;
+            SwitchValue none;  // the default: adds nothing (no case)
+            none.uid = new_uid();
+            none.name = "Other animations";
+            ng.values.push_back(none);
+            ng.default_value = none.uid;
+            store.groups.push_back(ng);
+            g = &store.groups.back();
+        }
+        SoundNode n;
+        n.uid = new_uid();
+        n.parent = blend;
+        n.type = SoundNodeType::Switch;
+        n.name = g->name;      // 13-68 v3: g
+        n.group_uid = g->uid;  // 13-68 v3: g
+        n.layer_keep_offset = true;
+        lib->nodes.push_back(n);
+        sw = &lib->nodes.back();
+    }
+    const std::string def = SwitchDefaultOf(*g, *sw);  // 13-68 v3 review: what the Switch plays unset
+    // The animation's value: the one it has, else the one named after it, else a new one. 13-68 v3 review: never one
+    // an item outside its pool holds (`held_elsewhere`: that animation's layers are not this one's).
+    std::string value;
+    for (const ValueSet& v : item_values)
+        if (v.group_uid == g->uid && v.value_uid != def && !held_elsewhere.count(v.value_uid))  // 13-68 v3
+            for (const SwitchValue& x : g->values)
+                if (x.uid == v.value_uid) value = x.uid;
+    for (const SwitchValue& x : g->values)
+        if (value.empty() && x.uid != def && x.name == anim_name && !held_elsewhere.count(x.uid)) value = x.uid;  // 13-68 v3
+    if (value.empty()) {
+        SwitchValue v;
+        v.uid = new_uid();
+        // 13-68 v3 review: a name of its own ("Walk", "Walk 2"...): another animation's value may hold it
+        const std::string base = anim_name.empty() ? std::string("Animation") : anim_name;
+        v.name = base;
+        for (int k = 2;; ++k) {
+            const bool used = std::any_of(g->values.begin(), g->values.end(), [&](const SwitchValue& x) { return x.name == v.name; });
+            if (!used) break;
+            v.name = base + " " + std::to_string(k);
+        }
+        g->values.push_back(v);
+        value = v.uid;
+    }
+    // Its Blend under the Switch (the animation's layers), made on its first layer.
+    std::string anim_blend;
+    for (const SwitchCase& c : sw->cases)
+        if (c.value_uid == value && FindNode(*lib, c.child_uid)) anim_blend = c.child_uid;
+    if (anim_blend.empty()) {
+        SoundNode b;
+        b.uid = new_uid();
+        b.parent = sw->uid;
+        b.type = SoundNodeType::Blend;
+        b.name = FindValueName(*g, value);  // 13-68 v3 review: its value's name ("Walk 2")
+        anim_blend = b.uid;
+        std::vector<SwitchCase>& cases = sw->cases;
+        cases.erase(std::remove_if(cases.begin(), cases.end(), [&](const SwitchCase& c) { return c.value_uid == value; }), cases.end());
+        SwitchCase c;
+        c.value_uid = value;
+        c.child_uid = b.uid;
+        cases.push_back(c);
+        lib->nodes.push_back(b);  // `sw` may move: not used after this
+    }
+    layer[0].parent = anim_blend;
+    layer[0].offset_ms = offset_ms;
+    layer[0].layer_keep_offset = true;
+    for (SoundNode& n : layer) lib->nodes.push_back(std::move(n));
+    out.group_uid = g->uid;
+    out.value_uid = value;
+    return out;
+}
+
+bool SeveralStackEvents(const std::vector<PlacedTag>& tags)
+{
+    for (size_t i = 1; i < tags.size(); ++i)
+        if (GuidUpper(tags[i].owner) != GuidUpper(tags[0].owner) || tags[i].rid != tags[0].rid ||
+            std::fabs(tags[i].t - tags[0].t) > kEventMatchSeconds)
+            return true;
+    return false;
+}
+
+bool IsStackItem(const SoundLibrary& lib, const std::string& guid, bool placed_for_library, bool child_in_stack)
+{
+    if (placed_for_library || child_in_stack) return true;
+    if (guid.empty()) return false;
+    for (const SoundNode& n : lib.nodes)
+        if (n.type == SoundNodeType::Sound && n.sound.source.kind == SoundSourceKind::Item &&
+            GuidUpper(n.sound.source.item_guid) == GuidUpper(guid))
+            return true;
+    return false;
 }
 
 std::string StackLayerName(const SoundLibrary& lib)
@@ -274,11 +465,10 @@ std::string SpreadRunReport(const SpreadRunCounts& c)
 {
     std::string out;
     if (c.selected_markers > 1)
-        out += "Used " + c.type + " (" + std::to_string(c.selected_markers) + " markers selected)\n";
-    // Add to stack: wherever the library is (no scope of its own).
-    out += c.type + (c.add_layer ? ": " : c.all_instances ? " (all instances): " : " (this animation): ");
+        out += "Used " + (c.marker.empty() ? c.type : c.marker) + " (" + std::to_string(c.selected_markers) + " markers selected)\n";
+    out += c.type + (c.all_instances ? " (all animations with this marker): " : " (this animation): ");
     std::vector<std::string> parts;
-    std::string              lib = c.add_layer ? "layer added to library " + c.type
+    std::string              lib = c.add_layer ? "layer added to library " + c.type + (c.all_instances ? "" : " for this animation")
                                                : std::string(c.reused ? "library " : "new library ") + c.type;
     lib += ", " + Count(c.variations, "variation", "variations");
     if (c.layers != c.variations) lib += " (" + Count(c.layers, "item", "items") + ")";
@@ -287,6 +477,7 @@ std::string SpreadRunReport(const SpreadRunCounts& c)
     if (c.placed > 0) parts.push_back(Count(c.placed, "sound placed", "sounds placed"));
     if (c.replaced > 0) parts.push_back(std::to_string(c.replaced) + " changed");
     if (c.kept > 0) parts.push_back(std::to_string(c.kept) + " already in place");
+    if (c.to_source > 0) parts.push_back(Count(c.to_source, "earlier sound to the source zone", "earlier sounds to the source zone"));
     if (c.events == 0) parts.push_back("no marker to place on");
     if (!c.skip_note.empty()) parts.push_back(c.skip_note);
     for (size_t i = 0; i < parts.size(); ++i) out += (i ? ", " : "") + parts[i];

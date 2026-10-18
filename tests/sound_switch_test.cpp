@@ -190,6 +190,43 @@ static void TestGroupDefault()
     CHECK(c3.nodes[0].default_value == "sgrass");
 }
 
+// 13-68 v3 review: a RAV layers Switch (rav_owned group) whose default has no case adds nothing, silently (never the
+// event's gap); a user group's Switch there still reports its gap.
+static void TestRavLayersDefault()
+{
+    SoundStore  st;
+    SwitchGroup g;
+    g.uid = "grav";
+    g.name = "FS layers";
+    g.rav_owned = true;
+    g.values = {{"vo", "Other animations", {}}, {"vw", "Walk", {}}};
+    g.default_value = "vo";
+    st.groups.push_back(g);
+    SoundLibrary lib;
+    lib.name = "FS";
+    lib.root = "b";
+    SoundNode sw = Node("sw", "b", SoundNodeType::Switch, "FS layers");
+    sw.group_uid = "grav";
+    Case(sw, "vw", "w");
+    lib.nodes = {Node("b", "", SoundNodeType::Blend, "FS"), Node("s", "b", SoundNodeType::Sound, "Steps"), sw,
+                 Node("w", "sw", SoundNodeType::Sound, "Walk layer")};
+    Resolution r = ResolveEvent(st, lib, {}, {});
+    CHECK(r.sounds.size() == 1 && r.sounds[0].node == "s" && r.gap.empty());
+    ValueLayers walk;
+    ValueSet    vw;
+    vw.group_uid = "grav";
+    vw.value_uid = "vw";
+    walk.item = {vw};
+    r = ResolveEvent(st, lib, walk, {});
+    CHECK(r.sounds.size() == 2 && r.gap.empty());
+    lib.nodes.erase(lib.nodes.begin() + 1);  // the Switch alone in its Blend: nothing plays, still no gap
+    r = ResolveEvent(st, lib, {}, {});
+    CHECK(r.sounds.empty() && r.gap.empty());
+    st.groups[0].rav_owned = false;  // a user group: its default without sound is the gap
+    r = ResolveEvent(st, lib, {}, {});
+    CHECK(r.sounds.empty() && !r.gap.empty());
+}
+
 static void TestNested()
 {
     SoundStore st = Store();
@@ -811,6 +848,7 @@ int main()
     TestInheritance();
     TestDefaultFallbackAndPath();
     TestGroupDefault();
+    TestRavLayersDefault();  // 13-68 v3 review
     TestNested();
     TestRootsAndNullHooks();
     TestUnassigned();

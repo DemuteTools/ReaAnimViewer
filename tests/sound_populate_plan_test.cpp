@@ -948,6 +948,198 @@ static void TestLinkedBlend()
     CHECK(LinkedVariation(0, 3, -1, 1, 2) == 2);  // a third layer shifts twice as far
 }
 
+// 13-68 v3: a linked layer pairs by rank in its own pool (its on variations of its part), the pick it plays is the one
+// recorded (history and draw), a hand-picked layer draw is kept, a re-Populate with the records plays the same.
+static int RankIn(const std::vector<int>& pool, int v)
+{
+    const auto it = std::find(pool.begin(), pool.end(), v);
+    return it == pool.end() ? -1 : static_cast<int>(it - pool.begin());
+}
+static const SoundDraw* OutDraw(const EventDraw& ed, const std::string& node)
+{
+    for (const SoundDraw& d : ed.out)
+        if (d.node == node) return &d;
+    return nullptr;
+}
+static void TestLinkedBlendPools()
+{
+    // Role-divided Sounds in a Blend (heel events play their Back part): the second has 4 variations, its 2nd without a
+    // Back part (pool {0, 2, 3}): 9 heel events over 3 rounds play the 9 rank pairs once each, never its 2nd.
+    {
+        const SoundStore st = ContactStore();
+        SoundLibrary     lib;
+        lib.uid = "L";
+        lib.root = "b";
+        lib.nodes.push_back(Node("b", "", SoundNodeType::Blend));
+        SoundNode a = DividedSteps("a", "b");
+        a.layer_roles = {"heel"};
+        SoundNode c = DividedSteps("c", "b");
+        c.layer_roles = {"heel"};
+        SoundFrame f3 = c.sound.frames[2];
+        f3.start += 1.0;
+        for (EditZone& z : f3.zones) {
+            z.a += 1.0;
+            z.b += 1.0;
+            z.slot_a += 1.0;
+            z.slot_b += 1.0;
+            z.onset += 1.0;
+        }
+        c.sound.frames.push_back(f3);
+        SetZones(c.sound, 1, {c.sound.frames[1].zones[1]});  // its 2nd: Front only
+        lib.nodes.insert(lib.nodes.end(), {a, c});
+        const std::vector<int> pa = ActiveVariationsFor(a.sound, "vb"), pc = ActiveVariationsFor(c.sound, "vb");
+        CHECK(pa.size() == 3 && pc == std::vector<int>({0, 2, 3}));
+        PopulateDrawState ps;
+        ps.lib = &lib;
+        ps.seed = 11;
+        std::set<std::pair<int, int>> pairs;
+        bool                          ok = true;
+        for (int e = 0; e < 9; ++e) {
+            EventDraw ed;
+            ed.rid = "r1";
+            ed.t = 1.0 + e;
+            ValueLayers layers;
+            layers.role = "heel";
+            const Resolution res = ResolveEvent(st, lib, layers, MakeDrawHooks(ps, ed, nullptr));
+            if (res.sounds.size() != 2 || res.sounds[0].part_value != "vb" || res.sounds[1].part_value != "vb") {
+                ok = false;
+                continue;
+            }
+            const int va = res.sounds[0].variation, vc = res.sounds[1].variation;
+            const int ra = RankIn(pa, va), rc = RankIn(pc, vc);
+            ok = ok && ra >= 0 && rc >= 0 && rc == (ra + e / 3) % 3;
+            // the record is what plays: its draw and its history's last pick
+            const SoundDraw* d = OutDraw(ed, "c");
+            ok = ok && d && d->pick == vc && d->part == "vb" && ps.history["c|vb"].back() == vc;
+            pairs.insert({ra, rc});
+        }
+        CHECK(ok);
+        CHECK(pairs.size() == 9);
+    }
+    // Whole variations: the second layer's 2nd switched off (pool {0, 2, 3}) never plays; a re-Populate reading the
+    // records (kept draws) plays every event the same.
+    SoundLibrary lib;
+    lib.uid = "L";
+    lib.root = "b";
+    lib.nodes.push_back(Node("b", "", SoundNodeType::Blend));
+    lib.nodes.push_back(Leaf("x", "b", 3));
+    SoundNode y = Leaf("y", "b", 4);
+    y.sound.frames[1].on = false;
+    lib.nodes.push_back(y);
+    const SoundStore empty;
+    {
+        PopulateDrawState ps;
+        ps.lib = &lib;
+        ps.seed = 5;
+        std::vector<std::vector<SoundDraw>> records;
+        std::vector<std::pair<int, int>>    played;
+        std::set<std::pair<int, int>>       pairs;
+        bool                                ok = true;
+        for (int e = 0; e < 9; ++e) {
+            EventDraw ed;
+            ed.rid = "r1";
+            ed.t = 1.0 + e;
+            const Resolution res = ResolveEvent(empty, lib, ValueLayers(), MakeDrawHooks(ps, ed, nullptr));
+            if (res.sounds.size() != 2) {
+                ok = false;
+                continue;
+            }
+            const int vx = res.sounds[0].variation, vy = res.sounds[1].variation;
+            const int ry = RankIn({0, 2, 3}, vy);
+            ok = ok && vy != 1 && ry == (vx + e / 3) % 3;
+            const SoundDraw* d = OutDraw(ed, "y");
+            ok = ok && d && d->pick == vy && ps.history["y"].back() == vy;
+            pairs.insert({vx, vy});
+            played.push_back({vx, vy});
+            records.push_back(ed.out);
+        }
+        CHECK(ok);
+        CHECK(pairs.size() == 9);
+        PopulateDrawState again;
+        again.lib = &lib;
+        again.seed = 5;
+        bool same = played.size() == 9;
+        for (int e = 0; e < 9 && same; ++e) {
+            EventDraw ed;
+            ed.rid = "r1";
+            ed.t = 1.0 + e;
+            ed.prev = &records[static_cast<size_t>(e)];
+            const Resolution res = ResolveEvent(empty, lib, ValueLayers(), MakeDrawHooks(again, ed, nullptr));
+            same = res.sounds.size() == 2 && res.sounds[0].variation == played[static_cast<size_t>(e)].first &&
+                   res.sounds[1].variation == played[static_cast<size_t>(e)].second;
+        }
+        CHECK(same);
+    }
+    // A layer's hand pick wins over the link (x picked 0 by hand would link y to 0): y plays its hand 3, kept hand.
+    {
+        PopulateDrawState ps;
+        ps.lib = &lib;
+        ps.seed = 5;
+        std::vector<SoundDraw> prev(2);
+        prev[0].node = "x";
+        prev[0].pick = 0;
+        prev[0].hand = true;
+        prev[1].node = "y";
+        prev[1].pick = 3;
+        prev[1].hand = true;
+        EventDraw ed;
+        ed.rid = "r1";
+        ed.t = 1.0;
+        ed.prev = &prev;
+        const Resolution res = ResolveEvent(empty, lib, ValueLayers(), MakeDrawHooks(ps, ed, nullptr));
+        CHECK(res.sounds.size() == 2 && res.sounds[0].variation == 0 && res.sounds[1].variation == 3);
+        const SoundDraw* d = OutDraw(ed, "y");
+        CHECK(d && d->pick == 3 && d->hand);
+    }
+}
+
+// 13-68 v3 review: A + B populated together (one gesture, one history: B's events in later rounds), then B alone (a
+// fresh history: round 0): the lead keeps its stored pick, so its layer keeps its stored pick too (never relinked).
+static void TestLinkedBlendKept()
+{
+    SoundLibrary lib;
+    lib.uid = "L";
+    lib.root = "b";
+    lib.nodes.push_back(Node("b", "", SoundNodeType::Blend));
+    lib.nodes.push_back(Leaf("x", "b", 3));
+    lib.nodes.push_back(Leaf("y", "b", 3));
+    const SoundStore  empty;
+    PopulateDrawState ps;  // A (6 events) then B (3 events), carried
+    ps.lib = &lib;
+    ps.seed = 9;
+    std::vector<std::vector<SoundDraw>> b_records;
+    std::vector<std::pair<int, int>>    b_played;
+    bool                                shifted = false;
+    for (int e = 0; e < 9; ++e) {
+        EventDraw ed;
+        ed.rid = "r1";
+        ed.t = 1.0 + e % 6;
+        const Resolution res = ResolveEvent(empty, lib, ValueLayers(), MakeDrawHooks(ps, ed, nullptr));
+        CHECK(res.sounds.size() == 2);
+        if (res.sounds.size() != 2 || e < 6) continue;
+        b_records.push_back(ed.out);
+        b_played.push_back({res.sounds[0].variation, res.sounds[1].variation});
+        shifted = shifted || res.sounds[0].variation != res.sounds[1].variation;  // round 2: 1-3 / 2-1 / 3-2
+    }
+    CHECK(shifted && b_played.size() == 3);
+    PopulateDrawState alone;
+    alone.lib = &lib;
+    alone.seed = 9;
+    bool same = b_played.size() == 3;
+    for (size_t e = 0; e < b_played.size() && same; ++e) {
+        EventDraw ed;
+        ed.rid = "r1";
+        ed.t = 1.0 + static_cast<double>(e);
+        ed.prev = &b_records[e];
+        const Resolution res = ResolveEvent(empty, lib, ValueLayers(), MakeDrawHooks(alone, ed, nullptr));
+        same = res.sounds.size() == 2 && res.sounds[0].variation == b_played[e].first &&
+               res.sounds[1].variation == b_played[e].second;
+        const SoundDraw* d = OutDraw(ed, "y");
+        same = same && d && d->pick == b_played[e].second;
+    }
+    CHECK(same);
+}
+
 // 13-73 review: a Blend of two Sounds with Left / Right on (6 variations, Alternate L R): every layer of a left event plays
 // a Left variation (the second pairs by rank on that side, then mixes by that side's rounds), never the other foot.
 static void TestSidesLinkedBlend()
@@ -1248,6 +1440,8 @@ int main()
     TestSidesLinkedBlend();  // 13-73 review
     SetNewSoundSyncMode(SyncMode::Attack);  // 13-67b: these fixtures were written for the old default (Attack)
     TestLinkedBlend();  // 13-68 v2
+    TestLinkedBlendPools();  // 13-68 v3
+    TestLinkedBlendKept();   // 13-68 v3 review
     TestPopulatePlanHelpers();  // 13-62i (D review)
     TestBlendMatrix();
     TestLoopPassDraws();

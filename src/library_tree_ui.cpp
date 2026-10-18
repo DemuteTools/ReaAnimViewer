@@ -304,6 +304,7 @@ void StartRowRename(const SoundLibrary& lib, const LibraryRow& row)
             if (const SwitchGroup* gr = FindGroup(GetSoundStore(nullptr), sw->group_uid))
                 for (const SwitchValue& v : gr->values)
                     if (v.uid == row.key) {
+                        if (gr->rav_owned) return;  // 13-68 v3: a RAV group's value is not renamed by hand
                         name = v.name;
                         found = true;
                     }
@@ -778,12 +779,16 @@ std::string GroupMenuItems(bool with_new_group, bool* new_group)
 {
     std::string picked;
     const SoundStore& store = GetSoundStore(nullptr);
-    for (const SwitchGroup& gr : store.groups) {
+    bool              any = false;  // 13-68 v3
+    for (const SwitchGroup* gp : GroupsInListOrder(store)) {
+        const SwitchGroup& gr = *gp;
+        if (gr.rav_owned) continue;  // 13-68 v3 review: RAV's groups are RAV's to use, never a user's pick
+        any = true;                  // 13-68 v3
         ImGui::PushID(gr.uid.c_str());
-        if (ImGui::MenuItem(gr.name.c_str())) picked = gr.uid;
+        if (ImGui::MenuItem(GroupDisplayName(gr).c_str())) picked = gr.uid;
         ImGui::PopID();
     }
-    if (store.groups.empty() && !with_new_group) ImGui::TextDisabled("No Switch Group yet");
+    if (!any && !with_new_group) ImGui::TextDisabled("No Switch Group yet");  // 13-68 v3: any
     if (with_new_group) {
         ImGui::Separator();
         if (ImGui::MenuItem("New group") && new_group) *new_group = true;
@@ -834,9 +839,12 @@ void RowMenu(const SoundLibrary& lib)
     if (is_value)
         if (const SoundNode* sw = FindNode(lib, row.parent)) value_group = sw->group_uid;
     bool group_known = false;  // the value row names a value its group still has
-    if (const SwitchGroup* vg = value_group.empty() ? nullptr : FindGroup(GetSoundStore(nullptr), value_group))
+    bool group_rav = false;    // 13-68 v3: of a RAV-owned group (its values are RAV's)
+    if (const SwitchGroup* vg = value_group.empty() ? nullptr : FindGroup(GetSoundStore(nullptr), value_group)) {
+        group_rav = vg->rav_owned;
         for (const SwitchValue& v : vg->values)
             if (v.uid == row.key) group_known = true;
+    }
     const std::string lib_uid = lib.uid, root_uid = lib.root;
 
     // Greyed when none of the rows can take that type (the tooltip says why).
@@ -927,7 +935,7 @@ void RowMenu(const SoundLibrary& lib)
         ImGui::EndMenu();
     }
     ImGui::Separator();
-    if (ImGui::MenuItem("Rename", "F2", false, (has_node || is_value) && !StoreReplaced())) StartRowRename(lib, row);
+    if (ImGui::MenuItem("Rename", "F2", false, (has_node || is_value) && !(is_value && group_rav) && !StoreReplaced())) StartRowRename(lib, row);
     const bool movable = has_node && node_uid != root_uid;
     if (ImGui::MenuItem("Cut", "Ctrl+X", false, movable)) DoCut(lib_uid, rows);
     if (ImGui::MenuItem("Copy", "Ctrl+C", false, movable)) DoCopy(lib_uid, rows);
@@ -981,14 +989,14 @@ void RowMenu(const SoundLibrary& lib)
     }
     if (is_value) {
         ImGui::Separator();
-        if (ImGui::MenuItem("Make default")) Later([rows] { DoMakeDefault(rows); });
+        if (ImGui::MenuItem("Make default", nullptr, false, !group_rav)) Later([rows] { DoMakeDefault(rows); });  // 13-68 v3: not RAV's
         if (!node_uid.empty() && ImGui::MenuItem("Clear (plays the default)"))
             Later([lib_uid, row] { Gesture("Clear value", [&](SoundStore& s) { return ClearValue(s, lib_uid, row); }); });
     }
     ImGui::Separator();
     if (ImGui::MenuItem("Remove", "Del", false, movable)) Later([rows] { DoRemove(rows); });
     if (is_value && group_known) {
-        if (ImGui::MenuItem("Remove value from group")) {
+        if (ImGui::MenuItem("Remove value from group", nullptr, false, !group_rav)) {
             const std::string gid = value_group, vid = row.key;
             Later([gid, vid] { Gesture("Remove value", [&](SoundStore& s) { return DeleteValue(s, gid, vid); }); });
         }
@@ -1491,7 +1499,7 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
         if (hot) {
             std::string tip = TypeWord(n->type);
             if (n->type == SoundNodeType::Switch)
-                if (const SwitchGroup* gr = FindGroup(GetSoundStore(nullptr), n->group_uid)) tip += " on " + gr->name;
+                if (const SwitchGroup* gr = FindGroup(GetSoundStore(nullptr), n->group_uid)) tip += " on " + GroupDisplayName(*gr);
             ui::ItemTip("%s \xC2\xB7 click to change the type", tip.c_str());
         }
         DrawTypeIcon(dl, ip, box, n->type, hot || selected || ImGui::IsPopupOpen("##typemenu"), Faded(TypeColor(n->type), is_cut));
@@ -1554,7 +1562,8 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
             ImGui::Dummy(ImVec2(tw, rh));
             ui::ItemTipText("Default value: plays when the event's value is not set, or when a value has no sound of its own");
             rx -= gap;
-        } else if (hovered) {
+        } else if (const SoundNode* vsw = FindNode(lib, r.row.parent);
+                   hovered && !(vsw && IsRavGroup(GetSoundStore(nullptr), vsw->group_uid))) {  // 13-68 v3: not RAV's
             // .star: 18 px, faint, warn on its hover background.
             const float bs = ui::Dp(18.0f);
             rx -= bs;
@@ -2146,7 +2155,16 @@ void SwitchGroupsSectionWidgets()
         const ImVec2 spacing0 = ImGui::GetStyle().ItemSpacing;
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 0.0f));
         g_group_folds.now_open = g_group_folds.now_closed = false;  // 13-33
-        for (const SwitchGroup& gr : store.groups) {
+        bool rav_caption = false;
+        for (const SwitchGroup* gp : GroupsInListOrder(store)) {
+            // 13-68 v3: RAV's groups after the user's, under their caption: shown "RAV - <name>", never renamed, deleted
+            // nor given / stripped of / renamed values by hand (the store gestures refuse them too).
+            const SwitchGroup& gr = *gp;
+            const bool         rav = gr.rav_owned;
+            if (rav && !rav_caption) {
+                rav_caption = true;
+                ui::SubText("Made and managed by RAV");
+            }
             ImGui::PushID(gr.uid.c_str());
             const ImGuiID open_id = ImGui::GetID("##grp");
             const bool    open = GroupRowOpen(open_id);
@@ -2179,7 +2197,8 @@ void SwitchGroupsSectionWidgets()
                     g.sg_menu = true;
                 }
                 const bool hovered = ui::SelectRowHovered();
-                if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                if (rav) ui::ItemTipText("Made and managed by RAV: not renamed, deleted or given values by hand");
+                if (!rav && ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                     g.rename = RenameKind::Group;
                     g.r_a = gr.uid;
                     std::snprintf(g.buf, sizeof(g.buf), "%s", gr.name.c_str());
@@ -2190,7 +2209,7 @@ void SwitchGroupsSectionWidgets()
                 // The mockup's group row: a folder icon (ICON.group) before the name.
                 DrawLibraryGlyph(dl, ImVec2(x0 + cs + gap, std::floor(cy - is * 0.5f)), is, kGlyphGroup, ui::kMuted);
                 float rx = p.x + w - ui::Dp(4.0f);
-                if (hovered) {
+                if (hovered && !rav) {
                     if (RowCross(p, w, "Delete the group: every Switch on it becomes a Random, its sounds kept")) del_group = gr.uid;
                     rx -= ui::Dp(22.0f) + gap;
                 }
@@ -2203,7 +2222,7 @@ void SwitchGroupsSectionWidgets()
                     rx -= gap;
                 }
                 ui::FontScope f(ui::FontTitle());
-                ui::EllipsisTextTip(dl, ImVec2(nx, std::floor(cy - ImGui::GetTextLineHeight() * 0.5f)), rx, ui::kText, gr.name);
+                ui::EllipsisTextTip(dl, ImVec2(nx, std::floor(cy - ImGui::GetTextLineHeight() * 0.5f)), rx, ui::kText, GroupDisplayName(gr));
                 ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + rh));
                 ImGui::Dummy(ImVec2(0.0f, 0.0f));
             }
@@ -2257,7 +2276,7 @@ void SwitchGroupsSectionWidgets()
                             g.sg_menu = true;
                         }
                         const bool hovered = ui::SelectRowHovered();
-                        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                        if (!rav && ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                             g.rename = RenameKind::Value;
                             g.r_a = gr.uid;
                             g.r_b = v.uid;
@@ -2267,7 +2286,7 @@ void SwitchGroupsSectionWidgets()
                         // The mockup's value row: the chevron's empty room, a dot (ICON.value), the name.
                         DrawLibraryGlyph(dl, ImVec2(vx0 + cs + gap, std::floor(vcy - is * 0.5f)), is, kGlyphValue, ui::kMuted);
                         float rx = vp.x + w - ui::Dp(4.0f);
-                        if (hovered) {
+                        if (hovered && !rav) {
                             if (RowCross(vp, w, "Remove the value: its sounds go to Unassigned in every Switch on this group")) {
                                 del_value_group = gr.uid;
                                 del_value = v.uid;
@@ -2355,7 +2374,7 @@ void SwitchGroupsSectionWidgets()
                     }
                     ImGui::PopID();
                 }
-                if (!StoreReplaced()) {
+                if (!StoreReplaced() && !rav) {
                     // .trow.add: the dashed "+ value" field one level in, 170 px; Enter adds the
                     // value (one undo point) and keeps the field for the next one.
                     std::array<char, 128>& buf = g.add_value[gr.uid];
@@ -2410,6 +2429,7 @@ void SwitchGroupsSectionWidgets()
                 g.sgd_vid.clear();
             }
             auto start_rename = [&]() {
+                if (cg->rav_owned) return;  // 13-68 v3
                 g.rename = cv ? RenameKind::Value : RenameKind::Group;
                 g.r_a = cg->uid;
                 g.r_b = cv ? cv->uid : std::string();
@@ -2426,12 +2446,13 @@ void SwitchGroupsSectionWidgets()
             }
             if (ui::BeginMenuPopup("##sgmenu")) {
                 if (!cg) ImGui::CloseCurrentPopup();  // its row went (undo)
-                if (cg && ImGui::MenuItem("Rename", "F2", false, !StoreReplaced() && g.rename == RenameKind::None)) start_rename();
-                if (cg && !cv && ImGui::MenuItem("Delete group")) del_group = cg->uid;
+                const bool rav = cg && cg->rav_owned;  // 13-68 v3: RAV's group: nothing renamed, deleted or given values
+                if (cg && ImGui::MenuItem("Rename", "F2", false, !rav && !StoreReplaced() && g.rename == RenameKind::None)) start_rename();
+                if (cg && !cv && ImGui::MenuItem("Delete group", nullptr, false, !rav)) del_group = cg->uid;
                 if (cg && cv) {
                     // 13-18 D2 / D3: the group's default; asks first when Switches have their own.
                     const bool is_def = cg->default_value == cv->uid;
-                    if (ImGui::MenuItem("Make default", nullptr, is_def, !is_def)) {
+                    if (ImGui::MenuItem("Make default", nullptr, is_def, !is_def && !rav)) {  // 13-68 v3: not RAV's
                         if (CountDefaultOverrides(store, cg->uid, cv->uid) == 0) {
                             def_group = cg->uid;
                             def_value = cv->uid;
@@ -2445,7 +2466,7 @@ void SwitchGroupsSectionWidgets()
                     // 13-23 (D9): Roles ▸ -- which events (by role) get this value's part in every sound divided
                     // by the group. A role belongs to one value: one used by another shows "(→ Back)" and moves.
                     ui::MenuSeparator();
-                    if (ui::BeginSubMenu("Roles")) {
+                    if (ui::BeginSubMenu("Roles", !rav)) {
                         const std::vector<std::string>& keys = LibraryRoleKeys();
                         const size_t                    nb = std::min(LibraryBuiltinRoleCount(), keys.size());
                         ui::MenuCaption(("Roles \xE2\x86\x92 " + cv->name).c_str());
@@ -2462,7 +2483,7 @@ void SwitchGroupsSectionWidgets()
                             const std::string hint = owner && !on ? "(\xE2\x86\x92 " + owner->name + ")" : std::string();
                             const std::string label = RoleKeyLabel(key) + "##role" + key;
                             if (ui::MenuEntry(label.c_str(), hint.empty() ? nullptr : hint.c_str(), on)) {
-                                const std::string gid = cg->uid, vid = cv->uid, gname = cg->name, vname = cv->name;
+                                const std::string gid = cg->uid, vid = cv->uid, gname = GroupDisplayName(*cg), vname = cv->name;
                                 const std::string toast = on ? gname + ": " + RoleKeyLabel(key) + " removed from " + vname
                                                              : gname + ": " + RoleKeyLabel(key) + " \xE2\x86\x92 " + vname +
                                                                    (owner ? " (moved from " + owner->name + ")" : std::string());
@@ -2476,7 +2497,7 @@ void SwitchGroupsSectionWidgets()
                     }
                 }
                 if (cg && cv) ui::MenuSeparator();
-                if (cg && cv && ImGui::MenuItem("Remove value")) {
+                if (cg && cv && ImGui::MenuItem("Remove value", nullptr, false, !rav)) {
                     del_value_group = cg->uid;
                     del_value = cv->uid;
                 }

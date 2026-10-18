@@ -350,7 +350,7 @@ void FillGroups(const SoundStore& store, const SoundLibrary& lib, const Effectiv
         gs.first_switch = use.first_switch;
         const SwitchGroup* g = FindGroup(store, use.group_uid);
         gs.deleted = g == nullptr;
-        if (g) gs.group_name = g->name;
+        if (g) gs.group_name = GroupDisplayName(*g);  // 13-68 v3
         if (g && use.first_switch) {
             ValueFrom   vf = ValueFrom::Default;
             std::string v = EffectiveValue(*use.first_switch, ea.layers, &vf);
@@ -503,7 +503,7 @@ Target MakeItemTarget(const SoundStore& store, const ItemSounds& rec, const std:
         const GroupState* src = first[sg.uid];
         GroupState        gs;
         gs.group_uid = sg.uid;
-        gs.group_name = sg.name;
+        gs.group_name = GroupDisplayName(sg);  // 13-68 v3
         gs.first_switch = src->first_switch;
         ValueFrom   vf = ValueFrom::Default;
         std::string v = EffectiveValue(*src->first_switch, t.ea.layers, &vf);

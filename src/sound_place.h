@@ -37,6 +37,9 @@ struct ItemFacts {
 };
 bool ReadItemFacts(MediaItem* item, ItemFacts* out);
 bool IsFolderItem(MediaItem* item);
+// 13-68 v3: the playrate of `item`'s take `k` (Takes mode: the variation's take; -1 or out of range: the active
+// take); 1 when unreadable.
+double TakePlayrateOf(MediaItem* item, int k);
 // 13-68 v2: the items a folder pile places (its child items inside its span, as Populate collects them:
 // nested folder items and items RAV placed left out). Empty when `item` is not a folder item.
 std::vector<MediaItem*> FolderPileMembers(MediaItem* item);
@@ -80,6 +83,9 @@ struct PlaceRequest {
     // are always copied as they are.
     bool as_auditioned = false;
     int  chan_mode = 0;
+    // 13-68 v3 (SoundData::keep_rate): with as_auditioned, a plain item's copy keeps its takes' playrate, pitch and
+    // preserve-pitch as the source has them (FoldPlayrate keep); its slices, pieces, fades and snap are read at that rate.
+    bool keep_rate = false;
     // 13-68 v2: a TakeMarkers Sound's variation index: a folder pile's members each play their own slice of
     // that index (their take markers / NVK slices, modulo their count), as a Takes pile plays take k. -1 = none.
     int  pile_slice = -1;

@@ -244,6 +244,39 @@ static void TestChanMode()
           ChanModeFor(MonoMode::Right) == 4);
 }
 
+// 13-68 v3: an Attached source's copy keeps its take's rate (keep_rate). The Dress Boots case: a layer at rate 1.335,
+// its snap 50 ms into the item: the Sound's sync is 66.75 ms of source (SourceSecondsOf, as SoundOf writes it); the
+// anchor piece's snap (source s, PieceApplyFor) read back on the copy at 1.335 (ApplyPiece: ItemSecondsOf) is 50 ms
+// again, its length the variation's over the rate; nothing folded. Rate 1: unchanged either way.
+static void TestKeepRate()
+{
+    const double rate = 1.335, snap = 0.050;
+    CHECK(Near(SourceSecondsOf(snap, rate), 0.06675) && Near(ItemSecondsOf(0.06675, rate), snap));
+    for (double bad : {0.0, -1.0, std::nan("")}) CHECK(Near(SourceSecondsOf(snap, bad), snap) && Near(ItemSecondsOf(snap, bad), snap));
+    SoundData d;
+    d.mode = DetectMode::Whole;
+    d.keep_rate = true;
+    d.sync_mode = SyncMode::SliceStart;
+    d.sync_offset_ms = SourceSecondsOf(snap, rate) * 1000.0;
+    SoundFrame fr;
+    fr.start = 0.2;  // the item's take offset (source s)
+    fr.length = 0.534;  // a 0.4 s item at 1.335
+    d.frames.push_back(fr);
+    const std::vector<PieceApply> pa = PieceApplyFor(d, 0, "");
+    CHECK(pa.size() == 1 && pa[0].anchor);
+    if (pa.size() == 1) {
+        CHECK(Near(pa[0].slice.start_offs, 0.2) && Near(pa[0].slice.snap_offset, 0.06675, 1e-9));
+        CHECK(Near(ItemSecondsOf(pa[0].slice.snap_offset, rate), snap, 1e-9));  // the copy's snap: on the marker
+        CHECK(Near(ItemSecondsOf(pa[0].slice.length, rate), 0.4, 1e-9));
+    }
+    PlayrateFold k = FoldPlayrate(rate, 0.4, snap, true);  // kept: the copy as the source has it
+    CHECK(!k.reset && Near(k.rate, rate) && Near(k.length, 0.4) && Near(k.snap, snap));
+    PlayrateFold p = FoldPlayrate(rate, 0.4, snap);  // as auditioned (rate 1): source seconds
+    CHECK(p.reset && Near(p.length, 0.534) && Near(p.snap, 0.06675));
+    const PlayrateFold one = FoldPlayrate(1.0, 0.4, snap, true);
+    CHECK(Near(one.length, 0.4) && Near(one.snap, snap) && Near(SourceSecondsOf(snap, 1.0), snap));
+}
+
 // 13-49 review: mono read from a take's channel mode, the playrate fold, the chunk stripping, the drops line.
 static void TestAsAuditioned()
 {
@@ -619,6 +652,7 @@ int main()
     TestZoneAnchorOwnSnap();
     TestChanMode();
     TestAsAuditioned();
+    TestKeepRate();
     // Position (Blend offset + nudge) and clamp.
     CHECK(Near(PlacementPosition(10.0, 0.25, 12.0, 0.1), 9.862));
     CHECK(Near(PlacementPosition(0.1, 0.5, 0.0, 0.0), 0.0));

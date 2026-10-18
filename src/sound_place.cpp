@@ -262,13 +262,14 @@ void ApplyVariation(MediaItem* item, const PlaceRequest& req)
 {
     if (req.slice.set) {
         MediaItem_Take* take = GetActiveTake(item);
+        double          rate = 1.0;  // 13-68 v3: hoisted, the snap reads it too
         if (take) {
-            double rate = GetMediaItemTakeInfo_Value(take, "D_PLAYRATE");
+            rate = GetMediaItemTakeInfo_Value(take, "D_PLAYRATE");
             if (!(rate > 0.0)) rate = 1.0;
             f_set_take(take, "D_STARTOFFS", req.slice.start_offs);
             f_set_item(item, "D_LENGTH", req.slice.length / rate);
         }
-        f_set_item(item, "D_SNAPOFFSET", req.slice.snap_offset);
+        f_set_item(item, "D_SNAPOFFSET", ItemSecondsOf(req.slice.snap_offset, rate));  // 13-68 v3: keep_rate (rate 1: as before)
         return;
     }
     if (req.variation >= 0 && req.variation < f_count_takes(item)) {
@@ -282,7 +283,8 @@ void ApplyVariation(MediaItem* item, const PlaceRequest& req)
 // the item's length and snap (FoldPlayrate: source seconds, as the variation was measured), then every take
 // at playrate 1, pitch 0, pan centre, and the Sound's channel mode when it forces mono (Off keeps the source
 // take's own mode). Called before ApplyVariation / ApplyPiece, which then read rate 1. Take FX and stretch
-// markers were already left out of the copied chunk (WriteCopy: StripTakeFxAndStretch).
+// markers were already left out of the copied chunk (WriteCopy: StripTakeFxAndStretch). 13-68 v3: a keep_rate copy
+// keeps its takes' playrate, pitch and preserve-pitch (nothing folded; ApplyPiece / ApplyFades read its rate).
 void PlayAsAuditioned(MediaItem* item, const PlaceRequest& req)
 {
     if (!req.as_auditioned || !item) return;
@@ -292,16 +294,18 @@ void PlayAsAuditioned(MediaItem* item, const PlaceRequest& req)
         if (MediaItem_Take* t = f_get_take(item, req.variation)) plays = t;
     const PlayrateFold fold = FoldPlayrate(plays ? GetMediaItemTakeInfo_Value(plays, "D_PLAYRATE") : 1.0,
                                            GetMediaItemInfo_Value(item, "D_LENGTH"),
-                                           GetMediaItemInfo_Value(item, "D_SNAPOFFSET"));
-    if (fold.rate != 1.0) {
+                                           GetMediaItemInfo_Value(item, "D_SNAPOFFSET"), req.keep_rate);
+    if (fold.reset && fold.rate != 1.0) {
         f_set_item(item, "D_LENGTH", fold.length);
         f_set_item(item, "D_SNAPOFFSET", fold.snap);
     }
     for (int k = 0; k < n; ++k) {
         MediaItem_Take* take = f_get_take(item, k);
         if (!take) continue;
-        f_set_take(take, "D_PLAYRATE", 1.0);
-        f_set_take(take, "D_PITCH", 0.0);
+        if (fold.reset) {
+            f_set_take(take, "D_PLAYRATE", 1.0);
+            f_set_take(take, "D_PITCH", 0.0);
+        }
         f_set_take(take, "D_PAN", 0.0);
         if (req.chan_mode != 0) f_set_take(take, "I_CHANMODE", static_cast<double>(req.chan_mode));
     }
@@ -573,13 +577,12 @@ PlaceResult PlaceFileImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* 
 void ApplyPiece(MediaItem* item, const PieceApply& piece)
 {
     MediaItem_Take* take = GetActiveTake(item);
-    double          rate = take ? GetMediaItemTakeInfo_Value(take, "D_PLAYRATE") : 1.0;
-    if (!(rate > 0.0) || !std::isfinite(rate)) rate = 1.0;
+    const double    rate = take ? GetMediaItemTakeInfo_Value(take, "D_PLAYRATE") : 1.0;  // 13-68 v3: a keep_rate copy's
     if (take) {
         f_set_take(take, "D_STARTOFFS", piece.slice.start_offs);
-        f_set_item(item, "D_LENGTH", piece.slice.length / rate);
+        f_set_item(item, "D_LENGTH", ItemSecondsOf(piece.slice.length, rate));
     }
-    f_set_item(item, "D_SNAPOFFSET", piece.anchor ? piece.slice.snap_offset / rate : 0.0);
+    f_set_item(item, "D_SNAPOFFSET", piece.anchor ? ItemSecondsOf(piece.slice.snap_offset, rate) : 0.0);
     ApplyFades(item, piece.fades);
 }
 
@@ -1058,6 +1061,16 @@ std::vector<MediaItem*> FolderPileMembers(MediaItem* item)
     if (!CollectMembers(EnumProjects(-1, nullptr, 0), req, &anchor, &folder, &members, &err) || !folder) return out;
     for (const Member& m : members) out.push_back(m.src);
     return out;
+}
+
+// 13-68 v3: see sound_place.h.
+double TakePlayrateOf(MediaItem* item, int k)
+{
+    if (!item) return 1.0;
+    MediaItem_Take* take = k >= 0 && f_count_takes && f_get_take && k < f_count_takes(item) ? f_get_take(item, k) : nullptr;
+    if (!take) take = GetActiveTake(item);
+    const double rate = take ? GetMediaItemTakeInfo_Value(take, "D_PLAYRATE") : 1.0;
+    return rate > 0.0 && std::isfinite(rate) ? rate : 1.0;
 }
 
 bool IsFolderItem(MediaItem* item)

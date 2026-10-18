@@ -44,23 +44,30 @@ struct Walker {
     const AuditionPicker& picker;
     AuditionPlan&         plan;
 
+    // 13-31: an audition is a combined event (no role): the whole variation, every Blend layer.
+    int Pick(const SoundNode& n) const
+    {
+        return picker.pick_part_variation ? picker.pick_part_variation(n, std::string())
+               : picker.pick_variation     ? picker.pick_variation(n)
+                                           : -1;
+    }
+
+    void Voices(const SoundNode& n, int v, double delay_ms, const std::vector<std::string>& path)
+    {
+        if (v < 0 || static_cast<size_t>(v) >= n.sound.frames.size()) return;
+        for (AuditionVoice& voice : PartAuditionVoices(lib, n, v, std::string(), delay_ms)) {
+            voice.path = path;
+            plan.voices.push_back(std::move(voice));
+        }
+    }
+
     void Walk(const SoundNode& n, double delay_ms, std::vector<std::string> path, int depth)
     {
         if (depth > kMaxDepth) return;
         switch (n.type) {
-        case SoundNodeType::Sound: {
-            // 13-31: an audition is a combined event (no role): the whole variation, every Blend layer.
-            const std::string part;
-            const int v = picker.pick_part_variation ? picker.pick_part_variation(n, part)
-                          : picker.pick_variation     ? picker.pick_variation(n)
-                                                      : -1;
-            if (v < 0 || static_cast<size_t>(v) >= n.sound.frames.size()) return;
-            for (AuditionVoice& voice : PartAuditionVoices(lib, n, v, part, delay_ms)) {
-                voice.path = path;
-                plan.voices.push_back(std::move(voice));
-            }
+        case SoundNodeType::Sound:
+            Voices(n, Pick(n), delay_ms, path);
             return;
-        }
         case SoundNodeType::Random: {
             const std::vector<const SoundNode*> kids = PlayableChildren(store, lib, n, depth);
             if (kids.empty()) return;
@@ -72,13 +79,39 @@ struct Walker {
             Walk(k, delay_ms, std::move(p), depth + 1);
             return;
         }
-        case SoundNodeType::Blend:
+        case SoundNodeType::Blend: {
+            // 13-68 v3 (audition = placement): its Sound layers play the lead's variation number by rank in their on
+            // variations, shifted once the lead's are used up (ResolveEvent's Blend rule, LinkedVariation).
+            int lead_rank = -1, round = 0, layer = 0;
+            bool have_lead = false;
             for (const SoundNode* k : BlendParts(lib, n)) {
                 std::vector<std::string> p = path;
                 p.push_back(k->uid);
-                Walk(*k, delay_ms + std::max(0.0, k->offset_ms), std::move(p), depth + 1);
+                const double d = delay_ms + std::max(0.0, k->offset_ms);
+                if (k->type != SoundNodeType::Sound) {
+                    Walk(*k, d, std::move(p), depth + 1);
+                    continue;
+                }
+                int                    v = Pick(*k);
+                const std::vector<int> pool = ActiveVariationsFor(k->sound, std::string());
+                if (!have_lead) {
+                    if (v >= 0) {
+                        have_lead = true;
+                        round = picker.rounds ? picker.rounds(*k, std::string()) : 0;
+                        const auto it = std::find(pool.begin(), pool.end(), v);
+                        lead_rank = it != pool.end() ? static_cast<int>(it - pool.begin()) : -1;
+                    }
+                } else {
+                    ++layer;
+                    if (lead_rank >= 0 && !pool.empty()) {
+                        v = pool[static_cast<size_t>(LinkedVariation(lead_rank, static_cast<int>(pool.size()), 0, round, layer))];
+                        if (picker.link) picker.link(*k, std::string(), v);
+                    }
+                }
+                Voices(*k, v, d, p);
             }
             return;
+        }
         case SoundNodeType::Switch: {
             const std::string child = SwitchPreviewChild(store, lib, n);
             const SoundNode*  k = child.empty() ? nullptr : FindNode(lib, child);
@@ -160,11 +193,23 @@ AuditionPicker AuditionHistory::Picker()
         return pick;
     };
     p.pick_part_variation = [this](const SoundNode& n, const std::string& part) {
-        std::vector<int>& h = hist_[part.empty() ? n.uid : n.uid + "|" + part];
+        const std::string key = part.empty() ? n.uid : n.uid + "|" + part;
+        std::vector<int>& h = hist_[key];
         const std::vector<int> active = ActiveVariationsFor(n.sound, part);  // 13-62i: Takes mode too
         const int pick = DrawPick(active, n.avoid_repeat, h, seed_, ++press_);
         Remember(h, pick);
+        if (pick >= 0) ++drawn_[key];
         return pick;
+    };
+    // 13-68 v3: a Blend's lead rounds over its on variations (its picks counted, the history being capped), as Populate.
+    p.rounds = [this](const SoundNode& n, const std::string& part) {
+        const int count = static_cast<int>(ActiveVariationsFor(n.sound, part).size());
+        const int drawn = drawn_[part.empty() ? n.uid : n.uid + "|" + part];
+        return count <= 0 || drawn <= 0 ? 0 : (drawn - 1) / count;
+    };
+    p.link = [this](const SoundNode& n, const std::string& part, int linked) {
+        std::vector<int>& h = hist_[part.empty() ? n.uid : n.uid + "|" + part];
+        if (!h.empty()) h.back() = linked;
     };
     return p;
 }

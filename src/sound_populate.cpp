@@ -466,6 +466,7 @@ PlaceRequest RequestFor(MediaItem* owner, const std::string& rid, double event_t
     // forced to mono as the Sound says.
     req.as_auditioned = true;
     req.chan_mode = ChanModeFor(PartMono(sd, rs.part_value));  // 13-62 (decision 7): the part's own, else the Sound's
+    req.keep_rate = n.sound.keep_rate;  // 13-68 v3: an Attached source's copies keep its rate and pitch
     req.blend_ms = rs.offset_ms;
     return req;
 }
@@ -762,7 +763,10 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                 if (n->sound.source.kind == SoundSourceKind::Item)
                     if (MediaItem* src = FindItemByGuid(n->sound.source.item_guid)) {
                         pile = IsFolderItem(src);
-                        if (MediaItem_Take* tk = GetActiveTake(src)) rate = GetMediaItemTakeInfo_Value(tk, "D_PLAYRATE");
+                        // 13-68 v3: the copy's rate: its source's when it keeps it (keep_rate), else 1 (PlayAsAuditioned);
+                        // Takes mode: the variation's take's (the one it plays)
+                        if (n->sound.keep_rate)
+                            rate = TakePlayrateOf(src, n->sound.mode == DetectMode::Takes ? s.variation : -1);  // 13-68 v3
                     }
                 if (s.variation >= 0 && pile) pa = PieceApplyFor(n->sound, s.variation, s.part_value);  // 13-62i: its zone's gain
                 if (s.variation >= 0) {

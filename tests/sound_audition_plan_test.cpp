@@ -1022,6 +1022,52 @@ void TestSelfLoop()
     CHECK(LoopedPass(0.25, 0.25, 0.5) == 1 && LoopedPosition(2.0, 0.25, 0.0) == 2.0);
 }
 
+// 13-68 v3 (audition = placement): a Blend of two Sounds (2 x 3 variations, the second's 2nd switched off in a 4) heard
+// with the Library's history: round 1 plays matching ranks, then the second layer shifts by the round (the 9 pairs).
+static void TestLinkedBlendAudition()
+{
+    SoundStore   store;
+    SoundLibrary lib;
+    lib.uid = "L";
+    lib.root = "b";
+    lib.nodes.push_back(Node("b", "", SoundNodeType::Blend, "Blend"));
+    lib.nodes.push_back(Snd("a", "b", "A", {0.3, 0.3, 0.3}));
+    lib.nodes.push_back(Snd("c", "b", "C", {0.3, 0.3, 0.3}));
+    SoundNode d = Snd("d", "b", "D", {0.3, 0.3, 0.3, 0.3});
+    d.sound.frames[1].on = false;
+    AuditionHistory hist(3);
+    std::set<std::pair<int, int>> pairs;
+    bool ok = true, round1 = true;
+    for (int e = 0; e < 9; ++e) {
+        const AuditionPlan plan = PlanAudition(store, lib, "b", hist.Picker());
+        if (plan.voices.size() != 2) {
+            ok = false;
+            continue;
+        }
+        const int va = plan.voices[0].variation, vc = plan.voices[1].variation;
+        ok = ok && vc == (va + e / 3) % 3 && hist.History("c").back() == vc;
+        if (e < 3) round1 = round1 && va == vc;
+        pairs.insert({va, vc});
+    }
+    CHECK(ok && round1);
+    CHECK(pairs.size() == 9);
+    // A layer's switched-off variation never plays: its rank among its on ones.
+    lib.nodes[2] = d;
+    AuditionHistory h2(9);
+    bool off_ok = true;
+    for (int e = 0; e < 9; ++e) {
+        const AuditionPlan plan = PlanAudition(store, lib, "b", h2.Picker());
+        if (plan.voices.size() != 2) {
+            off_ok = false;
+            continue;
+        }
+        const int va = plan.voices[0].variation, vd = plan.voices[1].variation;
+        const int want = std::vector<int>({0, 2, 3})[static_cast<size_t>((va + e / 3) % 3)];
+        off_ok = off_ok && vd != 1 && vd == want;
+    }
+    CHECK(off_ok);
+}
+
 int main()
 {
     TestReaperFadeCurves();  // 13-75
@@ -1040,6 +1086,7 @@ int main()
     TestChildAudition();
     TestDividedByText();
     TestBlend();
+    TestLinkedBlendAudition();  // 13-68 v3
     TestSwitch();
     TestRandomAvoid();
     TestLit();

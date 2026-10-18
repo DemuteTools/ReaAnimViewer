@@ -36,9 +36,14 @@ struct ResolveHooks {
     // 13-68 (Antho 2026-10-18): how many full rounds of its variations a Sound has drawn (for that part) before
     // its current pick (a Blend shifts its other layers by it: LinkedVariation). Null = 0.
     std::function<int(const SoundNode&, const std::string& part_value)> rounds;
-    // 13-73 review: the variations of a Sound the event's side draws from (Left / Right on and narrowing them), in
-    // order; empty = no narrowing (every one). A Blend's linked layer pairs inside it (the n-th Left with the n-th Left).
-    std::function<std::vector<int>(const SoundNode&, const std::string& part_value)> side_pool;
+    // 13-68 v3: the variations a Sound draws from for a part (on, with something of the part, on the event's side:
+    // 13-73), in order. A Blend's linked layer pairs by rank in it (the lead's rank in its pool -> the same rank, shifted,
+    // in the layer's), so a switched-off variation or an empty part never plays. Null = every frame.
+    std::function<std::vector<int>(const SoundNode&, const std::string& part_value)> pool;
+    // 13-68 v3: a Blend's linked layer links to `linked`: returns what it plays and records it (the
+    // caller's draw made `linked`; a hand-picked draw is kept: returns it). Null = `linked`.
+    // 13-68 v3: `lead` = the Blend's first Sound layer (a lead that kept its stored pick keeps the layer's too).
+    std::function<int(const SoundNode&, const std::string& part_value, int linked, const SoundNode& lead)> link;
 };
 
 struct ResolvedSound {

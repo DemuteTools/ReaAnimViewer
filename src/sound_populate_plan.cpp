@@ -206,26 +206,48 @@ ResolveHooks MakeDrawHooks(PopulateDrawState& state, EventDraw& ev, std::functio
         const std::vector<int> pool = SideVariations(n.sound, active, e->side);  // 13-73: its parts follow its side
         return Draw(*st, *e, n, pool, n.avoid_repeat, part, pool.size() != active.size());
     };
-    // 13-73 review: the variations the event's side narrows a Sound to (empty: none narrowed), as `variation` draws.
-    auto side_pool = [e](const SoundNode& n, const std::string& part) -> std::vector<int> {
-        const std::vector<int> active = part.empty() ? ActiveVariations(n.sound) : ActiveVariationsFor(n.sound, part);
-        std::vector<int>       pool = SideVariations(n.sound, active, e->side);
-        if (pool.size() == active.size()) pool.clear();
-        return pool;
+    // 13-68 v3: the variations a Sound draws from for a part (on, with something of the part, on the event's side), as
+    // part_variation draws them: a Blend's linked layer pairs by rank in it.
+    auto pool = [e](const SoundNode& n, const std::string& part) -> std::vector<int> {
+        return SideVariations(n.sound, ActiveVariationsFor(n.sound, part), e->side);
     };
-    h.side_pool = side_pool;
-    h.rounds = [st, side_pool](const SoundNode& n, const std::string& part) -> int {  // 13-68: after its pick (held by the history)
-        const auto   it = st->history.find(part.empty() ? n.uid : n.uid + "|" + part);  // Draw's key
-        const size_t count = part.empty() ? ActiveVariations(n.sound).size() : ActiveVariationsFor(n.sound, part).size();
-        if (it == st->history.end() || it->second.empty() || count == 0) return 0;
-        // 13-73 review: drawn on one side, its rounds are that side's (its picks among that side's variations).
-        const std::vector<int> pool = side_pool(n, part);
-        if (!pool.empty()) {
-            size_t mine = 0;
-            for (int x : it->second) mine += std::find(pool.begin(), pool.end(), x) != pool.end() ? 1 : 0;
-            return mine == 0 ? 0 : static_cast<int>((mine - 1) / pool.size());
+    h.pool = pool;
+    h.rounds = [st, pool](const SoundNode& n, const std::string& part) -> int {  // 13-68: after its pick (held by the history)
+        const auto it = st->history.find(part.empty() ? n.uid : n.uid + "|" + part);  // Draw's key
+        if (it == st->history.end() || it->second.empty()) return 0;
+        // 13-73 review / 13-68 v3: its rounds are those of its pool (its picks among them; one side's on a side).
+        const std::vector<int> p = pool(n, part);
+        if (p.empty()) return 0;
+        size_t mine = 0;
+        for (int x : it->second) mine += std::find(p.begin(), p.end(), x) != p.end() ? 1 : 0;
+        return mine == 0 ? 0 : static_cast<int>((mine - 1) / p.size());
+    };
+    // 13-68 v3: the linked pick is the one recorded (history and draw), so the saved draw is what plays; a hand pick stays.
+    h.link = [st, e, pool](const SoundNode& n, const std::string& part, int linked, const SoundNode& lead) -> int {
+        SoundDraw* d = nullptr;
+        const SoundDraw* lead_d = nullptr;  // 13-68 v3
+        for (SoundDraw& o : e->out) {
+            if (o.node == n.uid) d = &o;
+            if (o.node == lead.uid) lead_d = &o;  // 13-68 v3
         }
-        return static_cast<int>((it->second.size() - 1) / count);
+        if (!d) return linked;
+        if (d->hand) return d->pick;
+        // 13-68 v3: a lead that kept its stored pick keeps the layer's stored one (still in its pool): no relink, so a
+        // re-Populate under another history (one item alone) changes nothing; a freshly drawn lead relinks.
+        const SoundDraw* lead_prev = FindDraw(e->prev, lead.uid);  // 13-68 v3
+        const SoundDraw* own_prev = FindDraw(e->prev, n.uid);      // 13-68 v3
+        if (lead_d && lead_prev && lead_prev->pick == lead_d->pick && own_prev && own_prev->pick >= 0) {  // 13-68 v3
+            const std::vector<int> p = pool(n, part);                                                       // 13-68 v3
+            if (std::find(p.begin(), p.end(), own_prev->pick) != p.end()) linked = own_prev->pick;          // 13-68 v3
+        }
+        if (d->pick == linked) return linked;
+        std::vector<int>& hist = st->history[part.empty() ? n.uid : n.uid + "|" + part];
+        if (!hist.empty() && hist.back() == d->pick) hist.back() = linked;
+        else hist.push_back(linked);
+        const SoundDraw* prev = FindDraw(e->prev, n.uid);
+        d->pick = linked;
+        d->kept = prev && prev->pick == linked ? prev->kept : std::vector<std::string>();
+        return linked;
     };
     h.is_missing = std::move(is_missing);
     return h;

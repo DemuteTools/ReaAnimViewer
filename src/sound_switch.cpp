@@ -85,7 +85,7 @@ bool LayerOffsetApplies(const SoundNode& c, const std::string& role, bool blend_
 
 std::string GroupLabel(const SwitchGroup* g, const SoundNode& sw)
 {
-    return g ? g->name : sw.name;
+    return g ? GroupDisplayName(*g) : sw.name;  // 13-68 v3: "RAV - <name>"
 }
 
 struct Walker {
@@ -120,6 +120,15 @@ struct Walker {
     {
         if (!IsDivided(n.sound)) return std::string();
         return PartOfRole(store, n.sound, layers.role);
+    }
+
+    // 13-68 v3: the variations a Sound draws from for a part (ResolveHooks::pool; null hook: every frame).
+    std::vector<int> PoolOf(const SoundNode& n, const std::string& part) const
+    {
+        if (hooks.pool) return hooks.pool(n, part);
+        std::vector<int> all;
+        for (size_t i = 0; i < n.sound.frames.size(); ++i) all.push_back(static_cast<int>(i));
+        return all;
     }
 
     void Walk(const SoundNode& n, double gain, double offset)
@@ -184,6 +193,7 @@ struct Walker {
             // 13-68 v2, every Blend since Antho 2026-10-18 ("a global rule"): its Sound layers play the first one's
             // variation number, then mix once its variations are used up (LinkedVariation).
             int lead = -1, lead_rank = -1;  // the first Sound child's pick (13-73 review: and its rank on its side)
+            const SoundNode* lead_node = nullptr;  // 13-68 v3: that child, for ResolveHooks::link
             int round = 0, layer = 0;  // its full rounds drawn before (Antho 2026-10-18), the other child's rank
             for (const SoundNode* c : play) {
                 const size_t before = res.sounds.size();
@@ -191,21 +201,20 @@ struct Walker {
                 if (c->type != SoundNodeType::Sound || res.sounds.size() != before + 1) continue;
                 ResolvedSound& rs = res.sounds.back();
                 if (rs.missing) continue;
+                // 13-68 v3: one path, by rank in each layer's pool (its on variations of its part, on the event's side).
+                const std::vector<int> pool = PoolOf(*c, rs.part_value);
                 if (lead < 0) {
                     lead = rs.variation;
+                    lead_node = c;  // 13-68 v3
                     round = hooks.rounds ? hooks.rounds(*c, rs.part_value) : 0;
-                    // 13-73 review: drawn among one side's variations, the lead's number is its rank on that side.
-                    lead_rank = lead;
-                    const std::vector<int> pool = hooks.side_pool ? hooks.side_pool(*c, rs.part_value) : std::vector<int>{};
-                    const auto             it = std::find(pool.begin(), pool.end(), lead);
-                    if (it != pool.end()) lead_rank = static_cast<int>(it - pool.begin());
+                    const auto it = std::find(pool.begin(), pool.end(), lead);
+                    lead_rank = it != pool.end() ? static_cast<int>(it - pool.begin()) : hooks.pool ? -1 : lead;  // no hook: its number
                 } else {
-                    // 13-73 review: a layer with Left / Right on pairs inside the event's side (never the other foot).
-                    const std::vector<int> pool = hooks.side_pool ? hooks.side_pool(*c, rs.part_value) : std::vector<int>{};
-                    if (!pool.empty())
-                        rs.variation = pool[static_cast<size_t>(LinkedVariation(lead_rank, static_cast<int>(pool.size()), 0, round, ++layer))];
-                    else
-                        rs.variation = LinkedVariation(lead, static_cast<int>(c->sound.frames.size()), rs.variation, round, ++layer);
+                    ++layer;
+                    if (lead_rank < 0 || pool.empty()) continue;  // no lead in its pool, or nothing to play: its own draw
+                    const int linked =
+                        pool[static_cast<size_t>(LinkedVariation(lead_rank, static_cast<int>(pool.size()), 0, round, layer))];
+                    rs.variation = hooks.link ? hooks.link(*c, rs.part_value, linked, *lead_node) : linked;  // 13-68 v3: lead
                 }
             }
             break;
@@ -234,7 +243,7 @@ struct Walker {
                 }
                 Walk(*c, gain, offset);
             } else {
-                Gap(n, label + " has no sound");
+                if (!(g && g->rav_owned)) Gap(n, label + " has no sound");  // 13-68 v3: a RAV layers Switch's default adds nothing
                 text_open = false;
             }
             break;
@@ -293,7 +302,7 @@ struct Checker {
                 group_ok = g && !g->values.empty();
             }
             const std::string def = DefaultValue(st, n);
-            if (group_ok && !CaseChild(lib, n, def))
+            if (group_ok && !(g && g->rav_owned) && !CaseChild(lib, n, def))  // 13-68 v3: a RAV layers Switch's default adds nothing
                 Warn(n, g ? "default " + ValueName(g, def) + " has no sound" : std::string("default value has no sound"));
             std::set<std::string> seen;
             for (const SwitchCase& c : n.cases) {

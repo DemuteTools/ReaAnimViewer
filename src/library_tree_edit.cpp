@@ -1194,6 +1194,12 @@ bool SetRowsType(SoundStore& store, const std::string& lib_uid, const std::vecto
     });
 }
 
+bool IsRavGroup(const SoundStore& store, const std::string& group_uid)
+{
+    const SwitchGroup* g = group_uid.empty() ? nullptr : FindGroup(store, group_uid);  // 13-68 v3
+    return g && g->rav_owned;
+}
+
 bool MakeDefault(SoundStore& store, const std::string& lib_uid, const std::vector<LibraryRow>& rows)
 {
     return Transact(store, [&](SoundStore& s) {
@@ -1202,7 +1208,8 @@ bool MakeDefault(SoundStore& store, const std::string& lib_uid, const std::vecto
         for (const LibraryRow& r : rows) {
             if (!RowIsValue(*lib, r)) continue;
             if (SoundNode* sw = FindNode(*lib, r.parent))
-                if (FindValue(s, sw->group_uid, r.key)) sw->default_value = r.key;  // never a "(deleted value)"
+                if (FindValue(s, sw->group_uid, r.key) && !IsRavGroup(s, sw->group_uid))  // 13-68 v3: never RAV's
+                    sw->default_value = r.key;  // never a "(deleted value)"
         }
         return true;
     });
@@ -1213,6 +1220,7 @@ bool FollowGroupDefault(SoundStore& store, const std::string& lib_uid, const std
     SoundLibrary* lib = FindLibrary(store, lib_uid);
     SoundNode*    sw = lib ? FindNode(*lib, switch_uid) : nullptr;
     if (!sw || sw->type != SoundNodeType::Switch || sw->default_value.empty()) return false;
+    if (IsRavGroup(store, sw->group_uid)) return false;  // 13-68 v3: RAV's
     sw->default_value.clear();
     return true;
 }
@@ -1452,10 +1460,19 @@ bool AddGroup(SoundStore& store, const std::string& name, std::string* uid)
     return true;
 }
 
+std::vector<const SwitchGroup*> GroupsInListOrder(const SoundStore& store)
+{
+    std::vector<const SwitchGroup*> out;
+    for (int rav = 0; rav < 2; ++rav)
+        for (const SwitchGroup& g : store.groups)
+            if (g.rav_owned == (rav == 1)) out.push_back(&g);
+    return out;
+}
+
 bool RenameGroup(SoundStore& store, const std::string& group_uid, const std::string& name)
 {
     SwitchGroup* g = FindGroup(store, group_uid);
-    if (!g || name.empty() || g->name == name) return false;
+    if (!g || g->rav_owned || name.empty() || g->name == name) return false;  // 13-68 v3: RAV's
     std::vector<std::string> names;
     for (const SwitchGroup& o : store.groups)
         if (o.uid != group_uid) names.push_back(o.name);
@@ -1467,7 +1484,12 @@ bool RenameGroup(SoundStore& store, const std::string& group_uid, const std::str
 
 bool DeleteGroup(SoundStore& store, const std::string& group_uid)
 {
-    if (!FindGroup(store, group_uid)) return false;
+    const SwitchGroup* dg = FindGroup(store, group_uid);
+    if (!dg) return false;
+    if (dg->rav_owned)  // 13-68 v3: RAV's, unless no Switch uses it any more (an orphan: removable)
+        for (const SoundLibrary& lib : store.libraries)
+            for (const SoundNode& n : lib.nodes)
+                if (n.type == SoundNodeType::Switch && n.group_uid == group_uid) return false;
     for (SoundLibrary& lib : store.libraries)
         for (size_t i = 0; i < lib.nodes.size(); ++i)
             if (lib.nodes[i].type == SoundNodeType::Switch && lib.nodes[i].group_uid == group_uid) {
@@ -1483,7 +1505,7 @@ bool DeleteGroup(SoundStore& store, const std::string& group_uid)
 bool AddValue(SoundStore& store, const std::string& group_uid, const std::string& name, std::string* uid)
 {
     SwitchGroup* g = FindGroup(store, group_uid);
-    if (!g) return false;
+    if (!g || g->rav_owned) return false;  // 13-68 v3: RAV's
     std::vector<std::string> names;
     for (const SwitchValue& v : g->values) names.push_back(v.name);
     SwitchValue v;
@@ -1497,7 +1519,7 @@ bool AddValue(SoundStore& store, const std::string& group_uid, const std::string
 bool RenameValue(SoundStore& store, const std::string& group_uid, const std::string& value_uid, const std::string& name)
 {
     SwitchGroup* g = FindGroup(store, group_uid);
-    if (!g || name.empty()) return false;
+    if (!g || g->rav_owned || name.empty()) return false;  // 13-68 v3: RAV's
     std::vector<std::string> names;
     for (const SwitchValue& o : g->values)
         if (o.uid != value_uid) names.push_back(o.name);
@@ -1513,7 +1535,7 @@ bool RenameValue(SoundStore& store, const std::string& group_uid, const std::str
 bool DeleteValue(SoundStore& store, const std::string& group_uid, const std::string& value_uid)
 {
     SwitchGroup* g = FindGroup(store, group_uid);
-    if (!g) return false;
+    if (!g || g->rav_owned) return false;  // 13-68 v3: RAV's
     auto vit = std::find_if(g->values.begin(), g->values.end(), [&](const SwitchValue& v) { return v.uid == value_uid; });
     if (vit == g->values.end()) return false;
     g->values.erase(vit);
@@ -1566,7 +1588,8 @@ int CountDefaultOverrides(const SoundStore& store, const std::string& group_uid,
 bool SetGroupDefault(SoundStore& store, const std::string& group_uid, const std::string& value_uid, bool follow)
 {
     SwitchGroup* g = FindGroup(store, group_uid);
-    if (!g || !std::any_of(g->values.begin(), g->values.end(), [&](const SwitchValue& v) { return v.uid == value_uid; }))
+    if (!g || g->rav_owned ||  // 13-68 v3: RAV's
+        !std::any_of(g->values.begin(), g->values.end(), [&](const SwitchValue& v) { return v.uid == value_uid; }))
         return false;
     bool changed = g->default_value != value_uid;
     g->default_value = value_uid;

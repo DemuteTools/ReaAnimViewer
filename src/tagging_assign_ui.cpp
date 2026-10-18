@@ -1606,7 +1606,7 @@ void DrawCharDetails(const Frame& f)
                     if (grp)
                         for (const SwitchValue& sv : grp->values)
                             if (sv.uid == v.value_uid) vn = sv.name;
-                    bits += (bits.empty() ? "" : ", ") + (grp ? grp->name : std::string("(deleted group)")) + " = " + vn;
+                    bits += (bits.empty() ? "" : ", ") + (grp ? GroupDisplayName(*grp) : std::string("(deleted group)")) + " = " + vn;
                 }
                 ui::ToneText(bits, ui::kMuted, true);
                 ImGui::PopID();

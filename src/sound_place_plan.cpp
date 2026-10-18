@@ -220,12 +220,13 @@ MonoMode MonoForChanMode(int chan_mode)
     return MonoMode::Off;
 }
 
-PlayrateFold FoldPlayrate(double rate, double item_len, double snap)
+PlayrateFold FoldPlayrate(double rate, double item_len, double snap, bool keep)
 {
     PlayrateFold f;
-    f.rate = (std::isfinite(rate) && rate > 0.0) ? rate : 1.0;
-    f.length = item_len * f.rate;
-    f.snap = snap * f.rate;
+    f.rate = SaneRate(rate);
+    f.reset = !keep;
+    f.length = keep ? item_len : SourceSecondsOf(item_len, f.rate);
+    f.snap = keep ? snap : SourceSecondsOf(snap, f.rate);
     return f;
 }
 

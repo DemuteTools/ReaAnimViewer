@@ -181,7 +181,7 @@ void ValueMenu(const char* id, const SoundStore& store, const GroupUse& use, con
 
     ImGui::PushID(id);
     // The group's name (user-typed) in the label column, muted as the mockup's .k.
-    const float w = ui::LabelRowText(g->name, ui::Dp(120.0f), ui::kLabelCol, ui::kMuted);
+    const float w = ui::LabelRowText(GroupDisplayName(*g), ui::Dp(120.0f), ui::kLabelCol, ui::kMuted);
     if (ui::BeginComboStyled("##val", preview.c_str(), w)) {
         if (ImGui::Selectable(inherit, mine == nullptr) && mine) set(std::string());
         for (const SwitchValue& v : g->values) {

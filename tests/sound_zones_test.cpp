@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -1177,6 +1178,132 @@ void FuzzRun(uint64_t seed, int count, FuzzStats& st, int kind = 0)
 }
 
 // 13-62h: several fixed seeds (each a different gesture story), fewer gestures each: the same time as one long run.
+// ---- Fix 2026-10-19: the snap offset lands on the sample (Antho: the H / T markers sat a few ms before the peak) ---
+
+// A file at 48 kHz: silence (1e-5), a Heel transient rising from 0.2000 s to its peak 0.9 at frame kHeelPeak, then a
+// Toe one rising from 0.2520 s to its peak 0.7 at frame kToePeak, each decaying over 40 ms.
+constexpr double  kSr = 48000.0;
+constexpr int64_t kHeelPeak = 9654;   // 0.201125 s: inside the 1 ms bin [0.201, 0.202)
+constexpr int64_t kToePeak = 12290;   // 0.256042 s
+
+float SynthMag(int64_t n)
+{
+    auto hit = [n](double rise_s, int64_t peak, float top) -> float {
+        const int64_t r = static_cast<int64_t>(std::llround(rise_s * kSr));
+        if (n < r || n > peak + static_cast<int64_t>(0.040 * kSr)) return 0.0f;
+        if (n <= peak) return 0.05f + (top - 0.05f) * static_cast<float>(n - r) / static_cast<float>(peak - r);
+        return top * static_cast<float>(std::exp(-static_cast<double>(n - peak) / (0.008 * kSr)));
+    };
+    return std::max({1e-5f, hit(0.2000, kHeelPeak, 0.9f), hit(0.2520, kToePeak, 0.7f)});
+}
+
+// Its bins at 1000/s (max |sample| per bin, as the reader folds them), with (`fine`) or without its samples.
+PeakData SynthPeaks(bool fine)
+{
+    PeakData p;
+    p.rate = 1000.0;
+    p.max_abs.assign(3000, 0.0f);
+    for (int64_t n = 0; n < static_cast<int64_t>(3.0 * kSr); ++n) {
+        float& b = p.max_abs[static_cast<size_t>(static_cast<double>(n) * 1000.0 / kSr)];
+        b = std::max(b, SynthMag(n));
+    }
+    if (fine)
+        p.samples = [](double t0, double t1) {
+            auto          m = std::make_shared<SampleMags>();
+            const int64_t n0 = static_cast<int64_t>(std::floor(t0 * kSr)), n1 = static_cast<int64_t>(std::ceil(t1 * kSr)) + 1;
+            m->t0 = static_cast<double>(n0) / kSr;
+            m->sr = kSr;
+            for (int64_t n = n0; n < n1; ++n) m->mag.push_back(SynthMag(n));
+            return std::shared_ptr<const SampleMags>(m);
+        };
+    return p;
+}
+
+double FrameT(int64_t n) { return static_cast<double>(n) / kSr; }
+
+// The first frame at or above `lin` from `from`.
+int64_t FirstAt(float lin, int64_t from)
+{
+    for (int64_t n = from;; ++n)
+        if (SynthMag(n) >= lin) return n;
+}
+
+void TestSampleAccurateSnap()
+{
+    const PeakData fine = SynthPeaks(true), coarse = SynthPeaks(false);
+    {  // Peak, the Sound's mode, Offset 0: the very frame of the largest |sample|; on the bins alone, its bin's start
+        SoundData d = With({Z(kHeel, 0.195, 0.250), Z(kToe, 0.250, 0.330)});
+        d.sync_mode = SyncMode::Peak;
+        d.sync_offset_ms = 0.0;
+        CHECK(Near(ZoneSnap(d, {0, 0}, &fine).t, FrameT(kHeelPeak), 1e-9));
+        CHECK(Near(ZoneSnap(d, {0, 1}, &fine).t, FrameT(kToePeak), 1e-9));  // the part follows its Sound's mode
+        CHECK(Near(ZoneSnap(d, {0, 0}, &coarse).t, 0.201, 1e-9));           // the old measure: 0.125 ms early here
+        // The default Offset (-2 ms) is applied after: 2 ms before the peak's frame, as REAPER's snap offset.
+        d.sync_offset_ms = kDefaultSyncOffsetMs;
+        CHECK(Near(ZoneSnap(d, {0, 0}, &fine).t, FrameT(kHeelPeak) - 0.002, 1e-9));
+    }
+    {  // Attack: the first frame reaching max(threshold, peak - 20 dB); a part's own Sync point wins over the Sound's
+        SoundData d = With({Z(kHeel, 0.195, 0.250), Z(kToe, 0.250, 0.330)});
+        d.sync_mode = SyncMode::Attack;
+        d.sync_offset_ms = 0.0;
+        d.silence.threshold_db = -9.9;
+        const float lin = static_cast<float>(std::pow(10.0, -9.9 / 20.0));
+        CHECK(Near(ZoneSnap(d, {0, 0}, &fine).t, FrameT(FirstAt(lin, 9000)), 1e-9));
+        CHECK(Near(ZoneSnap(d, {0, 1}, &fine).t, FrameT(FirstAt(lin, 12000)), 1e-9));
+        PartSettings o;
+        o.sync_mode = SyncMode::Peak;
+        SetPartSetting(d, kToe, o);
+        CHECK(Near(ZoneSnap(d, {0, 1}, &fine).t, FrameT(kToePeak), 1e-9));            // Toe: its own Peak
+        CHECK(Near(ZoneSnap(d, {0, 0}, &fine).t, FrameT(FirstAt(lin, 9000)), 1e-9));  // Heel: still the Sound's Attack
+    }
+    {  // Pre-roll > 0 (3.3 ms): the zones open before the sound (auto edges, laid out on the peaks); the snap stays on
+       // the sample, wherever the Pre-roll put the zone's start; stored on the zone as measured on the samples
+        SoundData d = Base();
+        d.sync_mode = SyncMode::Peak;
+        d.sync_offset_ms = 0.0;
+        d.silence.threshold_db = -40.0;
+        d.silence.preroll_ms = 3.3;
+        EditZone h = Z(kHeel, 0.150, 0.250), t = Z(kToe, 0.250, 0.400);
+        h.a_hand = t.b_hand = false;
+        SoundFrame f;
+        f.zones = {h, t};
+        f.start = 0.150;
+        f.length = 0.250;
+        d.frames.push_back(f);
+        RelayoutZones(d, &fine, 3.0);
+        CHECK(At(d, 0, 0).a < 0.2000 - 0.003 && At(d, 0, 0).a > 0.2000 - 0.005);  // the Pre-roll before the sound
+        CHECK(ZoneSnapStored(d, {0, 0}) && At(d, 0, 0).auto_snap.fine);
+        CHECK(Near(ZoneSnap(d, {0, 0}, nullptr).t, FrameT(kHeelPeak), 1e-9));  // Populate without peaks: the same
+        CHECK(Near(ZoneSnap(d, {0, 1}, nullptr).t, FrameT(kToePeak), 1e-9));
+        d.sync_mode = SyncMode::Attack;
+        RelayoutZones(d, &fine, 3.0);
+        const float lin = static_cast<float>(std::pow(10.0, std::max(-40.0, 20.0 * std::log10(0.9) - 20.0) / 20.0));
+        CHECK(Near(ZoneSnap(d, {0, 0}, nullptr).t, FrameT(FirstAt(lin, 9000)), 1e-9) && ZoneSnap(d, {0, 0}, nullptr).t >= 0.2000);
+        CHECK(RoundTrips(d));
+        SoundStore back;  // `fine` is saved (the 7th number of `as`)
+        CHECK(ParseSoundStore(SerializeSoundStore(StoreOf(d)), &back) &&
+              back.libraries[0].nodes[0].sound.frames[0].zones[0].auto_snap == At(d, 0, 0).auto_snap);
+    }
+    {  // a snap stored as measured on the bins (an older build) is measured again once the samples read
+        SoundData d = With({Z(kHeel, 0.195, 0.250)});
+        d.sync_mode = SyncMode::Peak;
+        d.sync_offset_ms = 0.0;
+        RelayoutZones(d, &coarse, 3.0);
+        CHECK(ZoneSnapStored(d, {0, 0}) && !At(d, 0, 0).auto_snap.fine && Near(ZoneSnap(d, {0, 0}, nullptr).t, 0.201, 1e-9));
+        CHECK(Near(ZoneSnap(d, {0, 0}, &fine).t, FrameT(kHeelPeak), 1e-9));  // shown and placed right at once
+        RelayoutZones(d, &fine, 3.0);
+        CHECK(At(d, 0, 0).auto_snap.fine && Near(ZoneSnap(d, {0, 0}, nullptr).t, FrameT(kHeelPeak), 1e-9));
+        SoundStore back;  // an old `as` (6 numbers) still reads, as measured on the bins
+        std::string txt = SerializeSoundStore(StoreOf(d));
+        const size_t at = txt.find(" as=");
+        const size_t end = at == std::string::npos ? at : txt.find_first_of(" \r\n", at + 1);
+        CHECK(end != std::string::npos && txt.compare(end - 2, 2, ",1") == 0);
+        if (end != std::string::npos) txt.erase(end - 2, 2);
+        CHECK(ParseSoundStore(txt, &back) && back.libraries[0].nodes[0].sound.frames[0].zones[0].auto_snap.set &&
+              !back.libraries[0].nodes[0].sound.frames[0].zones[0].auto_snap.fine);
+    }
+}
+
 void TestFuzz()
 {
     const char* names[] = {"CutOut", "MakeGap", "NewZone", "FillGap", "Split", "TrimAt", "TrimTo", "Heal", "Delete", "Give",
@@ -1267,6 +1394,7 @@ int main()
     TestReviewBC();
     TestItems();
     TestUndividedAndTakes();
+    TestSampleAccurateSnap();  // fix 2026-10-19
     TestFuzz();
     if (g_fails) {
         std::printf("sound_zones_test: %d failure(s)\n", g_fails);

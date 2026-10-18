@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -958,12 +959,61 @@ double ClampIntoSpans(const std::vector<PartSpan>& spans, double t)
     return best;
 }
 
-double AutoSync(const SoundData& data, const PeakData* peaks, const std::vector<PartSpan>& spans)
+namespace {
+
+// Fix 2026-10-19 (the snap offset a few ms early): Attack / Peak measured on the file's samples over the spans
+// (PeakData::samples): Peak = the frame of the largest |sample| (the earliest on a tie), Attack = the first frame
+// reaching max(threshold, that peak - 20 dB), capped at the peak, as on the bins. False when the samples cannot be
+// read (no reader, a span too long to read at once, silence): the bins decide.
+constexpr double kFineSyncMaxSeconds = 30.0;
+
+bool FineSync(const SoundData& data, const PeakData& peaks, SyncMode mode, const std::vector<PartSpan>& spans, double* out)
 {
+    if (!peaks.samples) return false;
+    double total = 0.0;
+    for (const PartSpan& s : spans) total += std::max(0.0, s.length);
+    if (!(total > 0.0) || total > kFineSyncMaxSeconds) return false;
+    std::vector<std::shared_ptr<const SampleMags>> got;
+    float                                          top = 0.0f;
+    for (const PartSpan& s : spans) {
+        std::shared_ptr<const SampleMags> m = s.length > 0.0 ? peaks.samples(s.start, s.start + s.length) : nullptr;
+        if (!m || !(m->sr > 0.0)) return false;
+        for (float v : m->mag) top = std::isfinite(v) && v > top ? v : top;
+        got.push_back(std::move(m));
+    }
+    if (!(top > 0.0f) || 20.0 * std::log10(static_cast<double>(top)) <= kSilentDb) return false;
+    const double top_db = 20.0 * std::log10(static_cast<double>(top));
+    const double want_db = mode == SyncMode::Peak ? top_db : std::min(top_db, std::max(data.silence.threshold_db, top_db - kAttackBelowPeakDb));
+    // Peak: the very frame holding `top`; Attack: the first at the level (a float rounding never misses the peak).
+    const float want = mode == SyncMode::Peak ? top : std::min(top, static_cast<float>(std::pow(10.0, want_db / 20.0)));
+    for (size_t k = 0; k < spans.size(); ++k) {
+        const SampleMags& m = *got[k];
+        const double      a = spans[k].start, b = spans[k].start + spans[k].length;
+        for (size_t i = 0; i < m.mag.size(); ++i) {
+            const double t = m.t0 + static_cast<double>(i) / m.sr;
+            if (t < a - 1e-9 || t >= b) continue;  // only the frames inside the span
+            if (m.mag[i] >= want) {
+                *out = t;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+}  // namespace
+
+double AutoSync(const SoundData& data, const PeakData* peaks, const std::vector<PartSpan>& spans, bool* fine)
+{
+    if (fine) *fine = false;
     if (spans.empty()) return -1.0;
     double         base = spans.front().start;
     const SyncMode mode = PartSyncMode(data, spans.front().value_uid);  // 13-62: the part's own, else the Sound's
-    if (mode != SyncMode::SliceStart && HasPeaks(peaks)) {
+    double         t = 0.0;
+    if (mode != SyncMode::SliceStart && peaks && FineSync(data, *peaks, mode, spans, &t)) {
+        base = t;
+        if (fine) *fine = true;
+    } else if (mode != SyncMode::SliceStart && HasPeaks(peaks)) {
         double top = kSilentDb;
         for (const PartSpan& s : spans) {
             long long lo = 0, hi = 0;

@@ -27,7 +27,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -89,9 +91,13 @@ struct EditZone {
         bool   set = false;
         double t = 0.0, a = 0.0, b = 0.0, thr = 0.0, off = 0.0;
         int    mode = 0;
+        // Fix 2026-10-19: measured on the file's samples (PeakData::samples), not on its peak bins (a few ms
+        // early): one measured on the bins is measured again as soon as the samples can be read.
+        bool   fine = false;
         bool operator==(const AutoSnap& o) const
         {
-            return set == o.set && (!set || (t == o.t && a == o.a && b == o.b && thr == o.thr && off == o.off && mode == o.mode));
+            return set == o.set && (!set || (t == o.t && a == o.a && b == o.b && thr == o.thr && off == o.off && mode == o.mode &&
+                                             fine == o.fine));
         }
         bool operator!=(const AutoSnap& o) const { return !(*this == o); }
     };
@@ -535,12 +541,26 @@ struct Slice {
 // empty: its one lane is `max_abs`, so its memory is unchanged. Read them with PeakChannels / PeakLane.
 constexpr int kPeakMaxLanes = 8;
 
+// A stretch of a file's samples (PeakData::samples): max |sample| over every channel per frame, frame k at
+// t0 + k / sr (source seconds).
+struct SampleMags {
+    double             t0 = 0.0;
+    double             sr = 0.0;
+    std::vector<float> mag;
+};
+
 struct PeakData {
     double             rate = 0.0;  // peaks per second
     std::vector<float> max_abs;
     int                channels = 1;            // lanes: 1 (mono) or the source's channels (2..kPeakMaxLanes)
     std::vector<float> lanes[kPeakMaxLanes];    // channels >= 2: max |sample| of each lane; else empty
     FileVersion        file;                    // 13-54 review: the file's date + size they were read from (0 = unknown)
+    // Fix (Antho 2026-10-19, snap offset a few ms early): the file's own samples over [t0, t1) source seconds,
+    // for what must land on a sample (AutoSync's Attack / Peak): the bins above are 1 ms (a short file) to
+    // ~2.6 ms (REAPER's peak file) wide and a bin's time is its start, so a snap measured on them sat up to a
+    // few ms before the transient the sample-accurate waveform shows. Empty (no reader: the host tests' plain
+    // peaks, ReadPeaks' resampled ones) = the bins alone. Set by RequestPeaks (sound_peaks.cpp).
+    std::function<std::shared_ptr<const SampleMags>(double t0, double t1)> samples;
 };
 
 // ---- Peak lanes (13-14): pure helpers shared by the peak readers and the waveform drawers ----

@@ -174,7 +174,10 @@ std::vector<double> AutoCuts(const PeakData* peaks, const SoundFrame& frame, int
 // start + offset. -1 when `spans` is empty.
 // 13-62: the mode and offset are the spans' part's (PartSyncMode / PartSyncOffsetMs of the first span's
 // value_uid; "" = the Sound's).
-double AutoSync(const SoundData& data, const PeakData* peaks, const std::vector<PartSpan>& spans);
+// Fix 2026-10-19: with the file's samples (PeakData::samples) Attack / Peak land on the sample (Peak = the frame of
+// the largest |sample|, Attack = the first frame reaching the level above), `*fine` = true; else on the bins (a bin's
+// start: up to a bin early).
+double AutoSync(const SoundData& data, const PeakData* peaks, const std::vector<PartSpan>& spans, bool* fine = nullptr);
 // Keeps a time inside the spans (the nearest span edge when it falls between or outside them).
 double ClampIntoSpans(const std::vector<PartSpan>& spans, double t);
 // Refreshes one variation's cuts and sync points (every write that changes frames, detection, divide,

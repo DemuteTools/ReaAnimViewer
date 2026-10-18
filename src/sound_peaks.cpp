@@ -815,6 +815,117 @@ void Feed()
     }
 }
 
+// ---- Fix 2026-10-19: a file's samples for the sync point (PeakData::samples) -----------------------------------
+// AutoSync's Attack / Peak land on the sample: the frames of a zone are read here, on the UI thread, from a source of
+// their own (never one a reader holds), kept for the next zone; what was read is kept too (the Edit window asks for
+// each zone's snap every frame until it is stored on the zone).
+constexpr size_t kFineSources = 2;
+constexpr size_t kFineMemos = 64;
+
+struct FineSource {
+    PCM_source* src = nullptr;
+    FileVersion version;
+    uint64_t    used = 0;
+};
+struct FineMemo {
+    std::string                       key;
+    uint64_t                          seq = 0;  // the entry's read (its version)
+    int64_t                           n0 = 0, n1 = 0;
+    uint64_t                          used = 0;
+    std::shared_ptr<const SampleMags> mags;
+};
+std::map<std::string, FineSource>& g_fine_src = *new std::map<std::string, FineSource>();  // by PeakCacheKey
+std::vector<FineMemo>&             g_fine_memo = *new std::vector<FineMemo>();
+uint64_t                           g_fine_tick = 0;
+
+void DropFineSources()
+{
+    for (auto& kv : g_fine_src) delete kv.second.src;
+    g_fine_src.clear();
+    g_fine_memo.clear();
+}
+
+// The source of `key` for a samples read, opened when missing (or the file changed); null when it does not open.
+PCM_source* FineSourceOf(const std::string& key, const Entry& e)
+{
+    auto it = g_fine_src.find(key);
+    if (it != g_fine_src.end() && !(it->second.version == e.version)) {
+        delete it->second.src;
+        g_fine_src.erase(it);
+        it = g_fine_src.end();
+    }
+    if (it == g_fine_src.end()) {
+        PCM_source* s = OpenSource(e.path, nullptr);
+        if (!s) return nullptr;
+        while (g_fine_src.size() >= kFineSources) {
+            auto oldest = g_fine_src.begin();
+            for (auto o = g_fine_src.begin(); o != g_fine_src.end(); ++o)
+                if (o->second.used < oldest->second.used) oldest = o;
+            delete oldest->second.src;
+            g_fine_src.erase(oldest);
+        }
+        it = g_fine_src.emplace(key, FineSource{s, e.version, 0}).first;
+    }
+    it->second.used = ++g_fine_tick;
+    return it->second.src;
+}
+
+// The frames of [t0, t1) source seconds of the file `key` (max |sample| over its channels); null when its peaks are
+// not Ready (it is read again) or it does not open. UI thread only.
+std::shared_ptr<const SampleMags> FineSamples(const std::string& key, double t0, double t1)
+{
+    if (g_quit || !(t1 > t0) || !std::isfinite(t0) || !std::isfinite(t1)) return nullptr;
+    const auto e = g_cache.find(key);
+    if (e == g_cache.end() || e->second.state != PeakState::Ready || !(e->second.sr > 0.0) || e->second.nch < 1) return nullptr;
+    const Entry&  en = e->second;
+    const double  sr = en.sr;
+    const int64_t total = static_cast<int64_t>(std::ceil(en.length * sr));
+    const int64_t n0 = std::max<int64_t>(0, static_cast<int64_t>(std::floor(t0 * sr)));
+    const int64_t n1 = std::min(total, static_cast<int64_t>(std::ceil(t1 * sr)) + 1);
+    if (n1 <= n0) return nullptr;
+    for (FineMemo& m : g_fine_memo)
+        if (m.key == key && m.seq == en.seq && m.n0 == n0 && m.n1 == n1) {
+            m.used = ++g_fine_tick;
+            return m.mags;
+        }
+    PCM_source* s = FineSourceOf(key, en);
+    if (!s) return nullptr;
+    auto mags = std::make_shared<SampleMags>();
+    mags->t0 = static_cast<double>(n0) / sr;
+    mags->sr = sr;
+    mags->mag.assign(static_cast<size_t>(n1 - n0), 0.0f);
+    const int              nch = en.nch, block = PeakBlockFrames(nch);
+    std::vector<ReaSample> buf(static_cast<size_t>(block) * static_cast<size_t>(nch));
+    for (int64_t done = n0; done < n1;) {
+        PCM_source_transfer_t tr = {};
+        tr.time_s = static_cast<double>(done) / sr;
+        tr.samplerate = sr;
+        tr.nch = nch;
+        tr.length = static_cast<int>(std::min<int64_t>(block, n1 - done));
+        tr.samples = buf.data();
+        s->GetSamples(&tr);
+        const int got = tr.samples_out > 0 ? std::min(tr.samples_out, tr.length) : 0;
+        for (int k = 0; k < got; ++k) {
+            float m = 0.0f;
+            for (int c = 0; c < nch; ++c) {
+                const ReaSample v = buf[static_cast<size_t>(k) * static_cast<size_t>(nch) + static_cast<size_t>(c)];
+                const float     a = static_cast<float>(v < 0 ? -v : v);
+                m = m < a ? a : m;  // a NaN sample is skipped
+            }
+            mags->mag[static_cast<size_t>(done - n0 + k)] = m;
+        }
+        done += tr.length;  // a short read is silence
+    }
+    if (g_fine_memo.size() >= kFineMemos) {
+        auto oldest = g_fine_memo.begin();
+        for (auto o = g_fine_memo.begin(); o != g_fine_memo.end(); ++o)
+            if (o->used < oldest->used) oldest = o;
+        g_fine_memo.erase(oldest);
+    }
+    g_fine_memo.push_back(FineMemo{key, en.seq, n0, n1, ++g_fine_tick, mags});
+    return mags;
+}
+
 std::string RootFileOf(PCM_source* src, double* len)
 {
     PCM_source* root = src;
@@ -851,6 +962,7 @@ void QuitSoundPeaks()
     g_tiles.clear();
     for (auto& kv : g_idle) delete kv.second.src;  // 13-57 review: the kept detail sources
     g_idle.clear();
+    DropFineSources();  // fix 2026-10-19: the sync point's sources
     g_wave_memo.clear();
     for (auto it = g_cache.begin(); it != g_cache.end();)  // an unfinished read is not left waiting
         it = it->second.state == PeakState::Building ? g_cache.erase(it) : std::next(it);
@@ -894,6 +1006,8 @@ PeakState RequestPeaks(const std::string& path, PeakData* out, double* length)
     if (e.state == PeakState::Ready && out) {
         *out = e.peaks;
         out->file = e.version;  // 13-54 review: the part trims are keyed on it
+        // Fix 2026-10-19: the snap offset (AutoSync) lands on the file's sample, read here when asked.
+        out->samples = [key](double t0, double t1) { return FineSamples(key, t0, t1); };
     }
     if (length) *length = e.length;
     const PeakState st = e.state;

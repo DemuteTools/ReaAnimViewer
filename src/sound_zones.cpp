@@ -705,13 +705,14 @@ void MeasureAutoSnaps(SoundData& d, const PeakView* peaks, int tl)
         SoundFrame& f = d.frames[v];
         if (!f.on || ctl < 0 || ZoneTimeline(d, static_cast<int>(v)) != ctl) continue;  // 13-62i: its timeline's peaks only
         for (EditZone& z : f.zones) {
-            if (z.IsGap() || z.snap || AutoSnapHolds(d, z)) continue;  // only what moved (a drag stays cheap)
+            // Only what moved (a drag stays cheap), and (fix 2026-10-19) one measured on the bins once the samples read.
+            if (z.IsGap() || z.snap || (AutoSnapHolds(d, z) && (z.auto_snap.fine || !peaks->samples))) continue;
             const SyncMode mode = PartSyncMode(d, z.part);
             if (mode == SyncMode::SliceStart) continue;
             const double off_ms = PartSyncOffsetMs(d, z.part);
             EditZone::AutoSnap m;
             m.set = true;
-            m.t = Clamp(AutoSync(d, peaks, {PartSpan{z.part, z.a, z.b - z.a}}), z.a, z.b);
+            m.t = Clamp(AutoSync(d, peaks, {PartSpan{z.part, z.a, z.b - z.a}}, &m.fine), z.a, z.b);
             m.a = z.a;
             m.b = z.b;
             m.mode = static_cast<int>(mode);
@@ -1559,7 +1560,9 @@ ZoneSnapInfo ZoneSnap(const SoundData& d, const ZoneRef& r, const PeakView* peak
         return out;
     }
     const SyncMode mode = PartSyncMode(d, z->part);
-    if (mode != SyncMode::SliceStart && AutoSnapHolds(d, *z)) {  // 13-62h review (R2): as measured on the peaks
+    // 13-62h review (R2): as measured on the peaks; fix 2026-10-19: one measured on the bins only while the samples
+    // cannot be read (it sat up to a bin early).
+    if (mode != SyncMode::SliceStart && AutoSnapHolds(d, *z) && (z->auto_snap.fine || !peaks || !peaks->samples)) {
         out.t = Clamp(z->auto_snap.t, z->a, z->b);
         return out;
     }

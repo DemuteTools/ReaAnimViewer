@@ -753,9 +753,12 @@ Fields FzoneFields(const EditZone& z)
     if (z.xr != 0.0) f.push_back({"xr", FormatNumber(z.xr)});
     if (z.fade_in_shape != 0) f.push_back({"fis", FmtInt(z.fade_in_shape)});  // 13-62i
     if (z.fade_out_shape != 0) f.push_back({"fos", FmtInt(z.fade_out_shape)});
-    if (z.auto_snap.set)  // 13-62h review (R2): its measured automatic snap and what it was measured for
-        f.push_back({"as", JoinNumbers({z.auto_snap.t, z.auto_snap.a, z.auto_snap.b, static_cast<double>(z.auto_snap.mode),
-                                        z.auto_snap.thr, z.auto_snap.off})});
+    if (z.auto_snap.set) {  // 13-62h review (R2): its measured automatic snap and what it was measured for
+        std::vector<double> n = {z.auto_snap.t, z.auto_snap.a, z.auto_snap.b, static_cast<double>(z.auto_snap.mode), z.auto_snap.thr,
+                                 z.auto_snap.off};
+        if (z.auto_snap.fine) n.push_back(1.0);  // fix 2026-10-19: measured on the samples
+        f.push_back({"as", JoinNumbers(n)});
+    }
     return f;
 }
 
@@ -788,9 +791,10 @@ Got SetFzone(EditZone& z, bool* has_sa, bool* has_sb, const std::string& k, cons
         (k == "fis" ? z.fade_in_shape : z.fade_out_shape) = x;
         return Got::Ok;
     }
-    if (k == "as") {  // 13-62h review (R2): t, a, b, mode, threshold, offset
+    if (k == "as") {  // 13-62h review (R2): t, a, b, mode, threshold, offset (fix 2026-10-19: then 1 = on the samples)
         std::vector<double> n;
-        if (!SplitNumbers(v, &n) || n.size() != 6) return Got::Bad;
+        if (!SplitNumbers(v, &n) || n.size() < 6 || n.size() > 7) return Got::Bad;
+        if (n.size() == 7 && n[6] != 0.0 && n[6] != 1.0) return Got::Bad;
         for (double x : n)
             if (!std::isfinite(x)) return Got::Bad;
         if (n[3] != std::floor(n[3]) || n[3] < 0.0 || n[3] > 2.0) return Got::Bad;  // a SyncMode index
@@ -801,6 +805,7 @@ Got SetFzone(EditZone& z, bool* has_sa, bool* has_sb, const std::string& k, cons
         z.auto_snap.mode = static_cast<int>(n[3]);
         z.auto_snap.thr = n[4];
         z.auto_snap.off = n[5];
+        z.auto_snap.fine = n.size() == 7 && n[6] == 1.0;
         return Got::Ok;
     }
     return Got::Unknown;

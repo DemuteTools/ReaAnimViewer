@@ -1996,7 +1996,11 @@ void ZoneSnapToCursor(const ZoneWaveHost& h)
         bool only_gaps = !sel.empty();
         for (const ZoneRef& r : sel)
             if (const EditZone* z = ZoneOf(d, r); z && !z->IsGap()) only_gaps = false;
-        ShowLibraryToast(sel.empty()  ? "No zone under the cursor: no snap offset to set"
+        if (sel.empty()) {  // review: nothing selected, the cursor on a Gap: same answer
+            const EditZone* g = ZoneOf(d, ZoneAt(d, t, h.tl));
+            only_gaps = g && g->IsGap();
+        }
+        ShowLibraryToast(sel.empty() && !only_gaps ? "No zone under the cursor: no snap offset to set"
                          : only_gaps ? "A Gap has no snap offset: select a zone"
                                      : "The edit cursor is not inside the selected zone: no snap offset to set",
                          false);

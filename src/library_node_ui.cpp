@@ -2953,7 +2953,15 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
             if (mode != d.mode && d.parked_mode == mode && !d.parked.empty() && d.parked_edited)
                 toast = what + ": its zones edited by hand are back";
             else if (mode != d.mode && d.edited)
-                toast = what + ": the previous mode's hand edits are kept, back to it to get them";
+                toast = what + ": the hand edits of the mode left are kept, switch back to get them";
+            // Review: only the last mode left is kept: a parked set edited by hand (another mode) goes now.
+            if (mode != d.mode && d.parked_mode != mode && !d.parked.empty() && d.parked_edited) {
+                std::string gone = "an earlier mode";
+                for (size_t i = 0; i < modes.size(); ++i)
+                    if (modes[i] == d.parked_mode) gone = labels[i];
+                toast += (toast.empty() ? what + ": the" : ". The") + std::string(" hand edits of ") + gone +
+                         " are dropped (only the mode just left is kept)";
+            }
             const std::string path = m.path;
             EditNode("Detect", lib.uid, n.uid, [mode, frames, path](SoundNode& x) {
                 if (!SwitchDetectMode(x.sound, mode, frames)) return false;  // no empty undo point

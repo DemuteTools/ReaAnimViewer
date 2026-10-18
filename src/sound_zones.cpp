@@ -2337,6 +2337,11 @@ TailCaps TailCappedZones(const SoundData& d, const ZoneContext& ctx, const std::
     if (!UsesZones(d) || !HasPeaks(ctx.peaks)) return c;
     const int    tl = NormTl(d, ctx.tl);
     const double T = ctx.file_len > 0.0 ? ctx.file_len : static_cast<double>(ctx.peaks->max_abs.size()) / ctx.peaks->rate;
+    // Review: the zone starts of the timeline, sorted once (drawn every frame: no zone x zone scan).
+    std::vector<double> starts;
+    for (const ZoneRef& q : AllZones(d))
+        if (const EditZone* y = ZoneOf(d, q); y && ZoneTimeline(d, q.frame) == tl) starts.push_back(y->a);
+    std::sort(starts.begin(), starts.end());
     for (const ZoneRef& r : AllZones(d)) {
         const EditZone* z = ZoneOf(d, r);
         if (!z || z->IsGap() || z->b_hand || ZoneTimeline(d, r.frame) != tl) continue;
@@ -2355,11 +2360,8 @@ TailCaps TailCappedZones(const SoundData& d, const ZoneContext& ctx, const std::
         }
         // Against the next zone (a cut, a Gap, another variation's zone starting there), else at the end its variation
         // was detected with (its slot: a Tail longer than the detection's stops there).
-        bool next = false;
-        for (const ZoneRef& q : AllZones(d)) {
-            const EditZone* y = ZoneOf(d, q);
-            if (y && q != r && ZoneTimeline(d, q.frame) == tl && std::fabs(y->a - z->b) < 1e-4) next = true;
-        }
+        const auto it = std::lower_bound(starts.begin(), starts.end(), z->b - 1e-4);
+        const bool next = it != starts.end() && *it < z->b + 1e-4 && z->b - z->a > 1e-4;  // not its own start
         ++(next ? c.by_next : c.by_detected_end);
     }
     return c;

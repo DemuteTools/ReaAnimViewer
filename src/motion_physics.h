@@ -335,8 +335,20 @@ struct PhysicsParams {
     // from one clip (4 contacts). Limits: a foot that glides into place (Catwalk, high heels,
     // 3-4 leg/s after its descent ends) is timed by Speed, where it stops (story 10-8f); the
     // offsets were not refitted for it.
+    // Story 10-8r refit the heel and toe offsets (they were +0.007 / -0.031) on the all-trigger
+    // bench's confirmed step references (10-8o, 185 part steps, 103 foot steps, walks and runs):
+    // Descent's median signed error is +14.7 ms on the toe (runs +15.9, others +14.3), +14.3 on the
+    // heel. The toe takes -0.015 (its median); the heel -0.005 only, so that the heel stays 10 ms
+    // behind the toe and Combined's first part (and a Land's part) does not flip on a flat landing
+    // (Jump Attack: heel -0.010 / toe -0.015 already names its landing by the heel). Foot steps:
+    // runs mean -16.7 -> -5.9 ms, median |err| 18.2 -> 12.1; others -6.1 -> +0.3, 18.9 -> 11.7.
+    // Not kept, measured on the same references (left one clip out): the peak of the part's
+    // upward vertical acceleration (Handsaker et al. 2016, running touchdown; sigma 0-20 ms) and
+    // Speed are no better than Descent on runs (median |err| toe 16.6 / 16.5 vs 12.1 ms, heel 21.2
+    // / 17.9 vs 18.8, foot 19.3 / 23.4 vs 15.8) and worse on the other clips. The tip keeps +0.020
+    // (no tip reference).
     StepTiming step_timing[kFootPartCount] = {StepTiming::Descent, StepTiming::Descent, StepTiming::Descent};
-    double     step_offset_s[kFootPartCount] = {0.007, -0.031, 0.020};
+    double     step_offset_s[kFootPartCount] = {-0.005, -0.015, 0.020};
     // Hands (story 10-8c), segmented as a foot part with these instead of contact_speed and
     // switch_cost. Chosen with detection_eval --physics on the 11 fixture clips, which hold one
     // hand REF (Climbing, right hand, 3.65 s):

@@ -858,9 +858,10 @@ int main()
         if (foot.size() == 1) CHECK(foot[0].part != static_cast<int>(FootPart::Heel));
     }
     {
-        // Heel first: the heel lands at 1.0 s and the foot slaps flat about it in 20 ms. The heel's
-        // contact starts first, but by the default timing the toe's step comes earlier: the
-        // combined step is that earliest separate step, not the heel's.
+        // Heel first: the heel lands at 1.0 s and the foot slaps flat about it in 20 ms. The
+        // combined step is the earliest separate step by the default timing: the heel's (story
+        // 10-8r: the offsets keep the heel 10 ms behind the toe, less than this slap; with the old
+        // 38 ms the toe's step came first).
         const FootFn heel_first = [](double t) {
             const double u = std::clamp((t - 0.6) / 0.4, 0.0, 1.0);
             const Vec3d  heel{-0.1, 0.08 + 0.10 * std::sin(kPi * u), 0.5 * Ease(u)};
@@ -875,7 +876,7 @@ int main()
         const std::vector<PhysicsEvent> ev = FootEvents(a);
         const std::vector<PhysicsEvent> foot = Of(ev, PhysicsKind::FootStep, 'L');
         CHECK(foot.size() == 1 && CombinedIsEarliest(ev, 0.4));
-        if (foot.size() == 1) CHECK(foot[0].part == static_cast<int>(FootPart::Ball));
+        if (foot.size() == 1) CHECK(foot[0].part == static_cast<int>(FootPart::Heel));
     }
     {
         // Slow landing (0.5 m/s), fast take-off (2 m/s): the lift-off's strength, its departure

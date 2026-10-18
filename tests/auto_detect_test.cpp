@@ -1887,7 +1887,8 @@ int main()
             for (const Event& e : all_ev)
                 if (e.marker == "FS L" || e.marker == "FS R" || e.marker == "Lift L" || e.marker == "Lift R")
                     CHECK(e.time_s < 1.6 || e.time_s > 2.6);  // the far ones stay
-            // Separate steps: the heel and toe steps within 30 ms of Land go, back with Land off.
+            // Separate steps: the heel and toe steps within 30 ms of a (whole-foot) Land go, back
+            // with Land off.
             std::vector<Block> sep = {HeelRule("Rule")};
             AutoSettings       ss = Ticked(true, true, false, false, true);
             ss.type[static_cast<int>(AutoType::Jump)].on = true;
@@ -1905,6 +1906,29 @@ int main()
                     else if (e.time_s < 1.6 || e.time_s > 2.6) ++far;
                 }
             CHECK(near == 0 && far == 8);
+            // Story 10-8r: Land Separate too: a Land Heel / Land Toe replaces only the steps of its
+            // own part (a Land Toe never drops the heel slap that follows it).
+            {
+                std::vector<Block> sp = {HeelRule("Rule")};
+                AutoSettings       ps = ss;
+                ps.separate_parts[static_cast<int>(AutoType::Land)] = true;
+                ApplyAutoSettings(sp, ps);
+                const std::vector<Event> sp_ev = DetectAutoEvents(sp, walk_jump, nullptr, false);
+                double      lt = -1.0;
+                std::string lp;  // the Land's part word: "Heel" or "Toe"
+                for (const Event& e : sp_ev)
+                    if (e.marker.compare(0, 5, "Land ") == 0 && e.marker.size() > 7) {
+                        lt = e.time_s;
+                        lp = e.marker.compare(0, 9, "Land Heel") == 0 ? "Heel" : "Toe";
+                    }
+                CHECK(lt > 2.2 && lt < 2.4 && !lp.empty());
+                int own = 0, other = 0;
+                for (const Event& e : sp_ev)
+                    if ((e.marker.compare(0, 4, "Heel") == 0 || e.marker.compare(0, 3, "Toe") == 0) &&
+                        std::fabs(e.time_s - lt) <= kAutoReplaceS + 1e-9)
+                        ++(e.marker.compare(0, lp.size(), lp) == 0 ? own : other);
+                CHECK(own == 0 && other > 0);
+            }
             std::vector<Block> sep_off = sep;
             for (Block& b : sep_off)
                 if (b.marker.compare(0, 4, "Land") == 0) b.enabled = false;

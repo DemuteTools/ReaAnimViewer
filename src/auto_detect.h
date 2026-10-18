@@ -22,7 +22,9 @@
 //              step (Land L / R). With Step ticked too, Land replaces the steps (FS / Heel / Toe,
 //              either foot) within +-30 ms of it; with Lift-off ticked too, Jump replaces the
 //              lift-offs (either foot, any part) within +-30 ms of it (their physics times, before
-//              the blocks' offsets). Strength = the hips' vertical speed (leg/s).
+//              the blocks' offsets). Story 10-8r: a Separate one (Land Heel / Land Toe, Jump
+//              Heel / Jump Toe) replaces only its own part's (and the whole-foot kinds'), so a
+//              toe landing keeps the heel slap after it. Strength = the hips' vertical speed (leg/s).
 //   Story 10-9a-3: lift-off, jump and land each have Combined / Separate
 //   (AutoSettings::separate_parts, the types whose row says `part_split`). Separate puts each
 //   event on its part's block: Heel = the heel, Toe = the ball or the toe tip (kinds lift_heel,
@@ -263,7 +265,8 @@ std::vector<PhysicsParams> AutoParamSets(const std::vector<Block>& blocks, bool 
 // analysis of each block's parameter set (a block whose set is not in `analyses`, or whose
 // analysis failed, has none). Sorted by time (then block). Story 10-9a: a Land event replaces the
 // step blocks' events (combined, heel, toe) within kAutoReplaceS of it, a Jump event the lift-off
-// blocks' events, both on their physics times (before the blocks' offsets). Story 10-9a-2: every
+// blocks' events, both on their physics times (before the blocks' offsets); story 10-8r: a part
+// kind (role key heel / toe) only those of a kind with the same role key or a whole-foot kind. Story 10-9a-2: every
 // signature of a block's kind runs (AutoKindInfo::sigs), merged per block by
 // MergeSignatureEvents; Event::signature = the signature that found it.
 constexpr double kAutoReplaceS = 0.030;

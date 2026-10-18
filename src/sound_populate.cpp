@@ -182,7 +182,19 @@ struct PopOpts {
     double      t = 0.0;
     // 13-19: told before each of the item's events (handled so far, the item's count). Optional.
     std::function<void(int, int)> on_event;
+    // 13-68 (Antho 2026-10-18): the draws carried from item to item of one gesture, items in time order, so
+    // avoid-repeat holds across separate animation items (three Jump clips, one FS L each, drew 2, 2, 1). Optional.
+    std::map<std::string, std::vector<int>>* carry = nullptr;
 };
+
+// The items in time order (13-68: the order the carried draws follow).
+std::vector<MediaItem*> ByPosition(std::vector<MediaItem*> items)
+{
+    std::stable_sort(items.begin(), items.end(), [](MediaItem* a, MediaItem* b) {
+        return GetMediaItemInfo_Value(a, "D_POSITION") < GetMediaItemInfo_Value(b, "D_POSITION");
+    });
+    return items;
+}
 
 std::string NodeName(const SoundNode* n)
 {
@@ -455,6 +467,15 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
     if (rec.seed == 0) rec.seed = RandomSeed();
     PopulateDrawState st;
     st.seed = rec.seed;
+    if (o.carry) st.history = *o.carry;  // 13-68: the earlier items' draws
+    struct CarryBack {
+        const PopulateDrawState& st;
+        std::map<std::string, std::vector<int>>* to;
+        ~CarryBack()
+        {
+            if (to) *to = st.history;
+        }
+    } carry_back{st, o.carry};
     // 13-59: New variation per loop pass: each pass other than the first draws its own (its history
     // kept per pass, across the item's events in time order).
     const bool                               pass_draws = LoopPassDrawOf(store) == LoopPassDraw::New;
@@ -990,9 +1011,13 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
 void PopulateMembers(const std::vector<MediaItem*>& members, const SoundStore& store, const PopOpts& o, SoundReport& rep)
 {
     BusyScope busy("Updating sounds");
-    for (size_t k = 0; k < members.size(); ++k) {
-        busy.Item(static_cast<int>(k), static_cast<int>(members.size()));
-        PopulateOne(members[k], store, o, rep, nullptr);
+    std::map<std::string, std::vector<int>> carried;  // 13-68: avoid-repeat across the members, in time order
+    PopOpts                                 oc = o;
+    if (!oc.carry) oc.carry = &carried;
+    const std::vector<MediaItem*> in_time = ByPosition(members);
+    for (size_t k = 0; k < in_time.size(); ++k) {
+        busy.Item(static_cast<int>(k), static_cast<int>(in_time.size()));
+        PopulateOne(in_time[k], store, oc, rep, nullptr);
     }
 }
 
@@ -1284,7 +1309,7 @@ SoundReport PopulateItemsCounted(const std::vector<MediaItem*>& items, int* even
     if (events) *events = 0;
     if (counts) *counts = PopulateCounts();
     try {
-        const std::vector<MediaItem*> targets = PopulateTargets(items);
+        const std::vector<MediaItem*> targets = ByPosition(PopulateTargets(items));
         if (targets.empty()) return rep;
         BusyScope busy("Populating sounds");  // 13-59: the busy card (Repopulate's own, for instance)
         PopulateProgress where;  // 13-19: the caller's progress frames, the first one before any work
@@ -1297,6 +1322,8 @@ SoundReport PopulateItemsCounted(const std::vector<MediaItem*>& items, int* even
             PopOpts o;
             o.counts = counts;
             o.revive_deleted = revive_deleted;
+            std::map<std::string, std::vector<int>> carried;  // 13-68: avoid-repeat across the items
+            o.carry = &carried;
             // 13-15: a rule that only inherits its sound (Project / Character) has no id until now: given first,
             // else its events are not placed (they are found by rule id).
             for (MediaItem* it : targets) EnsureRids(it);
@@ -1372,7 +1399,7 @@ SoundReport ReshuffleItems(const std::vector<MediaItem*>& items)
 {
     SoundReport rep;
     try {
-        const std::vector<MediaItem*> targets = PopulateTargets(items);
+        const std::vector<MediaItem*> targets = ByPosition(PopulateTargets(items));
         if (targets.empty()) return rep;
         const SoundStore store = GetSoundStore(nullptr);
         {
@@ -1382,6 +1409,8 @@ SoundReport ReshuffleItems(const std::vector<MediaItem*>& items)
             PopOpts o;
             o.only_populated = true;
             o.report_replaced = false;
+            std::map<std::string, std::vector<int>> carried;  // 13-68: avoid-repeat across the items
+            o.carry = &carried;
             for (size_t k = 0; k < targets.size(); ++k) {
                 MediaItem* it = targets[k];
                 busy.Item(static_cast<int>(k), static_cast<int>(targets.size()));

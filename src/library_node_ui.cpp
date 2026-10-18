@@ -2607,7 +2607,7 @@ void ReplaceFromDrop(const std::string& lib_uid, const std::string& uid, const S
     // Threshold / Min gap (the preview detected it with a new Sound's), never another value.
     bool picked = false;
     for (const SoundFrame& f : dropped) picked = picked || f.hand;
-    if (!picked) frames.clear();
+    if (!picked && read) frames.clear();  // 13-67c review: an unreadable file keeps the dropped variations
     if (frames.empty() && read) {
         SilenceParams sp;
         {

@@ -559,6 +559,7 @@ struct MirrorProject {
     std::map<std::string, MirrorItemSeen>    items;       // by item GUID
     std::map<std::string, std::string>       owners;      // marker GUID -> item GUID (last scan)
     std::set<std::string>                    deleted;     // marker GUIDs the mirror itself deleted
+    bool                                     follow_waits = false;  // freeze fix #1: the follow has detections left
 };
 
 std::map<ReaProject*, MirrorProject> g_mirror;
@@ -1854,15 +1855,21 @@ void MarkerMirrorTick()
         bool timeline_changed = false;
         for (const auto& c : counts) {
             MirrorProject& mp = g_mirror[c.first];
-            if (mp.count == c.second) continue;  // nothing moved in this project: no work
-            try {
-                MirrorOneProject(c.first, mp, &timeline_changed);
-            } catch (...) {
+            const bool     moved = mp.count != c.second;
+            // Nothing moved in this project: no work, but for a follow pass still waiting on its
+            // detections (freeze fix #1: spread over several ticks).
+            if (!moved && !mp.follow_waits) continue;
+            if (moved) {
+                try {
+                    MirrorOneProject(c.first, mp, &timeline_changed);
+                } catch (...) {
+                }
             }
             // Epic 13 (D20): placed sounds follow their animation item's events (13-9).
             try {
-                SoundFollowTick(c.first);
+                mp.follow_waits = SoundFollowTick(c.first);
             } catch (...) {
+                mp.follow_waits = false;
             }
             // The mirror's own writes moved the count: the next tick has nothing to do.
             mp.count = GetProjectStateChangeCount(c.first);

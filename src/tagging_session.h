@@ -128,6 +128,10 @@ struct ItemDetection {
     std::string        missing; // RolesMissing: their names
     // 10-8b fb-1: the rules a missing role skips (per block; Ok with some skipped = the others ran).
     std::vector<char>  skipped;
+    // Freeze fix #1: the file's version on disk the parse it ran on was read from (zero when no file
+    // was read), so a detection is kept only for that version.
+    long long          file_time = 0;
+    unsigned long long file_size = 0;
 };
 // Reads the item's record, binds its rules on its skeleton, samples its bones (the session's
 // tracks when they fit) and runs detection, its auto blocks' too (story 10-8b: their events

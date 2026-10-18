@@ -831,7 +831,11 @@ ItemDetection DetectItem(MediaItem* item)
         out.rules = rd.rules;
         const std::string path = AnimPathOf(take);
         // The file: the session's parse when it is the same one, else the cache's.
-        std::shared_ptr<const CpuAsset> asset = (path == g.asset_path && g.asset) ? g.asset : AcquireCpuAsset(path);
+        const bool                      session_file = path == g.asset_path && g.asset;
+        AssetFileStamp                  used_stamp = g.asset_stamp;
+        std::shared_ptr<const CpuAsset> asset = session_file ? g.asset : AcquireCpuAsset(path, &used_stamp);
+        out.file_time = used_stamp.time;
+        out.file_size = used_stamp.size;
         if (!asset || asset->animations.empty() || asset->skeleton.bones.empty()) {
             out.status = ItemDetection::Status::NoFile;
             return out;
@@ -861,7 +865,7 @@ ItemDetection DetectItem(MediaItem* item)
         }
         std::vector<int> bones;
         RemapToTracks(bound, &bones);
-        const AssetFileStamp stamp = (path == g.asset_path) ? g.asset_stamp : ReadAssetFileStamp(path);
+        const AssetFileStamp stamp = (path == g.asset_path) ? g.asset_stamp : used_stamp;  // the parse's version
         SampleKey key{path, stamp, bones};
         std::vector<BoneTrack> tracks;
         if (g.have_tracks && key == g.sample_key) tracks = g.tracks;

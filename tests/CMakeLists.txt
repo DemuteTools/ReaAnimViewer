@@ -389,3 +389,12 @@ add_test(NAME sound_zones COMMAND sound_zones_test)
 add_executable(zone_hit_test zone_hit_test.cpp ../src/zone_hit.cpp ../src/sound_zones.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp ../src/normalize_presets.cpp)
 target_include_directories(zone_hit_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME zone_hit COMMAND zone_hit_test)
+
+# Freeze fix #1 -- the follow's detection kept for its inputs, spread under a budget (src/detect_cache.h).
+add_executable(detect_cache_test detect_cache_test.cpp)
+target_include_directories(detect_cache_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME detect_cache COMMAND detect_cache_test)
+# Freeze fix #1 -- the parse cache's recent files, bounded by count and size (src/asset_lru.h).
+add_executable(asset_lru_test asset_lru_test.cpp)
+target_include_directories(asset_lru_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME asset_lru COMMAND asset_lru_test)

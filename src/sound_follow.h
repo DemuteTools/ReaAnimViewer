@@ -18,7 +18,9 @@ namespace rav {
 
 void InitSoundFollow(void* (*get_func)(const char* name));
 // Called by the 10-4b mirror for each project whose state changed. Never throws.
-void SoundFollowTick(ReaProject* proj);
+// Freeze fix #1: true when it planned nothing yet because detections are left to run (they are
+// spread over ticks, ~30 ms each, at least one a tick): the mirror calls it again on its next tick.
+bool SoundFollowTick(ReaProject* proj);
 // The menu's Sounds section (Tagging tab, after "Markers written").
 void DrawSoundsMenuSection();
 // Story 13-17 (N6): the menu's Library tab, its Tracks section: where placed sounds land (the

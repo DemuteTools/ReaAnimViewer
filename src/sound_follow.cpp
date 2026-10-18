@@ -24,10 +24,13 @@
 #include <string>
 #include <vector>
 
+#include "asset_cache.h"
+#include "detect_cache.h"
 #include "event_list.h"
 #include "imgui.h"
 #include "item_rules.h"
 #include "picked_gestures.h"
+#include "role_map_store.h"
 #include "shortcuts.h"
 #include "sound_follow_plan.h"
 #include "sound_place.h"
@@ -178,43 +181,51 @@ std::string ItemExt(MediaItem* item, const char* key)
 }
 
 // Fix 2026-10-12: the follow's events are Populate's (SoundEventsOf over the live detection, the
-// marker mirror's list), not the record's last Commit. Detection is the costly part: it runs again
-// only when what it reads changed (the item's rules record, its file) or after kDetectKeepS (the
-// file re-exported in place, a role mapping changed in its own file). The passes are recomputed
-// every tick from the item's position, length, loop, start offset and rate (cheap).
-constexpr double kDetectKeepS = 5.0;
+// marker mirror's list), not the record's last Commit. Detection is the costly part (the file parsed,
+// its bones sampled): freeze fix #1 (2026-10-19) keeps it for exactly what it reads (detect_cache.h:
+// the rules record, the file's version, the role mapping file), with no time limit, so a follow pass
+// runs it only for what changed. The passes are recomputed every tick from the item's position,
+// length, loop, start offset and rate (cheap).
 struct DetectedEvents {
-    std::string                           rules_raw;
-    std::string                           path;
-    std::chrono::steady_clock::time_point when;
-    bool                                  ok = false;
-    double                                clip_len = 0.0;
-    std::vector<Event>                    events;  // DetectItem's detections
-    ItemRules                             rules;   // the record they go with
+    bool               ok = false;
+    double             clip_len = 0.0;
+    std::vector<Event> events;  // DetectItem's detections
+    ItemRules          rules;   // the record they go with
 };
-std::map<ReaProject*, std::map<std::string, DetectedEvents>> g_detected;  // owner GUID (upper) -> its detection
+std::map<ReaProject*, DetectCache<DetectedEvents>> g_detected;  // per project, by the detection's inputs
 
-// The item's sound events now, as PopulateOne builds them. False when its detection does not run
-// (nothing is decided then, as Populate places nothing).
-bool FollowEventsOf(ReaProject* proj, MediaItem* item, const std::string& key, const ItemRulesRead& rr,
-                    std::vector<FollowEvent>* out, ItemClipMap* map_out)
+// Freeze fix #1: the detections one tick runs (on the UI thread): at least one, then more while
+// this budget lasts; the others wait for the next ticks.
+constexpr double kDetectBudgetMs = 30.0;
+
+DetectedEvents RunDetection(MediaItem* item, AssetFileStamp* used)
 {
-    MediaItem_Take*   take = RavTakeOf(item);
-    const std::string path = take ? AnimPathOf(take) : std::string();
-    const auto           now = std::chrono::steady_clock::now();
-    DetectedEvents&      d = g_detected[proj][key];
-    const bool fresh = d.when.time_since_epoch().count() != 0 && d.rules_raw == rr.raw && d.path == path &&
-                       std::chrono::duration<double>(now - d.when).count() < kDetectKeepS;
-    if (!fresh) {
-        const ItemDetection det = DetectItem(item);
-        d.rules_raw = rr.raw;
-        d.path = path;
-        d.when = now;
-        d.ok = det.status == ItemDetection::Status::Ok;
-        d.clip_len = det.map.clip_len;
-        d.events = d.ok ? det.events : std::vector<Event>();
-        d.rules = d.ok ? det.rules : ItemRules();
+    const ItemDetection det = DetectItem(item);
+    if (used) *used = AssetFileStamp{det.file_time, det.file_size};
+    DetectedEvents d;
+    d.ok = det.status == ItemDetection::Status::Ok;
+    d.clip_len = det.map.clip_len;
+    if (d.ok) {
+        d.events = det.events;
+        d.rules = det.rules;
     }
+    return d;
+}
+
+// The role mapping file's text (an input of every detection: the bones of the roles).
+std::string RolesText()
+{
+    try {
+        return SerializeRoleMap(ReadRoleMapFile(RulesResourceRoot()));
+    } catch (...) {
+        return std::string();
+    }
+}
+
+// The item's sound events now, as PopulateOne builds them, from its detection. False when its
+// detection does not run (nothing is decided then, as Populate places nothing).
+bool FollowEventsOf(MediaItem* item, const DetectedEvents& d, std::vector<FollowEvent>* out, ItemClipMap* map_out)
+{
     if (!d.ok) return false;
     const ItemClipMap map = ItemClipMapOf(item, d.clip_len);  // DetectItem's own map, now
     *out = SoundEventsOf(BuildEventList(d.events, d.rules.events, d.rules.blocks.size()), d.rules.blocks, map);
@@ -560,10 +571,10 @@ void InitSoundFollow(void* (*get_func)(const char* name))
     f_localize = reinterpret_cast<LocalizeStringFn>(get_func("LocalizeString"));
 }
 
-void SoundFollowTick(ReaProject* proj)
+bool SoundFollowTick(ReaProject* proj)
 {
     try {
-        if (!proj) return;
+        if (!proj) return false;
         FollowProject& fp = g_follow[proj];
 
         // One pass over the items: the facts of every item.
@@ -611,11 +622,8 @@ void SoundFollowTick(ReaProject* proj)
             ItemRulesRead rr;
         };
         std::vector<Anim>     anims;
+        std::vector<size_t>   anim_index;  // per Anim: its index in anim_items
         std::set<std::string> placed_guids;
-        // Fix C review 2: an item gone and back (undo, redo) appears again.
-        std::vector<std::string> anim_keys;
-        for (MediaItem* item : anim_items) anim_keys.push_back(Upper(ItemGuidOf(item)));
-        const std::vector<bool> appeared = UpdateSeenOwners(&fp.seen, anim_keys, fp.scanned);
         for (size_t ai = 0; ai < anim_items.size(); ++ai) {
             MediaItem* const item = anim_items[ai];
             try {
@@ -623,7 +631,6 @@ void SoundFollowTick(ReaProject* proj)
                 a.item = item;
                 a.guid = ItemGuidOf(item);
                 a.key = Upper(a.guid);
-                a.appeared = appeared[ai];
                 a.rec = ReadItemSounds(item);
                 for (const EventSounds& ev : a.rec.events)
                     for (const SoundPlacement& p : ev.placed) placed_guids.insert(Upper(p.item_guid));
@@ -634,8 +641,54 @@ void SoundFollowTick(ReaProject* proj)
                 a.pos = GetMediaItemInfo_Value(item, "D_POSITION");
                 a.len = GetMediaItemInfo_Value(item, "D_LENGTH");
                 anims.push_back(std::move(a));
+                anim_index.push_back(ai);
             } catch (...) {
             }
+        }
+
+        // Freeze fix #1: each item's detection, kept for its inputs (detect_cache.h). Those not kept
+        // run here, within kDetectBudgetMs a tick (at least one): while some are left, nothing is
+        // planned (the follow's memory of the project is left as it is) and the next tick goes on,
+        // so what the follow writes once they are all there is what one long tick would have.
+        DetectCache<DetectedEvents>& detected = g_detected[proj];
+        detected.BeginPass(RolesText());
+        std::vector<DetectInputs>              inputs(anims.size());
+        std::map<DetectInputs, DetectedEvents> this_pass;  // ran on a file that changed meanwhile: not kept
+        {
+            std::map<std::string, AssetFileStamp> stamps;  // one read per file
+            std::vector<size_t>                   misses;
+            std::set<DetectInputs>                missing;
+            for (size_t i = 0; i < anims.size(); ++i) {
+                const Anim& a = anims[i];
+                if (!a.rules_ok) continue;
+                auto st = stamps.find(a.path);
+                if (st == stamps.end()) st = stamps.emplace(a.path, ReadAssetFileStamp(a.path)).first;
+                inputs[i] = DetectInputs{a.rr.raw, a.path, st->second.time, st->second.size};
+                if (!detected.Has(inputs[i]) && missing.insert(inputs[i]).second) misses.push_back(i);
+            }
+            const auto   t0 = std::chrono::steady_clock::now();
+            const size_t ran = RunUnderBudget(
+                misses.size(), kDetectBudgetMs,
+                [&](size_t k) {
+                    const size_t   i = misses[k];
+                    AssetFileStamp used;
+                    DetectedEvents d = RunDetection(anims[i].item, &used);
+                    // Kept only for the file's version it ran on (the parse cache may still hold the
+                    // previous one for up to a second after a re-export).
+                    if (used.time == inputs[i].file_time && used.size == inputs[i].file_size)
+                        detected.Store(inputs[i], std::move(d));
+                    else this_pass[inputs[i]] = std::move(d);
+                },
+                [&]() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); });
+            if (ran < misses.size()) return true;  // the rest on the next ticks
+        }
+
+        // Fix C review 2: an item gone and back (undo, redo) appears again.
+        {
+            std::vector<std::string> anim_keys;
+            for (MediaItem* item : anim_items) anim_keys.push_back(Upper(ItemGuidOf(item)));
+            const std::vector<bool> appeared = UpdateSeenOwners(&fp.seen, anim_keys, fp.scanned);
+            for (size_t i = 0; i < anims.size(); ++i) anims[i].appeared = appeared[anim_index[i]];
         }
         // Resilience 2026-10-19: the project's tracks (a copy whose track is gone was not deleted by hand: SettleGoneCopies).
         std::vector<std::string> track_guids;
@@ -736,7 +789,8 @@ void SoundFollowTick(ReaProject* proj)
         std::vector<MediaItem*> copies;
         std::vector<MediaItem*> pass_fill;  // 13-56: looped items with a loop pass to populate
         std::set<std::string>   owners_now;
-        for (const Anim& an : anims) {
+        for (size_t ai = 0; ai < anims.size(); ++ai) {
+            const Anim& an = anims[ai];
             try {
                 MediaItem* const   item = an.item;
                 const std::string& guid = an.guid;
@@ -803,7 +857,13 @@ void SoundFollowTick(ReaProject* proj)
                 }
                 FollowInput in;
                 ItemClipMap clip_map;
-                if (!FollowEventsOf(proj, item, key, an.rr, &in.events, &clip_map)) {
+                const DetectedEvents* det = detected.Find(inputs[ai]);
+                if (!det) {
+                    auto it = this_pass.find(inputs[ai]);
+                    if (it == this_pass.end()) it = this_pass.emplace(inputs[ai], RunDetection(item, nullptr)).first;
+                    det = &it->second;
+                }
+                if (!FollowEventsOf(item, *det, &in.events, &clip_map)) {
                     fp.owners[key] = snap;
                     continue;  // its detection does not run: nothing is decided
                 }
@@ -925,9 +985,8 @@ void SoundFollowTick(ReaProject* proj)
             it = fp.pending.erase(it);
         }
         fp.scanned = true;
-        // Detections of items that no longer have sounds (or are gone): forgotten.
-        auto& det = g_detected[proj];
-        for (auto it = det.begin(); it != det.end();) it = owners_now.count(it->first) ? std::next(it) : det.erase(it);
+        // Detections no item read in this pass (no longer has sounds, gone, changed): forgotten.
+        detected.DropUnused();
 
         for (auto it = fp.pass_fills.begin(); it != fp.pass_fills.end();)
             it = owners_now.count(it->first) ? std::next(it) : fp.pass_fills.erase(it);
@@ -945,6 +1004,7 @@ void SoundFollowTick(ReaProject* proj)
         }
     } catch (...) {
     }
+    return false;
 }
 
 std::vector<ReportLine> FollowReport(ReaProject* proj)

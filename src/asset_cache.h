@@ -8,8 +8,9 @@
 //    that holds one keeps it alive even if the cache drops it, so a reload or an item
 //    removal while playing can never show a half-built model.
 //  - A failed load is remembered (no re-parse every frame) until the file changes.
-//  - The main thread trims the cache to the files the video FX tracks use, and drops a
-//    file whose date or size changed on disk, so a re-export is read again.
+//  - The main thread keeps the files the video FX tracks use and (freeze fix #1) the most
+//    recently used other parses, bounded by count and size (asset_lru.h), and drops a file
+//    whose date or size changed on disk, so a re-export is read again.
 // All functions are thread-safe and never throw.
 
 #pragma once
@@ -38,8 +39,12 @@ struct AssetFileStamp {
 };
 AssetFileStamp ReadAssetFileStamp(const std::string& path);
 
-// The viewer's own parse of `path`, kept only if a video FX track uses that file (the
-// cache does not hold models nobody renders as video). `stamp` = ReadAssetFileStamp taken
+// AcquireCpuAsset, and the file version the parse handed out was read from (`*stamp_out`; zero
+// when none): freeze fix #1, the follow keeps a detection only for the version it ran on.
+std::shared_ptr<const CpuAsset> AcquireCpuAsset(const std::string& path, AssetFileStamp* stamp_out);
+
+// The viewer's own parse of `path`, kept with the recent files (freeze fix #1: the
+// Tagging view and the follow use it instead of parsing again). `stamp` = ReadAssetFileStamp taken
 // before that parse. An entry already holding that same version is kept as it is, so the
 // video thread does not re-upload an unchanged model each time the viewer switches items.
 void OfferCpuAsset(const std::string& path, std::shared_ptr<const CpuAsset> asset,
@@ -52,8 +57,9 @@ void OfferCpuAsset(const std::string& path, std::shared_ptr<const CpuAsset> asse
 // (13-51: it may predate the change).
 void EvictCpuAsset(const std::string& path);
 
-// Main thread: `wanted` = every file the video FX tracks use now. Other entries are
-// dropped; with check_files, entries whose file changed on disk are dropped too.
+// Main thread: `wanted` = every file the video FX tracks use now (always kept). The other
+// entries are kept within the recent files' bounds; with check_files, entries whose file
+// changed on disk are dropped.
 void TrimCpuAssetCache(const std::vector<std::string>& wanted, bool check_files);
 
 // Unload: drop everything.

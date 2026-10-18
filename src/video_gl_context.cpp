@@ -110,8 +110,23 @@ void LogFailureOnce(ThreadGl& g, const char* what, DWORD err)
             what, static_cast<unsigned long>(err));
 }
 
+// Why a context could not be made: the failed step and its error code.
+struct GlFailure {
+    const char* what = "";
+    DWORD       err = 0;
+};
+
 // Hidden window + WGL context for the calling thread, FBO entry points loaded.
-bool CreateThreadContext(ThreadGl& g)
+// Freeze fix #3 (2026-10-19): the window is first a message-only one (parent HWND_MESSAGE).
+// The video thread pumps its window only inside Begin, so a top-level window there is one any
+// program can reach while no frame is asked for: a broadcast SendMessage, an EnumWindows +
+// GetWindowText (SWS, js_ReaScriptAPI's JS_Window_Find, ShellExecute's DDE) then waited for
+// ever on the main thread. A message-only window is never enumerated nor broadcast to. RAV draws
+// into its own framebuffer object, never into the window, so the window only has to give WGL a
+// device context with a pixel format; most drivers accept a message-only window for that. When
+// one refuses it (any step fails), the hidden top-level window of before is used instead
+// (logged): the only way left to have GL on that driver.
+bool CreateThreadContext(ThreadGl& g, bool message_only, GlFailure* fail)
 {
     HINSTANCE hinst = ModuleInstance();
     WNDCLASSW wc = {};
@@ -122,13 +137,14 @@ bool CreateThreadContext(ThreadGl& g)
     wc.hInstance = hinst;
     wc.lpszClassName = kWindowClass;
     if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
-        LogFailureOnce(g, "RegisterClass", GetLastError());
+        *fail = {"RegisterClass", GetLastError()};
         return false;
     }
-    g.hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, kWindowClass, L"RAV video FX", WS_POPUP, 0, 0, 1, 1,
-                             nullptr, nullptr, hinst, nullptr);
+    g.hwnd = CreateWindowExW(message_only ? 0 : WS_EX_TOOLWINDOW, kWindowClass, L"RAV video FX",
+                             message_only ? 0 : WS_POPUP, 0, 0, 1, 1, message_only ? HWND_MESSAGE : nullptr,
+                             nullptr, hinst, nullptr);
     if (!g.hwnd) {
-        LogFailureOnce(g, "CreateWindowEx", GetLastError());
+        *fail = {"CreateWindowEx", GetLastError()};
         return false;
     }
     g.hdc = GetDC(g.hwnd);
@@ -143,19 +159,19 @@ bool CreateThreadContext(ThreadGl& g)
     pfd.iLayerType = PFD_MAIN_PLANE;
     const int pf = g.hdc ? ChoosePixelFormat(g.hdc, &pfd) : 0;
     if (!pf || !SetPixelFormat(g.hdc, pf, &pfd)) {
-        LogFailureOnce(g, "pixel format", GetLastError());
+        *fail = {"pixel format", GetLastError()};
         return false;
     }
     g.rc = wglCreateContext(g.hdc);
     if (!g.rc) {
-        LogFailureOnce(g, "wglCreateContext", GetLastError());
+        *fail = {"wglCreateContext", GetLastError()};
         return false;
     }
 
     HGLRC prev_rc = wglGetCurrentContext();
     HDC   prev_dc = wglGetCurrentDC();
     if (!wglMakeCurrent(g.hdc, g.rc)) {
-        LogFailureOnce(g, "wglMakeCurrent", GetLastError());
+        *fail = {"wglMakeCurrent", GetLastError()};
         RestoreContext(prev_dc, prev_rc);  // a failed MakeCurrent un-currents the old one
         return false;
     }
@@ -171,11 +187,16 @@ bool CreateThreadContext(ThreadGl& g)
     const char* version = reinterpret_cast<const char*>(glGetString(GL_VERSION));
     RestoreContext(prev_dc, prev_rc);
     if (!loaded) {
-        LogFailureOnce(g, "framebuffer functions missing", 0);
+        *fail = {"framebuffer functions missing", 0};
         return false;
     }
-    LogInfo("video FX: GL context created on thread %lu (%s)", static_cast<unsigned long>(GetCurrentThreadId()),
-            version ? version : "?");
+    if (!version) {  // a context that cannot even name its version is not one to draw with
+        *fail = {"glGetString", 0};
+        return false;
+    }
+    LogInfo("video FX: GL context created on thread %lu (%s, %s window)",
+            static_cast<unsigned long>(GetCurrentThreadId()), version ? version : "?",
+            message_only ? "message-only" : "hidden top-level");
     return true;
 }
 
@@ -242,8 +263,19 @@ bool VideoGlFrame::Begin(int width, int height)
     ThreadGl& g = t_gl;
     if (!g.attempted) {
         g.attempted = true;
-        g.ok = CreateThreadContext(g);
-        if (!g.ok) DestroyThreadContext(g);
+        GlFailure fail;
+        g.ok = CreateThreadContext(g, /*message_only=*/true, &fail);
+        if (!g.ok) {
+            DestroyThreadContext(g);
+            LogInfo("video FX: the driver refused a message-only GL window (%s, error %lu): a hidden "
+                    "top-level window is used",
+                    fail.what, static_cast<unsigned long>(fail.err));
+            g.ok = CreateThreadContext(g, /*message_only=*/false, &fail);
+            if (!g.ok) {
+                DestroyThreadContext(g);
+                LogFailureOnce(g, fail.what, fail.err);
+            }
+        }
     }
     if (!g.ok) return false;
 

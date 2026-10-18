@@ -1377,8 +1377,6 @@ bool PasteOnto(SoundStore& store, const std::string& src_lib, const std::string&
             SoundNode* t = FindNode(*dst, dst_uid);
             t->volume_db = from.volume_db;
             t->avoid_repeat = from.avoid_repeat;
-            if (from.type == SoundNodeType::Blend && t->type == SoundNodeType::Blend)
-                t->linked_variations = from.linked_variations;
             if (from.type == SoundNodeType::Switch && t->type == SoundNodeType::Switch && from.group_uid == t->group_uid)
                 t->default_value = from.default_value;
             return true;

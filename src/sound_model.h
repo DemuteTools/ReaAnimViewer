@@ -16,7 +16,7 @@
 // 13-62 (spec 13-62 Contract): SoundFrame::owners, PartSettings, SoundData::parts.
 // 13-62h (spec 13-62h Contract): EditZone, SoundFrame::zones, PartSettings::fader_db, SoundData::gap_xfade.
 // 13-62i (spec 13-62i A0): kWholePart, EditZone::fade_in_shape / fade_out_shape, SoundData::fader_db.
-// 13-68 v2 (spec 13-68): SoundLibrary::attached / attached_type, SoundNode::linked_variations.
+// 13-68 v2 (spec 13-68): SoundLibrary::attached / attached_type. v3: SoundData::keep_rate, SwitchGroup::rav_owned.
 // 13-73 (spec 13-73): SidePattern, NewSoundSides, SoundFrame::side / side_hand, SoundData::sides / side_pattern.
 //
 // Every `kept` member holds text this version did not understand, written back as read:
@@ -270,6 +270,9 @@ struct SoundData {
     std::vector<SoundFrame>  frames;
     bool                     edited = false;        // frames edited after detection
     bool                     linked_copies = true;  // copies of the pile share the takes
+    // 13-68 v3 (appended): its copies keep the source take's playrate, pitch and preserve-pitch (an Attached
+    // library's sources, tuned by ear on the timeline) instead of playing as auditioned at rate 1.
+    bool                     keep_rate = false;
     std::vector<std::string> kept;
     double                   fade_in = kDefaultFadeIn;    // default fades of its variations (s)
     double                   fade_out = kDefaultFadeOut;
@@ -339,10 +342,6 @@ struct SoundNode {
     std::vector<std::string> layer_roles;
     // 13-31: keep offset_ms on events with a role (off: the offset applies on combined events only).
     bool                     layer_keep_offset = false;
-    // 13-68 v2 (appended): a Blend whose direct Sound children share one variation number (NVK stacks: take /
-    // take marker k of layer 1 goes with k of layer 2): the first child with a variation draws, every other one
-    // plays that index (modulo its own count; a child of 1 variation plays it). Sound_switch.cpp ResolveEvent.
-    bool                     linked_variations = false;
     // 13-72 (appended): an Unassigned child keeps where it was before the tree gesture that put it there:
     // its path then ("Steps › LocomotionType › Run"), and when it was a Switch value's content, that
     // Switch and value ("Put back where it was"). Set and cleared by the tree edits (library_tree_edit.cpp).
@@ -363,6 +362,9 @@ struct SwitchValue {
 struct SwitchGroup {
     std::string              uid;
     std::string              name;
+    // 13-68 v3 (appended): a group RAV made and manages (Side, an Attached library's per-animation layers): shown
+    // "RAV - <name>", never renamed, deleted or given values by hand.
+    bool                     rav_owned = false;
     std::vector<SwitchValue> values;
     std::string              default_value;  // 13-18: value uid ("" = the first value); a Switch's own overrides it
     std::vector<std::string> kept;

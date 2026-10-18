@@ -367,6 +367,7 @@ Fields GroupFields(const SwitchGroup& g)
 {
     Fields f = {{"uid", Enc(g.uid)}, {"name", Enc(g.name)}};
     if (!g.default_value.empty()) f.push_back({"default", Enc(g.default_value)});
+    if (g.rav_owned) f.push_back({"rav", "1"});  // 13-68 v3
     return f;
 }
 
@@ -375,6 +376,7 @@ Got SetGroup(SwitchGroup& g, const std::string& k, const std::string& v)
     if (k == "uid") return G(ReadStr(v, &g.uid));
     if (k == "name") return G(ReadStr(v, &g.name));
     if (k == "default") return G(ReadStr(v, &g.default_value));
+    if (k == "rav") return G(ReadFlag(v, &g.rav_owned));
     return Got::Unknown;
 }
 
@@ -431,7 +433,6 @@ Fields NodeFields(const SoundNode& n)
     if (!n.lands_in.empty()) f.push_back({"lands", Enc(n.lands_in)});
     if (!n.layer_roles.empty()) f.push_back({"roles", JoinEncoded(n.layer_roles)});  // 13-31
     if (n.layer_keep_offset) f.push_back({"koff", "1"});
-    if (n.linked_variations) f.push_back({"lvar", "1"});  // 13-68 v2
     if (!n.was_path.empty()) f.push_back({"wpath", Enc(n.was_path)});  // 13-72
     if (!n.was_switch.empty()) f.push_back({"wsw", Enc(n.was_switch)});
     if (!n.was_value.empty()) f.push_back({"wval", Enc(n.was_value)});
@@ -453,7 +454,7 @@ Got SetNode(SoundNode& n, const std::string& k, const std::string& v)
     if (k == "lands") return G(ReadStr(v, &n.lands_in));
     if (k == "roles") return G(SplitDecoded(v, &n.layer_roles));
     if (k == "koff") return G(ReadFlag(v, &n.layer_keep_offset));
-    if (k == "lvar") return G(ReadFlag(v, &n.linked_variations));
+    if (k == "lvar") return Got::Ok;  // 13-68 v2's linked layers flag, read and dropped (v3: every Blend links)
     if (k == "wpath") return G(ReadStr(v, &n.was_path));
     if (k == "wsw") return G(ReadStr(v, &n.was_switch));
     if (k == "wval") return G(ReadStr(v, &n.was_value));
@@ -511,6 +512,7 @@ Fields SoundFields(const SoundData& s)
     if (s.silence.tail_ms != d.silence.tail_ms) f.push_back({"tail", FormatNumber(s.silence.tail_ms)});
     if (s.edited) f.push_back({"edited", "1"});
     if (!s.linked_copies) f.push_back({"linked", "0"});
+    if (s.keep_rate) f.push_back({"krate", "1"});  // 13-68 v3
     if (s.fade_in != d.fade_in) f.push_back({"fin", FormatNumber(s.fade_in)});
     if (s.fade_out != d.fade_out) f.push_back({"fout", FormatNumber(s.fade_out)});
     if (!a.name.empty()) f.push_back({"aname", Enc(a.name)});
@@ -552,6 +554,7 @@ Got SetSound(SoundData& s, const std::string& k, const std::string& v)
     if (k == "tail") return G(ReadNumber(v, &s.silence.tail_ms));
     if (k == "edited") return G(ReadFlag(v, &s.edited));
     if (k == "linked") return G(ReadFlag(v, &s.linked_copies));
+    if (k == "krate") return G(ReadFlag(v, &s.keep_rate));
     if (k == "fin") return G(ReadNumber(v, &s.fade_in));
     if (k == "fout") return G(ReadNumber(v, &s.fade_out));
     if (k == "aname") return G(ReadStr(v, &a.name));

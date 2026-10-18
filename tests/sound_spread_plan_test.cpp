@@ -97,19 +97,27 @@ int main()
             }
         }
         CHECK(blends == 3);
-        for (const SoundNode& b : n)
-            if (b.type == SoundNodeType::Blend) CHECK(b.linked_variations);
-        {
+        {  // 13-68 v3: keep_rate and a RAV-owned group survive the store; v2's 'lvar' flag is read and dropped
             SoundStore st;
             SoundLibrary l;
             l.uid = "l";
-            SetLibraryContent(l, n);
+            std::vector<SoundNode> kn = n;
+            for (SoundNode& x : kn)
+                if (x.type == SoundNodeType::Sound) x.sound.keep_rate = true;
+            SetLibraryContent(l, kn);
             st.libraries.push_back(l);
+            SwitchGroup g;
+            g.uid = "g";
+            g.name = "Side";
+            g.rav_owned = true;
+            st.groups.push_back(g);
             SoundStore back;
-            CHECK(ParseSoundStore(SerializeSoundStore(st), &back) && back.libraries.size() == 1);
-            int linked = 0;
-            for (const SoundNode& x : back.libraries[0].nodes) linked += x.linked_variations ? 1 : 0;
-            CHECK(linked == 3);
+            std::string text = SerializeSoundStore(st);
+            CHECK(ParseSoundStore(text, &back) && back.libraries.size() == 1 && back.groups.size() == 1);
+            CHECK(back.groups[0].rav_owned);
+            int keep = 0;
+            for (const SoundNode& x : back.libraries[0].nodes) keep += x.type == SoundNodeType::Sound && x.sound.keep_rate ? 1 : 0;
+            CHECK(keep == 6);
         }
         // The piles: touching items apart (cut end to end), members top first.
         std::vector<AttachItem> f;

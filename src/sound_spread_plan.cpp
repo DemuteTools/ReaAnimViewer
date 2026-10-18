@@ -102,7 +102,6 @@ std::vector<SoundNode> SpreadLayerNodes(const std::vector<SpreadSource>& items, 
         blend.parent = root.uid;
         blend.type = SoundNodeType::Blend;
         blend.name = top.name.empty() ? std::string("Sound") : top.name;
-        blend.linked_variations = true;  // the layers play the same variation number (NVK stacks)
         out.push_back(blend);
         const double top_sync = PileAnchor(top.facts);
         for (int m : pile) {

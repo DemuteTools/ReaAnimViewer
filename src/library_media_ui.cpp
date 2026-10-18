@@ -737,7 +737,11 @@ void ApplyPicks(const std::string& lib, const LibraryRow* row, const std::vector
     const char* desc = MediaUseAddsInside(GetSoundStore(nullptr), lib, row) ? "RAV: Add sounds"
                                                                              : "RAV: Set sound from Media Explorer";
     bool ok = ModifySoundStore(nullptr, desc, [&](SoundStore& s) {
-        return UseMediaAt(s, lib, row, picks, &created, &toast, &why, as_random, &rnd);
+        // 13-67c: the new Sounds' zones laid out on their files' peaks (read by the use already), as Edit shows them.
+        auto peaks = [](const std::string& path, PeakData* out) {
+            return !path.empty() && RequestPeaks(path, out) == PeakState::Ready;
+        };
+        return UseMediaAt(s, lib, row, picks, &created, &toast, &why, as_random, &rnd, peaks);
     });
     if (ok) {
         ShowLibraryToast(toast + suffix, true, desc);

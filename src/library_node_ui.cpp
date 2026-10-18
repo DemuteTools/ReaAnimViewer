@@ -2603,15 +2603,27 @@ void ReplaceFromDrop(const std::string& lib_uid, const std::string& uid, const S
     DetectMode              mode = DetectMode::Whole;
     const bool              read = ReadSoundMedia(src, &m);
     const std::string       path = read ? m.path : std::string();
+    // 13-67c: only variations picked by hand are kept as dropped; a whole file is detected again with the Sound's own
+    // Threshold / Min gap (the preview detected it with a new Sound's), never another value.
+    bool picked = false;
+    for (const SoundFrame& f : dropped) picked = picked || f.hand;
+    if (!picked) frames.clear();
     if (frames.empty() && read) {
+        SilenceParams sp;
+        {
+            const SoundStore&   store = GetSoundStore(nullptr);
+            const SoundLibrary* lib = FindLibrary(store, lib_uid);
+            const SoundNode*    node = lib ? FindNode(*lib, uid) : nullptr;
+            if (node) sp = node->sound.silence;
+        }
         PeakData   pk;
         const bool ready = RequestPeaks(m.path, &pk) == PeakState::Ready;
         mode = DefaultDetectMode(m.facts, ready);
-        frames = DetectFrames(m.facts, mode, SilenceParams{}, ready ? &pk : nullptr);
+        frames = DetectFrames(m.facts, mode, sp, ready ? &pk : nullptr);
     }
     EditNode(
         "Replace audio", lib_uid, uid,
-        [src, mode, frames, path, edited = !dropped.empty()](SoundNode& x) {
+        [src, mode, frames, path, edited = picked](SoundNode& x) {
             x.sound.source = src;
             x.sound.mode = mode;
             x.sound.frames = frames;
@@ -2977,7 +2989,8 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
             double SilenceParams::*field;
         };
         static const F kFields[] = {
-            {{"##thr", "Threshold", "dB", 0.1, -90.0, 0.0, -60.0f, 0.0f, nullptr}, &SilenceParams::threshold_db},
+            // 13-67c: the fader -80 to 0 dB (a -60 dB default no longer sits at its end); the field takes -90.
+            {{"##thr", "Threshold", "dB", 0.1, -90.0, 0.0, -80.0f, 0.0f, nullptr}, &SilenceParams::threshold_db},
             {{"##gap", "Min gap", "ms", 1.0, 0.0, 5000.0, 0.0f, 400.0f, nullptr}, &SilenceParams::min_gap_ms},
             {{"##pre", "Pre-roll", "ms", 0.5, 0.0, 1000.0, 0.0f, 50.0f, nullptr}, &SilenceParams::preroll_ms},
             {{"##tail", "Tail", "ms", 1.0, 0.0, 5000.0, 0.0f, 300.0f, nullptr}, &SilenceParams::tail_ms},

@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <string>
 
+#include "sound_entries.h"
 #include "sound_record.h"
 
 using namespace rav;
@@ -94,6 +95,44 @@ static std::string Case(const SoundStore& s, const char* lib, const char* sw, co
     return {};
 }
 
+// 13-67c: 2 s of peaks (1000 / s): loud hits (-6 dB) at 0.1 and 1.1 s, a quiet one (-52 dB) at 0.6 s, silence else.
+// -60 dB finds 3 variations, -45 dB 2.
+static PeakData Hits()
+{
+    PeakData p;
+    p.rate = 1000.0;
+    p.max_abs.assign(2000, 0.0f);
+    for (int i = 100; i < 300; ++i) p.max_abs[i] = p.max_abs[i + 1000] = 0.5f;
+    for (int i = 600; i < 800; ++i) p.max_abs[i] = 0.0025f;
+    return p;
+}
+
+// The zones of every variation, as Edit draws them (part, edges).
+static bool SameZones(const SoundData& x, const SoundData& y)
+{
+    if (x.frames.size() != y.frames.size()) return false;
+    for (size_t i = 0; i < x.frames.size(); ++i) {
+        const SoundFrame& a = x.frames[i];
+        const SoundFrame& b = y.frames[i];
+        if (a.start != b.start || a.length != b.length || a.on != b.on || a.zones.size() != b.zones.size()) return false;
+        for (size_t k = 0; k < a.zones.size(); ++k)
+            if (a.zones[k].part != b.zones[k].part || std::fabs(a.zones[k].a - b.zones[k].a) > 1e-9 ||
+                std::fabs(a.zones[k].b - b.zones[k].b) > 1e-9)
+                return false;
+    }
+    return true;
+}
+
+// What touching Threshold at its own value does (library_node_ui Redetect, no hand frame): detected again with the
+// Sound's own parameters, laid out on the peaks.
+static SoundData Retouched(const SoundData& d, const PeakData& pk)
+{
+    SoundData e = d;
+    e.frames = SplitOnSilence(pk, e.silence, 2.0);
+    RefreshParts(e, &pk);
+    return e;
+}
+
 int main()
 {
     {  // empty search: every entry of the selected database, in order, pointing into the index
@@ -108,6 +147,58 @@ int main()
         CHECK(b.size() == 2 && b[0] == &files[1] && b[1] == &files[3]);
         CHECK(MediaListAll(files, "C").empty());
         CHECK(MediaListAll({}, "").empty());
+    }
+    // 13-67c: a fresh Sound from a Media Explorer use: its default stored, zoned at creation on its peaks, so the
+    // main window (frames) and Edit (zones) show the same variations and touching Threshold changes nothing.
+    {
+        const PeakData pk = Hits();
+        SoundStore s = Store();
+        const LibraryRow* r = nullptr;  // inside the root Random
+        MediaPick pick = Whole("C:\\Sfx\\hits.wav", 2.0, 0);
+        pick.frames = SplitOnSilence(pk, SilenceParams{}, 2.0);  // the preview's detection
+        CHECK(pick.frames.size() == 3);
+        std::vector<std::string> created;
+        std::string toast, why;
+        auto peaks = [&pk](const std::string& path, PeakData* out) {
+            if (path != "C:\\Sfx\\hits.wav") return false;
+            *out = pk;
+            return true;
+        };
+        CHECK(UseMediaAt(s, "M", r, {pick}, &created, &toast, &why, false, nullptr, peaks));
+        CHECK(created.size() == 1);
+        const SoundNode* n = created.size() == 1 ? FindNode(*FindLibrary(s, "M"), created[0]) : nullptr;
+        CHECK(n && n->sound.silence.threshold_db == -60.0 && n->sound.frames.size() == 3);
+        bool zoned = n != nullptr;
+        if (n)
+            for (const SoundFrame& f : n->sound.frames) zoned = zoned && (!f.on || !f.zones.empty());
+        CHECK(zoned);
+        CHECK(n && SameZones(n->sound, Retouched(n->sound, pk)));
+        // Saved and read back: the threshold stays the Sound's own.
+        SoundStore back;
+        CHECK(ParseSoundStore(SerializeSoundStore(s), &back));
+        const SoundNode* b = n ? FindNode(*FindLibrary(back, "M"), n->uid) : nullptr;
+        CHECK(b && b->sound.silence.threshold_db == -60.0 && b->sound.frames.size() == 3);
+        // Without peaks (not read yet): zoned all the same (proposed, as a loaded Sound).
+        SoundStore s2 = Store();
+        std::vector<std::string> c2;
+        CHECK(UseMediaAt(s2, "M", r, {pick}, &c2, &toast, &why));
+        const SoundNode* n2 = c2.size() == 1 ? FindNode(*FindLibrary(s2, "M"), c2[0]) : nullptr;
+        CHECK(n2 && n2->sound.frames.size() == 3 && !n2->sound.frames[0].zones.empty());
+    }
+    // 13-67c: an old Sound without 'thr' reads -45 dB, and every path detects with that, never -60.
+    {
+        const PeakData pk = Hits();
+        SoundStore     old;
+        CHECK(ParseSoundStore("RAVSOUNDS 1\nlibrary uid=l name=L root=n\nnode uid=n type=sound\nsound kind=item guid=g\n", &old));
+        const SoundNode* n = old.libraries.empty() ? nullptr : FindNode(old.libraries[0], "n");
+        CHECK(n && n->sound.silence.threshold_db == -45.0);
+        if (n) {
+            SoundData d = n->sound;
+            d.mode = DetectMode::Silence;
+            const SoundData main = Retouched(d, pk);  // the main window's detection (its own Threshold)
+            CHECK(main.frames.size() == 2);
+            CHECK(SameZones(main, Retouched(main, pk)));  // Edit opened, the fader touched at -45: the same
+        }
     }
     // Whole file on an empty value: one Sound "stem", Silence, 4 frames, File identity.
     {

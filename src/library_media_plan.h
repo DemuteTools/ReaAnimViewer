@@ -8,6 +8,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -55,9 +56,13 @@ bool MediaUseAddsInside(const SoundStore& store, const std::string& lib_uid, con
 // as one new child, onto a Sound as a child of the Random that wraps it, on a value / empty slot the
 // Random the use makes anyway. `new_random` gets its uid ("" when no Random was made). One pick: the
 // plain use.
+// 13-67c: every new Sound is laid out as zones at once (RefreshParts, the Edit window's model), on its file's peaks
+// when `peaks` gives them (null / false: proposed without, as a loaded Sound), so the main window and Edit show the
+// same variations and opening Edit changes nothing.
+using MediaPeaksFn = std::function<bool(const std::string& path, PeakData* out)>;
 bool UseMediaAt(SoundStore& store, const std::string& lib_uid, const LibraryRow* row, const std::vector<MediaPick>& picks,
                 std::vector<std::string>* created, std::string* toast, std::string* why, bool as_random = false,
-                std::string* new_random = nullptr);
+                std::string* new_random = nullptr, const MediaPeaksFn& peaks = {});
 
 // 13-69: the name of a Random made of these files: their stems' longest common start (ignoring
 // case, the first file's spelling), without trailing spaces, '_', '-', '.', digits or "(";

@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 
+#include "sound_entries.h"  // 13-67c: RefreshParts
 #include "sound_record.h"
 
 namespace rav {
@@ -135,7 +136,7 @@ bool MediaUseLabel(const SoundStore& store, const std::string& lib_uid, const Li
 
 bool UseMediaAt(SoundStore& store, const std::string& lib_uid, const LibraryRow* row, const std::vector<MediaPick>& picks,
                 std::vector<std::string>* created, std::string* toast, std::string* why, bool as_random,
-                std::string* new_random)
+                std::string* new_random, const MediaPeaksFn& peaks)
 {
     if (new_random) new_random->clear();
     if (why) why->clear();
@@ -229,6 +230,14 @@ bool UseMediaAt(SoundStore& store, const std::string& lib_uid, const LibraryRow*
             msg = label + " is now a Random " + hname + " of " + Plural(k, "sound");
         if (new_random) *new_random = holder;
     }
+    // 13-67c: zoned at creation (the Edit window draws zones: a Sound left with frames only showed none there).
+    if (SoundLibrary* lib = FindLibrary(store, lib_uid))
+        for (const std::string& u : sounds)
+            if (SoundNode* sn = FindNode(*lib, u)) {
+                PeakData   pk;
+                const bool has = peaks && peaks(sn->sound.source.asset.last_path, &pk);
+                RefreshParts(sn->sound, has ? &pk : nullptr);
+            }
     if (created) *created = sounds;
     if (toast) *toast = msg;
     if (why) why->clear();

@@ -277,6 +277,7 @@ SoundData PromotedSoundData(MediaItem* item)
     if (GetActiveTake(item)) d.mono = MonoForChanMode(m.chan_mode);
     d.mode = DefaultDetectMode(f, false);
     d.frames = DetectFrames(f, d.mode, d.silence, nullptr);
+    RefreshParts(d, nullptr);  // 13-67c: zoned at creation (Edit draws zones; frames alone showed none there)
     return d;
 }
 

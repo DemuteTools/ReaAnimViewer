@@ -13,6 +13,7 @@
 
 #include "asset_cache.h"   // ReadAssetFileStamp — the loop period follows a re-export (11-7)
 #include "asset_loader.h"  // ProbeAnimationDuration — CPU-only, GL-free (Story 4.2)
+#include "duration_cache.h"  // freeze fix #2: one probe per file version
 
 #include <atomic>
 #include <cctype>
@@ -77,6 +78,14 @@ constexpr const char kSourceType[] = "RAV_ANIM";
 // on the schema without guessing (Story 6.1, fwd-compat).
 constexpr int kStateVer = 1;
 
+// Freeze fix #2: the durations read this session, by file version (any thread: REAPER may make a
+// source off the main thread).
+DurationCache<AssetFileStamp>& Durations()
+{
+    static DurationCache<AssetFileStamp> cache;
+    return cache;
+}
+
 // Minimal non-audio PCM_source: 0 channels + GetSampleRate()<1.0 mark it silent,
 // yet a dropped file still creates a real timeline item (Spike 0). It holds the
 // path and a cached real duration (Story 4.2) — GetLength reports the animation's
@@ -91,7 +100,11 @@ public:
         Probe();
     }
 
-    PCM_source* Duplicate() override            { return new AnimSource(m_path.c_str()); }
+    // Freeze fix #2: a copy has the same file and length: no new probe.
+    PCM_source* Duplicate() override
+    {
+        return new AnimSource(m_path, m_len.load(std::memory_order_relaxed), m_stamp);
+    }
     bool        IsAvailable() override           { return true; }
     const char* GetType() override               { return kSourceType; }
     const char* GetFileName() override           { return m_path.c_str(); }
@@ -158,21 +171,36 @@ public:
     // file's clip duration, which the Tagging view re-reads when the file is re-exported.
     // Re-probe here too when the file's date or size changed (checked at most once a second;
     // the probe is the same parse as at creation). Main thread.
+    // Freeze fix #2: only once the new version is stable (the same at two checks a second apart),
+    // so a file still being written is not parsed at each check.
     void RefreshLengthIfChanged()
     {
         const double now = std::chrono::duration<double>(
                                std::chrono::steady_clock::now().time_since_epoch()).count();
         if (m_checked_at >= 0.0 && now - m_checked_at < 1.0) return;
         m_checked_at = now;
-        if (ReadAssetFileStamp(m_path) != m_stamp) Probe();
+        if (m_stable.Check(m_stamp, ReadAssetFileStamp(m_path))) Probe();
     }
 
 private:
+    AnimSource(const std::string& path, double len, const AssetFileStamp& stamp) : m_path(path), m_stamp(stamp)
+    {
+        m_len.store(len, std::memory_order_relaxed);
+    }
+
     // The stamp is read BEFORE the parse, so a re-export during it is seen next time.
+    // Freeze fix #2: a version already read this session gives its length without a parse; a
+    // read is kept only when the file did not change during it (and exists).
     void Probe()
     {
-        m_stamp = ReadAssetFileStamp(m_path);
-        m_len.store(ProbeAnimationDuration(m_path), std::memory_order_relaxed);
+        const AssetFileStamp stamp = ReadAssetFileStamp(m_path);
+        m_stamp = stamp;
+        double len = 0.0;
+        if (!Durations().Find(m_path, stamp, &len)) {
+            len = ProbeAnimationDuration(m_path);
+            if (stamp != AssetFileStamp{} && ReadAssetFileStamp(m_path) == stamp) Durations().Store(m_path, stamp, len);
+        }
+        m_len.store(len, std::memory_order_relaxed);
     }
 
     // Apply one persisted state line (D9, Story 6.1). Ignores any line that isn't
@@ -199,6 +227,7 @@ private:
     std::atomic<double> m_len{0.0};
     AssetFileStamp      m_stamp;              // the file's version m_len was probed from
     double              m_checked_at = -1.0;  // RefreshLengthIfChanged's last check (s)
+    StableStamp<AssetFileStamp> m_stable;     // freeze fix #2: a new version seen twice before a re-probe
 };
 
 // --- pcmsrc_register_t callbacks (C-style entries Reaper drives → no-throw, D5/AR18) ---

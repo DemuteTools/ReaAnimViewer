@@ -43,12 +43,13 @@ AssetFileStamp ReadAssetFileStamp(const std::string& path);
 // when none): freeze fix #1, the follow keeps a detection only for the version it ran on.
 std::shared_ptr<const CpuAsset> AcquireCpuAsset(const std::string& path, AssetFileStamp* stamp_out);
 
-// The viewer's own parse of `path`, kept with the recent files (freeze fix #1: the
-// Tagging view and the follow use it instead of parsing again). `stamp` = ReadAssetFileStamp taken
-// before that parse. An entry already holding that same version is kept as it is, so the
-// video thread does not re-upload an unchanged model each time the viewer switches items.
-void OfferCpuAsset(const std::string& path, std::shared_ptr<const CpuAsset> asset,
-                   const AssetFileStamp& stamp);
+// Freeze fix #2: the cold paths' lookup (the viewer's item change, the Tagging view's file): the
+// parse of `path` for the file's version `now` (ReadAssetFileStamp just read): an entry of another
+// version is parsed again. The viewer and the Tagging view share it (one parse per file version,
+// also the video FX's: an unchanged file is never re-uploaded by the video thread). On a failure,
+// its category, detail and hint (kept with the entry until the file changes). `used` (optional):
+// the version handed out (read before its parse).
+CpuLoadResult AcquireCpuAssetAt(const std::string& path, const AssetFileStamp& now, AssetFileStamp* used);
 
 // Drops the parse of `path` (if any), so the next AcquireCpuAsset reads the file again.
 // For a change the file's date and size do not show, e.g. texture files copied next to

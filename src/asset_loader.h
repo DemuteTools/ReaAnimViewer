@@ -146,6 +146,10 @@ struct LoadResult {
 // nothing escapes). On success: result.asset has a value, category == Ok. On
 // failure: result.asset is empty and category/detail describe the cause.
 LoadResult LoadAsset(const std::string& path);
+// LoadAsset's upload half, from a parse already made (freeze fix #2: the viewer takes the shared
+// parse cache's, asset_cache.h, instead of parsing the file a second time). Needs a current GL
+// context like LoadAsset. A failed parse gives its own category, detail and hint.
+LoadResult UploadParsedAsset(CpuLoadResult parsed);
 
 // CPU-only duration probe for the PCM_source (Story 4.2). Returns the first
 // animation clip's duration in SECONDS, or 0.0 for no-file / no-clip / parse

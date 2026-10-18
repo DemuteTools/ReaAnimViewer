@@ -398,3 +398,8 @@ add_test(NAME detect_cache COMMAND detect_cache_test)
 add_executable(asset_lru_test asset_lru_test.cpp)
 target_include_directories(asset_lru_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME asset_lru COMMAND asset_lru_test)
+# Freeze fix #2 -- an animation source's length read once per file version (src/duration_cache.h).
+add_executable(duration_cache_test duration_cache_test.cpp)
+target_include_directories(duration_cache_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(duration_cache_test PRIVATE Threads::Threads)
+add_test(NAME duration_cache COMMAND duration_cache_test)

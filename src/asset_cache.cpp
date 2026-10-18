@@ -48,6 +48,10 @@ struct Entry {
     FileStamp stamp;                         // the file's stamp when it was read
     uint64_t  last_use = 0;                  // freeze fix #1: g_use when last handed out
     size_t    bytes = 0;                     // its approximate size in memory
+    // Freeze fix #2: why the load failed (the viewer's message), when it did.
+    LoadErrorCategory category = LoadErrorCategory::Ok;
+    std::string       detail;
+    std::string       hint;
 };
 
 std::mutex                              g_mutex;
@@ -96,24 +100,25 @@ AssetFileStamp ReadAssetFileStamp(const std::string& path)
     return StampOf(path);
 }
 
-std::shared_ptr<const CpuAsset> AcquireCpuAsset(const std::string& path)
-{
-    return AcquireCpuAsset(path, nullptr);
-}
+namespace {
 
-std::shared_ptr<const CpuAsset> AcquireCpuAsset(const std::string& path, AssetFileStamp* stamp_out)
+// The cache's lookup. `expect` (optional): the file's version the caller just read on disk; an
+// entry of another version is parsed again (freeze fix #2: the cold paths, the viewer and the
+// Tagging view, never get a parse older than the file). `used`: the version handed out.
+CpuLoadResult Lookup(const std::string& path, const FileStamp* expect, FileStamp* used)
 {
-    if (stamp_out) *stamp_out = AssetFileStamp{};
-    if (path.empty()) return nullptr;
+    if (used) *used = FileStamp{};
+    if (path.empty()) return {nullptr, LoadErrorCategory::FileNotFound, "no file", "No file."};
     try {
         uint64_t gen = 0;  // the path's eviction generation when this parse starts
         {
             std::lock_guard<std::mutex> lock(g_mutex);
             const auto it = g_entries.find(path);
-            if (it != g_entries.end()) {
-                it->second.last_use = ++g_use;
-                if (stamp_out) *stamp_out = it->second.stamp;
-                return it->second.asset;
+            if (it != g_entries.end() && (!expect || it->second.stamp == *expect)) {
+                Entry& e = it->second;
+                e.last_use = ++g_use;
+                if (used) *used = e.stamp;
+                return {e.asset, e.category, e.detail, e.hint};
             }
             gen = g_evicted.Of(path);
         }
@@ -121,7 +126,7 @@ std::shared_ptr<const CpuAsset> AcquireCpuAsset(const std::string& path, AssetFi
         // lookups never wait on it. If two threads miss the same file at once both parse
         // it; the last one stored wins, both results are valid.
         const FileStamp stamp = StampOf(path);
-        if (stamp_out) *stamp_out = stamp;
+        if (used) *used = stamp;
         const auto t0 = std::chrono::steady_clock::now();
         CpuLoadResult r = LoadCpuAsset(path);
         // The parse blocks the calling thread (REAPER's video thread on a miss): logged so
@@ -129,45 +134,48 @@ std::shared_ptr<const CpuAsset> AcquireCpuAsset(const std::string& path, AssetFi
         const double ms =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         if (!r.asset) {
-            LogError("video FX: load failed [%s] %s: %s", LoadErrorCategoryName(r.category),
-                     path.c_str(), r.detail.c_str());
+            LogError("parse failed [%s] %s: %s", LoadErrorCategoryName(r.category), path.c_str(),
+                     r.detail.c_str());
         } else {
-            LogInfo("video FX: parsed %s in %.0f ms", path.c_str(), ms);
+            LogInfo("parsed %s in %.0f ms", path.c_str(), ms);
         }
         std::lock_guard<std::mutex> lock(g_mutex);
         // 13-51: evicted during the parse ("Locate textures..." copied textures meanwhile): this
         // parse may lack them, so it is not stored; the next lookup parses the file again. The
         // caller still draws it this once (a complete model, just maybe flat).
         if (ParseStillCurrent(gen, g_evicted.Of(path))) {
-            g_entries[path] = Entry{r.asset, stamp, ++g_use, ApproxBytes(r.asset.get())};
+            Entry& e = g_entries[path];
+            // Freeze fix #2: the same version parsed meanwhile by another thread is kept (a new
+            // parse object would make the video thread drop and re-upload its GPU copy).
+            if (e.asset && r.asset && e.stamp == stamp) {
+                e.last_use = ++g_use;
+                return {e.asset, e.category, e.detail, e.hint};
+            }
+            e = Entry{r.asset, stamp, ++g_use, ApproxBytes(r.asset.get()), r.category, r.detail, r.hint};
             EnforceBoundsLocked();
         }
-        return r.asset;
+        return r;
     } catch (...) {
-        return nullptr;  // bad_alloc on the map: no picture, try again next frame
+        // bad_alloc on the map: no picture, try again next frame
+        return {nullptr, LoadErrorCategory::OutOfMemory, "out of memory", "Not enough memory to open this file."};
     }
 }
 
-void OfferCpuAsset(const std::string& path, std::shared_ptr<const CpuAsset> asset,
-                   const AssetFileStamp& stamp)
+}  // namespace
+
+std::shared_ptr<const CpuAsset> AcquireCpuAsset(const std::string& path)
 {
-    if (path.empty() || !asset) return;
-    try {
-        std::lock_guard<std::mutex> lock(g_mutex);
-        // Freeze fix #1: kept whether or not a video FX track uses it (the recent files), so the
-        // Tagging view and the follow find the viewer's parse instead of reading the file again.
-        Entry& e = g_entries[path];
-        e.last_use = ++g_use;
-        // Same version already parsed: keep it (a new parse object would make the video
-        // thread drop and re-upload its GPU copy of an unchanged file).
-        if (e.asset && e.stamp == stamp) return;
-        // The stamp was read before the viewer's parse: if the file changed during it,
-        // the 1 Hz check sees the difference and the file is read again.
-        const size_t bytes = ApproxBytes(asset.get());
-        e = Entry{std::move(asset), stamp, g_use, bytes};
-        EnforceBoundsLocked();
-    } catch (...) {
-    }
+    return Lookup(path, nullptr, nullptr).asset;
+}
+
+std::shared_ptr<const CpuAsset> AcquireCpuAsset(const std::string& path, AssetFileStamp* stamp_out)
+{
+    return Lookup(path, nullptr, stamp_out).asset;
+}
+
+CpuLoadResult AcquireCpuAssetAt(const std::string& path, const AssetFileStamp& now, AssetFileStamp* used)
+{
+    return Lookup(path, &now, used);
 }
 
 void EvictCpuAsset(const std::string& path)

@@ -207,7 +207,8 @@ void LoadFile(double now)
     if (!path_changed && stamp == g.asset_stamp) return;
     g.asset_path = m.path;
     g.asset_stamp = stamp;
-    g.asset = m.path.empty() ? nullptr : AcquireCpuAsset(m.path);
+    // Freeze fix #2: the shared parse of this version (the viewer's, when it showed the item first).
+    g.asset = m.path.empty() ? nullptr : AcquireCpuAssetAt(m.path, stamp, &g.asset_stamp).asset;
     g.have_tracks = false;
     g.have_role_tracks = false;
     g.auto_cache.clear();

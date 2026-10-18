@@ -1479,7 +1479,11 @@ bool UploadAsset(const CpuAsset& cpu, Asset& out, int* out_failed_textures)
 LoadResult LoadAsset(const std::string& path)
 {
     // Parse (GL-free) then upload into the current context. No-throw (AR18).
-    CpuLoadResult parsed = LoadCpuAsset(path);
+    return UploadParsedAsset(LoadCpuAsset(path));
+}
+
+LoadResult UploadParsedAsset(CpuLoadResult parsed)
+{
     if (!parsed.asset)
         return {std::nullopt, parsed.category, std::move(parsed.detail), std::move(parsed.hint)};
 

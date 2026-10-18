@@ -727,6 +727,8 @@ static void TestCopyPaste()
     DropTarget wood = conc;
     wood.row = {"sw", "vwood"};
     CHECK(!CanDrop(s, "L", {{"sw", "vwood"}}, wood, true));
+    CHECK(!CanDrop(s, "L", {{"sw", "vwood"}, {"sw", "vconc"}}, wood, true));  // review: several rows too
+    CHECK(CanDrop(s, "L", {{"sw", "vwood"}, {"sw", "vconc"}}, wood));            // a move still groups them
     CHECK(!CopyRows(s, "L", {{"", "sw"}}, into_m, nullptr));  // the root is refused (as Cut)
     std::set<std::string> uids;
     for (const SoundNode& n : FindLibrary(s, "L")->nodes) uids.insert(n.uid);

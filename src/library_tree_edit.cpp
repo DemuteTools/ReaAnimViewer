@@ -741,9 +741,13 @@ bool DropAllowed(const SoundLibrary& src, const std::vector<std::string>& nodes,
 {
     if (!d.ok || nodes.empty()) return false;
     if (&src != &dst) return true;
-    if (to.mode == DropMode::OntoValue && nodes.size() == 1)  // a value's content onto its own value
-        if (const SoundNode* sw = FindNode(dst, d.container))
-            if (CaseChild(*sw, to.row.key) == nodes.front()) return false;
+    // A value's content onto its own value (13-70 review: a copy of several rows too, else it
+    // would push the original out to Unassigned).
+    if (to.mode == DropMode::OntoValue && (nodes.size() == 1 || copy))
+        if (const SoundNode* sw = FindNode(dst, d.container)) {
+            const std::string held = CaseChild(*sw, to.row.key);
+            if (!held.empty() && std::find(nodes.begin(), nodes.end(), held) != nodes.end()) return false;
+        }
     if (copy) return true;  // 13-70: the copy is taken first, so into / next to itself is fine
     for (const std::string& n : nodes) {
         if (IsInSubtree(dst, d.container, n)) return false;  // into itself or a descendant

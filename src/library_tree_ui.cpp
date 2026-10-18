@@ -80,6 +80,7 @@ struct TreeState {
     std::string              clip_lib;
     std::vector<LibraryRow>  clip;
     bool                     clip_copy = false;
+    std::vector<std::string> clip_nodes;  // 13-70 review: a copy keeps its nodes, wherever they move
     // Drag.
     std::string              drag_lib;
     std::vector<LibraryRow>  drag_rows;
@@ -543,12 +544,26 @@ void DoCut(const std::string& lib_uid, const std::vector<LibraryRow>& rows)
 }
 
 // 13-70: Copy (Ctrl+C): the rows stay; each Paste puts a full copy of them (any library).
+// The clip holds the nodes, not the rows: a row later playing something else, or a node moved
+// elsewhere, still pastes what was copied (13-70 review).
 void DoCopy(const std::string& lib_uid, const std::vector<LibraryRow>& rows)
 {
+    const SoundLibrary* lib = FindLibrary(GetSoundStore(nullptr), lib_uid);
+    if (!lib) return;
+    std::vector<std::string> nodes;
+    for (const LibraryRow& r : rows) {
+        const std::string n = RowNode(*lib, r);
+        if (!n.empty() && n != lib->root && std::find(nodes.begin(), nodes.end(), n) == nodes.end()) nodes.push_back(n);
+    }
+    if (nodes.empty()) {
+        ShowLibraryToast("The root cannot be copied", false);
+        return;
+    }
     g.clip_lib = lib_uid;
     g.clip = rows;
     g.clip_copy = true;
-    ShowLibraryToast(std::to_string(rows.size()) + (rows.size() > 1 ? " rows copied" : " row copied") +
+    g.clip_nodes = nodes;
+    ShowLibraryToast(std::to_string(nodes.size()) + (nodes.size() > 1 ? " rows copied" : " row copied") +
                          ": select where the copy goes and press Ctrl+V", false);
 }
 
@@ -559,8 +574,19 @@ void DoPaste(const std::string& lib_uid, const LibraryRow* row)
     if (!lib) return;
     const DropTarget to = PasteTarget(*lib, row);  // `lib` is stale once the gesture rewrote the store
     const std::string src = g.clip_lib;
-    const std::vector<LibraryRow> rows = g.clip;
     const bool copy = g.clip_copy;
+    std::vector<LibraryRow> rows = g.clip;
+    if (copy) {  // 13-70 review: the copied nodes' rows as they are now
+        rows.clear();
+        if (const SoundLibrary* sl = FindLibrary(GetSoundStore(nullptr), src))
+            for (const std::string& n : g.clip_nodes)
+                if (FindNode(*sl, n)) rows.push_back(RowOfNode(*sl, n));
+        if (rows.empty()) {
+            g.clip.clear();
+            ShowLibraryToast("The copied rows no longer exist", false);
+            return;
+        }
+    }
     if (!CanDrop(GetSoundStore(nullptr), src, rows, to, copy)) {
         ShowLibraryToast("Cannot paste there", false);
         return;
@@ -1180,7 +1206,7 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
     }
 
     const bool       selected = IsSel(r.row);
-    const bool       is_cut = g.clip_lib == lib.uid && std::find(g.clip.begin(), g.clip.end(), r.row) != g.clip.end();
+    const bool       is_cut = !g.clip_copy && g.clip_lib == lib.uid && std::find(g.clip.begin(), g.clip.end(), r.row) != g.clip.end();
     const SoundNode* n = r.node.empty() ? nullptr : FindNode(lib, r.node);
     const bool       lit = g.hooks.is_lit && n && g.hooks.is_lit(n->uid);
     ImGui::SetNextItemAllowOverlap();

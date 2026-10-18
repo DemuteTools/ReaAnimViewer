@@ -443,12 +443,14 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
     const SoundCharacter* ch = CharacterFor(store, rig.skeleton, rig.model);
     std::map<std::string, std::pair<std::string, std::string>> part_of;  // rid -> body part, type
     std::map<std::string, std::string> role_of;  // 13-23 (D1): rid -> its events' role key
+    std::map<std::string, char>        side_of;  // 13-73: rid -> its events' side (Left / Right)
     for (const Block& b : blocks)
         if (!b.rid.empty()) {
             std::pair<std::string, std::string> pt;
             PartOfBlock(b, &pt.first, &pt.second);
             part_of[b.rid] = pt;
             role_of[b.rid] = EventRoleKey(b);
+            side_of[b.rid] = EventSide(b);
         }
     MeasureCache measured_here;  // 13-25: outside a gesture (PlacedDataFor)
 
@@ -592,6 +594,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
         ed.rid = rid;
         ed.t = ev->t;
         ed.prev = &prev;
+        if (const auto so = side_of.find(rid); so != side_of.end()) ed.side = so->second;  // 13-73
         const std::string lib_uid = lib->uid;
         auto is_missing = [&file_missing](const SoundNode& n) {
             if (n.sound.source.kind == SoundSourceKind::File) {  // 13-11: its file (no side effect here)
@@ -752,6 +755,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
             pd.ed.rid = rid;
             pd.ed.t = ev->t;
             pd.ed.prev = &pd.prev;
+            pd.ed.side = ed.side;  // 13-73
             pd.res = ResolveEvent(store, *lib, layers, MakeDrawHooks(ps, pd.ed, is_missing));
             if (pd.res.blocked) continue;
             // Review: a fill records a pass's picks only once it knows what that pass plays (below).

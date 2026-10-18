@@ -26,6 +26,10 @@ std::vector<int> ActiveVariations(const SoundData& data);
 // with at least one span of it (PlacedSpans). A variation whose part is empty or excluded is skipped.
 // 13-62h: a Sound edited as zones (PlacedFromZones): on, with at least one zone of that part ("": any part zone).
 std::vector<int> ActiveVariationsFor(const SoundData& data, const std::string& part_value);
+// 13-73 (Left / Right): the variations of `active` an event of `side` ('L' / 'R'; 0 = no side) draws from: with the Sound's
+// Left / Right on, those of that side (FrameSides; a divided variation's parts follow it); every one of `active` when the
+// event has no side, Left / Right is off, or no variation of `active` is on that side (Antho 2026-10-19).
+std::vector<int> SideVariations(const SoundData& data, const std::vector<int>& active, char side);
 // An event's salt: rule id + clip time in 100 ms bins (llround(t * 10)). It only seeds a first
 // draw; an event keeps its pick across re-detection through its stored draw (+-30 ms match).
 uint64_t EventSalt(const std::string& rid, double t);

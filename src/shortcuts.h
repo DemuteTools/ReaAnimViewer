@@ -122,7 +122,16 @@ enum ShortcutId : int {
     // 13-62h: zone editing, on REAPER's 40548 / 1068 keys (H / R while REAPER gives them none).
     kShortcutEditHeal      = 21,  // the selected zones that are edge to edge healed into one
     kShortcutEditLoop      = 22,  // Loop on / off (view state, never saved)
-    kShortcutCount       = 23,
+    // 13-73 (Antho 2026-10-19): the Channels > Mono selector on REAPER's take channel mode keys (one undo point).
+    kShortcutEditMonoOff   = 23,  // 40176 normal
+    kShortcutEditMonoSum   = 24,  // 40178 mono (downmix)
+    kShortcutEditMonoLeft  = 25,  // 40179 mono (left)
+    kShortcutEditMonoRight = 26,  // 40180 mono (right)
+    // 13-73: Left / Right on the selected variations (RAV actions, no key by default; one undo point).
+    kShortcutEditSideLeft  = 27,
+    kShortcutEditSideRight = 28,
+    kShortcutEditSideRule  = 29,
+    kShortcutCount       = 30,
 };
 
 inline const ShortcutDef kShortcutTable[kShortcutCount] = {
@@ -184,6 +193,22 @@ inline const ShortcutDef kShortcutTable[kShortcutCount] = {
      "40548", "Item: Heal splits in items", {'H', false, false, false}},
     {"edit_loop", "Loop on / off", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
      "1068", "Transport: Toggle repeat", {'R', false, false, false}},
+    // 13-73 (Antho 2026-10-19): REAPER's take channel mode actions, on the Sound's Mono (Channels card).
+    {"edit_mono_off", "Mono: off (as the file)", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+     "40176", "Item properties: Set take channel mode to normal"},
+    {"edit_mono_sum", "Mono: sum L+R", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+     "40178", "Item properties: Set take channel mode to mono (downmix)"},
+    {"edit_mono_left", "Mono: left", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+     "40179", "Item properties: Set take channel mode to mono (left)"},
+    {"edit_mono_right", "Mono: right", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+     "40180", "Item properties: Set take channel mode to mono (right)"},
+    // 13-73 (Antho 2026-10-19: shipped empty): Left / Right on the selected variations; no REAPER action to follow.
+    {"edit_side_left", "Left / Right: set Left", {0, false, false, false}, ShortcutContext::LibraryEdit,
+     "RAV_KEY_EDIT_SIDE_LEFT", "RAV: Sound Edit - Set selected variations Left"},
+    {"edit_side_right", "Left / Right: set Right", {0, false, false, false}, ShortcutContext::LibraryEdit,
+     "RAV_KEY_EDIT_SIDE_RIGHT", "RAV: Sound Edit - Set selected variations Right"},
+    {"edit_side_rule", "Left / Right: follow rule", {0, false, false, false}, ShortcutContext::LibraryEdit,
+     "RAV_KEY_EDIT_SIDE_RULE", "RAV: Sound Edit - Selected variations follow the Left / Right rule"},
 };
 
 // 13-60b: REAPER's id of a row's own action ("_RAV_KEY_VIDEO_CUT"), "" out of range. 13-61: a row on one

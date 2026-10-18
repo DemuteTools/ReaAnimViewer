@@ -163,6 +163,20 @@ void TestZonedActive()
     d.frames[2].zones.clear();  // a variation with no zone at all
     CHECK((ActiveVariationsFor(d, "") == std::vector<int>{0, 1}));
     CHECK((ActiveVariationsFor(d, "toe") == std::vector<int>{0}));
+    // 13-73: Left / Right: a divided variation's parts follow its side (V1 L, V2 R, V3 L, V4 R).
+    d.frames[2].zones = {zone(2.0, 2.2, "heel")};
+    d.frames[3].on = true;
+    d.frames[3].zones = {zone(3.0, 3.2, "heel")};
+    const std::vector<int> heel = ActiveVariationsFor(d, "heel");
+    CHECK((heel == std::vector<int>{0, 1, 2, 3}));
+    CHECK(SideVariations(d, heel, 'L') == heel);  // Left / Right off: every one
+    d.sides = true;
+    CHECK((SideVariations(d, heel, 'L') == std::vector<int>{0, 2}));
+    CHECK((SideVariations(d, heel, 'R') == std::vector<int>{1, 3}));
+    CHECK(SideVariations(d, heel, 0) == heel);  // an event with no side
+    d.frames[1].side_hand = 'L';
+    d.frames[3].side_hand = 'L';  // no Right variation left: a right event plays every one
+    CHECK(SideVariations(d, heel, 'R') == heel);
 }
 
 }  // namespace

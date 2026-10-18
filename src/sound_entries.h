@@ -212,6 +212,46 @@ double SyncFor(const SoundData& data, int variation, const std::string& part_val
 // frame give it all their pieces in time order, with a cut at each later old frame's start inside it; when
 // one of them has hand cuts but no owners, the first one's cuts alone are kept (as before 13-62).
 void CarryHandMarks(std::vector<SoundFrame>& now, const std::vector<SoundFrame>& old, bool with_cuts = true);
+
+// ---- 13-73: Left / Right per variation (spec 13-73) -------------------------------------------------------------
+// The side the Pattern gives the k-th variation (time order): 'L' or 'R'.
+char PatternSide(SidePattern p, int k);
+// The other side ('L' <-> 'R'; 0 stays 0).
+char OtherSide(char side);
+// The Pattern's name as the Parts card shows it ("Alternate L R", "Alternate R L", "All Left", "All Right").
+const char* SidePatternLabel(SidePattern p);
+// Each frame's rule side (no hand side), in frame order: its own `side` when set; else, for an alternating Pattern,
+// the other side of the frame before it (the first one: the Pattern's first side), for All Left / All Right that side.
+// So a variation that appeared (a re-detection, a new zone) continues the alternation of its neighbours.
+std::vector<char> FrameRuleSides(const SoundData& d);
+std::vector<char> FrameRuleSides(const std::vector<SoundFrame>& frames, SidePattern p);
+// Each frame's side as played: its hand side when set, else its rule side.
+std::vector<char> FrameSides(const SoundData& d);
+// Whether frame `i`'s side was set by hand (a hand side that differs from its rule side).
+bool FrameSideByHand(const SoundData& d, const std::vector<char>& rule, int i);
+// Left / Right on or off. On: every frame's rule side is written (locked, so a later re-detection keeps it). False when
+// nothing changed.
+bool SetSidesOn(SoundData& d, bool on);
+// A new Pattern: every frame's rule side from it, in time order; the hand sides stay (one now equal to its rule side is
+// no longer by hand: cleared). False when nothing changed.
+bool SetSidePattern(SoundData& d, SidePattern p);
+// Swap L/R: the Pattern to its mirror (L R <-> R L, All Left <-> All Right), every rule side and hand side flipped.
+bool SwapSides(SoundData& d);
+// The frames `frames` set to `side` by hand ('L' / 'R'), or back to the rule (side 0). A side equal to the rule's is
+// not "by hand" (cleared). False when nothing changed.
+bool SetFrameSides(SoundData& d, const std::vector<int>& frames, char side);
+// Every hand side cleared (Reset hand sides). False when there was none.
+bool ResetHandSides(SoundData& d);
+// How many frames play each side and how many were set by hand.
+struct SideCounts {
+    int left = 0, right = 0, hand = 0;
+};
+SideCounts CountSides(const SoundData& d);
+// A re-detection (or Reset / another mode) replaced `old` by `now`: each new frame that overlaps old ones takes the
+// side (rule and hand) of the old frame it overlaps most, written (locked); a frame with no old one keeps 0 and
+// continues the alternation from its neighbours (FrameRuleSides). Nothing is re-alternated. Runs only when `sides` (the
+// Sound's Left / Right) or some old frame had a side written; Takes mode (`by_index`) matches frame k to frame k.
+void CarrySides(std::vector<SoundFrame>& now, const std::vector<SoundFrame>& old, SidePattern p, bool sides_on, bool by_index = false);
 // Divides the Sound by `group` with its value uids (in the group's order); group "" = combined. Cuts and
 // syncs are dropped (RefreshParts measures them), and so are the "-> value" zones and role map entries
 // whose value is not one of `values`. Excluded zones and hand syncs stay. False when nothing changed.

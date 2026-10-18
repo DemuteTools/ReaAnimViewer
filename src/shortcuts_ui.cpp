@@ -53,6 +53,8 @@ constexpr float kGap      = 8.0f;   // between the table's columns
 bool g_open          = false;  // the window was open last frame
 bool g_open_at_press = false;  // ...when the icon was pressed (a second click closes it)
 bool g_close_request = false;  // Esc from the viewer's key handling
+bool g_open_request  = false;  // 13-73: RequestOpenShortcutsPopup
+std::string g_open_search;     // ...its search
 int  g_reset_refused = -1;     // 10-11 review: the action whose restore was refused (or -1)
 int  g_reset_blocker = -1;     // ...the action that holds its default as your own key
 
@@ -1697,6 +1699,12 @@ void OnOpen()
 
 }  // namespace
 
+void RequestOpenShortcutsPopup(const char* search)
+{
+    g_open_request = true;
+    g_open_search = search ? search : "";
+}
+
 void DrawShortcutsButton(float right_x, float centre_y, ImTextureID icon)
 {
     const float btn = ui::Dp(kIconSize + 2.0f * kIconPad);
@@ -1715,10 +1723,12 @@ void DrawShortcutsButton(float right_x, float centre_y, ImTextureID icon)
         }
         // A press on the icon while the window was open must not reopen it on the release.
         if (ImGui::IsItemActivated()) g_open_at_press = g_open;
-        if (pressed && !g_open_at_press && !g_open) {
+        if ((pressed && !g_open_at_press && !g_open) || (g_open_request && !g_open)) {
             ImGui::OpenPopup(kSheetId);
             OnOpen();
+            if (g_open_request) std::snprintf(g_search, sizeof(g_search), "%s", g_open_search.c_str());  // 13-73
         }
+        g_open_request = false;
         const ImVec2 bmax = ImGui::GetItemRectMax();
 
         // D1: a large panel over the viewer, inset, the rest dimmed.

@@ -46,6 +46,7 @@
 #include "shortcuts.h"
 #include "view_nav.h"  // 13-45: Edit's wheel and zoom keys, as every timeline's
 #include "zone_wave_ui.h"  // 13-62h (Lot E1): a zoned Sound's waveform
+#include "shortcuts_ui.h"  // 13-73: RequestOpenShortcutsPopup
 #include "wave_draw_ui.h"  // 13-71: the one waveform drawer
 #include "sound_assign.h"  // RoleKeyLabel (13-23 role maps)
 #include "sound_audition.h"
@@ -499,6 +500,7 @@ void Redetect(SoundData& d, const SoundMedia& m, const std::vector<SoundFrame>& 
 {
     d.frames = MergeHandFrames(Detected(m, d.mode, d.silence), previous, d.mode == DetectMode::Takes);
     CarryHandMarks(d.frames, previous);
+    CarrySides(d.frames, previous, d.side_pattern, d.sides, d.mode == DetectMode::Takes);  // 13-73: each keeps its side
     RefreshWith(d, m.path);
 }
 
@@ -1152,7 +1154,8 @@ void RequestLibraryEditKey(int shortcut_id)
     else if (shortcut_id == kShortcutEditNextVar || shortcut_id == kShortcutEditPrevVar)  // 13-62F (F5)
         P.nav_request = shortcut_id == kShortcutEditNextVar ? 1 : -1;
     else if (shortcut_id == kShortcutEditHeal || shortcut_id == kShortcutEditLoop ||  // 13-62h (Lot D; Lot E does them)
-             shortcut_id == kShortcutEditSnapOffset || shortcut_id == kShortcutEditPrevStop)  // 13-67a
+             shortcut_id == kShortcutEditSnapOffset || shortcut_id == kShortcutEditPrevStop ||  // 13-67a
+             (shortcut_id >= kShortcutEditMonoOff && shortcut_id <= kShortcutEditSideRule))  // 13-73: Mono, Left / Right
         P.zone_request = shortcut_id;
 }
 
@@ -2987,10 +2990,10 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
         const std::string frozen = HandFramesText(Shown(n).frames);
         if (!frozen.empty()) ui::ToneText(frozen.c_str(), ui::kWarn, true);
     }
-    if (edit) {  // 13-20 / 13-23 / 13-25
-        PartsControls(lib, n, m, label_col);
-        if (StoreReplaced()) return;
-    } else if (UsesZones(Shown(n))) {  // 13-62h review: where they went
+    // 13-73: in the Edit window, the Detection card goes on with the zone edges and its foot (EditDetectionCard); Divide
+    // by is the Parts card's.
+    if (edit) return;
+    if (UsesZones(Shown(n))) {  // 13-62h review: where they went
         ui::SubText("Pre-roll, Tail, Snap offset: in the Edit window (Settings of)");
     }
     ui::SubText(VariationCountText(DetectedCount(n.uid, m, Shown(n)), Shown(n).frames).c_str());
@@ -3416,6 +3419,36 @@ void EditLegend(const SoundStore& store, const SoundLibrary& lib, const SoundNod
     LegendChip("##lggap", "Gap", 0, LegendGlyph::Hatch, false, false, "A Gap: playback jumps over it and glues its two neighbours");
     next(chip_w("By hand"));
     LegendChip("##lghand", "By hand", 0, LegendGlyph::Pin, false, false, "An edge dragged by hand (double-click: automatic again)");
+    if (d.sides) {  // 13-73: L R Side · L set by hand (the letters as the waveform draws them)
+        ImFont*      fm = ui::FontMonoTiny();
+        const float  lw = ui::TextSizeIn(fm, "L").x + ui::Dp(4.0f), gap = ui::Dp(4.0f);
+        const char*  t1 = "Side \xC2\xB7";
+        const char*  t2 = "set by hand";
+        const float  w = ui::Dp(12.0f) + 3.0f * lw + 4.0f * gap + ImGui::CalcTextSize(t1).x + ImGui::CalcTextSize(t2).x;
+        const float  bh = ui::Dp(22.0f);
+        next(w);
+        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+        ImGui::Dummy(ImVec2(w, bh));
+        ui::ItemTipText("Each zone's side (Parts > Left / Right). Yellow and underlined: set by hand (right-click > Follow rule: "
+                        "back to the Pattern). Dropped when the zone is too narrow: then a colour mark in the variations band.");
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        float       x = p0.x + ui::Dp(6.0f);
+        const float ty = p0.y + (bh - ImGui::GetFontSize()) * 0.5f, ly = p0.y + (bh - fm->FontSize) * 0.5f;
+        auto letter = [&](const char* c, ImU32 col, bool under) {
+            dl->AddRectFilled(ImVec2(x, ly - ui::Dp(1.0f)), ImVec2(x + lw, ly + fm->FontSize + ui::Dp(1.0f)), ui::kBg);
+            ui::AddTextIn(dl, fm, ImVec2(x + ui::Dp(2.0f), ly), col, c);
+            if (under) dl->AddLine(ImVec2(x + ui::Dp(2.0f), ly + fm->FontSize + ui::Dp(0.5f)), ImVec2(x + lw - ui::Dp(2.0f), ly + fm->FontSize + ui::Dp(0.5f)), col);
+            x += lw;
+        };
+        letter("L", kZoneSideLeftInk, false);
+        letter("R", ui::kUserInk, false);
+        x += gap;
+        dl->AddText(ImVec2(x, ty), ui::kMuted, t1);
+        x += ImGui::CalcTextSize(t1).x + gap;
+        letter("L", ui::kWarn, true);
+        x += gap;
+        dl->AddText(ImVec2(x, ty), ui::kMuted, t2);
+    }
     const double len = m.ok ? m.source_len : 0.0;
     if (len > 0.0 && d.mode != DetectMode::Takes) {
         const float bh = ui::Dp(22.0f);
@@ -3824,6 +3857,19 @@ void ZoneSelectionPanel(const SoundLibrary& lib, const SoundNode& n, const Sound
         ink = IM_COL32(0x10, 0x13, 0x1A, 0xFF);
         edge = 0;
         line = nm(L.front()) + " \xC2\xB7 variation " + std::to_string(ZoneVariationNumber(d, L.front())) + " \xC2\xB7 " + ZoneRangeMs(z->a, z->b);
+    }
+    if (d.sides && !L.empty() && !(z && z->IsGap())) {  // 13-73: the side of what is selected
+        const std::vector<int>  fr = SelFrames(L);
+        const std::vector<char> sides = FrameSides(d), rule = FrameRuleSides(d);
+        int                     nl = 0, nr = 0, hand = 0;
+        for (int f : fr) {
+            if (f < 0 || static_cast<size_t>(f) >= sides.size()) continue;
+            (sides[static_cast<size_t>(f)] == 'L' ? nl : nr)++;
+            if (FrameSideByHand(d, rule, f)) ++hand;
+        }
+        if (nl + nr == 1) line += std::string(" \xC2\xB7 ") + (nl ? "Left" : "Right") + (hand ? " (by hand)" : "");
+        else if (nl + nr > 1)
+            line += " \xC2\xB7 " + std::to_string(nl) + " L \xC2\xB7 " + std::to_string(nr) + " R" + (hand ? " \xC2\xB7 " + std::to_string(hand) + " by hand" : "");
     }
     if (L.empty()) {
         // 13-62h review: nothing selected = the mockup's .sect.sel.empty -- a dashed card, no fill, its grey tag and
@@ -4329,11 +4375,12 @@ bool SoundZoneNumberRow(const NumRow& f, const SoundLibrary& lib, const SoundNod
 // Settings of: Sound (the mockup's FIELDS, Sound side): Detection (Pre-roll, Tail, Sync point, Offset), Level
 // (Normalize mode and Target -- the user's Level settings, C1 -- and "Normalize (every zone to its part's target)"),
 // Fades (Fade in, Fade out, At cuts, At Gaps). True when the drawing must stop.
-bool SoundZoneRows(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m)
+// 13-73: the Sound's zone edges (the Detection card's second half): Pre-roll, Tail, Snap offset (this sound's: overrides
+// Options > New sounds), Offset. True when the drawing must stop (the store replaced).
+bool SoundEdgeRows(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m)
 {
     const std::string path = m.path;
     const double      len = m.source_len;
-    ui::GroupCaption("Detection", ui::kMuted);
     for (int k = 0; k < 2; ++k) {  // Pre-roll / Tail: the zones' automatic edges, then decision 7 (the hand edges)
         const bool      pre = k == 0;
         const PartField f = pre ? PartField::Preroll : PartField::Tail;
@@ -4390,9 +4437,12 @@ bool SoundZoneRows(const SoundLibrary& lib, const SoundNode& n, const SoundMedia
                                return 0;
                            }))
         return true;
+    return false;
+}
 
-    ImGui::Dummy(ImVec2(1.0f, ui::Dp(4.0f)));
-    ui::GroupCaption("Level", ui::kMuted);
+// 13-73: the Level card: Normalize, Target, the implicit part's Gain.
+bool SoundLevelRows(const SoundLibrary& lib, const SoundNode& n)
+{
     LoadNormalizePrefs();
     {  // C1: the Sound's Normalize mode and target = the user's Level settings (every project; no undo point)
         const float w = ui::LabelRow("Normalize", ui::Dp(110.0f), ui::Dp(64.0f), ui::kText);
@@ -4432,11 +4482,13 @@ bool SoundZoneRows(const SoundLibrary& lib, const SoundNode& n, const SoundMedia
         if (PartFaderEdit(o.e, o.v, lib, n, kWholePart, "Sound")) return true;
     }
     PartNormalizeNow(EditLibIndex(), n.uid, std::string());
-    if (StoreReplaced()) return true;
+    return StoreReplaced();
+}
 
+// 13-73: the Fades card: Fade in, Fade out, At cuts, At Gaps (none for a folder-sourced Sound: nothing is faded).
+bool SoundFadeRows(const SoundLibrary& lib, const SoundNode& n)
+{
     if (!FolderSourced(Shown(n))) {
-        ImGui::Dummy(ImVec2(1.0f, ui::Dp(4.0f)));
-        ui::GroupCaption("Fades", ui::kMuted);
         static const NumRow kIn = {"##sfin", "Fade in", "ms", 0.1, 0.0, 10000.0, 0.0f, 50.0f, "Default fade in of its zones"};
         static const NumRow kOut = {"##sfout", "Fade out", "ms", 0.1, 0.0, 10000.0, 0.0f, 50.0f, "Default fade out of its zones"};
         static const NumRow kCut = {"##scut", "At cuts", "ms", 0.1, 0.0, 50.0, 0.0f, 20.0f,
@@ -4472,6 +4524,224 @@ bool SoundZoneRows(const SoundLibrary& lib, const SoundNode& n, const SoundMedia
     return false;
 }
 
+// ---- 13-73: the Edit window's Sound cards (maquette-sound-edit-reglages-13-67-v2.html) ----
+
+// The Detection card's foot: "N variations · edited by hand" and Reset to detected (one undo point).
+void DetectionFoot(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m)
+{
+    const SoundData& d = Shown(n);
+    {
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const float  w = ImGui::GetContentRegionAvail().x;
+        ImGui::GetWindowDrawList()->AddLine(ImVec2(p.x, p.y + 0.5f), ImVec2(p.x + w, p.y + 0.5f), ui::kStroke);
+        ImGui::Dummy(ImVec2(1.0f, ui::Dp(3.0f)));
+    }
+    const std::string count = std::to_string(d.frames.size()) + (d.frames.size() == 1 ? " variation" : " variations") +
+                              (d.edited ? " \xC2\xB7 edited by hand" : "");
+    FitText(count.c_str(), ui::kMuted);
+    ui::ItemTipText(VariationCountText(DetectedCount(n.uid, m, d), d.frames).c_str());
+    SameLineIfFits(ui::ButtonWidth("Reset to detected"));
+    if (ui::SolidButton("Reset to detected##edreset")) {
+        const std::vector<SoundFrame> det = Detected(m, d.mode, d.silence);
+        const std::string             path = m.path;
+        EditNode("Reset to detected", lib.uid, n.uid, [det, path](SoundNode& x) {
+            ResetToDetected(x.sound, det);
+            RefreshWith(x.sound, path);
+            return true;
+        }, "Back to detected: zones proposed again");
+    }
+    ui::ItemTipText("Variations and their zones back to RAV's proposal (edits by hand dropped; their sides are kept).");
+}
+
+// The Parts card's Left / Right (the rule only; each variation's side is read and changed on the waveform): Off / On,
+// Pattern, the count, Swap L/R, Reset hand sides, a warning when a side has no variation. One undo point per gesture.
+void SidesControls(const SoundLibrary& lib, const SoundNode& n, float label_col)
+{
+    const SoundData& d = Shown(n);
+    {
+        static const char* const kOnOff[2] = {"Off", "On"};
+        static const char* const kTips[2] = {"Every event plays any variation",
+                                             "Each variation is Left or Right (the Pattern; each side shows on the waveform)"};
+        ui::LabelRow("Left / Right", ui::Dp(110.0f), label_col);
+        int        sel = d.sides ? 1 : 0;
+        const bool picked = ui::Segmented("##sides", kOnOff, 2, &sel);
+        const int  hov = ui::SegmentedHovered();
+        if (hov >= 0 && hov < 2) ui::ShowTip(kTips[hov]);
+        else ui::ItemTipText("Left / Right: a left foot or hand event plays a Left variation, a right one a Right variation");
+        if (picked && (sel == 1) != d.sides) {
+            const bool        on = sel == 1;
+            const std::string pat = SidePatternLabel(d.side_pattern);
+            EditNode("Left / Right", lib.uid, n.uid, [on](SoundNode& x) { return SetSidesOn(x.sound, on); },
+                     on ? "Left / Right: on \xC2\xB7 " + pat + " \xC2\xB7 each zone shows its side on the waveform"
+                        : std::string("Left / Right: off \xC2\xB7 every event plays any variation (the sides are kept)"));
+            return;
+        }
+    }
+    if (!d.sides) return;
+    {
+        static const SidePattern kPats[4] = {SidePattern::AltLR, SidePattern::AltRL, SidePattern::AllLeft, SidePattern::AllRight};
+        const float w = ui::LabelRow("Pattern", ui::Dp(140.0f), label_col);
+        const bool  open = ui::BeginComboStyled("##sidepat", SidePatternLabel(d.side_pattern), w);
+        ui::ItemTipText("How the variations get their side, in time order. Sides set by hand on the waveform (select zones, "
+                        "right-click) stay.");
+        if (open) {
+            int picked = -1;
+            for (int k = 0; k < 4; ++k)
+                if (ImGui::Selectable(SidePatternLabel(kPats[k]), d.side_pattern == kPats[k])) picked = k;
+            ui::EndComboStyled();
+            if (picked >= 0) {
+                const SidePattern p = kPats[picked];
+                SoundData         probe = n.sound;
+                SetSidePattern(probe, p);
+                const int         hand = CountSides(probe).hand;
+                EditNode("Left / Right Pattern", lib.uid, n.uid, [p](SoundNode& x) { return SetSidePattern(x.sound, p); },
+                         std::string("Pattern: ") + SidePatternLabel(p) + (hand ? " \xC2\xB7 " + std::to_string(hand) + " set by hand kept" : ""));
+                return;
+            }
+        }
+    }
+    const SideCounts c = CountSides(d);
+    {
+        std::vector<TextRun> runs = {{std::to_string(c.left), ui::kText}, {" L \xC2\xB7 ", ui::kMuted}, {std::to_string(c.right), ui::kText},
+                                     {" R", ui::kMuted}};
+        if (c.hand) runs.push_back({" \xC2\xB7 " + std::to_string(c.hand) + " set by hand", ui::kWarn});
+        RichText(runs);
+        ui::ItemTipText("Set a side by hand: select zones on the waveform (click, Ctrl+click, right-drag), then right-click > Set "
+                        "Left / Set Right / Follow rule");
+    }
+    if (ui::SolidButton("\xE2\x87\x84 Swap L/R##sideswap")) {
+        const bool hand = c.hand > 0;
+        SoundData  probe = n.sound;
+        SwapSides(probe);
+        EditNode("Swap L/R", lib.uid, n.uid, [](SoundNode& x) { return SwapSides(x.sound); },
+                 std::string("Left / Right swapped: ") + SidePatternLabel(probe.side_pattern) + (hand ? ", the sides set by hand too" : ""));
+        return;
+    }
+    ui::ItemTipText("Every variation to the other side: the Pattern and the sides set by hand (one undo point)");
+    if (c.hand) {
+        SameLineIfFits(ui::ButtonWidth("Reset hand sides"));
+        if (ui::SolidButton("Reset hand sides##sidereset")) {
+            EditNode("Reset hand sides", lib.uid, n.uid, [](SoundNode& x) { return ResetHandSides(x.sound); },
+                     std::string("Every variation follows the Pattern again (") + SidePatternLabel(d.side_pattern) + ")");
+            return;
+        }
+        ui::ItemTip("The %d side%s set by hand follow the Pattern again (one undo point)", c.hand, c.hand > 1 ? "s" : "");
+    }
+    if (!d.frames.empty() && (c.left == 0 || c.right == 0))
+        ui::ToneText(c.left ? "No Right variation: right events play every variation" : "No Left variation: left events play every variation",
+                     ui::kWarn, true);
+}
+
+// The Sound's cards (nothing picked in Settings of): Detection (how zones are found, then their edges), Parts (Divide by,
+// Left / Right), Level, Fades, Channels; no tutorial line (Antho 2026-10-19). Divided: the Settings of chips above.
+void SoundSettingsCards(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, const ZoneWaveHost& zh)
+{
+    const SoundStore& store = GetSoundStore(nullptr);
+    const float       lc = ui::Dp(70.0f);
+    {
+        const SoundData& d = Shown(n);
+        if (IsDivided(d)) {
+            std::string pick, select_all;
+            FitText("Settings of", ui::kMuted);
+            ImGui::SameLine();
+            PartChip("##pchip_sound", "Sound", ui::kAccent, PartChipLook{}, true, "The whole Sound: every part follows it unless it has its own");
+            for (size_t k = 0; k < d.divide_values.size(); ++k) {
+                const std::string& v = d.divide_values[k];
+                const std::string  name = PartName(d, v);
+                PartChipLook       look;
+                look.dot = true;
+                look.solo = P.part_solo.count(v) > 0;
+                look.mute = P.part_mute.count(v) > 0;
+                look.count = OwnSettingCount(d, v);
+                ImGui::PushID(static_cast<int>(k));
+                ui::SameLineIfFits(PartChipWidth(name, look));
+                const std::string tip = name + ": click to pick it; double-click: select all its zones";
+                if (PartChip("##pchip", name, PartColor(static_cast<int>(k)), look, false, tip.c_str())) pick = v;
+                if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) select_all = v;
+                ImGui::PopID();
+            }
+            ImGui::Dummy(ImVec2(1.0f, ui::Dp(2.0f)));
+            if (!pick.empty()) P.part_sel = pick;
+            if (!select_all.empty()) ZoneSelectPart(zh, select_all);
+        }
+    }
+    {
+        ui::Section     ds;
+        ui::SectionOpts o;
+        o.suffix = "\xC2\xB7 this sound";
+        if (ui::BeginSection(ds, "Detection", o)) {
+            DetectionControls(lib, n, m, lc, /*edit=*/true);
+            bool stop = StoreReplaced();
+            if (!stop) {
+                const ImVec2 p = ImGui::GetCursorScreenPos();
+                ImGui::GetWindowDrawList()->AddLine(ImVec2(p.x, p.y + ui::Dp(2.0f)), ImVec2(p.x + ImGui::GetContentRegionAvail().x, p.y + ui::Dp(2.0f)),
+                                                    ui::kStroke);
+                ImGui::Dummy(ImVec2(1.0f, ui::Dp(5.0f)));
+                stop = SoundEdgeRows(lib, n, m);
+            }
+            if (!stop) DetectionFoot(lib, n, m);
+        }
+        ui::EndSection(ds);
+        if (StoreReplaced()) return;
+    }
+    {
+        const SoundData&   d = Shown(n);
+        const SwitchGroup* g = IsDivided(d) ? FindGroup(store, d.divide_group) : nullptr;
+        std::string        suf = "\xC2\xB7 combined";
+        if (g) {
+            suf = "\xC2\xB7 ";
+            for (size_t k = 0; k < d.divide_values.size(); ++k) suf += (k ? " \xC2\xB7 " : "") + PartName(d, d.divide_values[k]);
+        }
+        ui::Section     ps;
+        ui::SectionOpts o;
+        o.suffix = suf.c_str();
+        if (ui::BeginSection(ps, "Parts", o)) {
+            PartsControls(lib, n, m, lc);
+            if (!StoreReplaced()) SidesControls(lib, n, lc);
+        }
+        ui::EndSection(ps);
+        if (StoreReplaced()) return;
+    }
+    {
+        SeedSection("Level", false);
+        ui::Section ls;
+        if (ui::BeginSection(ls, "Level")) {
+            if (SoundLevelRows(lib, n)) {
+                ui::EndSection(ls);
+                return;
+            }
+        }
+        ui::EndSection(ls);
+    }
+    if (!FolderSourced(Shown(n))) {
+        SeedSection("Fades", false);
+        ui::Section fs;
+        if (ui::BeginSection(fs, "Fades")) {
+            if (SoundFadeRows(lib, n)) {
+                ui::EndSection(fs);
+                return;
+            }
+        }
+        ui::EndSection(fs);
+    }
+    {
+        ui::Section cs;
+        if (ui::BeginSection(cs, "Channels")) {
+            MonoControl(lib, n);  // 13-41
+            if (!StoreReplaced()) {
+                if (ui::SolidButton("\xE2\x8C\xA8 Shortcuts##monokeys")) RequestOpenShortcutsPopup("Mono:");
+                ui::ItemTipText("Shortcuts window, Sound Edit rows: Mono off / sum / left / right, linked to REAPER's keys "
+                                "(40176 / 40178 / 40179 / 40180)");
+                SameLineIfFits(ui::TextWidth("REAPER's take channel mode keys"));
+                FitText("REAPER's take channel mode keys", ui::kMuted);
+            }
+        }
+        ui::EndSection(cs);
+        if (StoreReplaced()) return;
+    }
+    ui::SubText("Every change is saved at once (Ctrl+Z to undo), with the sound.");
+}
+
 // The right column of a zoned Sound (the mockup's settingsHTML): the "Settings of" card -- its chips (the Sound, a
 // part each, with its own-settings count; double-click a part's chip: all its zones selected), Mute / Solo of the
 // part picked, its rows (PartSettingsRows, or the Sound's) and the foot line -- then, for the Sound, its detection
@@ -4485,6 +4755,10 @@ void ZoneSettingsColumn(const SoundLibrary& lib, const SoundNode& n, const Sound
         const SoundData& d = Shown(n);
         // not one of its values now; 13-62i: an undivided Sound's one part is the Sound itself (never picked)
         if (!P.part_sel.empty() && (PartIndex(d, P.part_sel) < 0 || !IsDivided(d))) P.part_sel.clear();
+    }
+    if (P.part_sel.empty()) {  // 13-73: the Sound's cards
+        SoundSettingsCards(lib, n, m, zh);
+        return;
     }
     const std::string part = P.part_sel;
     const SoundData&  d = Shown(n);
@@ -4538,7 +4812,7 @@ void ZoneSettingsColumn(const SoundLibrary& lib, const SoundNode& n, const Sound
         ImGui::Unindent(ui::Dp(8.0f));
         stop = StoreReplaced();
     } else {
-        stop = SoundZoneRows(lib, n, m);
+        stop = SoundEdgeRows(lib, n, m) || SoundLevelRows(lib, n) || SoundFadeRows(lib, n);  // (a part is always picked here)
     }
     if (!stop) {
         ImGui::Dummy(ImVec2(1.0f, ui::Dp(2.0f)));
@@ -4581,14 +4855,6 @@ void ZoneSettingsColumn(const SoundLibrary& lib, const SoundNode& n, const Sound
         }, name + ": every setting same as the Sound again" + PreTailToastExtra(hand, wins));
     }
     ui::SubText("Every change is saved at once (Ctrl+Z to undo), with the sound.");
-    if (part.empty()) {
-        ui::Section ds;
-        if (ui::BeginSection(ds, "Detection \xC2\xB7 this sound only")) {
-            DetectionControls(lib, n, m, ui::Dp(70.0f), /*edit=*/true);
-            if (!StoreReplaced()) MonoControl(lib, n);  // 13-41
-        }
-        ui::EndSection(ds);
-    }
 }
 
 // ---- the header of a zoned Sound's Edit window ----
@@ -4600,7 +4866,8 @@ constexpr const char kZoneHelp[] =
 // How many Sound Edit options are off their default (the ⚙ badge).
 int ZoneOptionsChanged()
 {
-    return (ZoneClickPlays() ? 0 : 1) + (ZoneTailWins() ? 0 : 1) + (ZoneNewSnapMode() == SyncMode::Peak ? 0 : 1);
+    return (ZoneClickPlays() ? 0 : 1) + (ZoneTailWins() ? 0 : 1) + (ZoneNewSnapMode() == SyncMode::Peak ? 0 : 1) +
+           (ZoneNewSides() ? 1 : 0);  // 13-73
 }
 
 // The header's "Click plays" toggle (the speaker icon, on = accent): a pref of the user, no undo point.
@@ -4721,6 +4988,19 @@ void ZoneOptionsButton(float h)
         if (picked && sel >= 0 && sel < 3 && sel != static_cast<int>(ZoneNewSnapMode())) {
             SetZoneNewSnapMode(static_cast<SyncMode>(sel));
             ShowLibraryToast(std::string("New sounds: snap offset at ") + kModes[sel] + " (yours, every project)", false);
+        }
+        {  // 13-73: whether a new Sound starts with Left / Right on (default Off, Antho 2026-10-19)
+            static const char* const kOnOff[2] = {"Off", "On"};
+            ui::LabelRow("Left / Right", ui::Dp(150.0f), ui::Dp(84.0f), ui::kText);
+            int        ls = ZoneNewSides() ? 1 : 0;
+            const bool lp = ui::Segmented("##onewsides", kOnOff, 2, &ls);
+            ui::ItemTipText("Whether a new sound starts with Left / Right on (Pattern: Alternate L R). A sound already made "
+                            "keeps its own: its Parts card.");
+            if (lp && (ls == 1) != ZoneNewSides()) {
+                SetZoneNewSides(ls == 1);
+                ShowLibraryToast(std::string("New sounds: Left / Right ") + (ls == 1 ? "on (Alternate L R)" : "off") + " (yours, every project)",
+                                 false);
+            }
         }
         ui::ToneText("For the sounds you make from now on.", ui::kMuted, true);
     }

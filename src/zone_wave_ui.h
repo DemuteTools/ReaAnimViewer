@@ -53,6 +53,10 @@
 
 namespace rav {
 
+// 13-73: a variation's side on the waveform and in the legend (the mockup's colours): Left a light blue, Right ui::kUserInk,
+// set by hand ui::kWarn (underlined).
+constexpr ImU32 kZoneSideLeftInk = IM_COL32(0x9F, 0xB8, 0xFF, 0xFF);
+
 // The drag in progress (view state).
 struct ZoneDrag {
     ZoneDragKind kind = ZoneDragKind::None;
@@ -192,6 +196,11 @@ void ZoneSelectPart(const ZoneWaveHost& h, const std::string& part);
 void ZoneStepVariation(const ZoneWaveHost& h, int dir);
 void ZoneSnapToCursor(const ZoneWaveHost& h);  // 13-67a: REAPER 40541 on the selected zone (one undo point)
 void ZonePrevStop(const ZoneWaveHost& h);      // 13-67a: REAPER 40172, the cursor back one stop (view state)
+// 13-73: the selected variations Left ('L') / Right ('R') by hand, or back to the rule (0): one undo point (a toast when
+// Left / Right is off or nothing is selected). Their parts follow them.
+void ZoneSetSide(const ZoneWaveHost& h, char side);
+// 13-73: the Sound's Mono (REAPER 40176 / 40178 / 40179 / 40180 keys): one undo point.
+void ZoneSetMono(const ZoneWaveHost& h, MonoMode m);
 bool ZonePlaying(const ZoneWaveHost& h);
 
 bool ZoneClickPlays();
@@ -203,6 +212,10 @@ void SetZoneTailWins(bool on);
 SyncMode ZoneNewSnapMode();
 void     SetZoneNewSnapMode(SyncMode m);
 void     LoadZoneNewSnapMode();
+// 13-73: whether a new Sound starts with Left / Right on (Options > New sounds; the user's pref, default Off), pushed to
+// SetNewSoundSides; read by LoadZoneNewSnapMode.
+bool ZoneNewSides();
+void SetZoneNewSides(bool on);
 
 }  // namespace rav
 

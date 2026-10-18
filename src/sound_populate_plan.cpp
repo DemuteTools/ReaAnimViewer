@@ -50,14 +50,21 @@ const SoundDraw* FindDraw(const std::vector<SoundDraw>* draws, const std::string
 }
 
 int Draw(PopulateDrawState& st, EventDraw& ev, const SoundNode& n, const std::vector<int>& active, int avoid,
-         const std::string& part = std::string())
+         const std::string& part = std::string(), bool one_side = false)
 {
     const SoundDraw*  prev = FindDraw(ev.prev, n.uid);
     const std::string key = part.empty() ? n.uid : n.uid + "|" + part;  // 13-23: per part
     std::vector<int>& hist = st.history[key];
+    // 13-73: drawing among one side's variations, Avoid repeat counts that side's picks (the history stays one: the
+    // other side's picks are skipped, so a left step avoids the last left steps).
+    std::vector<int> side_hist;
+    if (one_side)
+        for (int x : hist)
+            if (std::find(active.begin(), active.end(), x) != active.end()) side_hist.push_back(x);
     // 13-62i (D): a filtered Populate also avoids the picks the events after it keep.
     const int         window = std::min(std::max(avoid, 0), static_cast<int>(active.size()) - 1);
-    const int pick = KeepOrDraw(prev, active, avoid, hist, st.seed, NodeSalt(ev.rid, ev.t, n.uid), AheadPicks(st, key, window));
+    const int pick = KeepOrDraw(prev, active, avoid, one_side ? side_hist : hist, st.seed, NodeSalt(ev.rid, ev.t, n.uid),
+                                AheadPicks(st, key, window));
     if (pick < 0) return -1;
     hist.push_back(pick);
     SoundDraw d;
@@ -181,7 +188,8 @@ ResolveHooks MakeDrawHooks(PopulateDrawState& state, EventDraw& ev, std::functio
             e->no_active.insert(n.uid);
             return -1;
         }
-        return Draw(*st, *e, n, active, n.avoid_repeat);
+        const std::vector<int> pool = SideVariations(n.sound, active, e->side);  // 13-73: Left / Right
+        return Draw(*st, *e, n, pool, n.avoid_repeat, std::string(), pool.size() != active.size());
     };
     h.part_variation = [st, e](const SoundNode& n, const std::string& part) -> int {
         if (n.sound.frames.empty()) return -1;
@@ -195,7 +203,8 @@ ResolveHooks MakeDrawHooks(PopulateDrawState& state, EventDraw& ev, std::functio
             e->no_part[n.uid] = part;
             return -1;
         }
-        return Draw(*st, *e, n, active, n.avoid_repeat, part);
+        const std::vector<int> pool = SideVariations(n.sound, active, e->side);  // 13-73: its parts follow its side
+        return Draw(*st, *e, n, pool, n.avoid_repeat, part, pool.size() != active.size());
     };
     h.rounds = [st](const SoundNode& n, const std::string& part) -> int {  // 13-68: after its pick (held by the history)
         const auto   it = st->history.find(part.empty() ? n.uid : n.uid + "|" + part);  // Draw's key

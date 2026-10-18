@@ -5,6 +5,7 @@
 
 #include "sound_populate_plan.h"
 #include "sound_place_plan.h"
+#include "sound_entries.h"  // 13-73: SetSidePattern
 
 #include <algorithm>
 #include <cmath>
@@ -157,6 +158,7 @@ static Resolved ResolveFor(const SoundStore& st, const SoundLibrary& lib, const 
     r.ed.t = 1.0;
     ValueLayers layers;
     layers.role = EventRoleKey(b);
+    r.ed.side = EventSide(b);  // 13-73: as Populate
     r.res = ResolveEvent(st, lib, layers, MakeDrawHooks(ds, r.ed, nullptr));
     return r;
 }
@@ -946,8 +948,89 @@ static void TestLinkedBlend()
     CHECK(LinkedVariation(0, 3, -1, 1, 2) == 2);  // a third layer shifts twice as far
 }
 
+// 13-73 (Left / Right): an event with a side draws only that side's variations (Alternate L R: even = L, odd = R) when the
+// Sound has Left / Right on, with Avoid repeat on that side's picks; no side or Left / Right off: all; a side with none: all.
+static void TestSidesDraw()
+{
+    SoundLibrary lib = OneSound(Leaf("s", "", 8));
+    lib.nodes[0].sound.sides = true;
+    const SoundStore empty;
+    PopulateDrawState ds;
+    ds.lib = &lib;
+    ds.seed = 11;
+    std::vector<int> lefts;
+    bool             ok_side = true, ok_avoid = true;
+    for (int i = 0; i < 40; ++i) {
+        EventDraw ed;
+        ed.rid = "r1";
+        ed.t = 0.5 * i;
+        ed.side = i % 2 == 0 ? 'L' : 'R';
+        const Resolution res = ResolveEvent(empty, lib, ValueLayers(), MakeDrawHooks(ds, ed, nullptr));
+        if (res.sounds.size() != 1) {
+            ok_side = false;
+            continue;
+        }
+        const int v = res.sounds[0].variation;
+        ok_side = ok_side && (v % 2 == (ed.side == 'L' ? 0 : 1));
+        if (ed.side == 'L') {
+            // avoid_repeat 2 among the 4 left variations: never one of the last two left picks
+            for (size_t k = lefts.size() >= 2 ? lefts.size() - 2 : 0; k < lefts.size(); ++k) ok_avoid = ok_avoid && lefts[k] != v;
+            lefts.push_back(v);
+        }
+    }
+    CHECK(ok_side);
+    CHECK(ok_avoid);
+    std::set<int> seen(lefts.begin(), lefts.end());
+    CHECK((seen == std::set<int>{0, 2, 4, 6}));
+    // No side: any variation.
+    std::set<int> any;
+    for (int i = 0; i < 60; ++i) {
+        PopulateDrawState d2;
+        d2.lib = &lib;
+        d2.seed = 100 + i;
+        EventDraw ed;
+        ed.rid = "r1";
+        ed.t = 1.0;
+        const Resolution res = ResolveEvent(empty, lib, ValueLayers(), MakeDrawHooks(d2, ed, nullptr));
+        if (!res.sounds.empty()) any.insert(res.sounds[0].variation);
+    }
+    CHECK(any.size() == 8);
+    // Every variation set Left (All Left): a right event plays any of them; Left / Right off: the side is ignored.
+    CHECK(SetSidePattern(lib.nodes[0].sound, SidePattern::AllLeft));
+    std::set<int> right_all, off_all;
+    for (int i = 0; i < 60; ++i) {
+        for (int off = 0; off < 2; ++off) {
+            lib.nodes[0].sound.sides = off == 0;
+            if (off) CHECK(SetSidePattern(lib.nodes[0].sound, SidePattern::AltLR));
+            PopulateDrawState d2;
+            d2.lib = &lib;
+            d2.seed = 300 + i;
+            EventDraw ed;
+            ed.rid = "r1";
+            ed.t = 1.0;
+            ed.side = 'R';
+            const Resolution res = ResolveEvent(empty, lib, ValueLayers(), MakeDrawHooks(d2, ed, nullptr));
+            if (!res.sounds.empty()) (off ? off_all : right_all).insert(res.sounds[0].variation);
+            if (off) SetSidePattern(lib.nodes[0].sound, SidePattern::AllLeft);
+        }
+    }
+    CHECK(right_all.size() == 8);
+    CHECK(off_all.size() == 8);
+    // The event's side comes from its block: a step:R auto block, a Heel (sideless role key) still has its side.
+    lib.nodes[0].sound.sides = true;
+    SetSidePattern(lib.nodes[0].sound, SidePattern::AltLR);
+    CHECK(EventSide(Auto(AutoKind::Step, 'R')) == 'R' && EventSide(Auto(AutoKind::Heel, 'L')) == 'L');
+    for (uint64_t seed = 1; seed <= 20; ++seed) {
+        PopulateDrawState d2;
+        d2.seed = seed;
+        const Resolved r = ResolveFor(empty, lib, Auto(AutoKind::Step, 'R'), &d2);
+        CHECK(r.res.sounds.size() == 1 && r.res.sounds[0].variation % 2 == 1);
+    }
+}
+
 int main()
 {
+    TestSidesDraw();  // 13-73
     SetNewSoundSyncMode(SyncMode::Attack);  // 13-67b: these fixtures were written for the old default (Attack)
     TestLinkedBlend();  // 13-68 v2
     TestPopulatePlanHelpers();  // 13-62i (D review)

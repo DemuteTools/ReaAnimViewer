@@ -79,6 +79,16 @@ std::vector<int> ActiveVariations(const SoundData& data)
     return out;
 }
 
+std::vector<int> SideVariations(const SoundData& data, const std::vector<int>& active, char side)
+{
+    if (!data.sides || (side != 'L' && side != 'R')) return active;
+    const std::vector<char> sides = FrameSides(data);
+    std::vector<int>        out;
+    for (int k : active)
+        if (k >= 0 && static_cast<size_t>(k) < sides.size() && sides[static_cast<size_t>(k)] == side) out.push_back(k);
+    return out.empty() ? active : out;
+}
+
 std::vector<int> ActiveVariationsFor(const SoundData& data0, const std::string& part_value)
 {
     std::vector<int> out;

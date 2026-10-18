@@ -832,8 +832,109 @@ void TestSwitchDetectMode()
     CHECK(SetDivide(d, "g", {"a", "b"}) && d.parked.empty());
 }
 
+// 13-73: Left / Right per variation: the Pattern, Swap, sides by hand, the count, a re-detection that keeps every side by
+// time (new variations continue the alternation of their neighbours, nothing re-alternated), the record round trip.
+static SoundFrame SideFrame(double start, double len)
+{
+    SoundFrame f;
+    f.start = start;
+    f.length = len;
+    return f;
+}
+static std::string SidesOf(const SoundData& d)
+{
+    std::string s;
+    for (char c : FrameSides(d)) s += c ? c : '0';
+    return s;
+}
+static void TestSides()
+{
+    SoundData d;
+    CHECK(!d.sides);  // Off by default (New sounds pref Off)
+    for (int i = 0; i < 6; ++i) d.frames.push_back(SideFrame(i * 1.0, 0.4));
+    CHECK(SidesOf(d) == "LRLRLR");  // Alternate L R before anything is written
+    CHECK(SetSidesOn(d, true) && d.sides && d.frames[3].side == 'R');  // On: written (locked)
+    CHECK(!SetSidesOn(d, true));
+    CHECK(SetSidePattern(d, SidePattern::AltRL) && SidesOf(d) == "RLRLRL");
+    CHECK(SetSidePattern(d, SidePattern::AllLeft) && SidesOf(d) == "LLLLLL");
+    CHECK(SetSidePattern(d, SidePattern::AltLR) && SidesOf(d) == "LRLRLR");
+    CHECK(!SetSidePattern(d, SidePattern::AltLR));
+    // By hand: V2 (R) and V3 (L) set Left: V2 by hand, V3 already Left (not by hand).
+    CHECK(SetFrameSides(d, {1, 2}, 'L') && SidesOf(d) == "LLLRLR");
+    std::vector<char> rule = FrameRuleSides(d);
+    CHECK(FrameSideByHand(d, rule, 1) && !FrameSideByHand(d, rule, 2));
+    SideCounts c = CountSides(d);
+    CHECK(c.left == 4 && c.right == 2 && c.hand == 1);
+    CHECK(!SetFrameSides(d, {2}, 'L'));
+    // A new Pattern keeps the hand sides (one it now gives anyway is no longer by hand).
+    CHECK(SetSidePattern(d, SidePattern::AllRight) && SidesOf(d) == "RLRRRR" && CountSides(d).hand == 1);
+    CHECK(SetSidePattern(d, SidePattern::AltLR) && SidesOf(d) == "LLLRLR");
+    // Swap: the Pattern and the hand sides flipped, in one gesture.
+    CHECK(SwapSides(d) && d.side_pattern == SidePattern::AltRL && SidesOf(d) == "RRRLRL" && CountSides(d).hand == 1);
+    CHECK(SwapSides(d) && d.side_pattern == SidePattern::AltLR && SidesOf(d) == "LLLRLR");
+    // Follow rule, Reset hand sides.
+    CHECK(SetFrameSides(d, {1}, 0) && SidesOf(d) == "LRLRLR" && CountSides(d).hand == 0);
+    CHECK(!ResetHandSides(d));
+    CHECK(SetFrameSides(d, {4, 5}, 'R') && SidesOf(d) == "LRLRRR");
+    CHECK(ResetHandSides(d) && SidesOf(d) == "LRLRLR");
+
+    // Re-detection: V3 (2.0) is lost and comes back; a new one appears at 6.5 and one before V1 at -1 (none before: the
+    // first variation's side by parity). Every known variation keeps its side, by time.
+    CHECK(SetFrameSides(d, {4}, 'R'));  // V5 Right by hand
+    const std::vector<SoundFrame> old = d.frames;
+    std::vector<SoundFrame>       now;
+    for (int i : {0, 1, 3, 4, 5}) now.push_back(SideFrame(i * 1.0 + 0.05, 0.3));  // V3 gone, the others moved a little
+    CarrySides(now, old, d.side_pattern, d.sides);
+    SoundData r = d;
+    r.frames = now;
+    CHECK(SidesOf(r) == "LRRRR");  // L R (V3 gone) R R(hand) R: nothing re-alternated
+    CHECK(r.frames[3].side_hand == 'R' && r.frames[3].side == 'L');
+    // V3 back, plus a new one after the last: each continues the alternation of its neighbours.
+    std::vector<SoundFrame> back;
+    for (int i : {0, 1, 2, 3, 4, 5, 6}) back.push_back(SideFrame(i * 1.0, 0.4));
+    CarrySides(back, r.frames, r.side_pattern, r.sides);
+    SoundData b = r;
+    b.frames = back;
+    CHECK(SidesOf(b) == "LRLRRRL");  // V3 new: after V2 (R) -> L; V7 new: after V6 (R) -> L; V5 still Right by hand
+    CHECK(b.frames[2].side == 'L' && b.frames[6].side == 'L');  // written: the next re-detection keeps them too
+    // A Sound that never had a side written (Left / Right off, none set): nothing written by a re-detection.
+    SoundData plain;
+    for (int i = 0; i < 3; ++i) plain.frames.push_back(SideFrame(i * 1.0, 0.4));
+    std::vector<SoundFrame> pn = plain.frames;
+    CarrySides(pn, plain.frames, plain.side_pattern, plain.sides);
+    CHECK(pn[0].side == 0 && pn[1].side == 0 && pn[2].side == 0);
+
+    // Saved with the Sound: sides, Pattern, each variation's side and hand side.
+    SoundStore st;
+    SoundLibrary lib;
+    lib.uid = "0123456789abcdef";
+    lib.name = "Steps";
+    SoundNode n;
+    n.uid = "1123456789abcdef";
+    n.type = SoundNodeType::Sound;
+    n.name = "S";
+    n.sound = d;
+    n.sound.side_pattern = SidePattern::AltRL;
+    lib.root = n.uid;
+    lib.nodes.push_back(n);
+    st.libraries.push_back(lib);
+    SoundStore back_st;
+    CHECK(ParseSoundStore(SerializeSoundStore(st), &back_st) && back_st.libraries.size() == 1 && back_st.libraries[0].nodes.size() == 1);
+    if (!back_st.libraries.empty() && !back_st.libraries[0].nodes.empty()) {
+        const SoundData& x = back_st.libraries[0].nodes[0].sound;
+        CHECK(x.sides && x.side_pattern == SidePattern::AltRL && x.frames.size() == 6);
+        for (size_t i = 0; i < x.frames.size() && i < d.frames.size(); ++i)
+            CHECK(x.frames[i].side == d.frames[i].side && x.frames[i].side_hand == d.frames[i].side_hand);
+    }
+    st.libraries[0].nodes[0].sound = SoundData();  // Off, nothing set: nothing written
+    st.libraries[0].nodes[0].sound.frames.push_back(SideFrame(0.0, 1.0));
+    const std::string plain_text = SerializeSoundStore(st);
+    CHECK(plain_text.find("sides") == std::string::npos && plain_text.find("side=") == std::string::npos);
+}
+
 int main()
 {
+    TestSides();  // 13-73
     TestSwitchDetectMode();  // 13-67b
     TestPartSettings();  // 13-62
     TestPartRowHelpers();

@@ -17,6 +17,7 @@
 // 13-62h (spec 13-62h Contract): EditZone, SoundFrame::zones, PartSettings::fader_db, SoundData::gap_xfade.
 // 13-62i (spec 13-62i A0): kWholePart, EditZone::fade_in_shape / fade_out_shape, SoundData::fader_db.
 // 13-68 v2 (spec 13-68): SoundLibrary::attached / attached_type, SoundNode::linked_variations.
+// 13-73 (spec 13-73): SidePattern, NewSoundSides, SoundFrame::side / side_hand, SoundData::sides / side_pattern.
 //
 // Every `kept` member holds text this version did not understand, written back as read:
 // unknown fields ("key=value" tokens) of the object's own line, and `kept_lines` the unknown
@@ -149,6 +150,12 @@ struct SoundFrame {
     // its first zone's start and its last zone's end. 13-62i: every Sound (undivided: kWholePart zones; Takes mode:
     // on its take's own source, each take a timeline of its own).
     std::vector<EditZone>    zones;
+    // 13-73 (appended): its Left / Right side (which foot or hand it is a step of; never a channel). `side`: the
+    // rule's side ('L' / 'R'), set when the variation became known (Pattern, then kept by time across re-detections);
+    // 0 = not set yet (it follows the Pattern from its neighbours: FrameRuleSides, sound_entries.h). `side_hand`:
+    // set by hand ('L' / 'R'; 0 = follows the rule).
+    char                     side = 0;
+    char                     side_hand = 0;
 };
 
 // The Sound-level default fades (s): every variation with no fade of its own gets them.
@@ -167,6 +174,18 @@ struct SoundSource {
     // Library), so a later detection on the file still starts from it. An item Sound reads its live item.
     double          item_db = 0.0;
 };
+
+// 13-73: how a Sound's variations get their Left / Right side, in time order.
+enum class SidePattern { AltLR, AltRL, AllLeft, AllRight };
+// 13-73: whether a new Sound starts with Left / Right on (Sound Edit Options > New sounds, the user's pref; Off by default,
+// Antho 2026-10-19). Saved Sounds keep their own (a missing `sides` reads Off).
+inline bool& NewSoundSidesRef()
+{
+    static bool on = false;
+    return on;
+}
+inline bool NewSoundSides() { return NewSoundSidesRef(); }
+inline void SetNewSoundSides(bool on) { NewSoundSidesRef() = on; }
 
 // 13-25: where a variation's (or part's) sync point sits before its offset: the attack, the loudest
 // bin, or the start of its first span.
@@ -265,6 +284,10 @@ struct SoundData {
     std::vector<SoundFrame>  parked;
     DetectMode               parked_mode = DetectMode::Whole;
     bool                     parked_edited = false;
+    // 13-73 (appended): Left / Right per variation (Parts card): on, a left event plays a Left variation, a right one a
+    // Right one (sound_draw.h SideVariations); the Pattern gives each variation its side in time order.
+    bool                     sides = NewSoundSides();
+    SidePattern              side_pattern = SidePattern::AltLR;
 };
 
 // A Switch's value -> child.

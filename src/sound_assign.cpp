@@ -352,6 +352,39 @@ std::string EventRoleKey(const Block& b)
     return std::string();
 }
 
+char EventSide(const Block& b)
+{
+    if (IsAutoBlock(b)) {
+        AutoKind kind;
+        char     side = 0;
+        if (!AutoBlockKind(b, &kind, &side)) return 0;
+        return side == 'L' || side == 'R' ? side : 0;
+    }
+    if (b.conditions.empty()) return 0;
+    const SignalSpec& sp = b.conditions.front().signal;
+    for (const std::vector<int>* ids : {&sp.bones, &sp.ref_bones})
+        for (int id : *ids) {
+            if (id < 0) continue;
+            if (id < static_cast<int>(Role::Count) && id < kBoneRefExtra) {
+                const char s = RoleSide(static_cast<Role>(id));
+                if (s) return s;
+                continue;
+            }
+            const std::string ref = BoneRefKey(id);
+            static const char kRole[] = "role:";
+            if (ref.compare(0, sizeof(kRole) - 1, kRole) != 0) continue;  // a plain bone: no side
+            const std::string key = ref.substr(sizeof(kRole) - 1);
+            Role              builtin;
+            if (RoleFromKey(key, &builtin)) {
+                if (const char s = RoleSide(builtin)) return s;
+                continue;
+            }
+            if (key.compare(0, 5, "left_") == 0) return 'L';
+            if (key.compare(0, 6, "right_") == 0) return 'R';
+        }
+    return 0;
+}
+
 // ---- Resolution -------------------------------------------------------------------------------
 
 std::string EffectiveAssign::ValueFromText(const std::string& group_uid) const

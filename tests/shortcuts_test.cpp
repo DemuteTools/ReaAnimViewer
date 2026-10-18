@@ -1173,7 +1173,13 @@ int main()
     // 13-62h: Heal / Loop in the Sound Edit window -- on REAPER's 40548 (Item: Heal splits in items) / 1068
     // (Transport: Toggle repeat) by default, H / R while REAPER lists no key for them; 40508 retargeted.
     {
-        CHECK(kShortcutCount == 23 && kShortcutEditHeal == 21 && kShortcutEditLoop == 22);  // 13-67a: renumbered
+        CHECK(kShortcutCount == 30 && kShortcutEditHeal == 21 && kShortcutEditLoop == 22);  // 13-67a: renumbered; 13-73: +7
+        // 13-73: Mono on REAPER's take channel mode keys; Left / Right as RAV actions with no default key.
+        CHECK(ShortcutReaperActionId(kShortcutEditMonoOff) == "40176" && ShortcutReaperActionId(kShortcutEditMonoSum) == "40178");
+        CHECK(ShortcutReaperActionId(kShortcutEditMonoLeft) == "40179" && ShortcutReaperActionId(kShortcutEditMonoRight) == "40180");
+        CHECK(ShortcutReaperActionId(kShortcutEditSideLeft) == "_RAV_KEY_EDIT_SIDE_LEFT");
+        for (int id : {kShortcutEditSideLeft, kShortcutEditSideRight, kShortcutEditSideRule, kShortcutEditMonoOff})
+            CHECK(kShortcutTable[id].def.vk == 0 && kShortcutTable[id].context == ShortcutContext::LibraryEdit);
         CHECK(ShortcutReaperActionId(kShortcutEditHeal) == "40548");
         CHECK(ShortcutReaperActionId(kShortcutEditLoop) == "1068");
         CHECK(std::string(kShortcutTable[kShortcutEditHeal].id) == "edit_heal");

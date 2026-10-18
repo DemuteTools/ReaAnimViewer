@@ -251,6 +251,7 @@ const char* const kModeWords[] = {"whole", "takes", "tmarkers", "silence"};
 const char* const kSyncWords[] = {"attack", "peak", "start"};
 // 13-41: MonoMode, Off never written.
 const char* const kMonoWords[] = {"off", "left", "right", "sum"};
+const char* const kSidePatternWords[] = {"lr", "rl", "left", "right"};  // 13-73: SidePattern
 
 bool MonoFromWord(const std::string& s, MonoMode* out)
 {
@@ -492,6 +493,7 @@ void SetRecordBaseline(SoundData& s)
 {
     s.silence.threshold_db = kRecordThresholdDb;
     s.sync_mode = kRecordSyncMode;
+    s.sides = false;  // 13-73: a Sound saved without `sides` has Left / Right off (whatever the New sounds pref)
 }
 
 Fields SoundFields(const SoundData& s)
@@ -527,6 +529,8 @@ Fields SoundFields(const SoundData& s)
     if (s.gap_xfade != d.gap_xfade) f.push_back({"gxfade", FormatNumber(s.gap_xfade)});  // 13-62h
     if (s.mono != d.mono) f.push_back({"mono", kMonoWords[static_cast<int>(s.mono)]});
     if (s.fader_db) f.push_back({"fdr", FormatNumber(*s.fader_db)});  // 13-62i: the implicit part's fader
+    if (s.sides) f.push_back({"sides", "1"});                                  // 13-73
+    if (s.side_pattern != d.side_pattern) f.push_back({"spat", kSidePatternWords[static_cast<int>(s.side_pattern)]});
     return f;
 }
 
@@ -580,6 +584,15 @@ Got SetSound(SoundData& s, const std::string& k, const std::string& v)
         if (!ReadNumber(v, &x)) return Got::Bad;
         s.fader_db = x;
         return Got::Ok;
+    }
+    if (k == "sides") return G(ReadFlag(v, &s.sides));  // 13-73
+    if (k == "spat") {
+        for (int i = 0; i < 4; ++i)
+            if (v == kSidePatternWords[i]) {
+                s.side_pattern = static_cast<SidePattern>(i);
+                return Got::Ok;
+            }
+        return Got::Bad;
     }
     return Got::Unknown;
 }
@@ -669,6 +682,8 @@ Fields FrameFields(const SoundFrame& fr)
     if (fr.zones.empty() && fr.fade_out >= 0.0) f.push_back({"fout", FormatNumber(fr.fade_out)});
     if (fr.fade_in_shape != 0) f.push_back({"fish", FmtInt(fr.fade_in_shape)});
     if (fr.fade_out_shape != 0) f.push_back({"fosh", FmtInt(fr.fade_out_shape)});
+    if (fr.side == 'L' || fr.side == 'R') f.push_back({"side", std::string(1, fr.side)});  // 13-73
+    if (fr.side_hand == 'L' || fr.side_hand == 'R') f.push_back({"sideh", std::string(1, fr.side_hand)});
     // 13-62h: a frame laid out as zones writes its zones (fzone lines), never the old model's keys.
     const bool zoned = !fr.zones.empty();
     if (zoned) return f;
@@ -695,6 +710,11 @@ Got SetFrame(SoundFrame& fr, const std::string& k, const std::string& v)
     if (k == "fout") return G(ReadNumber(v, &fr.fade_out));
     if (k == "fish") return G(ReadInt(v, &fr.fade_in_shape));
     if (k == "fosh") return G(ReadInt(v, &fr.fade_out_shape));
+    if (k == "side" || k == "sideh") {  // 13-73
+        if (v != "L" && v != "R") return Got::Bad;
+        (k == "side" ? fr.side : fr.side_hand) = v[0];
+        return Got::Ok;
+    }
     if (k == "cuts") return G(SplitNumbers(v, &fr.cuts));
     if (k == "cutsh") return G(ReadFlag(v, &fr.cuts_hand));
     if (k == "cutq") return G(ReadFlag(v, &fr.cut_unsure));

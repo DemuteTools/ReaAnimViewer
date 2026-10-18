@@ -19,6 +19,7 @@
 
 #include "library_view_ui.h"  // ShowLibraryToast
 #include "shortcuts.h"        // LoadPrefBool, ShortcutKeyLabel, kShortcutEdit*
+#include "shortcuts_ui.h"     // 13-73: RequestOpenShortcutsPopup
 #include "sound_audition.h"
 #include "sound_entries.h"
 #include "sound_peaks.h"
@@ -36,6 +37,8 @@ constexpr const char kTailWinsPref[] = "lib_edit_tail_wins";
 int g_click_plays = -1, g_tail_wins = -1;  // < 0 = not read yet
 constexpr const char kSnapModePref[] = "lib_edit_snap_mode";  // 13-67b: the snap offset mode of new Sounds
 int g_snap_mode = -1;                                       // < 0 = not read yet
+constexpr const char kNewSidesPref[] = "lib_edit_new_sides";  // 13-73: Left / Right of new Sounds (default Off)
+int g_new_sides = -1;                                         // < 0 = not read yet
 
 constexpr ImU32 kGapCol = IM_COL32(0x8B, 0x91, 0x9C, 0xFF);  // the mockup's GAPC (--muted)
 
@@ -537,6 +540,8 @@ struct Frame {
     const PeakView*       peaks = nullptr;
     WaveColumns           wc;
     bool                  have_cols = false;
+    // 13-73: Left / Right on: each frame's side as played and its rule side (FrameSides / FrameRuleSides); empty = off.
+    std::vector<char>     sides, rule;
     const std::vector<ZoneLook>& Looks() const { return lc->looks; }
     float X(double t) const { return cx0 + static_cast<float>((t - v0) / vl * cw); }
     double T(float x) const { return v0 + static_cast<double>(x - cx0) / cw * vl; }
@@ -641,6 +646,19 @@ void DrawVars(const Frame& F, float y0, float y1)
         const std::string lbl = TextW(f, full) + 10.0f * F.dp < xb - xa ? full : num;
         if (TextW(f, lbl) + 6.0f * F.dp < xb - xa)
             TextAt(dl, f, std::max(xa, F.cx0) + 5.0f * F.dp, y1 - 6.0f * F.dp, all ? ui::kText : ui::kMuted, lbl);
+        // 13-73: zoomed out (a zone of it too narrow for its L / R letter): its side as a colour mark at the band's bottom.
+        if (b.frame >= 0 && static_cast<size_t>(b.frame) < F.sides.size()) {
+            bool narrow = zs.empty();
+            for (const ZoneRef& r : zs)
+                if (const EditZone* z = ZoneOf(*F.d, r); z && !z->IsGap() && F.X(z->b) - F.X(z->a) < 20.0f * F.dp) narrow = true;
+            if (narrow) {
+                const size_t k = static_cast<size_t>(b.frame);
+                const bool   hand = F.d->frames[k].side_hand != 0 && F.d->frames[k].side_hand != F.rule[k];
+                const ImU32  col = hand ? ui::kWarn : F.sides[k] == 'L' ? kZoneSideLeftInk : ui::kUserInk;
+                const float  a = std::max(xa, F.cx0) + 1.0f, bb = std::min(xb, F.cx0 + F.cw) - 1.0f;
+                dl->AddRectFilled(ImVec2(a, y1 - 5.0f * F.dp), ImVec2(std::max(a + 1.0f, bb), y1 - 2.0f * F.dp), col);
+            }
+        }
     }
     (void)i;
     DrawOverlays(F, y0, y1, true);
@@ -864,6 +882,25 @@ void DrawLane(const Frame& F, const Row& row)
         if (v.hover_on && v.hover.z == z.ref && v.hover.kind == ZoneHitKind::Zone && v.hover.lane == lane) {
             if (v.hover.top) dl->AddRectFilled(ImVec2(xa, y0), ImVec2(xb, mid), IM_COL32(255, 255, 255, 10));
             else dl->AddRectFilled(ImVec2(xa, mid), ImVec2(xb, y1), IM_COL32(255, 255, 255, 10));
+        }
+    }
+    // 13-73: each zone's side, a small L / R at its bottom left (set by hand: yellow, underlined); none on a zone too
+    // narrow for it (never two letters on top of each other, at any zoom: the Variations band shows a mark instead).
+    if (!F.sides.empty()) {
+        ImFont* fl = ui::FontMonoTiny();
+        for (const ZoneLook& z : F.Looks()) {
+            if (z.gap || z.b < F.v0 || z.a > v1 || !Mine(z, lane)) continue;
+            const size_t k = static_cast<size_t>(z.ref.frame);
+            if (z.ref.frame < 0 || k >= F.sides.size()) continue;
+            const float xa = std::max(F.X(z.a), left), xb = std::min(F.X(z.b), right);
+            if (xb - xa < 20.0f * dp || y1 - y0 < 30.0f * dp) continue;
+            const bool        hand = d.frames[k].side_hand != 0 && d.frames[k].side_hand != F.rule[k];
+            const ImU32       col = hand ? ui::kWarn : F.sides[k] == 'L' ? kZoneSideLeftInk : ui::kUserInk;
+            const float       bx = std::round(xa) + 5.0f * dp, by = y1 - 16.0f * dp, bw = 12.0f * dp, bh = 13.0f * dp;
+            const std::string letter(1, F.sides[k]);
+            dl->AddRectFilled(ImVec2(bx, by), ImVec2(bx + bw, by + bh), IM_COL32(18, 19, 23, 219));
+            TextAt(dl, fl, bx + (bw - TextW(fl, letter)) * 0.5f, by + 10.5f * dp, col, letter);
+            if (hand) dl->AddRectFilled(ImVec2(bx + 2.0f * dp, by + bh - 2.0f * dp), ImVec2(bx + bw - 2.0f * dp, by + bh - 0.5f * dp), col);
         }
     }
     // Cuts between two zones edge to edge: a grab at the bottom.
@@ -1234,6 +1271,43 @@ bool EscStep(const ZoneWaveHost& h)
     return menu;
 }
 
+// 13-73: the Left / Right entries of the right-click menu, on the variations of the selection (Set Left / Set Right /
+// Follow rule: one undo point for the whole selection; no key by default, Shortcuts... to give one).
+void SideMenu(const ZoneWaveHost& h)
+{
+    const SoundData&       d = Shown(h);
+    const std::vector<int> fr = SelFrames(SelValid(d, h.view->sel));
+    if (fr.empty()) return;
+    ui::MenuSeparator();
+    const bool on = d.sides;
+    bool       all_l = true, all_r = true, any_hand = false;
+    if (on) {
+        const std::vector<char> sides = FrameSides(d), rule = FrameRuleSides(d);
+        for (int f : fr) {
+            if (f < 0 || static_cast<size_t>(f) >= sides.size()) continue;
+            all_l = all_l && sides[static_cast<size_t>(f)] == 'L';
+            all_r = all_r && sides[static_cast<size_t>(f)] == 'R';
+            any_hand = any_hand || FrameSideByHand(d, rule, f);
+        }
+    }
+    std::string cap = fr.size() > 1 ? std::to_string(fr.size()) + " variations selected" : "Variation " + std::to_string(fr.front() + 1);
+    if (on) cap += all_l ? " \xC2\xB7 Left" : all_r ? " \xC2\xB7 Right" : " \xC2\xB7 mixed";
+    ui::MenuCaption(cap.c_str());
+    if (!on) ui::MenuEntry("Left / Right is Off (Parts card)##zsoff", nullptr, false, false);
+    auto key = [](int id) {
+        const std::string k = KeyHint(id, "");
+        return k.empty() ? std::string("no key") : k;
+    };
+    if (ui::MenuEntry("Set Left##zsl", key(kShortcutEditSideLeft).c_str(), on && all_l, on)) ZoneSetSide(h, 'L');
+    ui::ItemTipText("Every selected variation plays for left events (its parts with it)");
+    if (ui::MenuEntry("Set Right##zsr", key(kShortcutEditSideRight).c_str(), on && all_r, on)) ZoneSetSide(h, 'R');
+    ui::ItemTipText("Every selected variation plays for right events (its parts with it)");
+    if (ui::MenuEntry("Follow rule##zsf", key(kShortcutEditSideRule).c_str(), false, on && any_hand)) ZoneSetSide(h, 0);
+    ui::ItemTipText((std::string("Back to the Pattern (") + SidePatternLabel(d.side_pattern) + ")").c_str());
+    if (ui::MenuEntry("Shortcuts\xE2\x80\xA6##zskeys")) RequestOpenShortcutsPopup("Left / Right");
+    ui::ItemTipText("Shortcuts window: Set Left, Set Right, Follow rule (none by default)");
+}
+
 void ZoneMenu(const ZoneWaveHost& h)
 {
     if (!ui::BeginMenuPopup("##zonewavemenu")) return;
@@ -1268,6 +1342,7 @@ void ZoneMenu(const ZoneWaveHost& h)
         ui::MenuSeparator();
         if (ui::MenuEntry("Heal into one zone", KeyHint(kShortcutEditHeal, "H").c_str())) ZoneHeal(h);
         if (ui::MenuEntry("Delete it", "Delete")) ZoneDelete(h);
+        SideMenu(h);  // 13-73
     } else if (z->IsGap()) {
         const ZoneRef     l = GapLeft(d, v.menu_z);
         const std::string ln = ZoneOf(d, l) ? NameOfZone(h, d, l) : std::string("the left");
@@ -1312,6 +1387,7 @@ void ZoneMenu(const ZoneWaveHost& h)
         }
         ui::MenuSeparator();
         if (ui::MenuEntry("\xE2\x96\xB6 Play zone")) ZonePlayZone(h, r);
+        SideMenu(h);  // 13-73
     }
     ui::EndMenuPopup();
 }
@@ -1364,6 +1440,23 @@ void SetZoneNewSnapMode(SyncMode m)
 void LoadZoneNewSnapMode()
 {
     (void)ZoneNewSnapMode();
+    (void)ZoneNewSides();  // 13-73: read with it (plugin load), before any Sound is made
+}
+
+bool ZoneNewSides()
+{
+    if (g_new_sides < 0) {
+        g_new_sides = LoadPrefBool(kNewSidesPref, false) ? 1 : 0;
+        SetNewSoundSides(g_new_sides == 1);
+    }
+    return g_new_sides == 1;
+}
+
+void SetZoneNewSides(bool on)
+{
+    g_new_sides = on ? 1 : 0;
+    SetNewSoundSides(on);
+    SavePrefBool(kNewSidesPref, on);
 }
 
 void ZoneEditReset(ZoneEditView& v)
@@ -1650,6 +1743,10 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
     F.dp = dp;
     F.peaks = PeaksOf(h.path);
     F.lc = &LooksNow(h);
+    if (F.d->sides) {  // 13-73
+        F.sides = FrameSides(*F.d);
+        F.rule = FrameRuleSides(*F.d);
+    }
     if (v.playing && v.play_tl == h.tl && AuditionPlaying() && AuditionTag() == PlayTag(h)) F.heads = HeardHeads(v.map, AuditionPosition());
     const int ncols = std::max(1, static_cast<int>(std::floor(cw)));
     F.have_cols = ReadWaveColumns(h.path, vs, vl, ncols, &F.wc);
@@ -1762,6 +1859,13 @@ void ZoneEditRequest(const ZoneWaveHost& h, int id)
     case kShortcutEditPrevVar: ZoneStepVariation(h, -1); return;
     case kShortcutEditSnapOffset: ZoneSnapToCursor(h); return;  // 13-67a
     case kShortcutEditPrevStop: ZonePrevStop(h); return;        // 13-67a
+    case kShortcutEditSideLeft: ZoneSetSide(h, 'L'); return;    // 13-73
+    case kShortcutEditSideRight: ZoneSetSide(h, 'R'); return;
+    case kShortcutEditSideRule: ZoneSetSide(h, 0); return;
+    case kShortcutEditMonoOff: ZoneSetMono(h, MonoMode::Off); return;
+    case kShortcutEditMonoSum: ZoneSetMono(h, MonoMode::Sum); return;
+    case kShortcutEditMonoLeft: ZoneSetMono(h, MonoMode::Left); return;
+    case kShortcutEditMonoRight: ZoneSetMono(h, MonoMode::Right); return;
     default: return;
     }
 }
@@ -1933,6 +2037,38 @@ void ZoneSplit(const ZoneWaveHost& h)
 
 // 13-67a: REAPER's 40541 "Item: Set snap offset to cursor": the selected part zones holding the edit cursor (none
 // selected: the part zone under it) get their own snap offset there (a hand snap offset), one undo point.
+void ZoneSetSide(const ZoneWaveHost& h, char side)
+{
+    const SoundData& d = Shown(h);
+    if (!d.sides) {
+        ShowLibraryToast("Left / Right is Off (Parts card)", false);
+        return;
+    }
+    const std::vector<int> fr = SelFrames(SelValid(d, h.view->sel));
+    if (fr.empty()) {
+        ShowLibraryToast("Select zones first (click, Ctrl+click, right-drag)", false);
+        return;
+    }
+    const std::string what = fr.size() > 1 ? std::to_string(fr.size()) + " variations" : "V" + std::to_string(fr.front() + 1);
+    const std::string toast = side ? what + ": " + (side == 'L' ? "Left" : "Right") + (IsDivided(d) ? ", their parts with them" : "")
+                                   : what + ": follow the rule again (" + SidePatternLabel(d.side_pattern) + ")";
+    if (!Write(h, "Left / Right", [fr, side](SoundData& x, const ZoneContext&, ZoneSel*) { return SetFrameSides(x, fr, side); }, toast))
+        ShowLibraryToast(what + ": no change", false);
+}
+
+void ZoneSetMono(const ZoneWaveHost& h, MonoMode m)
+{
+    static const char* const kWords[4] = {"off (as the file)", "left", "right", "sum L+R"};
+    const std::string        toast = std::string("Mono: ") + kWords[static_cast<int>(m)];
+    if (!Write(h, "Mono", [m](SoundData& x, const ZoneContext&, ZoneSel*) {
+                   if (x.mono == m) return false;
+                   x.mono = m;
+                   return true;
+               },
+               toast))
+        ShowLibraryToast(toast + " already", false);
+}
+
 void ZoneSnapToCursor(const ZoneWaveHost& h)
 {
     const double t = *h.cursor;

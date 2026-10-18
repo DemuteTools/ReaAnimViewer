@@ -317,6 +317,7 @@ void DrawEventSoundSection(const TaggingSoundContext& ctx, const ShownEvent& e)
         ed.rid = rid;
         ed.t = t;
         ed.prev = ev ? &ev->draws : nullptr;
+        ed.side = EventSide(blk);  // 13-73: as Populate
         std::string part, type;
         PartOfBlock(blk, &part, &type);
         ValueLayers layers = ResolveAssignFor(store, rec, ch, rid, part, type, t).layers;

@@ -325,6 +325,7 @@ void ResetToDetected(SoundData& data, const std::vector<SoundFrame>& detected)
 {
     const std::vector<SoundFrame> old = data.frames;
     data.frames = detected;
+    CarrySides(data.frames, old, data.side_pattern, data.sides, data.mode == DetectMode::Takes);  // 13-73: sides kept by time
     CarryHandMarks(data.frames, old, false);  // A7: hand sync points survive, hand cuts go
     for (SoundFrame& f : data.frames) f.owners.clear();  // 13-62: and the owners with them
     data.zones.erase(std::remove_if(data.zones.begin(), data.zones.end(), [](const SoundZone& z) { return !z.to.empty(); }),
@@ -345,6 +346,7 @@ bool SwitchDetectMode(SoundData& data, DetectMode mode, const std::vector<SoundF
         data.frames = detected;
         data.edited = false;
         CarryHandMarks(data.frames, old, false);  // A7: hand sync points kept while their variation exists
+        CarrySides(data.frames, old, data.side_pattern, data.sides, mode == DetectMode::Takes && old_mode == DetectMode::Takes);  // 13-73
     }
     data.mode = mode;
     data.parked = std::move(old);
@@ -1839,6 +1841,209 @@ std::string RoundedNumberText(double v, bool sign)
     char buf[48];
     std::snprintf(buf, sizeof(buf), sign && r > 0.0 ? "+%g" : "%g", r);
     return buf;
+}
+
+// ---- 13-73: Left / Right per variation -------------------------------------------------------------------------
+
+char PatternSide(SidePattern p, int k)
+{
+    switch (p) {
+    case SidePattern::AllLeft: return 'L';
+    case SidePattern::AllRight: return 'R';
+    case SidePattern::AltRL: return k % 2 == 0 ? 'R' : 'L';
+    case SidePattern::AltLR:
+    default: return k % 2 == 0 ? 'L' : 'R';
+    }
+}
+
+char OtherSide(char side) { return side == 'L' ? 'R' : side == 'R' ? 'L' : 0; }
+
+const char* SidePatternLabel(SidePattern p)
+{
+    switch (p) {
+    case SidePattern::AltRL: return "Alternate R L";
+    case SidePattern::AllLeft: return "All Left";
+    case SidePattern::AllRight: return "All Right";
+    case SidePattern::AltLR:
+    default: return "Alternate L R";
+    }
+}
+
+std::vector<char> FrameRuleSides(const std::vector<SoundFrame>& frames, SidePattern p)
+{
+    std::vector<char> out(frames.size(), 0);
+    const bool alt = p == SidePattern::AltLR || p == SidePattern::AltRL;
+    // A frame with no side of its own: from the nearest one before it that has one (alternating), else from the first one
+    // after it that has one (by parity), else the Pattern by index.
+    int next_set = -1;
+    for (size_t i = 0; i < frames.size(); ++i)
+        if (frames[i].side == 'L' || frames[i].side == 'R') {
+            next_set = static_cast<int>(i);
+            break;
+        }
+    for (size_t i = 0; i < frames.size(); ++i) {
+        const char own = frames[i].side;
+        if (own == 'L' || own == 'R') out[i] = own;
+        else if (!alt) out[i] = PatternSide(p, static_cast<int>(i));
+        else if (i > 0) out[i] = OtherSide(out[i - 1]);
+        else if (next_set > 0) out[i] = (next_set % 2 == 0) ? frames[static_cast<size_t>(next_set)].side : OtherSide(frames[static_cast<size_t>(next_set)].side);
+        else out[i] = PatternSide(p, 0);
+    }
+    return out;
+}
+
+std::vector<char> FrameRuleSides(const SoundData& d) { return FrameRuleSides(d.frames, d.side_pattern); }
+
+std::vector<char> FrameSides(const SoundData& d)
+{
+    std::vector<char> s = FrameRuleSides(d);
+    for (size_t i = 0; i < s.size(); ++i)
+        if (d.frames[i].side_hand == 'L' || d.frames[i].side_hand == 'R') s[i] = d.frames[i].side_hand;
+    return s;
+}
+
+bool FrameSideByHand(const SoundData& d, const std::vector<char>& rule, int i)
+{
+    if (i < 0 || static_cast<size_t>(i) >= d.frames.size() || static_cast<size_t>(i) >= rule.size()) return false;
+    const char h = d.frames[static_cast<size_t>(i)].side_hand;
+    return (h == 'L' || h == 'R') && h != rule[static_cast<size_t>(i)];
+}
+
+namespace {
+
+// Every frame's rule side written (what FrameRuleSides gives now); a hand side equal to it cleared. True when changed.
+bool LockSides(SoundData& d)
+{
+    const std::vector<char> rule = FrameRuleSides(d);
+    bool                    changed = false;
+    for (size_t i = 0; i < d.frames.size(); ++i) {
+        SoundFrame& f = d.frames[i];
+        if (f.side != rule[i]) {
+            f.side = rule[i];
+            changed = true;
+        }
+        if (f.side_hand != 0 && f.side_hand != 'L' && f.side_hand != 'R') {
+            f.side_hand = 0;
+            changed = true;
+        }
+        if (f.side_hand == rule[i]) {
+            f.side_hand = 0;
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+}  // namespace
+
+bool SetSidesOn(SoundData& d, bool on)
+{
+    if (d.sides == on) return false;
+    d.sides = on;
+    if (on) LockSides(d);
+    return true;
+}
+
+bool SetSidePattern(SoundData& d, SidePattern p)
+{
+    const std::vector<SoundFrame> before = d.frames;
+    const SidePattern             was = d.side_pattern;
+    d.side_pattern = p;
+    for (size_t i = 0; i < d.frames.size(); ++i) d.frames[i].side = PatternSide(p, static_cast<int>(i));
+    LockSides(d);
+    if (was != p) return true;
+    for (size_t i = 0; i < d.frames.size(); ++i)
+        if (d.frames[i].side != before[i].side || d.frames[i].side_hand != before[i].side_hand) return true;
+    return false;
+}
+
+bool SwapSides(SoundData& d)
+{
+    LockSides(d);
+    switch (d.side_pattern) {
+    case SidePattern::AltLR: d.side_pattern = SidePattern::AltRL; break;
+    case SidePattern::AltRL: d.side_pattern = SidePattern::AltLR; break;
+    case SidePattern::AllLeft: d.side_pattern = SidePattern::AllRight; break;
+    case SidePattern::AllRight: d.side_pattern = SidePattern::AllLeft; break;
+    }
+    for (SoundFrame& f : d.frames) {
+        f.side = OtherSide(f.side);
+        f.side_hand = OtherSide(f.side_hand);
+    }
+    return true;
+}
+
+bool SetFrameSides(SoundData& d, const std::vector<int>& frames, char side)
+{
+    if (side != 0 && side != 'L' && side != 'R') return false;
+    LockSides(d);  // the others keep the side they show now
+    const std::vector<char> rule = FrameRuleSides(d);
+    bool                    changed = false;
+    for (int i : frames) {
+        if (i < 0 || static_cast<size_t>(i) >= d.frames.size()) continue;
+        const char want = side == rule[static_cast<size_t>(i)] ? 0 : side;
+        if (d.frames[static_cast<size_t>(i)].side_hand != want) {
+            d.frames[static_cast<size_t>(i)].side_hand = want;
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+bool ResetHandSides(SoundData& d)
+{
+    bool changed = false;
+    for (SoundFrame& f : d.frames)
+        if (f.side_hand != 0) {
+            f.side_hand = 0;
+            changed = true;
+        }
+    return changed;
+}
+
+SideCounts CountSides(const SoundData& d)
+{
+    SideCounts              c;
+    const std::vector<char> rule = FrameRuleSides(d);
+    const std::vector<char> s = FrameSides(d);
+    for (size_t i = 0; i < s.size(); ++i) {
+        (s[i] == 'L' ? c.left : c.right)++;
+        if (FrameSideByHand(d, rule, static_cast<int>(i))) ++c.hand;
+    }
+    return c;
+}
+
+void CarrySides(std::vector<SoundFrame>& now, const std::vector<SoundFrame>& old, SidePattern p, bool sides_on, bool by_index)
+{
+    bool any = sides_on;
+    for (const SoundFrame& f : old) any = any || f.side != 0 || f.side_hand != 0;
+    for (SoundFrame& f : now) f.side = f.side_hand = 0;
+    if (!any || old.empty()) return;
+    const std::vector<char> rule = FrameRuleSides(old, p);
+    for (size_t i = 0; i < now.size(); ++i) {
+        int best = -1;
+        if (by_index) {
+            if (i < old.size()) best = static_cast<int>(i);
+        } else {
+            double      most = 0.0;
+            const double a = now[i].start, b = now[i].start + now[i].length;
+            for (size_t k = 0; k < old.size(); ++k) {
+                const double ov = std::min(b, old[k].start + old[k].length) - std::max(a, old[k].start);
+                if (ov > most) {
+                    most = ov;
+                    best = static_cast<int>(k);
+                }
+            }
+        }
+        if (best < 0) continue;  // new: continues the alternation of its neighbours (FrameRuleSides)
+        now[i].side = rule[static_cast<size_t>(best)];
+        const char h = old[static_cast<size_t>(best)].side_hand;
+        now[i].side_hand = h == now[i].side ? 0 : h;
+    }
+    // Two new frames that took one old frame (it was split) keep its side both; then every side is written so the next
+    // re-detection keeps them too.
+    const std::vector<char> after = FrameRuleSides(now, p);
+    for (size_t i = 0; i < now.size(); ++i) now[i].side = after[i];
 }
 
 }  // namespace rav

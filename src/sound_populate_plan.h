@@ -79,6 +79,7 @@ struct EventDraw {
     std::string                  rid;
     double                       t = 0.0;
     const std::vector<SoundDraw>* prev = nullptr;
+    char                         side = 0;  // 13-73: the event's side ('L' / 'R', EventSide; 0 = none): SideVariations
     std::vector<SoundDraw>       out;
     std::set<std::string>        no_active;
     // 13-23 (A5): Sound uid -> the part (value uid; "" = the whole variation) none of its on variations

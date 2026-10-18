@@ -46,7 +46,6 @@
 #include "shortcuts.h"
 #include "view_nav.h"  // 13-45: Edit's wheel and zoom keys, as every timeline's
 #include "zone_wave_ui.h"  // 13-62h (Lot E1): a zoned Sound's waveform
-#include "shortcuts_ui.h"  // 13-73: RequestOpenShortcutsPopup
 #include "wave_draw_ui.h"  // 13-71: the one waveform drawer
 #include "sound_assign.h"  // RoleKeyLabel (13-23 role maps)
 #include "sound_audition.h"
@@ -4730,13 +4729,6 @@ void SoundSettingsCards(const SoundLibrary& lib, const SoundNode& n, const Sound
         ui::Section cs;
         if (ui::BeginSection(cs, "Channels")) {
             MonoControl(lib, n);  // 13-41
-            if (!StoreReplaced()) {
-                if (ui::SolidButton("\xE2\x8C\xA8 Shortcuts##monokeys")) RequestOpenShortcutsPopup("Mono:");
-                ui::ItemTipText("Shortcuts window, Sound Edit rows: Mono off / sum / left / right, linked to REAPER's keys "
-                                "(40176 / 40178 / 40179 / 40180)");
-                SameLineIfFits(ui::TextWidth("REAPER's take channel mode keys"));
-                FitText("REAPER's take channel mode keys", ui::kMuted);
-            }
         }
         ui::EndSection(cs);
         if (StoreReplaced()) return;

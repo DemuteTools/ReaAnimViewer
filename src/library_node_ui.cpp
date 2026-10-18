@@ -1631,7 +1631,7 @@ bool PartNumberRow(const SoundLibrary& lib, const SoundNode& n, const std::strin
     NumRow                      row = f.row;
     if (!row.unit) row.unit = NormModeUnit(PartNormModeOf(d, value));
     NumRowLook look;
-    look.label_w = ui::Dp(64.0f);
+    look.label_w = ui::kLabelCol;
     look.label_col = own ? ui::kText : ui::kMuted;
     look.text_col = own ? 0 : ui::kMuted;
     look.sign = f.field == PartField::Gain;
@@ -1687,7 +1687,7 @@ bool PartSegmentRow(const char* id, const char* label, const char* const* labels
 {
     ImGui::PushID(id);
     PartRowBar(own, col);
-    ui::LabelRow(label, ui::Dp(120.0f), ui::Dp(64.0f), own ? ui::kText : ui::kMuted);
+    ui::LabelRow(label, ui::Dp(120.0f), ui::kLabelCol, own ? ui::kText : ui::kMuted);
     int        sel = current;
     const bool hit = ui::Segmented("##seg", labels, count, &sel, 0.0f, -1, nullptr, nullptr, /*follow=*/!own);
     const int  hov = ui::SegmentedHovered();
@@ -1771,7 +1771,7 @@ static void PartSettingsRows(const char* id, int lib, const std::string& node_ui
                                      "The fader: moves the gain of every zone of this part by the same amount (they keep "
                                      "their differences); shows what it has applied"};
         NumRowLook look;
-        look.label_w = ui::Dp(64.0f);
+        look.label_w = ui::kLabelCol;
         look.sign = true;
         const NumRowOut o = SettingsNumberRow(n->uid + "/" + value + kGain.id, kGain, PartFaderDb(Shown(*n), value), look);
         if (PartFaderEdit(o.e, o.v, *l, *n, value, pname)) return stop();
@@ -1781,7 +1781,7 @@ static void PartSettingsRows(const char* id, int lib, const std::string& node_ui
         const bool          own = ps && ps->norm_mode;
         const NormMode      cur = PartNormModeOf(Shown(*n), value);
         PartRowBar(own, col);
-        const float w = ui::LabelRow("Normalize", ui::Dp(110.0f), ui::Dp(64.0f), own ? ui::kText : ui::kMuted);
+        const float w = ui::LabelRow("Normalize", ui::Dp(110.0f), ui::kLabelCol, own ? ui::kText : ui::kMuted);
         const float side = own ? ui::ControlH() + ImGui::GetStyle().ItemSpacing.x : 0.0f;
         if (ui::BeginComboStyled("##nmode", NormModeLabel(cur), std::max(ui::Dp(60.0f), w - side), 0, ui::TagTone::Neutral,
                                  /*follow=*/!own)) {
@@ -3630,7 +3630,7 @@ ZoneRowOut ZoneNumRow(const ZoneRowLook& k)
     o.v = k.value;
     ImGui::PushID(k.id);
     PartRowBar(k.bar != 0, k.bar);
-    ui::LabelRow(k.label, nw, ui::Dp(64.0f), ui::kText);
+    ui::LabelRow(k.label, nw, ui::kLabelCol, ui::kText);
     ImGui::BeginDisabled(k.disabled);
     o.e = ui::DragNumber("##num", &o.v, k.step, 1, k.unit, fw, /*trim=*/true, k.muted ? ui::kMuted : 0, k.sign);
     ImGui::EndDisabled();
@@ -4160,7 +4160,7 @@ void ZoneSelectionPanel(const SoundLibrary& lib, const SoundNode& n, const Sound
                 {[&]() {
                      ui::GroupCaption("Zone", ui::kMuted);
                      {  // Part: the zone given to another part (one undo point)
-                         const float w = ui::LabelRow("Part", ui::Dp(90.0f), ui::Dp(64.0f), ui::kText);
+                         const float w = ui::LabelRow("Part", ui::Dp(90.0f), ui::kLabelCol, ui::kText);
                          if (ui::BeginComboStyled("##zpart", pname.c_str(), w)) {
                              for (size_t k = 0; k < d.divide_values.size(); ++k) {
                                  const std::string& v = d.divide_values[k];
@@ -4341,7 +4341,7 @@ bool SoundZoneNumberRow(const NumRow& f, const SoundLibrary& lib, const SoundNod
                         const std::function<double(const SoundData&)>& get, const std::function<int(SoundData&, double)>& apply)
 {
     NumRowLook look;
-    look.label_w = ui::Dp(64.0f);
+    look.label_w = ui::kLabelCol;
     const NumRowOut           o = SettingsNumberRow(n.uid + f.id, f, get(Shown(n)), look);
     const ui::DragNumberEvent e = o.e;
     const double              v = o.v;
@@ -4407,7 +4407,7 @@ bool SoundEdgeRows(const SoundLibrary& lib, const SoundNode& n, const SoundMedia
         static const char* const kTips[3] = {"Where the first transient crosses the threshold", "The loudest transient's peak",
                                              "The zone's start, pre-roll included"};
         const SoundData& d = Shown(n);
-        ui::LabelRow("Snap offset", ui::Dp(120.0f), ui::Dp(64.0f), ui::kText);
+        ui::LabelRow("Snap offset", ui::Dp(120.0f), ui::kLabelCol, ui::kText);
         int        sel = static_cast<int>(d.sync_mode);
         const bool picked = ui::Segmented("##ssync", kModes, 3, &sel);
         const int  hov = ui::SegmentedHovered();
@@ -4446,7 +4446,7 @@ bool SoundLevelRows(const SoundLibrary& lib, const SoundNode& n)
 {
     LoadNormalizePrefs();
     {  // C1: the Sound's Normalize mode and target = the user's Level settings (every project; no undo point)
-        const float w = ui::LabelRow("Normalize", ui::Dp(110.0f), ui::Dp(64.0f), ui::kText);
+        const float w = ui::LabelRow("Normalize", ui::Dp(110.0f), ui::kLabelCol, ui::kText);
         if (ui::BeginComboStyled("##snmode", NormModeLabel(P.norm_mode), w)) {
             for (int k = 0; k < kNormModeCount; ++k) {
                 const NormMode md = static_cast<NormMode>(k);
@@ -4462,7 +4462,7 @@ bool SoundLevelRows(const SoundLibrary& lib, const SoundNode& n)
         const NumRow kTgt = {"##sntgt", "Target", NormModeUnit(P.norm_mode), 0.1, kNormTargetMin, kNormTargetMax, -60.0f, 0.0f,
                              "Normalize target: every part follows it unless it has its own (your setting, every project)"};
         NumRowLook look;
-        look.label_w = ui::Dp(64.0f);
+        look.label_w = ui::kLabelCol;
         const NumRowOut o = SettingsNumberRow(n.uid + kTgt.id, kTgt, P.norm_db, look);
         if (o.e == ui::DragNumberEvent::Commit) {
             const double now = std::clamp(std::round(o.v * 10.0) / 10.0, kNormTargetMin, kNormTargetMax);
@@ -4477,7 +4477,7 @@ bool SoundLevelRows(const SoundLibrary& lib, const SoundNode& n)
                                      "The fader: moves the gain of every zone by the same amount (they keep their differences); "
                                      "shows what it has applied"};
         NumRowLook look;
-        look.label_w = ui::Dp(64.0f);
+        look.label_w = ui::kLabelCol;
         look.sign = true;
         const NumRowOut o = SettingsNumberRow(n.uid + kGain.id, kGain, PartFaderDb(Shown(n), kWholePart), look);
         if (PartFaderEdit(o.e, o.v, lib, n, kWholePart, "Sound")) return true;

@@ -503,7 +503,9 @@ bool SameAutoAnalysis(const PhysicsParams& a, const PhysicsParams& b)
     for (int t = 0; t < kAutoTypeCount; ++t)
         for (const AutoSensField& sf : AutoTypeRow(static_cast<AutoType>(t)).sens)
             if (sf.field && !(a.*sf.field == b.*sf.field)) return false;
-    return a.hand_switch_cost == b.hand_switch_cost && a.looping == b.looping;
+    return a.hand_switch_cost == b.hand_switch_cost && a.looping == b.looping &&
+           a.hand_reach_frac == b.hand_reach_frac && a.hand_reach_floor == b.hand_reach_floor &&
+           a.hand_reach_window_s == b.hand_reach_window_s;  // story 10-8q
 }
 
 // ---- Detection ---------------------------------------------------------------------------------

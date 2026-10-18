@@ -106,9 +106,16 @@
 // moves is no contact; one the clip start or end cuts short counts. Its part is -1.
 //   grab          a counted contact's start, never at the clip start, approached at
 //                 hand_min_approach at least (a still hand drifting to rest is no grab).
-//                 Timed by hand_timing + hand_offset_s. Strength = the approach speed (leg/s).
+//                 Timed by hand_timing + hand_offset_s; Speed (the default) is, since story
+//                 10-8q, the first fall below max(hand_reach_floor, hand_reach_frac x the reach's
+//                 peak speed) after that peak (the peak within hand_reach_window_s before the
+//                 contact, after the previous one). Strength = the approach speed (leg/s).
 //   release       a counted contact's end (its lift-off time), never at the clip end, left at
-//                 hand_min_approach at least. Strength = the departure speed (leg/s).
+//                 hand_min_approach at least. Timed (10-8q) at the last rise above the same
+//                 fraction of the departure's peak before it. Strength = the departure speed.
+//                 No crossing (the hand never gets that slow): the contact speed's crossing.
+//                 The hand point is the hand bone: a finger point (the middle finger's first
+//                 bone) was measured and found worse (spec 10-8q).
 //   hand pivot    (story 10-8e) the planted hand turns: the foot pivot's rules with the hand's
 //                 own thresholds: the heading turns at >= hand_pivot_rate_dps for >= pivot_min_s
 //                 and sweeps >= hand_pivot_min_deg (the unwrapped heading's difference), the hand
@@ -351,6 +358,18 @@ struct PhysicsParams {
     double     hand_min_contact_s = 0.150;   // a shorter contact is a stop between two moves
     StepTiming hand_timing = StepTiming::Speed;
     double     hand_offset_s = 0.0;
+    // Story 10-8q: grab and release timed on the reach's own speed (10 % of its peak, the
+    // reach onset / offset of Schnorenberg et al. 2015), with an absolute floor against jitter;
+    // which contacts exist stays the absolute rule above. 0 = the absolute crossing (the old
+    // timing). Measured on the all-trigger bench (confirmed references, spec 10-8q): grab mean
+    // -14.3 -> +5.2 ms, median |err| 12.6 -> 4.1; release mean +56.0 -> -8.6, median 28.6 -> 28.2;
+    // no count change. 5 % / 15 % / 20 % / 30 % and a per-type release fraction were worse; the
+    // floor (0.02-0.10) moves nothing; a 0.3 s window drags grabs late, 1.0 s widens them.
+    // Under a +-0.05 leg/s change of hand_contact_speed the matched hand events move by 0 ms
+    // median (p90 5 ms) instead of 10.9 (p90 21.9).
+    double     hand_reach_frac = 0.10;
+    double     hand_reach_floor = 0.05;      // leg/s
+    double     hand_reach_window_s = 0.5;    // the reach's peak is searched this far from the contact
     // Hand pivots (story 10-8e): the foot's rate and angle (no hand pivot REF exists to choose
     // others); pivot_min_s, pivot_planted_s, pivot_smooth_ms and pivot_level_deg are shared.
     double     hand_pivot_rate_dps = 90.0;

@@ -1331,6 +1331,47 @@ int main()
         CHECK(StepsNear(Of(HandEvents(AnalyseMotion(t, sens), sens), PhysicsKind::Grab, 'R'), {1.0}, 0.03));
     }
     {
+        // Story 10-8q: the reach's own threshold. The right hand reaches at 2 leg/s, brakes evenly
+        // to rest at 1.0 s (0.8-1.0 s), rests, then speeds up evenly from 1.5 s to 2 leg/s at
+        // 1.7 s. 10 % of the peak (0.2 leg/s) is crossed at 0.98 s and 1.52 s; the absolute contact
+        // speed (0.4 leg/s, hand_reach_frac = 0) at 0.96 s and 1.54 s.
+        Options o;
+        o.dur = 2.5;
+        std::vector<BoneTrack> t = Rig(walk_l, walk_r, o);
+        const HandFn brake = [](double time) {
+            const double v = 2.0 * kLeg;  // m/s
+            double       d = v * std::min(time, 0.8);
+            if (time > 0.8) {
+                const double u = std::min(time, 1.0) - 0.8;
+                d += v * (u - u * u / 0.4);
+            }
+            if (time > 1.5) {
+                const double u = std::min(time, 1.7) - 1.5;
+                d += v * u * u / 0.4;
+            }
+            if (time > 1.7) d += v * (time - 1.7);
+            return Vec3d{0.3, 1.4 - 0.6 * d, 0.8 * d};
+        };
+        AddHands(t, HandStill(-0.3), brake, o);
+        const std::vector<PhysicsEvent> ev = HandEvents(AnalyseMotion(t));
+        CHECK(StepsNear(Of(ev, PhysicsKind::Grab, 'R'), {0.98}, 0.008));
+        CHECK(StepsNear(Of(ev, PhysicsKind::Release, 'R'), {1.52}, 0.008));
+        PhysicsParams abs_rule;
+        abs_rule.hand_reach_frac = 0.0;
+        const std::vector<PhysicsEvent> old = HandEvents(AnalyseMotion(t, abs_rule), abs_rule);
+        CHECK(StepsNear(Of(old, PhysicsKind::Grab, 'R'), {0.96}, 0.008));
+        CHECK(StepsNear(Of(old, PhysicsKind::Release, 'R'), {1.54}, 0.008));
+        // The fraction scales with the reach: the same move at 60 % of the speed is timed the same.
+        std::vector<BoneTrack> slow = Rig(walk_l, walk_r, o);
+        AddHands(slow, HandStill(-0.3), [&](double time) {
+            const Vec3d p = brake(time);
+            return Vec3d{p.x, 1.4 - 0.6 * (1.4 - p.y), 0.6 * p.z};
+        }, o);
+        const std::vector<PhysicsEvent> ev_slow = HandEvents(AnalyseMotion(slow));
+        CHECK(StepsNear(Of(ev_slow, PhysicsKind::Grab, 'R'), {0.98}, 0.008));
+        CHECK(StepsNear(Of(ev_slow, PhysicsKind::Release, 'R'), {1.52}, 0.008));
+    }
+    {
         // Still in the air: the right hand approaches at 0.7 leg/s (under the min approach), then
         // drifts at 0.2 leg/s (under the contact speed) to the end: no Grab, no Release.
         Options o;

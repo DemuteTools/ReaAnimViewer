@@ -413,6 +413,49 @@ void SegmentPart(PartTrack& pt, double leg, double rate, const PhysicsParams& p,
     pt.contacts = cs;
 }
 
+// Story 10-8q: a hand contact's grab (the Speed time) and release retimed on the reach's own
+// speed: grab = the first fall below max(floor, frac x the approach's peak) after that peak, release
+// = the last rise above max(floor, frac x the departure's peak) before it. The peaks are taken
+// within hand_reach_window_s (and the neighbouring contacts); the crossing within search_fwd_s of
+// the contact's start (grab) or end (release), as the absolute rule. No crossing: the absolute time stays.
+void HandReachTiming(PartTrack& pt, double rate, const PhysicsParams& p)
+{
+    if (!(p.hand_reach_frac > 0.0)) return;
+    const std::vector<double>& sp = pt.speed;
+    const int                  n = static_cast<int>(sp.size());
+    const int                  w = SamplesOf(p.hand_reach_window_s, rate);
+    const int                  fwd = SamplesOf(p.search_fwd_s, rate);
+    auto peak_at = [&](int a, int b) {
+        int m = std::max(0, a);
+        for (int i = m; i <= std::min(n - 1, b); ++i)
+            if (sp[static_cast<size_t>(i)] > sp[static_cast<size_t>(m)]) m = i;
+        return m;
+    };
+    std::vector<PartContact>& cs = pt.contacts;
+    for (size_t k = 0; k < cs.size(); ++k) {
+        PartContact& c = cs[k];
+        if (c.start > 0) {
+            const int    m = peak_at(std::max(k ? cs[k - 1].end : 0, c.start - w), c.start);
+            const double th = std::max(p.hand_reach_floor, p.hand_reach_frac * sp[static_cast<size_t>(m)]);
+            for (int j = m + 1; j < std::min(c.end, c.start + fwd + 1); ++j)
+                if (sp[static_cast<size_t>(j - 1)] >= th && sp[static_cast<size_t>(j)] < th) {
+                    c.step_s[static_cast<int>(StepTiming::Speed)] =
+                        CrossTime(j, sp[static_cast<size_t>(j - 1)], sp[static_cast<size_t>(j)], th, rate);
+                    break;
+                }
+        }
+        if (c.end < n) {
+            const int    m = peak_at(c.end, std::min(k + 1 < cs.size() ? cs[k + 1].start : n - 1, c.end + w));
+            const double th = std::max(p.hand_reach_floor, p.hand_reach_frac * sp[static_cast<size_t>(m)]);
+            for (int j = m; j > std::max(c.start, c.end - fwd - 1); --j)
+                if (sp[static_cast<size_t>(j - 1)] < th && sp[static_cast<size_t>(j)] >= th) {
+                    c.lift_s = CrossTime(j, sp[static_cast<size_t>(j - 1)], sp[static_cast<size_t>(j)], th, rate);
+                    break;
+                }
+        }
+    }
+}
+
 // Arrival at the clip end (story 10-8j): a part free at the last sample that brakes through the
 // arrival speed (arrival_speed_factor x contact_speed) in the last arrival_window_s, approached at
 // min_approach at least, and stays below it to the end gets a contact from the braking point: its
@@ -1234,6 +1277,7 @@ PhysicsAnalysis AnalyseTrack(const std::vector<BoneTrack>& rt, const PhysicsPara
         // with the hand's own reach (10 % of the reach's peak speed, Schnorenberg et al. 2015,
         // story 10-8q); gait-speed scaling is a foot rule.
         SegmentPart(pt, leg, rate, hp);
+        HandReachTiming(pt, rate, p);
 
         // The heading (story 10-8e): a bone-space axis perpendicular to the hand's mean up (the
         // mean of R^-1 . up over its contact samples), seen from above.

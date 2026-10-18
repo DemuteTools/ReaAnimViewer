@@ -777,6 +777,17 @@ static void TestFadeCurveHits()
     CHECK(h.kind == ZoneHitKind::Curve && h.z == (ZoneRef{0, 0}) && h.side < 0);
     CHECK(PressDragKind(h, false, false) == ZoneDragKind::Curve && DoubleActionOf(h) == ZoneDoubleAction::ResetCurve);
     CHECK(ZoneCursorOf(h) == ZoneCursor::ResizeNS && ZoneTip(d, h, {"Heel", "Toe"}, false).find("curve (Linear)") != std::string::npos);
+    // 13-75 review: Ctrl or Alt alone on a diamond is the click / gesture they are on any handle; the fade's ends stay
+    // its zone's edge (a 12 px fade's diamond would reach them).
+    CHECK(ZoneReservedOnMove(h, true, false) && ZoneReservedOnMove(h, false, true) && !ZoneReservedOnMove(h, false, false));
+    {
+        SoundData n = d;
+        n.frames[0].zones[0].fade_in = 0.012;  // 12 px: its diamond at 106
+        h = HitZones(n, v, 104.0f, 50.5f);
+        CHECK(h.kind == ZoneHitKind::Edge && h.side < 0);
+        h = HitZones(n, v, 106.0f, 50.5f);
+        CHECK(h.kind == ZoneHitKind::Curve);
+    }
     // On a convex curve the diamond goes up with it.
     SoundData c = d;
     CHECK(SetZonesFadeCurve(c, {{0, 0}}, -1, 3, NAN));

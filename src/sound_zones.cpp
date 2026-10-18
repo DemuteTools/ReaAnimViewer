@@ -1584,6 +1584,9 @@ FadeCurve ZoneFadeCurve(const SoundData& d, const ZoneRef& r, int side, bool cut
 {
     const EditZone* z = ZoneOf(d, r);
     if (!z || side == 0) return {};
+    // 13-75 review: a side cut at a Gap's edge is linear, as before 13-75: the zone's own curve on a side a Gap holds is
+    // never shown or edited (the Gap's is), so it must not be heard nor placed (an old project sounds the same).
+    if (!z->IsGap() && cut && (side < 0 ? ZoneOf(d, GapBefore(d, r)) : ZoneOf(d, GapAfter(d, r)))) return {};
     if (!z->IsGap() && !cut) {
         const std::pair<ZoneRef, int> h = FadeCurveHolder(d, r, side);
         if (h.first != r) return ZoneFadeCurve(d, h.first, h.second);
@@ -2577,7 +2580,8 @@ bool ResetZoneFade(SoundData& d, const ZoneRef& r, int side, const ZoneContext& 
     EditZone* z = LiveZone(d, r);
     if (!UsesZones(d) || !z || z->IsGap() || side == 0) return false;
     std::optional<double>& f = side < 0 ? z->fade_in : z->fade_out;
-    if (!f) return false;
+    // 13-75 review: a curve of its own (on a default length) is reset too.
+    if (!f && (side < 0 ? z->fade_in_shape : z->fade_out_shape) == 0 && !(side < 0 ? z->fade_in_dir : z->fade_out_dir)) return false;
     const Snap before = Take(d);
     f.reset();
     (side < 0 ? z->fade_in_shape : z->fade_out_shape) = 0;

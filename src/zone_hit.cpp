@@ -424,8 +424,14 @@ ZoneHit HitZones(const SoundData& d, const ZoneHitView& v, float x, float y)
         for (const FadeSpan& f : spans) {
             float fx = 0.0f, fy = 0.0f;
             if (!FadeDiamond(f, dp, &fx, &fy)) continue;
-            const float dd = std::hypot(x - fx, y - fy);
-            if (dd <= 6.0f * dp && (!best || dd < bd)) {
+            if (std::hypot(x - fx, y - fy) > 6.0f * dp) continue;
+            // 13-75 review: a zone's fade never takes its ends (its zone's edge, the fade length handle's x, a butted
+            // neighbour's edge or cut): those handles stay where they were.
+            if (!f.xfade && (std::fabs(x - f.x0) <= 5.0f * dp || std::fabs(x - f.x1) <= 5.0f * dp)) continue;
+            // Two diamonds on one spot (the Heard strip's crossfade, both sides in the overlap's middle): the curve
+            // nearest the mouse there (left of the crossing the falling one is above, the rising one below).
+            const float dd = std::fabs(y - FadeSpanY(f, x));
+            if (!best || dd < bd) {
                 best = &f;
                 bd = dd;
             }
@@ -481,12 +487,6 @@ ZoneHit HitZones(const SoundData& d, const ZoneHitView& v, float x, float y)
             }
         }
     }
-    if (const FadeSpan* f = diamond_at()) {  // 13-75
-        h.kind = ZoneHitKind::Curve;
-        h.z = f->z;
-        h.side = f->side;
-        return h;
-    }
     if (y >= 24.0f * dp && y <= 42.0f * dp)
         for (const ZoneLook* L : parts)
             if (std::fabs(x - X(L->snap)) <= 6.0f * dp) {
@@ -494,6 +494,12 @@ ZoneHit HitZones(const SoundData& d, const ZoneHitView& v, float x, float y)
                 h.z = L->ref;
                 return h;
             }
+    if (const FadeSpan* f = diamond_at()) {  // 13-75 (review: after the snap tag, which keeps its place)
+        h.kind = ZoneHitKind::Curve;
+        h.z = f->z;
+        h.side = f->side;
+        return h;
+    }
     if (y > v.h - 16.0f * dp) {
         for (size_t i = 0; i + 1 < looks.size(); ++i) {
             const ZoneLook &a = looks[i], &b = looks[i + 1];
@@ -581,7 +587,10 @@ ZoneDragKind PressDragKind(const ZoneHit& h, bool ctrl, bool alt)
 
 bool ZoneReservedOnMove(const ZoneHit& h, bool ctrl, bool alt)
 {
-    if (h.kind == ZoneHitKind::TselEdge || h.kind == ZoneHitKind::Curve) return false;  // like REAPER (13-75: Ctrl+Alt)
+    if (h.kind == ZoneHitKind::TselEdge) return false;  // the time selection's edge: like REAPER, no modifier
+    // 13-75: a curve drags with no modifier (its diamond) or with Ctrl+Alt (REAPER's curvature modifier); Ctrl or Alt
+    // alone is the click / gesture they are on any other handle (review: Ctrl+click on a diamond toggles the selection).
+    if (h.kind == ZoneHitKind::Curve) return ctrl != alt;
     if (ctrl) return true;
     switch (h.kind) {
     case ZoneHitKind::Edge:

@@ -1376,6 +1376,17 @@ void TestFadeCurves()
     CHECK(b.frames[0].zones[2].fade_out_shape == 4 && b.frames[0].zones[3].fade_out_shape == 4);
     CHECK(ZoneFadeCurve(b, {0, 0}, 1).shape == 4 && Near(ZoneFadeCurve(b, {0, 0}, 1).dir, -1.0));
     CHECK(ZoneFadeCurve(b, {0, 0}, 1, true) == FadeCurve{});  // cut at the Gap's edge: its own (linear)
+    {  // 13-75 review: a cut side is linear even when the zone keeps a curve of its own there (never shown: the Gap's is)
+        SoundData k = b;
+        k.frames[0].zones[0].fade_out_shape = 3;
+        k.frames[0].zones[0].fade_out_dir = 0.2;
+        CHECK(ZoneFadeCurve(k, {0, 0}, 1, true) == FadeCurve{} && ZoneFadeCurve(k, {0, 0}, 1).shape == 4);
+        // Its fade's reset (the length handle's double-click) takes a curve on a default length too.
+        k.frames[0].zones[3].fade_in.reset();
+        k.frames[0].zones[3].fade_in_shape = 2;
+        CHECK(ResetZoneFade(k, {0, 3}, -1, {}) && k.frames[0].zones[3].fade_in_shape == 0);
+        CHECK(!ResetZoneFade(k, {0, 3}, -1, {}));
+    }
     CHECK(ZoneFadeCurve(b, {0, 2}, -1) == FadeCurve{});      // the Gap's other side stays linear
     // The crossfade on its curve: Heel 1 at the overlap's middle (0.400) = (1 - 0.5)^4.
     CHECK(Near(ZoneEnv(b, {0, 0}, 0.400), 0.0625) && Near(ZoneEnv(b, {0, 2}, 0.450), 0.5));

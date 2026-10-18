@@ -31,6 +31,11 @@ bool (*g_store_edit_hook)(ReaProject*) = nullptr;  // 13-17 (SetSoundStoreEditHo
 
 std::map<ReaProject*, SoundStore> g_stores;
 uint64_t                          g_store_gen = 0;  // SoundStoreGeneration
+// Fix 2026-10-19 (Sound Edit writes slow): each project's store as written by its last ModifySoundStore (SerializeSoundStore
+// of g_stores[proj], exactly); absent = not known (a load, a project closed). A write compares with it instead of
+// serializing the store before, and REAPER's undo point / project save write it instead of serializing it again: one
+// serialization per write instead of three.
+std::map<ReaProject*, std::string> g_texts;
 // A <RAVSOUNDS chunk that did not read: its text is written back unchanged while the project's
 // store stays empty (a save never deletes a library it could not read).
 std::map<ReaProject*, std::string> g_unreadable;
@@ -86,6 +91,7 @@ bool ProcessExtensionLine(const char* line, ProjectStateContext* ctx, bool, proj
             g_unreadable[proj] = text;
         }
         g_stores[proj] = std::move(s);
+        g_texts.erase(proj);
         ++g_store_gen;
         return true;
     } catch (...) {
@@ -99,7 +105,10 @@ void SaveExtensionConfig(ProjectStateContext* ctx, bool, project_config_extensio
         if (!ctx) return;
         ReaProject*       proj = LoadSaveProject();
         const auto        it = g_stores.find(proj);
-        std::string       text = it == g_stores.end() ? std::string() : SerializeSoundStore(it->second);
+        const auto        known = g_texts.find(proj);
+        std::string       text = it == g_stores.end() ? std::string()
+                                 : known != g_texts.end() ? known->second
+                                                          : SerializeSoundStore(it->second);
         const auto        raw = g_unreadable.find(proj);
         if (text.empty() && raw != g_unreadable.end()) text = raw->second;
         if (text.empty()) return;  // an empty store writes no chunk (D1)
@@ -122,6 +131,7 @@ void BeginLoadProjectState(bool, project_config_extension_t*)
     try {
         ReaProject* proj = LoadSaveProject();
         g_stores.erase(proj);
+        g_texts.erase(proj);
         ++g_store_gen;
         g_unreadable.erase(proj);
     } catch (...) {
@@ -213,6 +223,7 @@ void QuitSoundProject()
     if (g_register && g_pcreg_on) g_register("-projectconfig", &g_pcreg);
     g_pcreg_on = false;
     g_stores.clear();
+    g_texts.clear();
     ++g_store_gen;
     g_unreadable.clear();
 }
@@ -256,11 +267,14 @@ bool ModifySoundStore(ReaProject* proj, const char* undo_desc, const std::functi
     try {
         proj = ProjectOrCurrent(proj);
         if (!proj || !edit) return false;
-        SoundStore copy = GetSoundStore(proj);
-        const std::string before = SerializeSoundStore(copy);
+        SoundStore        copy = GetSoundStore(proj);
+        const auto        known = g_texts.find(proj);
+        const std::string before = known != g_texts.end() ? known->second : SerializeSoundStore(copy);
         if (!edit(copy)) return false;
-        if (SerializeSoundStore(copy) == before) return false;
+        std::string after = SerializeSoundStore(copy);
+        if (after == before) return false;
         g_stores[proj] = std::move(copy);
+        g_texts[proj] = std::move(after);  // fix 2026-10-19: the undo point below writes it as is
         ++g_store_gen;
         MarkProjectDirty(proj);
         int states = UNDO_STATE_MISCCFG;

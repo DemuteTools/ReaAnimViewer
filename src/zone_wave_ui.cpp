@@ -233,12 +233,20 @@ bool Write(const ZoneWaveHost& h, const std::string& name, const ZoneFn& f, cons
     const std::string path = h.path;
     const double      len = h.file_len;
     const int         tl = h.tl;
+    // Fix 2026-10-19 (Sound Edit writes slow): the write runs at this frame's end; when the store has not changed since
+    // (its generation), the probe IS the result (the gesture on the same Sound with the same peaks): it is written as is
+    // instead of running the gesture (relayout, snaps measured on the samples) a second time on a copy of the peaks.
+    const uint64_t                   gen0 = SoundStoreGeneration();
+    const std::shared_ptr<SoundData> done = std::make_shared<SoundData>(std::move(probe));
     MarkOwn(v);
-    h.edit(name, [g, path, len, tl](SoundData& x) {
-        PeakData   pk;
-        const bool has = !path.empty() && RequestPeaks(path, &pk) == PeakState::Ready;
-        ZoneSel    s;
-        return g(x, ZoneContext{has ? &pk : nullptr, len, tl}, &s);
+    h.edit(name, [g, path, len, tl, gen0, done](SoundData& x) {
+        if (SoundStoreGeneration() == gen0) {
+            x = std::move(*done);
+            return true;
+        }
+        const PeakView* pk = PeaksOf(path);  // the view's (this frame's), with its sample reader
+        ZoneSel         s;
+        return g(x, ZoneContext{pk, len, tl}, &s);
     }, msg);
     return true;
 }

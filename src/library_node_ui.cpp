@@ -3590,7 +3590,15 @@ bool ZoneWriteNow(const SoundLibrary& lib, const SoundNode& n, const SoundMedia&
     MarkZoneOwn();
     const std::string path = m.path;
     const double      len = m.source_len;
-    EditNode(name, lib.uid, n.uid, [f, path, len](SoundNode& x) {
+    // Fix 2026-10-19 (Sound Edit writes slow): the store unchanged since the probe (its generation): the probe is written
+    // as is (no second run of the gesture, no copy of the peaks).
+    const uint64_t                   gen0 = SoundStoreGeneration();
+    const std::shared_ptr<SoundData> done = std::make_shared<SoundData>(std::move(probe));
+    EditNode(name, lib.uid, n.uid, [f, path, len, gen0, done](SoundNode& x) {
+        if (SoundStoreGeneration() == gen0) {
+            x.sound = std::move(*done);
+            return true;
+        }
         PeakData   pk;
         const bool has = !path.empty() && RequestPeaks(path, &pk) == PeakState::Ready;
         ZoneSel    s;

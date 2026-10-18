@@ -94,6 +94,10 @@ struct EditZone {
         // Fix 2026-10-19: measured on the file's samples (PeakData::samples), not on its peak bins (a few ms
         // early): one measured on the bins is measured again as soon as the samples can be read.
         bool   fine = false;
+        // Freeze audit #2, runtime only (neither saved nor compared): `rough` = measured on the bins during a live
+        // drag (its commit measures it on the samples: SettleZoneSnaps); `tried` = the samples could not settle it
+        // for these values (silence, a span too long, a file that does not open): not read again until it changes.
+        bool   rough = false, tried = false;
         bool operator==(const AutoSnap& o) const
         {
             return set == o.set && (!set || (t == o.t && a == o.a && b == o.b && thr == o.thr && off == o.off && mode == o.mode &&

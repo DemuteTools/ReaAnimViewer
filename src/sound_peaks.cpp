@@ -837,12 +837,23 @@ struct FineMemo {
 std::map<std::string, FineSource>& g_fine_src = *new std::map<std::string, FineSource>();  // by PeakCacheKey
 std::vector<FineMemo>&             g_fine_memo = *new std::vector<FineMemo>();
 uint64_t                           g_fine_tick = 0;
+// Freeze audit #2: a file whose source did not open, by key, with the version tried and when: not opened again (a
+// disk call on the UI thread at each ask) for kFineRetrySeconds, unless the file changed.
+struct FineFail {
+    FileVersion version;
+    double      at = 0.0;
+};
+std::map<std::string, FineFail>& g_fine_fail = *new std::map<std::string, FineFail>();
+constexpr double                 kFineRetrySeconds = 10.0;
+// Freeze audit #2: the most seconds one ask reads (AutoSync asks at most kFineSyncMaxSeconds, 30 s).
+constexpr double kFineMaxSeconds = 60.0;
 
 void DropFineSources()
 {
     for (auto& kv : g_fine_src) delete kv.second.src;
     g_fine_src.clear();
     g_fine_memo.clear();
+    g_fine_fail.clear();
 }
 
 // The source of `key` for a samples read, opened when missing (or the file changed); null when it does not open.
@@ -855,8 +866,15 @@ PCM_source* FineSourceOf(const std::string& key, const Entry& e)
         it = g_fine_src.end();
     }
     if (it == g_fine_src.end()) {
+        const auto failed = g_fine_fail.find(key);
+        if (failed != g_fine_fail.end() && failed->second.version == e.version && NowSeconds() - failed->second.at < kFineRetrySeconds)
+            return nullptr;
         PCM_source* s = OpenSource(e.path, nullptr);
-        if (!s) return nullptr;
+        if (!s) {
+            g_fine_fail[key] = FineFail{e.version, NowSeconds()};
+            return nullptr;
+        }
+        g_fine_fail.erase(key);
         while (g_fine_src.size() >= kFineSources) {
             auto oldest = g_fine_src.begin();
             for (auto o = g_fine_src.begin(); o != g_fine_src.end(); ++o)
@@ -874,7 +892,7 @@ PCM_source* FineSourceOf(const std::string& key, const Entry& e)
 // not Ready (it is read again) or it does not open. UI thread only.
 std::shared_ptr<const SampleMags> FineSamples(const std::string& key, double t0, double t1)
 {
-    if (g_quit || !(t1 > t0) || !std::isfinite(t0) || !std::isfinite(t1)) return nullptr;
+    if (g_quit || !(t1 > t0) || !std::isfinite(t0) || !std::isfinite(t1) || t1 - t0 > kFineMaxSeconds) return nullptr;
     const auto e = g_cache.find(key);
     if (e == g_cache.end() || e->second.state != PeakState::Ready || !(e->second.sr > 0.0) || e->second.nch < 1) return nullptr;
     const Entry&  en = e->second;

@@ -177,7 +177,9 @@ std::vector<double> AutoCuts(const PeakData* peaks, const SoundFrame& frame, int
 // Fix 2026-10-19: with the file's samples (PeakData::samples) Attack / Peak land on the sample (Peak = the frame of
 // the largest |sample|, Attack = the first frame reaching the level above), `*fine` = true; else on the bins (a bin's
 // start: up to a bin early).
-double AutoSync(const SoundData& data, const PeakData* peaks, const std::vector<PartSpan>& spans, bool* fine = nullptr);
+// Freeze audit #2: `samples` false = on the peak bins only (a live drag's frame), never a read of the file.
+double AutoSync(const SoundData& data, const PeakData* peaks, const std::vector<PartSpan>& spans, bool* fine = nullptr,
+                bool samples = true);
 // Keeps a time inside the spans (the nearest span edge when it falls between or outside them).
 double ClampIntoSpans(const std::vector<PartSpan>& spans, double t);
 // Refreshes one variation's cuts and sync points (every write that changes frames, detection, divide,

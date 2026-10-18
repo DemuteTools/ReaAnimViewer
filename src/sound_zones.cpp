@@ -182,6 +182,9 @@ struct Work {
             for (const EditZone& z : data.frames[f].zones) zs.push_back({static_cast<int>(f), nid++, z});
         }
     }
+    // Freeze audit #2: from a gesture's context (a live drag's frame: `live`).
+    Work(SoundData& data, const ZoneContext& c) : Work(data, c.peaks, c.file_len, c.tl) { live = c.live; }
+    bool live = false;
     bool isLoaded(int f) const { return f < 0 || static_cast<size_t>(f) >= loaded.size() || loaded[static_cast<size_t>(f)]; }
 
     bool gap(int i) const { return zs[static_cast<size_t>(i)].z.IsGap(); }
@@ -697,7 +700,9 @@ bool AutoSnapHolds(const SoundData& d, const EditZone& z)
 // 13-62h review (R2): with the peaks, every part zone of an on variation that has no snap of its own (and whose
 // part's Sync point reads the audio: Attack / Peak) gets its automatic snap measured and stored, unless the stored
 // one still holds.
-void MeasureAutoSnaps(SoundData& d, const PeakView* peaks, int tl)
+// Freeze audit #2: `live` (a drag's frame) measures what moved on the bins only (`rough`, settled at the commit) and
+// keeps every snap that still holds; one whose samples could not settle it (`tried`) is not read again until it changes.
+void MeasureAutoSnaps(SoundData& d, const PeakView* peaks, int tl, bool live = false)
 {
     if (!HasPeaks(peaks)) return;
     const int ctl = NormTl(d, tl);
@@ -706,13 +711,16 @@ void MeasureAutoSnaps(SoundData& d, const PeakView* peaks, int tl)
         if (!f.on || ctl < 0 || ZoneTimeline(d, static_cast<int>(v)) != ctl) continue;  // 13-62i: its timeline's peaks only
         for (EditZone& z : f.zones) {
             // Only what moved (a drag stays cheap), and (fix 2026-10-19) one measured on the bins once the samples read.
-            if (z.IsGap() || z.snap || (AutoSnapHolds(d, z) && (z.auto_snap.fine || !peaks->samples))) continue;
+            if (z.IsGap() || z.snap) continue;
+            if (AutoSnapHolds(d, z) && (live || z.auto_snap.fine || z.auto_snap.tried || !peaks->samples)) continue;
             const SyncMode mode = PartSyncMode(d, z.part);
             if (mode == SyncMode::SliceStart) continue;
             const double off_ms = PartSyncOffsetMs(d, z.part);
             EditZone::AutoSnap m;
             m.set = true;
-            m.t = Clamp(AutoSync(d, peaks, {PartSpan{z.part, z.a, z.b - z.a}}, &m.fine), z.a, z.b);
+            m.t = Clamp(AutoSync(d, peaks, {PartSpan{z.part, z.a, z.b - z.a}}, &m.fine, !live), z.a, z.b);
+            m.rough = live;
+            m.tried = !live && !m.fine && peaks->samples;
             m.a = z.a;
             m.b = z.b;
             m.mode = static_cast<int>(mode);
@@ -744,7 +752,7 @@ bool Finish(Work& w, const Snap& before, ZoneSel* sel, const std::vector<int>& i
     w.relayout();
     std::map<int, ZoneRef> where;
     w.store(&where);
-    MeasureAutoSnaps(*w.d, w.peaks, w.ctl);
+    MeasureAutoSnaps(*w.d, w.peaks, w.ctl, w.live);
     RelayoutOffFrames(*w.d, w.peaks, w.ctl);  // a setting a gesture changed lays the off variations out too
     for (size_t f = 0; f < touched.size() && f < w.d->frames.size(); ++f)
         if (touched[f]) {
@@ -776,7 +784,7 @@ bool FinishKeep(Work& w, const Snap& before, const ZoneSel* in, ZoneSel* out)
 // A direct edit's relayout (the zone count unchanged by the edit itself), the selection re-resolved.
 void Relay(SoundData& d, const ZoneContext& ctx, ZoneSel* sel, const Snap* before = nullptr)
 {
-    Work                   w(d, ctx.peaks, ctx.file_len, ctx.tl);
+    Work                   w(d, ctx);
     const std::vector<int> ids = sel ? IdsOf(d, *sel) : std::vector<int>();
     const Snap             now = Take(d);
     Finish(w, before ? *before : now, sel, ids);
@@ -984,6 +992,11 @@ void RelayoutOn(SoundData& d, const PeakView* peaks, double file_len, int tl)
 }
 
 }  // namespace
+
+void SettleZoneSnaps(SoundData& d, const ZoneContext& ctx)
+{
+    MeasureAutoSnaps(d, ctx.peaks, ctx.tl);
+}
 
 void RelayoutZones(SoundData& d, const PeakView* peaks, double file_len, int tl)
 {
@@ -1562,7 +1575,10 @@ ZoneSnapInfo ZoneSnap(const SoundData& d, const ZoneRef& r, const PeakView* peak
     const SyncMode mode = PartSyncMode(d, z->part);
     // 13-62h review (R2): as measured on the peaks; fix 2026-10-19: one measured on the bins only while the samples
     // cannot be read (it sat up to a bin early).
-    if (mode != SyncMode::SliceStart && AutoSnapHolds(d, *z) && (z->auto_snap.fine || !peaks || !peaks->samples)) {
+    // Freeze audit #2: also one measured on the bins during a live drag (rough) or one the samples could not settle
+    // (tried): never a read of the samples per call (each frame draws it).
+    if (mode != SyncMode::SliceStart && AutoSnapHolds(d, *z) &&
+        (z->auto_snap.fine || z->auto_snap.rough || z->auto_snap.tried || !peaks || !peaks->samples)) {
         out.t = Clamp(z->auto_snap.t, z->a, z->b);
         return out;
     }
@@ -1673,7 +1689,7 @@ bool CutOut(SoundData& d, double x0, double x1, const ZoneContext& ctx, ZoneSel*
 {
     if (!UsesZones(d) || !Valid(x0) || !Valid(x1) || !(x1 > x0)) return false;
     const Snap before = Take(d);
-    Work       w(d, ctx.peaks, ctx.file_len, ctx.tl);
+    Work       w(d, ctx);
     w.cutOut(x0, x1);
     return FinishKeep(w, before, sel, sel);
 }
@@ -1683,7 +1699,7 @@ bool MakeGap(SoundData& d, double x0, double x1, const ZoneContext& ctx, bool* m
     if (made) *made = false;
     if (!UsesZones(d) || !Valid(x0) || !Valid(x1) || !(x1 - x0 >= kMinZone)) return false;
     const Snap before = Take(d);
-    Work       w(d, ctx.peaks, ctx.file_len, ctx.tl);
+    Work       w(d, ctx);
     for (size_t q = 0; q < w.zs.size(); ++q) {  // a Gap over Gaps: one Gap (13-62i: on its timeline)
         const EditZone& z = w.zs[q].z;
         if (z.IsGap() && w.onCtx(static_cast<int>(q)) && z.b >= x0 && z.a <= x1) {
@@ -1723,7 +1739,7 @@ bool NewZone(SoundData& d, const std::string& part, double x0, double x1, const 
     if (ctx.file_len > 0.0) x1 = std::min(ctx.file_len, x1);
     if (!(x1 - x0 >= kMinZone)) return false;
     const Snap before = Take(d);
-    Work       w(d, ctx.peaks, ctx.file_len, ctx.tl);
+    Work       w(d, ctx);
     int        frame = w.nearestFrame(x0);
     if (frame < 0 && d.mode == DetectMode::Takes) return false;  // 13-62i: a take is a variation; none is made
     if (frame < 0) {  // no variation at all: a new one
@@ -1747,7 +1763,7 @@ bool FillGap(SoundData& d, const ZoneRef& gap, const ZoneContext& ctx, ZoneSel* 
     const EditZone* gz = LiveZone(d, gap);
     if (!UsesZones(d) || !gz || !gz->IsGap()) return false;
     const Snap before = Take(d);
-    Work       w(d, ctx.peaks, ctx.file_len, ctx.tl);
+    Work       w(d, ctx);
     const int  g = w.byId(IdOf(d, gap));
     if (g < 0) return false;
     const int  l = w.gapLeft(g);
@@ -1770,7 +1786,7 @@ bool SplitZoneAt(SoundData& d, double t, const ZoneContext& ctx, ZoneSel* sel)
     const EditZone* z = LiveZone(d, r);
     if (!z || z->IsGap() || t - z->a < kMinZone || z->b - t < kMinZone) return false;
     const Snap before = Take(d);
-    Work       w(d, ctx.peaks, ctx.file_len, ctx.tl);
+    Work       w(d, ctx);
     const int  i = w.byId(IdOf(d, r));
     if (i < 0) return false;
     EditZone   rz = w.mkZone(w.Z(i).part, t, w.Z(i).slot_b);
@@ -1797,7 +1813,7 @@ bool TrimZonesAt(SoundData& d, const ZoneSel& sel, double t, int side, const Zon
 {
     if (!UsesZones(d) || !Valid(t) || side == 0) return false;
     const Snap       before = Take(d);
-    Work             w(d, ctx.peaks, ctx.file_len, ctx.tl);
+    Work             w(d, ctx);
     std::vector<int> L;
     for (int id : IdsOf(d, sel)) {
         const int i = w.byId(id);
@@ -1831,7 +1847,7 @@ bool TrimZonesTo(SoundData& d, const ZoneSel& sel, double a, double b, const Zon
     if (b < a) std::swap(a, b);
     if (b - a < kMinZone) return false;
     const Snap       before = Take(d);
-    Work             w(d, ctx.peaks, ctx.file_len, ctx.tl);
+    Work             w(d, ctx);
     std::vector<int> L;
     for (int id : IdsOf(d, sel)) {
         const int i = w.byId(id);
@@ -1867,7 +1883,7 @@ bool HealZones(SoundData& d, ZoneSel& sel, const ZoneContext& ctx, bool* mixed)
     const std::vector<int> ids = IdsOf(d, sel);
     if (ids.size() < 2) return false;
     const Snap       before = Take(d);
-    Work             w(d, ctx.peaks, ctx.file_len, ctx.tl);
+    Work             w(d, ctx);
     std::vector<int> L;  // ids, time order
     for (int id : ids)
         if (w.byId(id) >= 0) L.push_back(id);
@@ -1917,7 +1933,7 @@ bool DeleteZones(SoundData& d, ZoneSel& sel, const ZoneContext& ctx)
     const std::vector<int> ids = IdsOf(d, sel);
     if (ids.empty()) return false;
     const Snap before = Take(d);
-    Work       w(d, ctx.peaks, ctx.file_len, ctx.tl);
+    Work       w(d, ctx);
     for (int id : ids) {  // Gaps first: given to the zone on their left
         const int g = w.byId(id);
         if (g < 0 || !w.gap(g)) continue;
@@ -1943,7 +1959,7 @@ bool GiveZonesPart(SoundData& d, const ZoneSel& sel, const std::string& part, co
 {
     if (!UsesZones(d) || PartIndex(d, part) < 0) return false;
     const Snap before = Take(d);
-    Work       w(d, ctx.peaks, ctx.file_len, ctx.tl);
+    Work       w(d, ctx);
     for (int id : IdsOf(d, sel)) {
         const int i = w.byId(id);
         if (i >= 0 && !w.gap(i)) w.Z(i).part = part;
@@ -1972,7 +1988,7 @@ bool MoveZone(SoundData& d, const ZoneRef& r, double delta, const ZoneContext& c
     const double dd = MoveRange(d, r, delta, ctx.file_len);
     if (std::fabs(dd) < 1e-12) return false;
     const Snap before = Take(d);
-    Work       w(d, ctx.peaks, ctx.file_len, ctx.tl);
+    Work       w(d, ctx);
     const int  id = IdOf(d, r);
     const int  i = w.byId(id);
     if (i < 0) return false;
@@ -2040,7 +2056,7 @@ bool MoveChain(SoundData& d, const ZoneRef& r, double delta, const ZoneContext& 
     const double dd = MoveChainRange(d, r, delta, ctx.file_len);
     if (std::fabs(dd) < 1e-12) return false;
     const Snap             before = Take(d);
-    Work                   w(d, ctx.peaks, ctx.file_len, ctx.tl);
+    Work                   w(d, ctx);
     const std::vector<int> ids = IdsOf(d, it);
     const int              fi = w.byId(IdOf(d, it.front())), li = w.byId(IdOf(d, it.back()));
     if (fi < 0 || li < 0) return false;
@@ -2193,7 +2209,7 @@ bool MoveZones(SoundData& d, const ZoneSel& sel, double delta, const ZoneContext
     if (std::fabs(dd) < 1e-12) return false;
     const std::vector<MoveRun> runs = MoveRuns(d, moved);
     const Snap                 before = Take(d);
-    Work                       w(d, ctx.peaks, ctx.file_len, ctx.tl);
+    Work                       w(d, ctx);
     std::vector<int>           ids = IdsOf(d, sel);  // the selection kept (an item's members joined it)
     for (int id : IdsOf(d, moved))
         if (std::find(ids.begin(), ids.end(), id) == ids.end()) ids.push_back(id);
@@ -2248,7 +2264,7 @@ bool DragZoneEdge(SoundData& d, const ZoneRef& r, int side, double t, const Zone
 {
     if (!UsesZones(d) || !Valid(t) || side == 0 || !FreeSide(d, r, side)) return false;  // held by a Gap: false
     const Snap before = Take(d);
-    Work       w(d, ctx.peaks, ctx.file_len, ctx.tl);
+    Work       w(d, ctx);
     const int  i = w.byId(IdOf(d, r));
     if (i < 0 || !EdgeTo(w, i, side, t)) return false;
     return FinishKeep(w, before, sel, sel);
@@ -2260,7 +2276,7 @@ bool DragZonesEdge(SoundData& d, const ZoneSel& sel, const ZoneRef& r, int side,
     const EditZone* z0 = ZoneOf(d, r);
     const double    delta = t - (side < 0 ? z0->a : z0->b);
     const Snap      before = Take(d);
-    Work            w(d, ctx.peaks, ctx.file_len, ctx.tl);
+    Work            w(d, ctx);
     ZoneSel         all = {r};
     for (const ZoneRef& q : sel)
         if (std::find(all.begin(), all.end(), q) == all.end()) all.push_back(q);
@@ -2291,7 +2307,7 @@ bool DragCut(SoundData& d, const ZoneRef& r, double t, const ZoneContext& ctx, Z
     if (hi < lo) return false;
     const double c = Clamp(t, lo, hi);
     const Snap   before = Take(d);
-    Work         w(d, ctx.peaks, ctx.file_len, ctx.tl);
+    Work         w(d, ctx);
     EditZone&    x = w.Z(w.byId(IdOf(d, r)));
     x.b = c;
     x.slot_b = c;
@@ -2309,7 +2325,7 @@ bool DragGapEdge(SoundData& d, const ZoneRef& gap, int side, double t, const Zon
     const EditZone* g0 = LiveZone(d, gap);
     if (!UsesZones(d) || !g0 || !g0->IsGap() || !Valid(t) || side == 0) return false;
     const Snap before = Take(d);
-    Work       w(d, ctx.peaks, ctx.file_len, ctx.tl);
+    Work       w(d, ctx);
     const int  g = w.byId(IdOf(d, gap));
     if (g < 0) return false;
     const int  l = w.gapLeft(g), r = w.gapRight(g);

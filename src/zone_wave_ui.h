@@ -160,6 +160,7 @@ struct ZoneWaveHost {
     std::function<void(const std::string& name, const std::string& toast)> commit;  // CommitLive
     std::function<void()>    cancel;              // CancelLive
     std::function<bool()>    live_now;            // a live draft is being shown
+    std::function<SoundData*()> draft;            // freeze audit #2: that draft as it is (no restart); null = none
     // One write (one undo point): f on the stored Sound's data.
     std::function<void(const std::string& name, std::function<bool(SoundData&)> f, const std::string& toast)> edit;
     std::function<bool()>    store_replaced;

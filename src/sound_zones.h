@@ -44,6 +44,9 @@ struct ZoneContext {
     const PeakView* peaks = nullptr;
     double          file_len = 0.0;
     int             tl = -1;
+    // Freeze audit #2: a live drag's frame. The automatic snaps that moved are measured on the peak bins only (no
+    // read of the file's samples each frame); SettleZoneSnaps measures them on the samples once, at the commit.
+    bool            live = false;
 };
 
 // A zone: its variation and its index in that variation's zones.
@@ -96,6 +99,9 @@ std::string ZonesProblem(const SoundData& d, double file_len);
 // a variation left with no zone is turned off.
 // 13-62i: `peaks` and `file_len` are timeline `tl`'s (the other timelines are laid out without them).
 void RelayoutZones(SoundData& d, const PeakView* peaks, double file_len = 0.0, int tl = -1);
+// Freeze audit #2: the automatic snaps a live drag measured on the bins (ZoneContext::live) measured on the samples, as
+// a gesture's write measures them: run once on the draft before its commit.
+void SettleZoneSnaps(SoundData& d, const ZoneContext& ctx);
 // After a read: every zone made sane (RelayoutZones without peaks; an off variation's zones too, on their own); an on
 // variation with none gets ProposeZones. ZonesProblem is "" after it.
 void SanitizeZones(SoundData& d);

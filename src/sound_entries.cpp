@@ -1003,14 +1003,14 @@ bool FineSync(const SoundData& data, const PeakData& peaks, SyncMode mode, const
 
 }  // namespace
 
-double AutoSync(const SoundData& data, const PeakData* peaks, const std::vector<PartSpan>& spans, bool* fine)
+double AutoSync(const SoundData& data, const PeakData* peaks, const std::vector<PartSpan>& spans, bool* fine, bool samples)
 {
     if (fine) *fine = false;
     if (spans.empty()) return -1.0;
     double         base = spans.front().start;
     const SyncMode mode = PartSyncMode(data, spans.front().value_uid);  // 13-62: the part's own, else the Sound's
     double         t = 0.0;
-    if (mode != SyncMode::SliceStart && peaks && FineSync(data, *peaks, mode, spans, &t)) {
+    if (mode != SyncMode::SliceStart && peaks && samples && FineSync(data, *peaks, mode, spans, &t)) {
         base = t;
         if (fine) *fine = true;
     } else if (mode != SyncMode::SliceStart && HasPeaks(peaks)) {

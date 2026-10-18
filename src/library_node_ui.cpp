@@ -2470,6 +2470,7 @@ ZoneWaveHost ZoneHost(const SoundLibrary& lib, const SoundNode& n, const SoundMe
     h.commit = [lib_uid, uid](const std::string& name, const std::string& toast) { CommitLive(name, lib_uid, uid, toast); };
     h.cancel = [] { CancelLive(); };
     h.live_now = [uid] { return P.phase.Shows(uid); };
+    h.draft = [uid]() -> SoundData* { return P.phase.Shows(uid) ? &P.draft : nullptr; };
     h.edit = [lib_uid, uid](const std::string& name, std::function<bool(SoundData&)> f, const std::string& toast) {
         EditNode(name, lib_uid, uid, [f](SoundNode& x) { return f(x.sound); }, toast);
     };

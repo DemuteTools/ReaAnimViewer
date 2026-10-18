@@ -1478,6 +1478,66 @@ void TestGroupGestures()
     CHECK(Near(*At(d, 0, 0).snap, 0.15) && Near(*At(d, 0, 3).snap, 0.80));
 }
 
+
+// Freeze audit #2: a live drag never reads the file's samples (its snaps on the bins, `rough`), its commit measures
+// them once (SettleZoneSnaps) to what a measure at each frame gave; a zone the samples could not settle (`tried`) is
+// not read again until it changes.
+void TestLiveDragSnaps()
+{
+    int            reads = 0;
+    const PeakData fine = SynthPeaks(true);
+    PeakData       counted = fine;
+    counted.samples = [&reads, &fine](double t0, double t1) {
+        ++reads;
+        return fine.samples(t0, t1);
+    };
+    SoundData d = With({Z(kHeel, 0.195, 0.250), Z(kToe, 0.250, 0.330)});
+    d.sync_mode = SyncMode::Peak;
+    d.sync_offset_ms = 0.0;
+    RelayoutZones(d, &counted, 3.0);
+    CHECK(At(d, 0, 0).auto_snap.fine && At(d, 0, 1).auto_snap.fine);
+    ZoneContext full{&counted, 3.0, 0};
+    ZoneContext live = full;
+    live.live = true;
+    SoundData whole = d, drag = d;
+    CHECK(DragZoneEdge(whole, {0, 0}, -1, 0.180, full));  // as before: measured on the samples at once
+    reads = 0;
+    for (double t : {0.192, 0.188, 0.184, 0.180}) {  // a drag's frames, each from the snapshot
+        drag = d;
+        CHECK(DragZoneEdge(drag, {0, 0}, -1, t, live));
+        CHECK(Near(ZoneSnap(drag, {0, 0}, &counted).t, At(drag, 0, 0).auto_snap.t, 1e-12));  // drawn: the rough one
+    }
+    CHECK(reads == 0);
+    CHECK(At(drag, 0, 0).auto_snap.rough && !At(drag, 0, 0).auto_snap.fine);
+    SettleZoneSnaps(drag, full);  // the commit
+    CHECK(reads > 0);
+    for (int k = 0; k < 2; ++k) {
+        CHECK(At(drag, 0, k).auto_snap == At(whole, 0, k).auto_snap && Near(At(drag, 0, k).a, At(whole, 0, k).a, 0.0));
+        CHECK(!At(drag, 0, k).auto_snap.rough);
+    }
+    CHECK(SerializeSoundStore(StoreOf(drag)) == SerializeSoundStore(StoreOf(whole)));  // saved the same
+    {  // samples that cannot be read: tried once for these values, then never again until the zone changes
+        PeakData none = fine;
+        none.samples = [&reads](double, double) {
+            ++reads;
+            return std::shared_ptr<const SampleMags>();
+        };
+        SoundData e = With({Z(kHeel, 0.195, 0.250)});
+        e.sync_mode = SyncMode::Peak;
+        e.sync_offset_ms = 0.0;
+        reads = 0;
+        RelayoutZones(e, &none, 3.0);
+        const int once = reads;
+        CHECK(once > 0 && At(e, 0, 0).auto_snap.tried && !At(e, 0, 0).auto_snap.fine);
+        CHECK(Near(ZoneSnap(e, {0, 0}, &none).t, 0.201, 1e-9));  // the bins' measure, each frame without a read
+        RelayoutZones(e, &none, 3.0);
+        CHECK(reads == once);
+        ZoneContext c{&none, 3.0, 0};
+        CHECK(DragZoneEdge(e, {0, 0}, -1, 0.190, c));  // it changed: tried again
+        CHECK(reads > once);
+    }
+}
+
 int main()
 {
     TestTailCaps();  // 13-67b
@@ -1496,6 +1556,7 @@ int main()
     TestGroupGestures();
     TestUndividedAndTakes();
     TestSampleAccurateSnap();  // fix 2026-10-19
+    TestLiveDragSnaps();       // freeze audit #2
     TestFuzz();
     if (g_fails) {
         std::printf("sound_zones_test: %d failure(s)\n", g_fails);

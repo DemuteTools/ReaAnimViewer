@@ -220,6 +220,10 @@ void MarkOwn(ZoneEditView& v)
 void Commit(const ZoneWaveHost& h, const std::string& name, const std::string& toast)
 {
     MarkOwn(*h.view);
+    // Freeze audit #2: the drag measured the automatic snaps that moved on the peak bins only (ZoneContext::live);
+    // measured on the samples once, here, so the write is what a measure at each frame gave.
+    if (h.draft)
+        if (SoundData* d = h.draft()) SettleZoneSnaps(*d, Ctx(h));
     h.commit(name, toast);
 }
 
@@ -1102,7 +1106,8 @@ void DragMove(const ZoneWaveHost& h, double t, float dx, float dy, double px_per
         if (g.kind == ZoneDragKind::Edge || g.kind == ZoneDragKind::Fade || g.kind == ZoneDragKind::Snap)
             g.group = GroupDragZones(Stored(h), SelValid(Stored(h), v.sel), g.hit.z);  // fix 2026-10-19
     }
-    const ZoneContext c = Ctx(h);
+    ZoneContext c = Ctx(h);
+    c.live = true;  // freeze audit #2: no read of the file's samples at each frame (Commit settles the snaps)
     if (!g.group.empty() && (g.kind == ZoneDragKind::Move || g.kind == ZoneDragKind::MoveChain)) {
         // Fix 2026-10-19: every selected zone (items whole) by the same delta, the group stopping at its most constrained.
         g.moved = true;

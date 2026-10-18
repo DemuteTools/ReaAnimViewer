@@ -2536,7 +2536,7 @@ bool SetPartFader(SoundData& d, const std::string& part, double value, const Zon
     return ShiftPartGain(d, part, Round01(value) - PartFaderDb(d, part), ctx, sel);
 }
 
-TailCaps TailCappedZones(const SoundData& d, const ZoneContext& ctx, const std::string& part)
+TailCaps TailCappedZones(const SoundData& d, const ZoneContext& ctx, const std::string& part, bool every_part)
 {
     TailCaps c;
     if (!UsesZones(d) || !HasPeaks(ctx.peaks)) return c;
@@ -2547,28 +2547,46 @@ TailCaps TailCappedZones(const SoundData& d, const ZoneContext& ctx, const std::
     for (const ZoneRef& q : AllZones(d))
         if (const EditZone* y = ZoneOf(d, q); y && ZoneTimeline(d, q.frame) == tl) starts.push_back(y->a);
     std::sort(starts.begin(), starts.end());
+    double first = -1.0;
     for (const ZoneRef& r : AllZones(d)) {
         const EditZone* z = ZoneOf(d, r);
         if (!z || z->IsGap() || z->b_hand || ZoneTimeline(d, r.frame) != tl) continue;
-        if (!part.empty() ? z->part != part : [&] {
+        if (!every_part && (!part.empty() ? z->part != part : [&] {
                 const PartSettings* s = PartSettingsOf(d, z->part);
                 return s && s->tail_ms.has_value();
-            }())
+            }()))
             continue;
         if (ZoneOf(d, GapAfter(d, r))) continue;  // held by a Gap
         double on = 0.0, off = 0.0;
         Detect(d, *ctx.peaks, z->slot_a, z->slot_b, &on, &off);
-        if (off + TailS(d, z->part) <= z->b + 1e-4) continue;  // Tail reached
+        // 13-74: the farthest any Tail takes it (its slot, the next zone's start, the file end): the Tail from which it
+        // stops is that minus its sound's end.
+        {
+            const auto   nx = std::upper_bound(starts.begin(), starts.end(), z->a + 1e-4);
+            const double lim = std::min({z->slot_b, T, nx != starts.end() ? *nx : T});
+            const double ms = std::max(0.0, lim - off) * 1000.0;
+            if (first < 0.0 || ms < first) first = ms;
+        }
+        const double want = off + TailS(d, z->part);
+        if (want <= z->b + 1e-4) continue;  // Tail reached
+        TailCapAt at;
+        at.r = r;
+        at.end = z->b;
+        at.want = want;
         if (z->b >= T - 1e-4) {
             ++c.by_file_end;
-            continue;
+            at.why = 2;
+        } else {
+            // Against the next zone (a cut, a Gap, another variation's zone starting there), else at the end its
+            // variation was detected with (its slot: a Tail longer than the detection's stops there).
+            const auto it = std::lower_bound(starts.begin(), starts.end(), z->b - 1e-4);
+            const bool next = it != starts.end() && *it < z->b + 1e-4 && z->b - z->a > 1e-4;  // not its own start
+            ++(next ? c.by_next : c.by_detected_end);
+            at.why = next ? 1 : 3;
         }
-        // Against the next zone (a cut, a Gap, another variation's zone starting there), else at the end its variation
-        // was detected with (its slot: a Tail longer than the detection's stops there).
-        const auto it = std::lower_bound(starts.begin(), starts.end(), z->b - 1e-4);
-        const bool next = it != starts.end() && *it < z->b + 1e-4 && z->b - z->a > 1e-4;  // not its own start
-        ++(next ? c.by_next : c.by_detected_end);
+        c.at.push_back(at);
     }
+    c.first_ms = first;
     return c;
 }
 

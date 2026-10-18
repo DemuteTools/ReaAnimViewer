@@ -327,12 +327,25 @@ int ApplyPreTailChange(SoundData& d, const std::string& part, bool tail_wins, Pa
 // 13-67b: the automatic zone ends the Tail does not reach (Antho 2026-10-17: a zone stops against the next one, no
 // overlap), of `part` ("" = every part following the Sound's Tail), on ctx's timeline, measured on ctx's peaks (none:
 // nothing counted). An end dragged by hand or held by a Gap is not counted; a cut counts as the next zone.
+// 13-74 (the v1 mockup's marks, Antho 2026-10-19): each stopped zone (`at`: where it ends, where the Tail would have
+// taken it, why) for the yellow bar and dotted ghost on the waveform; `first_ms`: the Tail (ms) from which the first
+// counted zone gets stopped (the yellow tick on the Tail fader; < 0 = none).
+struct TailCapAt {
+    ZoneRef r;
+    double  end = 0.0;   // its end now (stopped there)
+    double  want = 0.0;  // where the Tail would have taken it (its sound's end + Tail)
+    int     why = 0;     // 1 the next zone (or a cut), 2 the file end, 3 where its variation was detected
+};
 struct TailCaps {
     int by_next = 0;      // stopped by the next zone (or a cut)
     int by_file_end = 0;  // stopped by the end of the file
     int by_detected_end = 0;  // stopped at its variation's end as detected (its slot: detected with a shorter Tail)
+    std::vector<TailCapAt> at;  // 13-74: each one, in the Sound's zone order
+    double first_ms = -1.0;     // 13-74
 };
-TailCaps    TailCappedZones(const SoundData& d, const ZoneContext& ctx, const std::string& part = std::string());
+// `every_part` (13-74, the waveform's marks): every part's zones, each against its own Tail (`part` unused).
+TailCaps    TailCappedZones(const SoundData& d, const ZoneContext& ctx, const std::string& part = std::string(),
+                            bool every_part = false);
 // "3 zones stopped by the next zone, 1 by the file end", "1 zone stopped by the file end", "... where their variation
 // was detected (...)"; "" when none.
 std::string TailCapsText(const TailCaps& c);

@@ -1439,6 +1439,10 @@ struct NumRowLook {
     bool        sign = false;
     const char* hint = nullptr;
     float       after_w = 0.0f;
+    // 13-74 (the v1 mockup 13-67): a yellow tick on the fader at this value (< 0 or off its span: none), its tip when
+    // the mouse is on it (the Tail's: where the first zone starts to be stopped).
+    double      mark = -1.0;
+    std::string mark_tip;
 };
 
 // What the row did this frame: the event (ui::DragNumberEvent's meaning, from the fader or the field) and the value
@@ -1473,9 +1477,21 @@ NumRowOut SettingsNumberRow(const std::string& key, const NumRow& f, double valu
     bool        beside = true;
     const float room = flow::StretchBeside(ImGui::GetContentRegionAvail().x, fader_min, tail, sp, &beside);
     ImGui::SetNextItemWidth(std::max(1.0f, room));
-    const bool moved = ui::Fader("##fader", &fv, f.flo, f.fhi);
+    ui::FaderOpts fo;
+    const bool    marked = k.mark >= 0.0 && k.mark >= f.flo && k.mark <= f.fhi;  // 13-74
+    if (marked) {
+        fo.mark_on = true;
+        fo.mark = static_cast<float>(k.mark);
+    }
+    const bool moved = ui::Fader("##fader", &fv, f.flo, f.fhi, 0.0f, fo);
     const bool active = ImGui::IsItemActive(), released = ImGui::IsItemDeactivated();
-    if (f.tip) ui::ItemTipText(f.tip);
+    bool       on_mark = false;
+    if (marked && !k.mark_tip.empty() && ImGui::IsItemHovered() && !active) {
+        const float mx = flow::FaderThumbX(fo.mark, ImGui::GetItemRectMin().x, ImGui::GetItemRectMax().x, ui::Dp(8.0f), f.flo, f.fhi);
+        on_mark = std::fabs(ImGui::GetIO().MousePos.x - mx) <= ui::Dp(4.0f);
+    }
+    if (on_mark) ui::ShowTip(k.mark_tip.c_str());
+    else if (f.tip) ui::ItemTipText(f.tip);
     if (active && P.numf_key != key) {  // a gesture begins: from the value itself (not its float)
         P.numf_key = key;
         P.numf_live = value;
@@ -1513,6 +1529,14 @@ NumRowOut SettingsNumberRow(const std::string& key, const NumRow& f, double valu
         out.v = std::clamp(v, f.lo, f.hi);
     }
     return out;
+}
+
+// 13-74: the Tail fader's tick tip (the v1 mockup's): "From 42 ms the first zone is stopped short".
+std::string TailMarkTip(double ms)
+{
+    char buf[96];
+    std::snprintf(buf, sizeof(buf), "From %.0f ms the first zone is stopped short", ms);
+    return buf;
 }
 
 // A number row (the mockup's FIELDS, part side). `unit` nullptr = the Normalize mode's.
@@ -1696,6 +1720,10 @@ bool PartNumberRow(const SoundLibrary& lib, const SoundNode& n, const std::strin
                 : PartSyncMode(d, value) == SyncMode::SliceStart ? "after the start"
                                                                  : "before (\xE2\x88\x92) / after";
     look.after_w = own ? ui::ControlH() : std::min(ImGui::CalcTextSize("= Sound").x + ui::Dp(12.0f), ui::Dp(56.0f));
+    if (f.field == PartField::Tail && UsesZones(d)) {  // 13-74: where its first zone starts to be stopped
+        look.mark = TailCappedZones(d, ZoneCtxOf(MediaOf(n)), value).first_ms;
+        if (look.mark >= 0.0) look.mark_tip = TailMarkTip(look.mark);
+    }
     PartRowBar(own.has_value(), col);
     const NumRowOut o = SettingsNumberRow(n.uid + "/" + value + row.id, row, own ? *own : SoundPartNumber(d, f.field), look);
     if (PartNumberEdit(o.e, o.v, lib, n, path, value, f.field, PartNumberToast(pname, row.label, f.field, o.v, row.unit)))
@@ -4413,10 +4441,13 @@ void ZoneSelectionPanel(const SoundLibrary& lib, const SoundNode& n, const Sound
 // is dragged (`apply` on the draft; it returns the hand edges a Pre-roll / Tail change met, else 0), one undo point
 // at its end, none when `get` reads the same as stored. True when the drawing must stop.
 bool SoundZoneNumberRow(const NumRow& f, const SoundLibrary& lib, const SoundNode& n,
-                        const std::function<double(const SoundData&)>& get, const std::function<int(SoundData&, double)>& apply)
+                        const std::function<double(const SoundData&)>& get, const std::function<int(SoundData&, double)>& apply,
+                        double mark = -1.0)
 {
     NumRowLook look;
     look.label_w = ui::kLabelCol;
+    look.mark = mark;  // 13-74
+    if (mark >= 0.0) look.mark_tip = TailMarkTip(mark);
     const NumRowOut           o = SettingsNumberRow(n.uid + f.id, f, get(Shown(n)), look);
     const ui::DragNumberEvent e = o.e;
     const double              v = o.v;
@@ -4457,6 +4488,9 @@ bool SoundEdgeRows(const SoundLibrary& lib, const SoundNode& n, const SoundMedia
 {
     const std::string path = m.path;
     const double      len = m.source_len;
+    // 13-67b / 13-74: the zones the Tail does not reach (the line under its row) and where the first one starts to be
+    // stopped (the tick on its fader).
+    const TailCaps caps = TailCappedZones(Shown(n), ZoneContext{EditPeaks(path), len});
     for (int k = 0; k < 2; ++k) {  // Pre-roll / Tail: the zones' automatic edges, then decision 7 (the hand edges)
         const bool      pre = k == 0;
         const PartField f = pre ? PartField::Preroll : PartField::Tail;
@@ -4470,10 +4504,11 @@ bool SoundEdgeRows(const SoundLibrary& lib, const SoundNode& n, const SoundMedia
                                    (pre ? x.silence.preroll_ms : x.silence.tail_ms) = v;
                                    RefreshWith(x, path);
                                    return ApplyPreTailChange(x, std::string(), ZoneTailWins(), f, ZoneContext{EditPeaks(path), len});
-                               }))
+                               },
+                               pre ? -1.0 : caps.first_ms))
             return true;
         if (!pre) {  // 13-67b: why a longer Tail stops lengthening some zones
-            const std::string capped = TailCapsText(TailCappedZones(Shown(n), ZoneContext{EditPeaks(path), len}));
+            const std::string capped = TailCapsText(caps);
             if (!capped.empty()) ui::ToneText(capped.c_str(), ui::kMuted, true);
         }
     }

@@ -1293,6 +1293,10 @@ bool Fader(const char* id, float* v, float v_min, float v_max, float width, cons
         const float tx = flow::FaderThumbX(*v, a.x, b.x, r, v_min, v_max, o.log);
         dl->AddRectFilled(ImVec2(a.x, cy - th * 0.5f), ImVec2(b.x, cy + th * 0.5f), Ink(kStrokeStrong), th * 0.5f);
         if (tx > a.x) dl->AddRectFilled(ImVec2(a.x, cy - th * 0.5f), ImVec2(tx, cy + th * 0.5f), Ink(kAccent), th * 0.5f);
+        if (o.mark_on) {  // 13-74
+            const float mx = std::round(flow::FaderThumbX(o.mark, a.x, b.x, r, v_min, v_max, o.log));
+            dl->AddRectFilled(ImVec2(mx - Dp(1.0f), cy - Dp(8.0f)), ImVec2(mx + Dp(1.0f), cy + Dp(8.0f)), Ink(kWarn), Dp(1.0f));
+        }
         dl->AddCircleFilled(ImVec2(tx, cy), r, Ink((hovered || active) ? kPrimaryHover : kAccent), 24);
     }
     if (value_w > 0.0f) {

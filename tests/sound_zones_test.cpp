@@ -1391,10 +1391,25 @@ void TestTailCaps()
     CHECK(c.by_next == 1 && c.by_file_end == 1 && c.by_detected_end == 1);
     CHECK(TailCapsText(c) == "1 zone stopped by the next zone, 1 by the file end, 1 where their variation was detected "
                              "(a Threshold change re-detects with this Tail)");
+    // 13-74: each stopped zone (the waveform's yellow bar and dotted ghost), and the Tail from which the first one stops.
+    auto near = [](double x, double y) { return std::fabs(x - y) < 1e-6; };
+    CHECK(c.at.size() == 3);
+    if (c.at.size() == 3) {
+        CHECK(c.at[0].r.frame == 0 && c.at[0].why == 1 && near(c.at[0].end, 0.30) && near(c.at[0].want, 0.35));
+        CHECK(c.at[1].r.frame == 2 && c.at[1].why == 3 && near(c.at[1].end, 1.10) && near(c.at[1].want, 1.20));
+        CHECK(c.at[2].r.frame == 3 && c.at[2].why == 2 && near(c.at[2].end, 3.00) && near(c.at[2].want, 3.15));
+    }
+    CHECK(near(c.first_ms, 0.0));  // the last zone's sound runs to the file end: any Tail stops it
     CHECK(TailCappedZones(d, ZoneContext{}).by_next == 0);  // no peaks: nothing said
     d.frames[2].zones[0].b_hand = true;                       // an end dragged by hand is not counted
     c = TailCappedZones(d, ctx);
-    CHECK(c.by_next == 1 && c.by_file_end == 1 && c.by_detected_end == 0);
+    CHECK(c.by_next == 1 && c.by_file_end == 1 && c.by_detected_end == 0 && c.at.size() == 2);
+    d.frames[3].zones[0].b_hand = true;
+    c = TailCappedZones(d, ctx);
+    // The first one stopped: V1 at 100 ms (its sound ends at 0.20, V2 starts at 0.30); V2 at 150 ms (its slot).
+    CHECK(c.at.size() == 1 && near(c.first_ms, 100.0));
+    // Every part (the waveform): the same zones here (one implicit part); a part with its own Tail counts against it.
+    CHECK(TailCappedZones(d, ctx, std::string(), true).at.size() == 1);
     CHECK(TailCapsText(TailCaps{2, 0, 0}) == "2 zones stopped by the next zone" && TailCapsText(TailCaps{}).empty());
 }
 

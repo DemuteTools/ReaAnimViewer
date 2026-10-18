@@ -509,6 +509,9 @@ struct FaderOpts {
     bool        log = false;
     const char* format = nullptr;
     float       value_w = 0.0f;
+    // 13-74: a 2 px x 16 px tick (kWarn) on the track at `mark`, under the thumb (the Tail's "first zone stopped here").
+    bool        mark_on = false;
+    float       mark = 0.0f;
 };
 bool Fader(const char* id, float* v, float v_min, float v_max, float width, const FaderOpts& o);
 // 13-14 (finishing): Ctrl+click types a value (as ImGui's slider): a raised mono field (accent-line edge)

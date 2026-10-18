@@ -611,6 +611,7 @@ struct Frame {
     bool                  have_cols = false;
     // 13-73: Left / Right on: each frame's side as played and its rule side (FrameSides / FrameRuleSides); empty = off.
     std::vector<char>     sides, rule;
+    std::vector<TailCapAt> caps;  // 13-74: the zones the Tail does not reach (TailCappedZones, every part)
     const std::vector<ZoneLook>& Looks() const { return lc->looks; }
     float X(double t) const { return cx0 + static_cast<float>((t - v0) / vl * cw); }
     double T(float x) const { return v0 + static_cast<double>(x - cx0) / cw * vl; }
@@ -766,6 +767,36 @@ std::array<const ZoneLook*, 2> GapSides(const Frame& F, const ZoneLook& g)
 bool Mine(const ZoneLook& z, int lane)
 {
     return lane < 0 || z.gap || z.k == lane;
+}
+
+// 13-74 (the v1 mockup maquette-sound-edit-reglages-13-67.html; Antho 2026-10-19): a zone the Tail does not reach (the
+// next zone, a cut, the file end, where its variation was detected) gets a yellow bar at its stopped end and, dotted,
+// how far the Tail would have taken it (a line at the lane's middle in a 20 px box). Drawn only where it fits, between
+// the top handles (fade, gain chip, hand pin: 26 px) and the cut grab (12 px); left out while its end is under the
+// mouse or dragged (the white edge shows), and for a zone too narrow for it.
+void DrawTailCaps(const Frame& F, const Row& row, float y0, float y1, float mid)
+{
+    if (F.caps.empty()) return;
+    const ZoneEditView& v = *F.h->view;
+    const float         dp = F.dp;
+    const ImU32         ghost = Alpha(ui::kWarn, 0.75f);
+    for (const TailCapAt& c : F.caps) {
+        const EditZone* z = ZoneOf(*F.d, c.r);
+        if (!z || (row.lane >= 0 && PartIndex(*F.d, z->part) != row.lane)) continue;
+        if (v.drag.kind != ZoneDragKind::None && (v.drag.hit.z == c.r || SelHas(v.drag.group, c.r))) continue;  // a group drag too
+        const float x1 = F.X(c.end), xa = F.X(z->a);
+        if (x1 < F.cx0 || xa > F.cx0 + F.cw || x1 - xa < 8.0f * dp) continue;
+        const float xw = std::min(F.X(c.want), F.cx0 + F.cw + 1.0f);
+        if (xw - x1 >= 6.0f * dp) {
+            DashedH(F.dl, x1, xw, std::floor(mid) + 0.5f, ghost, 3.0f * dp, 3.0f * dp);
+            if (y1 - y0 >= 36.0f * dp)
+                DashedRect(F.dl, ImVec2(x1 + 0.5f, std::floor(mid - 10.0f * dp) + 0.5f), ImVec2(xw - 0.5f, std::floor(mid + 10.0f * dp) + 0.5f),
+                           ghost, 3.0f * dp, 3.0f * dp);
+        }
+        const bool edge_hot = v.hover_on && v.hover.kind == ZoneHitKind::Edge && v.hover.z == c.r && v.hover.side > 0;
+        const float by0 = y0 + 26.0f * dp, by1 = y1 - 12.0f * dp;
+        if (!edge_hot && by1 - by0 >= 8.0f * dp) F.dl->AddRectFilled(ImVec2(x1 - 3.0f * dp, by0), ImVec2(x1, by1), ui::kWarn);
+    }
 }
 
 // A lane (lane -1 = Combined): the mockup's drawLane.
@@ -972,6 +1003,7 @@ void DrawLane(const Frame& F, const Row& row)
             if (hand) dl->AddRectFilled(ImVec2(bx + 2.0f * dp, by + bh - 2.0f * dp), ImVec2(bx + bw - 2.0f * dp, by + bh - 0.5f * dp), col);
         }
     }
+    DrawTailCaps(F, row, y0, y1, mid);  // 13-74
     // Cuts between two zones edge to edge: a grab at the bottom.
     for (size_t i = 0; i + 1 < F.Looks().size(); ++i) {
         const ZoneLook &x = F.Looks()[i], &y = F.Looks()[i + 1];
@@ -1878,6 +1910,7 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
         SyncLoopMap(v);  // fix 2026-10-19
         F.heads = HeardHeads(v.map, AuditionPosition());
     }
+    F.caps = TailCappedZones(*F.d, Ctx(h), std::string(), true).at;  // 13-74
     const int ncols = std::max(1, static_cast<int>(std::floor(cw)));
     F.have_cols = ReadWaveColumns(h.path, vs, vl, ncols, &F.wc);
     ImDrawList* dl = F.dl;

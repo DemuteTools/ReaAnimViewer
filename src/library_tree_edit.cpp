@@ -254,6 +254,73 @@ std::string CaseChild(const SoundNode& sw, const std::string& value)
     return {};
 }
 
+// The value a Switch case plays `child` on ("" = none).
+std::string CaseChildValue(const SoundNode& sw, const std::string& child)
+{
+    for (const SwitchCase& c : sw.cases)
+        if (c.child_uid == child) return c.value_uid;
+    return {};
+}
+
+// True when the node sits in its parent Switch's Unassigned list.
+bool IsUnassigned(const SoundLibrary& lib, const SoundNode& n)
+{
+    const SoundNode* p = n.parent.empty() || n.parent == n.uid ? nullptr : FindNode(lib, n.parent);
+    return p && p->type == SoundNodeType::Switch &&
+           std::find(p->unassigned.begin(), p->unassigned.end(), n.uid) != p->unassigned.end();
+}
+
+// 13-72: "Steps › LocomotionType › Run": the names from the root down to the node; a Switch
+// case's content reads as its value's name, an Unassigned child gets " (Unassigned)".
+std::string PathText(const SoundStore& store, const SoundLibrary& lib, const std::string& uid)
+{
+    std::vector<std::string> parts;
+    std::set<std::string>    seen;
+    for (const SoundNode* n = FindNode(lib, uid); n && seen.insert(n->uid).second;
+         n = n->parent.empty() || n->parent == n->uid ? nullptr : FindNode(lib, n->parent)) {
+        std::string label = n->name.empty() ? TypeName(n->type) : n->name;
+        const SoundNode* p = n->parent.empty() ? nullptr : FindNode(lib, n->parent);
+        if (p && p->type == SoundNodeType::Switch) {
+            const std::string v = CaseChildValue(*p, n->uid);
+            if (!v.empty()) {
+                const SwitchValue* sv = FindValue(store, p->group_uid, v);
+                label = sv ? sv->name : std::string("(deleted value)");
+            } else {
+                label += " (Unassigned)";
+            }
+        }
+        parts.push_back(label);
+    }
+    std::string out;
+    for (auto it = parts.rbegin(); it != parts.rend(); ++it) out += (out.empty() ? "" : " \xE2\x80\xBA ") + *it;
+    return out;
+}
+
+// 13-72: an Unassigned child keeps where it was before the gesture that put it there; a node no
+// longer Unassigned (or new: a copy) forgets it.
+void NoteOrphans(const SoundStore& before, SoundStore& after)
+{
+    for (SoundLibrary& lib : after.libraries) {
+        const SoundLibrary* old = FindLibrary(before, lib.uid);
+        for (SoundNode& n : lib.nodes) {
+            const bool now = IsUnassigned(lib, n);
+            const SoundNode* o = old ? FindNode(*old, n.uid) : nullptr;
+            if (now && o && IsUnassigned(*old, *o)) continue;  // already an orphan: keeps its story
+            n.was_path.clear();
+            n.was_switch.clear();
+            n.was_value.clear();
+            if (!now || !o) continue;
+            n.was_path = PathText(before, *old, o->uid);
+            const SoundNode* op = o->parent.empty() ? nullptr : FindNode(*old, o->parent);
+            if (op && op->type == SoundNodeType::Switch) {
+                n.was_switch = op->uid;
+                n.was_value = CaseChildValue(*op, o->uid);
+                if (n.was_value.empty()) n.was_switch.clear();
+            }
+        }
+    }
+}
+
 // Runs an edit; restores the store and returns false when it failed or changed nothing.
 bool Transact(SoundStore& store, const std::function<bool(SoundStore&)>& edit)
 {
@@ -262,6 +329,7 @@ bool Transact(SoundStore& store, const std::function<bool(SoundStore&)>& edit)
         store = before;
         return false;
     }
+    NoteOrphans(before, store);
     return true;
 }
 
@@ -928,7 +996,20 @@ std::string WrapOne(SoundStore& s, SoundLibrary& lib, const std::string& n, Soun
         wn->layer_keep_offset = false;
     }
     if (type == SoundNodeType::Blend) FindNode(lib, wu)->type = SoundNodeType::Blend;
-    if (type == SoundNodeType::Switch) ConvertNodeType(lib, wu, SoundNodeType::Switch, group_uid, s);
+    if (type == SoundNodeType::Switch) {
+        ConvertNodeType(lib, wu, SoundNodeType::Switch, group_uid, s);
+        // 13-72 (Antho 2026-10-19): what is wrapped in a Switch plays on the group's default value
+        // (unless its name already matched a value), not Unassigned, so the tree keeps playing.
+        SoundNode*         sw = FindNode(lib, wu);
+        const SwitchGroup* gr = FindGroup(s, group_uid);
+        const std::string  dv = gr ? GroupDefaultValue(*gr) : std::string();
+        if (sw && !dv.empty() && CaseChild(*sw, dv).empty() &&
+            std::find(sw->unassigned.begin(), sw->unassigned.end(), n) != sw->unassigned.end()) {
+            sw->unassigned.erase(std::remove(sw->unassigned.begin(), sw->unassigned.end(), n), sw->unassigned.end());
+            sw->cases.push_back({dv, n, {}});
+            sw->default_value.clear();  // it plays the group's default: follows it
+        }
+    }
     return wu;
 }
 
@@ -943,9 +1024,14 @@ bool WrapRows(SoundStore& store, const std::string& lib_uid, const std::vector<L
         SoundLibrary* lib = FindLibrary(s, lib_uid);
         if (!lib) return false;
         if (type == SoundNodeType::Switch && !FindGroup(s, group_uid)) return false;
+        // 13-72 (Wrap each in): the rows' nodes resolved before any wrap (a wrapped value row then
+        // shows its wrapper), each once.
+        std::vector<std::string> nodes;
         for (const LibraryRow& r : rows) {
             std::string n = RowNode(*lib, r);
-            if (n.empty()) continue;
+            if (!n.empty() && std::find(nodes.begin(), nodes.end(), n) == nodes.end()) nodes.push_back(n);
+        }
+        for (const std::string& n : nodes) {
             std::string w = WrapOne(s, *lib, n, type, group_uid);
             if (!w.empty()) made.push_back(w);
         }
@@ -1143,6 +1229,195 @@ bool ClearValue(SoundStore& store, const std::string& lib_uid, const LibraryRow&
         us.parent = row.parent;
         us.unassigned = true;
         Attach(*lib, c, us);
+        return true;
+    });
+}
+
+// ---- 13-72: wrap value contents, put back, paste onto --------------------------------------------
+
+std::vector<LibraryRow> ValueContentRows(const SoundLibrary& lib, const std::vector<LibraryRow>& rows)
+{
+    std::vector<LibraryRow> out;
+    auto add = [&](const LibraryRow& r) {
+        if (!RowNode(lib, r).empty() && std::find(out.begin(), out.end(), r) == out.end()) out.push_back(r);
+    };
+    for (const LibraryRow& r : rows) {
+        if (RowIsValue(lib, r)) {
+            add(r);
+            continue;
+        }
+        const SoundNode* sw = FindNode(lib, RowNode(lib, r));
+        if (!sw || sw->type != SoundNodeType::Switch) continue;
+        for (const SwitchCase& c : sw->cases)
+            if (FindNode(lib, c.child_uid)) add({sw->uid, c.value_uid});
+    }
+    return out;
+}
+
+bool WrapValueContents(SoundStore& store, const std::string& lib_uid, const std::vector<LibraryRow>& rows,
+                       SoundNodeType type, const std::string& group_uid, std::vector<std::string>* created)
+{
+    const SoundLibrary* lib = FindLibrary(store, lib_uid);
+    if (!lib) return false;
+    const std::vector<LibraryRow> targets = ValueContentRows(*lib, rows);
+    if (targets.empty()) return false;
+    return WrapRows(store, lib_uid, targets, type, group_uid, created);
+}
+
+bool CanPutBack(const SoundStore& store, const SoundLibrary& lib, const std::string& uid, std::string* why)
+{
+    auto no = [&](const char* w) {
+        if (why) *why = w;
+        return false;
+    };
+    const SoundNode* n = FindNode(lib, uid);
+    if (!n || !IsUnassigned(lib, *n)) return no("Only an Unassigned row can be put back");
+    if (n->was_switch.empty() || n->was_value.empty()) return no("It was not on a Switch value before");
+    const SoundNode* sw = FindNode(lib, n->was_switch);
+    if (!sw || sw->type != SoundNodeType::Switch) return no("The Switch it was on no longer exists");
+    const SwitchGroup* gr = FindGroup(store, sw->group_uid);
+    if (!gr || !GroupHasValue(*gr, n->was_value)) return no("Its value no longer exists on that Switch");
+    if (IsInSubtree(lib, sw->uid, uid)) return no("The Switch it was on is now inside it");
+    if (CaseChild(*sw, n->was_value) == uid) return no("It already plays that value");
+    if (why) why->clear();
+    return true;
+}
+
+bool PutBackRows(SoundStore& store, const std::string& lib_uid, const std::vector<LibraryRow>& rows,
+                 std::vector<std::string>* placed)
+{
+    std::vector<std::string> out;
+    bool ok = Transact(store, [&](SoundStore& s) {
+        SoundLibrary* lib = FindLibrary(s, lib_uid);
+        if (!lib) return false;
+        std::vector<std::string> nodes;
+        for (const LibraryRow& r : rows) {
+            const std::string n = RowNode(*lib, r);
+            if (!n.empty() && std::find(nodes.begin(), nodes.end(), n) == nodes.end()) nodes.push_back(n);
+        }
+        for (const std::string& n : nodes) {
+            if (!CanPutBack(s, *lib, n, nullptr)) continue;  // checked again: an earlier one may have moved
+            const SoundNode*  nn = FindNode(*lib, n);
+            const std::string sw = nn->was_switch, v = nn->was_value;
+            // What the value plays now goes to that Switch's Unassigned (Paste's rule on a taken value).
+            const std::string old = CaseChild(*FindNode(*lib, sw), v);
+            Detach(*lib, n);
+            if (!old.empty()) {
+                Detach(*lib, old);
+                Slot us;
+                us.parent = sw;
+                us.unassigned = true;
+                Attach(*lib, old, us);
+            }
+            Slot vs;
+            vs.parent = sw;
+            vs.value = v;
+            Attach(*lib, n, vs);
+            out.push_back(n);
+        }
+        return !out.empty();
+    });
+    if (ok && placed) *placed = out;
+    return ok;
+}
+
+std::vector<std::pair<std::string, std::string>> OrphanUsedBy(const SoundStore& store, const SoundNode& n)
+{
+    std::vector<std::pair<std::string, std::string>> out;
+    if (n.was_value.empty()) return out;
+    auto scan = [&](const std::vector<SoundAssign>& list, const std::string& who) {
+        for (const SoundAssign& a : list)
+            for (const ValueSet& v : a.values)
+                if (v.value_uid == n.was_value) out.emplace_back(who, a.key);
+    };
+    scan(store.project, std::string());
+    for (const SoundCharacter& c : store.characters) scan(c.assigns, c.name.empty() ? std::string("Character") : c.name);
+    return out;
+}
+
+bool CanPasteOnto(const SoundStore& store, const std::string& src_lib, const std::string& src_uid,
+                  const std::string& dst_lib, const std::string& dst_uid, PasteOntoWhat what, std::string* why)
+{
+    auto no = [&](const char* w) {
+        if (why) *why = w;
+        return false;
+    };
+    const SoundLibrary* sl = FindLibrary(store, src_lib);
+    const SoundLibrary* dl = FindLibrary(store, dst_lib);
+    const SoundNode*    sn = sl ? FindNode(*sl, src_uid) : nullptr;
+    const SoundNode*    tn = dl ? FindNode(*dl, dst_uid) : nullptr;
+    if (!sn) return no("The copied row no longer exists");
+    if (!tn) return no("Right-click the container to replace");
+    if (sl == dl && sn->uid == tn->uid) return no("That is the copied row itself");
+    const bool sc = IsContainer(*sn), tc = IsContainer(*tn);
+    if (what == PasteOntoWhat::Contents) {
+        if (!sc || !tc) return no("Sounds have no contents: use Paste");
+        if (sl == dl && (IsInSubtree(*dl, tn->uid, sn->uid) || IsInSubtree(*dl, sn->uid, tn->uid)))
+            return no("One is inside the other");
+    } else if (sc != tc) {
+        return no("A Sound and a container do not share settings");
+    }
+    if (why) why->clear();
+    return true;
+}
+
+bool PasteOnto(SoundStore& store, const std::string& src_lib, const std::string& src_uid, const std::string& dst_lib,
+               const std::string& dst_uid, PasteOntoWhat what)
+{
+    if (!CanPasteOnto(store, src_lib, src_uid, dst_lib, dst_uid, what, nullptr)) return false;
+    return Transact(store, [&](SoundStore& s) {
+        SoundLibrary* src = FindLibrary(s, src_lib);
+        SoundLibrary* dst = FindLibrary(s, dst_lib);
+        const SoundNode from = *FindNode(*src, src_uid);  // a copy: dst may grow below
+        if (what == PasteOntoWhat::Settings) {
+            SoundNode* t = FindNode(*dst, dst_uid);
+            t->volume_db = from.volume_db;
+            t->avoid_repeat = from.avoid_repeat;
+            if (from.type == SoundNodeType::Blend && t->type == SoundNodeType::Blend)
+                t->linked_variations = from.linked_variations;
+            if (from.type == SoundNodeType::Switch && t->type == SoundNodeType::Switch && from.group_uid == t->group_uid)
+                t->default_value = from.default_value;
+            return true;
+        }
+        // Contents: the target keeps its place, name, settings and assignments; its children are
+        // replaced by a copy of the source's (CopySubtree), and it takes the source's type (and Switch
+        // Group, cases, default, Unassigned for a Switch).
+        std::vector<std::string> old_kids;
+        for (const SoundNode* k : ChildrenOf(*dst, dst_uid)) old_kids.push_back(k->uid);
+        for (const std::string& k : old_kids) EraseSubtree(*dst, k);
+        std::vector<std::string> src_kids;
+        for (const SoundNode* k : ChildrenOf(*src, src_uid)) src_kids.push_back(k->uid);
+        std::vector<std::pair<std::string, std::string>> map;  // source child -> its copy
+        for (const std::string& k : src_kids) {
+            const std::string c = CopySubtree(*src, k, *dst);
+            FindNode(*dst, c)->parent = dst_uid;
+            map.emplace_back(k, c);
+        }
+        auto copy_of = [&](const std::string& u) {
+            for (const auto& m : map)
+                if (m.first == u) return m.second;
+            return std::string();
+        };
+        SoundNode* t = FindNode(*dst, dst_uid);
+        t->type = from.type;
+        t->cases.clear();
+        t->unassigned.clear();
+        t->group_uid.clear();
+        t->default_value.clear();
+        t->preview_value.clear();
+        if (from.type == SoundNodeType::Switch) {
+            t->group_uid = from.group_uid;
+            t->default_value = from.default_value;
+            t->preview_value = from.preview_value;
+            for (const SwitchCase& c : from.cases) {
+                const std::string k = copy_of(c.child_uid);
+                if (!k.empty()) t->cases.push_back({c.value_uid, k, c.kept});
+            }
+            for (const std::string& u : from.unassigned) {
+                const std::string k = copy_of(u);
+                if (!k.empty()) t->unassigned.push_back(k);
+            }
+        }
         return true;
     });
 }

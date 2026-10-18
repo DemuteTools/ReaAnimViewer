@@ -735,6 +735,206 @@ static void TestCopyPaste()
     CHECK(uids.size() == FindLibrary(s, "L")->nodes.size());
 }
 
+// 13-72: Antho's case. Group Loco {Run, Walk}, group Feet {Boots, Bare} (default Bare); library T:
+// root Switch "lt" on Loco, Run = Switch "smr" (Surface), Walk = Switch "smw"; each holds a Sound.
+static SoundStore LocoStore()
+{
+    SoundStore s;
+    SwitchGroup loco;
+    loco.uid = "gloco";
+    loco.name = "LocomotionType";
+    loco.values = {{"vrun", "Run", {}}, {"vwalk", "Walk", {}}, {"vsprint", "Sprint", {}}};
+    SwitchGroup feet;
+    feet.uid = "gfeet";
+    feet.name = "FeetType";
+    feet.values = {{"vboots", "Boots", {}}, {"vbare", "Bare", {}}};
+    feet.default_value = "vbare";
+    SwitchGroup surf;
+    surf.uid = "gsurf";
+    surf.name = "Surface Material";
+    surf.values = {{"vwood", "Wood", {}}};
+    s.groups = {loco, feet, surf};
+    SoundLibrary l;
+    l.uid = "T";
+    l.name = "Steps";
+    l.root = "lt";
+    SoundNode lt = Node("lt", "", SoundNodeType::Switch, "LocomotionType");
+    lt.group_uid = "gloco";
+    lt.cases = {{"vrun", "smr", {}}, {"vwalk", "smw", {}}};
+    SoundNode smr = Node("smr", "lt", SoundNodeType::Switch, "Switch");
+    smr.group_uid = "gsurf";
+    smr.cases = {{"vwood", "sr", {}}};
+    SoundNode smw = smr;
+    smw.uid = "smw";
+    smw.cases = {{"vwood", "sw2", {}}};
+    l.nodes = {lt, smr, Node("sr", "smr", SoundNodeType::Sound, "RunWood"), smw,
+               Node("sw2", "smw", SoundNodeType::Sound, "WalkWood")};
+    s.libraries.push_back(l);
+    return s;
+}
+
+static void TestWrapEachAndValueContents()
+{
+    // Wrap each in: Run and Walk picked, one FeetType Switch around each, each on its own value,
+    // the Surface Switch on FeetType's default value (Bare), not Unassigned.
+    SoundStore s = LocoStore();
+    std::vector<std::string> made;
+    CHECK(WrapRows(s, "T", {{"lt", "vrun"}, {"lt", "vwalk"}}, SoundNodeType::Switch, "gfeet", &made));
+    CHECK(made.size() == 2);
+    CHECK(Case(s, "T", "lt", "vrun") == made[0] && Case(s, "T", "lt", "vwalk") == made[1]);
+    for (size_t i = 0; i < made.size(); ++i) {
+        const SoundNode* w = N(s, "T", made[i]);
+        CHECK(w->type == SoundNodeType::Switch && w->group_uid == "gfeet" && w->unassigned.empty());
+        CHECK(Case(s, "T", made[i].c_str(), "vbare") == (i == 0 ? "smr" : "smw"));
+        CHECK(w->default_value.empty());  // plays the group's default (Bare)
+    }
+    CHECK(N(s, "T", "smr")->parent == made[0] && N(s, "T", "sr")->parent == "smr");
+    // A row picked twice (same node) is wrapped once.
+    SoundStore d = LocoStore();
+    CHECK(WrapRows(d, "T", {{"lt", "vrun"}, {"lt", "vrun"}}, SoundNodeType::Random, "", &made) && made.size() == 1);
+
+    // Wrap value contents in, on the Switch row: the same in one gesture; the Switch stays.
+    SoundStore v = LocoStore();
+    const SoundLibrary& vl = *FindLibrary(v, "T");
+    CHECK((ValueContentRows(vl, {{"", "lt"}}) == std::vector<LibraryRow>{{"lt", "vrun"}, {"lt", "vwalk"}}));
+    CHECK(ValueContentRows(vl, {{"lt", "vsprint"}}).empty());  // an empty value: nothing to wrap
+    CHECK(WrapValueContents(v, "T", {{"", "lt"}}, SoundNodeType::Switch, "gfeet", &made));
+    CHECK(made.size() == 2 && FindLibrary(v, "T")->root == "lt");
+    CHECK(SerializeSoundStore(v) != SerializeSoundStore(LocoStore()));
+    CHECK(Case(v, "T", "lt", "vrun") == made[0] && Case(v, "T", made[0].c_str(), "vbare") == "smr");
+    CHECK(Case(v, "T", "lt", "vwalk") == made[1] && Case(v, "T", made[1].c_str(), "vbare") == "smw");
+    // On a value row: only that value's content.
+    SoundStore one = LocoStore();
+    CHECK(WrapValueContents(one, "T", {{"lt", "vwalk"}}, SoundNodeType::Blend, "", &made) && made.size() == 1);
+    CHECK(Case(one, "T", "lt", "vwalk") == made[0] && N(one, "T", "smw")->parent == made[0] &&
+          Case(one, "T", "lt", "vrun") == "smr");
+    CHECK(!WrapValueContents(one, "T", {{"lt", "vsprint"}}, SoundNodeType::Random, "", &made));
+
+    // A name that matches a value wins over the default; a group with no value: Unassigned.
+    SoundStore m = LocoStore();
+    FindLibrary(m, "T")->nodes[1].name = "Boots";  // smr
+    CHECK(WrapRows(m, "T", {{"lt", "vrun"}}, SoundNodeType::Switch, "gfeet", &made));
+    CHECK(Case(m, "T", made[0].c_str(), "vboots") == "smr" && N(m, "T", made[0])->unassigned.empty());
+    SoundStore e = LocoStore();
+    SwitchGroup empty;
+    empty.uid = "gempty";
+    empty.name = "Empty";
+    e.groups.push_back(empty);
+    CHECK(WrapRows(e, "T", {{"lt", "vrun"}}, SoundNodeType::Switch, "gempty", &made));
+    CHECK((N(e, "T", made[0])->unassigned == std::vector<std::string>{"smr"}));
+}
+
+static void TestOrphanStoryAndPutBack()
+{
+    // Change the root's group to FeetType: Run / Walk match nothing, both go to Unassigned and keep
+    // where they were (path, Switch, value), saved with the store.
+    SoundStore s = LocoStore();
+    SoundAssign a;
+    a.key = "legs.step";
+    a.values = {{"gloco", "vrun", {}}};
+    s.project.push_back(a);
+    SoundCharacter ch;
+    ch.uid = "c1";
+    ch.name = "Knight";
+    ch.assigns = {a};
+    s.characters.push_back(ch);
+    CHECK(SetRowsType(s, "T", {{"", "lt"}}, SoundNodeType::Switch, "gfeet"));
+    const SoundNode* r = N(s, "T", "smr");
+    CHECK((N(s, "T", "lt")->unassigned == std::vector<std::string>{"smr", "smw"}));
+    CHECK(r->was_path == "LocomotionType \xE2\x80\xBA Run" && r->was_switch == "lt" && r->was_value == "vrun");
+    CHECK(N(s, "T", "sr")->was_path.empty());  // its children did not move
+    const auto used = OrphanUsedBy(s, *r);
+    CHECK(used.size() == 2 && used[0].first.empty() && used[0].second == "legs.step" && used[1].first == "Knight");
+    CHECK(OrphanUsedBy(s, *N(s, "T", "smw")).empty());
+    SoundStore back;
+    CHECK(ParseSoundStore(SerializeSoundStore(s), &back));
+    CHECK(N(back, "T", "smr")->was_value == "vrun" && N(back, "T", "smr")->was_path == r->was_path);
+    // Its value is gone from the Switch's group: cannot be put back yet.
+    std::string why;
+    CHECK(!CanPutBack(s, *FindLibrary(s, "T"), "smr", &why) && !why.empty());
+    CHECK(!PutBackRows(s, "T", {{"lt", "smr"}}, nullptr));
+    // Back on LocomotionType: both go back onto Run / Walk, and forget their story.
+    CHECK(SetRowsType(s, "T", {{"", "lt"}}, SoundNodeType::Switch, "gloco"));
+    // (a Switch -> Switch change maps by value name: none matched, they stay Unassigned, story kept)
+    CHECK(N(s, "T", "smr")->was_value == "vrun");
+    std::vector<std::string> placed;
+    CHECK(CanPutBack(s, *FindLibrary(s, "T"), "smr", &why));
+    CHECK(PutBackRows(s, "T", {{"lt", "smr"}, {"lt", "smw"}}, &placed) && placed.size() == 2);
+    CHECK(Case(s, "T", "lt", "vrun") == "smr" && Case(s, "T", "lt", "vwalk") == "smw" && N(s, "T", "lt")->unassigned.empty());
+    CHECK(N(s, "T", "smr")->was_path.empty() && N(s, "T", "smr")->was_value.empty());
+    // A value taken since: what it plays goes to Unassigned (with its own story).
+    SoundStore t = LocoStore();
+    CHECK(ClearValue(t, "T", {"lt", "vrun"}));
+    CHECK(N(t, "T", "smr")->was_value == "vrun");
+    DropTarget onto;
+    onto.lib = "T";
+    onto.row = {"lt", "vrun"};
+    onto.mode = DropMode::OntoValue;
+    std::vector<std::string> moved;
+    CHECK(MoveRows(t, "T", {{"lt", "vwalk"}}, onto, &moved));  // Walk's content now plays Run
+    CHECK(PutBackRows(t, "T", {{"lt", "smr"}}, &placed));
+    CHECK(Case(t, "T", "lt", "vrun") == "smr" && Has(N(t, "T", "lt")->unassigned, "smw"));
+    CHECK(N(t, "T", "smw")->was_value == "vrun");
+    // Not an orphan / never on a value: refused.
+    CHECK(!CanPutBack(t, *FindLibrary(t, "T"), "sr", &why));
+}
+
+static void TestPasteOnto()
+{
+    // Replace contents across types: Random "rb" (two Sounds) takes Switch "smr"'s contents and type.
+    SoundStore s = LocoStore();
+    SoundLibrary& l = *FindLibrary(s, "T");
+    SoundNode rb = Node("rb", "lt", SoundNodeType::Random, "Bank");
+    rb.volume_db = -3.0;
+    l.nodes.push_back(rb);
+    l.nodes.push_back(Node("b1", "rb", SoundNodeType::Sound, "B1"));
+    l.nodes.push_back(Node("b2", "rb", SoundNodeType::Sound, "B2"));
+    FindNode(l, "lt")->cases.push_back({"vsprint", "rb", {}});
+    FindNode(l, "smr")->default_value = "vwood";
+    std::string why;
+    CHECK(CanPasteOnto(s, "T", "smr", "T", "rb", PasteOntoWhat::Contents, &why));
+    CHECK(PasteOnto(s, "T", "smr", "T", "rb", PasteOntoWhat::Contents));
+    const SoundNode* t = N(s, "T", "rb");
+    CHECK(t->type == SoundNodeType::Switch && t->group_uid == "gsurf" && t->default_value == "vwood");
+    CHECK(t->name == "Bank" && t->volume_db == -3.0 && Case(s, "T", "lt", "vsprint") == "rb");  // keeps its place
+    const std::string k = Case(s, "T", "rb", "vwood");
+    CHECK(!k.empty() && k != "sr" && N(s, "T", k)->name == "RunWood" && N(s, "T", k)->parent == "rb");
+    CHECK(!N(s, "T", "b1") && !N(s, "T", "b2"));      // its old children are gone
+    CHECK(N(s, "T", "sr")->parent == "smr");           // the source is untouched
+    // And back: a Switch target takes a Random's contents (cases cleared, children kept as a list).
+    SoundStore r = LocoStore();
+    SoundLibrary& rl = *FindLibrary(r, "T");
+    rl.nodes.push_back(Node("rb", "lt", SoundNodeType::Random, "Bank"));
+    rl.nodes.push_back(Node("b1", "rb", SoundNodeType::Sound, "B1"));
+    FindNode(rl, "lt")->cases.push_back({"vsprint", "rb", {}});
+    CHECK(PasteOnto(r, "T", "rb", "T", "smw", PasteOntoWhat::Contents));
+    const SoundNode* w = N(r, "T", "smw");
+    CHECK(w->type == SoundNodeType::Random && w->group_uid.empty() && w->cases.empty() && !N(r, "T", "sw2"));
+    CHECK(ChildrenOf(*FindLibrary(r, "T"), "smw").size() == 1 && ChildrenOf(*FindLibrary(r, "T"), "smw")[0]->name == "B1");
+    // Refused: one inside the other, a Sound's contents, itself.
+    CHECK(!CanPasteOnto(r, "T", "lt", "T", "smr", PasteOntoWhat::Contents, &why) && !why.empty());
+    CHECK(!CanPasteOnto(r, "T", "sr", "T", "smr", PasteOntoWhat::Contents, &why));
+    CHECK(!CanPasteOnto(r, "T", "smr", "T", "smr", PasteOntoWhat::Settings, &why));
+    CHECK(!PasteOnto(r, "T", "lt", "T", "smr", PasteOntoWhat::Contents));
+    // Across libraries: the copy lands in the target's library.
+    SoundStore x = Store();
+    CHECK(PasteOnto(x, "L", "gr", "M", "mr", PasteOntoWhat::Contents));
+    CHECK(ChildrenOf(*FindLibrary(x, "M"), "mr").size() == 1 && N(x, "L", "g1")->parent == "gr");
+
+    // Replace settings: dB, Avoid repeat; the default between two Switches on one group; nothing else.
+    SoundStore st = LocoStore();
+    SoundLibrary& sl = *FindLibrary(st, "T");
+    FindNode(sl, "smr")->volume_db = -9.0;
+    FindNode(sl, "smr")->avoid_repeat = 4;
+    FindNode(sl, "smr")->default_value = "vwood";
+    CHECK(PasteOnto(st, "T", "smr", "T", "smw", PasteOntoWhat::Settings));
+    const SoundNode* sw = N(st, "T", "smw");
+    CHECK(sw->volume_db == -9.0 && sw->avoid_repeat == 4 && sw->default_value == "vwood");
+    CHECK(sw->name == "Switch" && Case(st, "T", "smw", "vwood") == "sw2");  // contents kept
+    CHECK(PasteOnto(st, "T", "sr", "T", "sw2", PasteOntoWhat::Settings) == false);  // nothing changed (both 0 dB)
+    CHECK(!CanPasteOnto(st, "T", "sr", "T", "smw", PasteOntoWhat::Settings, &why));  // a Sound onto a container
+}
+
 int main()
 {
     TestSortAndSearch();
@@ -757,6 +957,9 @@ int main()
     TestBatchSwitchOnNewGroup();
     TestUnwrap();
     TestCopyPaste();
+    TestWrapEachAndValueContents();
+    TestOrphanStoryAndPutBack();
+    TestPasteOnto();
     if (g_fail) {
         std::printf("library_tree_edit_test: %d failure(s)\n", g_fail);
         return 1;

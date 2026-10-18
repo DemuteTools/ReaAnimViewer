@@ -15,6 +15,7 @@
 #include <functional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "sound_model.h"
@@ -144,6 +145,39 @@ bool MakeDefault(SoundStore& store, const std::string& lib_uid, const std::vecto
 bool FollowGroupDefault(SoundStore& store, const std::string& lib_uid, const std::string& switch_uid);
 // "Clear (plays the default)": the value's content goes to Unassigned.
 bool ClearValue(SoundStore& store, const std::string& lib_uid, const LibraryRow& row);
+
+// ---- 13-72: restructuring the tree ---------------------------------------------------------------
+// "Wrap each in" is WrapRows with several rows (one new container around each, each in its place).
+// Wrapping in a Switch: the wrapped node plays the group's default value (GroupDefaultValue) unless
+// its name matches a value; Unassigned only when the group has no value (Antho 2026-10-19).
+//
+// "Wrap value contents in": the value rows whose content gets wrapped: a value row itself, or every
+// value of a Switch row that plays something. Empty values are skipped.
+std::vector<LibraryRow> ValueContentRows(const SoundLibrary& lib, const std::vector<LibraryRow>& rows);
+// WrapRows on ValueContentRows(rows): inside each value, a new container around what it plays.
+bool WrapValueContents(SoundStore& store, const std::string& lib_uid, const std::vector<LibraryRow>& rows,
+                       SoundNodeType type, const std::string& group_uid, std::vector<std::string>* created);
+// Every tree edit notes, on each node it puts in a Switch's Unassigned, where it was just before
+// (SoundNode::was_path, and was_switch / was_value when it was a value's content); a node that
+// leaves Unassigned forgets it. "Put back where it was": an Unassigned row goes back onto its
+// former value of that Switch when both still exist (what the value plays now goes to Unassigned).
+bool CanPutBack(const SoundStore& store, const SoundLibrary& lib, const std::string& uid, std::string* why);
+bool PutBackRows(SoundStore& store, const std::string& lib_uid, const std::vector<LibraryRow>& rows,
+                 std::vector<std::string>* placed);
+// The store's assignments (Project: first "" ; a Character: its name) choosing the value an orphan
+// was on, each with its assign key ("legs.step"). Rule / item / event values live on the animation
+// items, not here.
+std::vector<std::pair<std::string, std::string>> OrphanUsedBy(const SoundStore& store, const SoundNode& n);
+// "Paste onto": the target node keeps its place, name, settings and assignments.
+// Contents: its children are replaced by a copy of the source's (CopySubtree, new uids) and it takes
+// the source's type (a Switch: its group, cases, default, Unassigned); two containers, neither inside
+// the other. Settings: dB, Avoid repeat (Blend: linked variations; two Switches on one group: the
+// default value); two containers or two Sounds. Any two libraries of the store.
+enum class PasteOntoWhat { Contents, Settings };
+bool CanPasteOnto(const SoundStore& store, const std::string& src_lib, const std::string& src_uid,
+                  const std::string& dst_lib, const std::string& dst_uid, PasteOntoWhat what, std::string* why);
+bool PasteOnto(SoundStore& store, const std::string& src_lib, const std::string& src_uid, const std::string& dst_lib,
+               const std::string& dst_uid, PasteOntoWhat what);
 
 // ---- Switch Groups (column 1) -------------------------------------------------------------------
 bool AddGroup(SoundStore& store, const std::string& name, std::string* uid);

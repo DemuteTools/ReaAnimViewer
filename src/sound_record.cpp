@@ -431,6 +431,9 @@ Fields NodeFields(const SoundNode& n)
     if (!n.layer_roles.empty()) f.push_back({"roles", JoinEncoded(n.layer_roles)});  // 13-31
     if (n.layer_keep_offset) f.push_back({"koff", "1"});
     if (n.linked_variations) f.push_back({"lvar", "1"});  // 13-68 v2
+    if (!n.was_path.empty()) f.push_back({"wpath", Enc(n.was_path)});  // 13-72
+    if (!n.was_switch.empty()) f.push_back({"wsw", Enc(n.was_switch)});
+    if (!n.was_value.empty()) f.push_back({"wval", Enc(n.was_value)});
     return f;
 }
 
@@ -450,6 +453,9 @@ Got SetNode(SoundNode& n, const std::string& k, const std::string& v)
     if (k == "roles") return G(SplitDecoded(v, &n.layer_roles));
     if (k == "koff") return G(ReadFlag(v, &n.layer_keep_offset));
     if (k == "lvar") return G(ReadFlag(v, &n.linked_variations));
+    if (k == "wpath") return G(ReadStr(v, &n.was_path));
+    if (k == "wsw") return G(ReadStr(v, &n.was_switch));
+    if (k == "wval") return G(ReadStr(v, &n.was_value));
     if (k == "part") return Got::Ok;  // 13-31: the retired 13-23 layer part, read and dropped
     return Got::Unknown;
 }

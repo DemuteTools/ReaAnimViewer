@@ -303,6 +303,12 @@ struct SoundNode {
     // take marker k of layer 1 goes with k of layer 2): the first child with a variation draws, every other one
     // plays that index (modulo its own count; a child of 1 variation plays it). Sound_switch.cpp ResolveEvent.
     bool                     linked_variations = false;
+    // 13-72 (appended): an Unassigned child keeps where it was before the tree gesture that put it there:
+    // its path then ("Steps âº LocomotionType âº Run"), and when it was a Switch value's content, that
+    // Switch and value ("Put back where it was"). Set and cleared by the tree edits (library_tree_edit.cpp).
+    std::string              was_path;
+    std::string              was_switch;
+    std::string              was_value;
 };
 
 struct SwitchValue {

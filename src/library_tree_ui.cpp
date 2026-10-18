@@ -175,6 +175,9 @@ const char* TypeWord(SoundNodeType t)
     }
 }
 
+// 13-72: a node as menus and toasts name it (its name, else its type).
+std::string NodeName(const SoundNode& n) { return n.name.empty() ? std::string(TypeWord(n.type)) : n.name; }
+
 // 13-7 (audit A5): one ink for every container's icon (the mockup's #a8c2ff, .trow.sw .ti),
 // muted for a Sound -- as TypeIconInk (library_icons.h).
 ImU32 TypeColor(SoundNodeType t)
@@ -326,6 +329,19 @@ void FocusNew(const std::string& lib_uid, const std::vector<std::string>& made, 
     const LibraryRow r = RowOfNode(*lib, made.front());
     SelectOnly(r);
     if (rename) StartRowRename(*lib, r);
+}
+
+// 13-72: several new nodes all selected (Wrap each in, Put back), their parents opened.
+void SelectMade(const std::string& lib_uid, const std::vector<std::string>& made)
+{
+    const SoundLibrary* lib = FindLibrary(GetSoundStore(nullptr), lib_uid);
+    if (!lib || made.empty()) return;
+    FocusNew(lib_uid, made, false);
+    g.sel.clear();
+    for (const std::string& u : made) {
+        RevealNode(*lib, u);
+        g.sel.push_back(RowOfNode(*lib, u));
+    }
 }
 
 // ---- Small drawing helpers ----------------------------------------------------------------------
@@ -641,6 +657,86 @@ void DoUnwrap(const std::vector<LibraryRow>& rows)
     if (Gesture("Unwrap", [&](SoundStore& s) { return UnwrapRows(s, lib_uid, rows); })) FocusNew(lib_uid, kept, false);
 }
 
+// 13-72: Wrap each in: one new container around each picked row, each staying in its place.
+void DoWrapEach(const std::vector<LibraryRow>& rows, SoundNodeType type, const std::string& group_uid)
+{
+    const std::string        lib_uid = g.lib;
+    std::vector<std::string> made;
+    const std::string        word = TypeWord(type);
+    if (Gesture("Wrap each in " + word, [&](SoundStore& s) { return WrapRows(s, lib_uid, rows, type, group_uid, &made); },
+                std::to_string(rows.size()) + " rows wrapped, each in its own " + word))
+        SelectMade(lib_uid, made);
+}
+
+// 13-72: Wrap value contents in: inside each value of a Switch (or each picked value), a new
+// container around what it plays; the Switch stays.
+void DoWrapValueContents(const std::vector<LibraryRow>& rows, SoundNodeType type, const std::string& group_uid)
+{
+    const std::string lib_uid = g.lib;
+    size_t            count = 0;
+    if (const SoundLibrary* lib = FindLibrary(GetSoundStore(nullptr), lib_uid)) count = ValueContentRows(*lib, rows).size();
+    std::vector<std::string> made;
+    const std::string        word = TypeWord(type);
+    if (Gesture("Wrap value contents in " + word,
+                [&](SoundStore& s) { return WrapValueContents(s, lib_uid, rows, type, group_uid, &made); },
+                std::to_string(count) + (count > 1 ? " values" : " value") + ": what each plays wrapped in a new " + word))
+        SelectMade(lib_uid, made);
+}
+
+// 13-72: Put back where it was: Unassigned rows go back onto their former value.
+void DoPutBack(const std::vector<LibraryRow>& rows)
+{
+    const std::string        lib_uid = g.lib;
+    std::vector<std::string> placed;
+    if (Gesture("Put back where it was", [&](SoundStore& s) { return PutBackRows(s, lib_uid, rows, &placed); }))
+        SelectMade(lib_uid, placed);
+}
+
+// 13-72: the clipboard's one node for Paste onto (a copy's node, or a cut row's); false + why otherwise.
+bool ClipSource(std::string* lib_uid, std::string* node, std::string* why)
+{
+    if (g.clip.empty()) {
+        *why = "Copy (Ctrl+C) a container or a Switch first";
+        return false;
+    }
+    const SoundLibrary* sl = FindLibrary(GetSoundStore(nullptr), g.clip_lib);
+    std::vector<std::string> nodes;
+    if (sl) {
+        if (g.clip_copy) {
+            for (const std::string& n : g.clip_nodes)
+                if (FindNode(*sl, n)) nodes.push_back(n);
+        } else {
+            for (const LibraryRow& r : g.clip) {
+                const std::string n = RowNode(*sl, r);
+                if (!n.empty() && std::find(nodes.begin(), nodes.end(), n) == nodes.end()) nodes.push_back(n);
+            }
+        }
+    }
+    if (nodes.empty()) {
+        *why = "The copied row no longer exists";
+        return false;
+    }
+    if (nodes.size() != 1) {
+        *why = "Copy one row to paste onto another";
+        return false;
+    }
+    *lib_uid = g.clip_lib;
+    *node = nodes.front();
+    return true;
+}
+
+void DoPasteOnto(const std::string& src_lib, const std::string& src, const std::string& dst_lib, const std::string& dst,
+                 PasteOntoWhat what, const std::string& src_name, const std::string& dst_name)
+{
+    const bool contents = what == PasteOntoWhat::Contents;
+    if (Gesture(contents ? "Paste onto (replace contents)" : "Paste onto (replace settings)",
+                [&](SoundStore& s) { return PasteOnto(s, src_lib, src, dst_lib, dst, what); },
+                contents ? dst_name + ": contents replaced by a copy of " + src_name + "'s"
+                         : dst_name + ": settings taken from " + src_name))
+        return;
+    ShowLibraryToast(contents ? "Cannot replace its contents" : "Same settings already: nothing changed", false);
+}
+
 // The batch "Switch on <group>": a toast says why when nothing changed (bug 3: never silent).
 void BatchSwitchOn(const std::vector<LibraryRow>& rows, const std::string& group_uid)
 {
@@ -703,13 +799,16 @@ void TypeMenu(const std::vector<LibraryRow>& rows)
     }
 }
 
-void WrapMenu(const std::vector<LibraryRow>& rows)
+// Random / Blend / Switch on ▸ group, for a wrap gesture (Wrap in / Group into, 13-72 Wrap each in,
+// Wrap value contents in).
+using WrapFn = void (*)(const std::vector<LibraryRow>&, SoundNodeType, const std::string&);
+void WrapMenu(const std::vector<LibraryRow>& rows, WrapFn fn = DoWrap)
 {
-    if (ui::IconMenuItem(TypeIcon(SoundNodeType::Random), "Random")) Later([rows] { DoWrap(rows, SoundNodeType::Random, {}); });
-    if (ui::IconMenuItem(TypeIcon(SoundNodeType::Blend), "Blend")) Later([rows] { DoWrap(rows, SoundNodeType::Blend, {}); });
+    if (ui::IconMenuItem(TypeIcon(SoundNodeType::Random), "Random")) Later([rows, fn] { fn(rows, SoundNodeType::Random, {}); });
+    if (ui::IconMenuItem(TypeIcon(SoundNodeType::Blend), "Blend")) Later([rows, fn] { fn(rows, SoundNodeType::Blend, {}); });
     if (ui::IconBeginMenu(TypeIcon(SoundNodeType::Switch), "Switch on")) {
         const std::string gid = GroupMenuItems(false, nullptr);
-        if (!gid.empty()) Later([rows, gid] { DoWrap(rows, SoundNodeType::Switch, gid); });
+        if (!gid.empty()) Later([rows, gid, fn] { fn(rows, SoundNodeType::Switch, gid); });
         ImGui::EndMenu();
     }
 }
@@ -772,9 +871,44 @@ void RowMenu(const SoundLibrary& lib)
         TypeMenu(rows);
         ImGui::EndMenu();
     }
-    if (has_node && ImGui::BeginMenu(rows.size() > 1 ? "Group into" : "Wrap in")) {
-        WrapMenu(rows);
-        ImGui::EndMenu();
+    if (has_node) {
+        const bool many = rows.size() > 1;
+        const bool open = ImGui::BeginMenu(many ? "Group into" : "Wrap in");
+        ui::ItemTipText(many ? "All the selected rows into ONE new container, at the first one's place"
+                             : "A new container around this row, at its place");
+        if (open) {
+            WrapMenu(rows);
+            ImGui::EndMenu();
+        }
+    }
+    // 13-72: Wrap each in (several rows with a node): one new container around EACH, each in its place.
+    size_t node_rows = 0;
+    for (const LibraryRow& r : rows)
+        if (!RowNode(lib, r).empty()) ++node_rows;
+    if (has_node && node_rows > 1) {
+        const bool open = ImGui::BeginMenu("Wrap each in");
+        ui::ItemTip("One new container around EACH of the %d selected rows; each stays where it is", static_cast<int>(node_rows));
+        if (open) {
+            WrapMenu(rows, DoWrapEach);
+            ImGui::EndMenu();
+        }
+    }
+    // 13-72: Wrap value contents in, on a Switch's own row or several value rows (on one value it
+    // would be Wrap in).
+    size_t value_rows = 0;
+    for (const LibraryRow& r : rows)
+        if (RowIsValue(lib, r)) ++value_rows;
+    if ((is_switch && !is_value) || (is_value && value_rows > 1)) {
+        const size_t vct = ValueContentRows(lib, rows).size();
+        const bool   open = ImGui::BeginMenu("Wrap value contents in", vct > 0);
+        if (vct > 0)
+            ui::ItemTip("Inside each value (%d), a new container around what it plays; the Switch stays", static_cast<int>(vct));
+        else
+            ui::ItemTipText("No value plays anything yet");
+        if (open) {
+            WrapMenu(rows, DoWrapValueContents);
+            ImGui::EndMenu();
+        }
     }
     if (has_node) {
         bool can = false;
@@ -794,7 +928,53 @@ void RowMenu(const SoundLibrary& lib)
     if (ImGui::MenuItem("Cut", "Ctrl+X", false, movable)) DoCut(lib_uid, rows);
     if (ImGui::MenuItem("Copy", "Ctrl+C", false, movable)) DoCopy(lib_uid, rows);
     if (ImGui::MenuItem("Paste", "Ctrl+V", false, !g.clip.empty() && !StoreReplaced())) Later([lib_uid, row] { DoPaste(lib_uid, &row); });
+    {  // 13-72: Paste onto: the target keeps its place, name and assignments.
+        std::string src_lib, src, why;
+        const bool  clip_ok = ClipSource(&src_lib, &src, &why);
+        if (clip_ok && !has_node) why = "Right-click the container to replace";
+        const bool ok = clip_ok && has_node && !StoreReplaced();
+        const bool open = ImGui::BeginMenu("Paste onto", ok);
+        if (ok) {
+            ui::ItemTip("Keeps %s's place, name and assignments", NodeName(*n).c_str());
+        } else {
+            ui::ItemTipText(why.c_str());
+        }
+        if (open) {
+            const SoundStore&   store = GetSoundStore(nullptr);
+            const SoundLibrary* sl = FindLibrary(store, src_lib);
+            const SoundNode*    sn = sl ? FindNode(*sl, src) : nullptr;
+            const std::string   sname = sn ? NodeName(*sn) : std::string(), tname = NodeName(*n);
+            ui::MenuCaption((sname + " \xE2\x86\x92 " + tname).c_str());
+            std::string wc, ws;
+            const bool  can_c = CanPasteOnto(store, src_lib, src, lib_uid, node_uid, PasteOntoWhat::Contents, &wc);
+            const bool  can_s = CanPasteOnto(store, src_lib, src, lib_uid, node_uid, PasteOntoWhat::Settings, &ws);
+            const std::string dst = node_uid;
+            if (ImGui::MenuItem("Replace contents", nullptr, false, can_c))
+                Later([src_lib, src, lib_uid, dst, sname, tname] {
+                    DoPasteOnto(src_lib, src, lib_uid, dst, PasteOntoWhat::Contents, sname, tname);
+                });
+            ui::ItemTipText(can_c ? "Its children are replaced by a copy of the copied row's children (its type too)" : wc.c_str());
+            if (ImGui::MenuItem("Replace settings", nullptr, false, can_s))
+                Later([src_lib, src, lib_uid, dst, sname, tname] {
+                    DoPasteOnto(src_lib, src, lib_uid, dst, PasteOntoWhat::Settings, sname, tname);
+                });
+            ui::ItemTipText(can_s ? "Only dB and Avoid repeat (and the default value between two Switches on one group)"
+                                  : ws.c_str());
+            ImGui::EndMenu();
+        }
+    }
     if (ImGui::MenuItem("Duplicate", "Ctrl+D", false, movable)) Later([rows] { DoDuplicate(rows); });
+    if (n && n->parent.size() && !is_value) {  // 13-72: an Unassigned row
+        const SoundNode* p = FindNode(lib, n->parent);
+        if (p && p->type == SoundNodeType::Switch &&
+            std::find(p->unassigned.begin(), p->unassigned.end(), n->uid) != p->unassigned.end()) {
+            std::string why;
+            const bool  can = CanPutBack(GetSoundStore(nullptr), lib, n->uid, &why);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Put back where it was", nullptr, false, can && !StoreReplaced())) Later([rows] { DoPutBack(rows); });
+            ui::ItemTipText(can ? ("Back on " + n->was_path).c_str() : why.c_str());
+        }
+    }
     if (is_value) {
         ImGui::Separator();
         if (ImGui::MenuItem("Make default")) Later([rows] { DoMakeDefault(rows); });
@@ -1171,6 +1351,60 @@ void DrawUnassignedHeader(const TreeRow& r)
     ImGui::Dummy(ImVec2(w, top + h));
 }
 
+// 13-72 (mockup .ocol): an Unassigned row's name, its Switch Group as a chip (accent; a non-Switch:
+// its type, muted), then a second 11 px line "was: <path before> · used by: <assignments>".
+void DrawOrphanLines(ImDrawList* dl, const SoundLibrary& lib, const SoundNode& n, const std::string& label, float x,
+                     float max_x, float cy, float y2, ImU32 name_col, bool cut)
+{
+    (void)lib;
+    const SoundStore& store = GetSoundStore(nullptr);
+    std::string       chip = TypeWord(n.type);
+    const bool        sw = n.type == SoundNodeType::Switch;
+    if (sw) {
+        const SwitchGroup* gr = FindGroup(store, n.group_uid);
+        chip = gr ? gr->name : std::string("?");
+    }
+    ImFont*     fs = ui::FontSmall();
+    const float pad = ui::Dp(7.0f), gap = ui::Dp(6.0f);
+    const float chip_w = std::min(ui::TextSizeIn(fs, chip.c_str()).x + pad * 2.0f, std::max(0.0f, (max_x - x) * 0.5f));
+    {
+        ui::FontScope f(ui::FontTitle());
+        const float name_w = std::min(ImGui::CalcTextSize(label.c_str()).x, std::max(0.0f, max_x - x - chip_w - gap));
+        ui::EllipsisTextTip(dl, ImVec2(x, std::floor(cy - ImGui::GetTextLineHeight() * 0.5f)), x + name_w + 1.0f, name_col, label);
+        const float cx = x + name_w + gap, ch = std::floor(fs->FontSize + ui::Dp(4.0f)), top = std::floor(cy - ch * 0.5f);
+        if (chip_w > pad * 2.0f && cx + chip_w <= max_x) {
+            dl->AddRect(ImVec2(cx, top), ImVec2(cx + chip_w, top + ch), Faded(sw ? ui::kAccentLine : ui::kStrokeStrong, cut), ch * 0.5f);
+            ui::FontScope f2(fs);
+            ui::EllipsisTextTip(dl, ImVec2(cx + pad, std::floor(top + (ch - fs->FontSize) * 0.5f)), cx + chip_w - pad + 1.0f,
+                                Faded(sw ? ui::kAccentInk : ui::kMuted, cut), chip, sw ? "Switch Group" : nullptr);
+        }
+    }
+    // Line 2: muted keys, the facts in the text colour (the mockup's <b>).
+    std::vector<std::pair<std::string, bool>> segs;  // text, is a fact
+    if (!n.was_path.empty()) {
+        segs.push_back({"was: ", false});
+        segs.push_back({n.was_path, true});
+        segs.push_back({" \xC2\xB7 ", false});
+    }
+    std::string used;
+    for (const auto& u : OrphanUsedBy(store, n))
+        used += (used.empty() ? "" : ", ") + (u.first.empty() ? std::string("Project") : u.first) + " \xC2\xB7 " + AssignKeyLabel(u.second);
+    segs.push_back({"used by: ", false});
+    segs.push_back({used.empty() ? std::string("nothing") : used, !used.empty()});
+    std::string all;
+    for (const auto& sg : segs) all += sg.first;
+    ui::FontScope f(fs);
+    if (ImGui::CalcTextSize(all.c_str()).x > max_x - x) {
+        ui::EllipsisTextTip(dl, ImVec2(x, y2), max_x, Faded(ui::kMuted, cut), all);
+        return;
+    }
+    float cx = x;
+    for (const auto& sg : segs) {
+        dl->AddText(ImVec2(cx, y2), Faded(sg.second ? ui::kText : ui::kMuted, cut), sg.first.c_str());
+        cx += ImGui::CalcTextSize(sg.first.c_str()).x;
+    }
+}
+
 // One row; returns at once after a gesture (`lib` is then stale).
 // 13-7a (audit C3.3 - C3.5, B10): the mockup's .trow, 28 px: from the left 4 px + 18 px a level,
 // the 18 px chevron (or its empty room), the type icon (a container's a 20 px button in the
@@ -1184,11 +1418,15 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
         return;
     }
     ImDrawList*  dl = ImGui::GetWindowDrawList();
-    const float  rh = ui::RowH();
+    // 13-72: an Unassigned row says what it was on a second line (.trow.orph): the icons and the
+    // name stay on the first.
+    const SoundNode* orphan = r.unassigned && !r.node.empty() ? FindNode(lib, r.node) : nullptr;
+    const float  line_h = ui::RowH();
+    const float  rh = orphan ? line_h + ui::FontSmall()->FontSize + ui::Dp(6.0f) : line_h;
     const ImVec2 p = ImGui::GetCursorScreenPos();
     const float  w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
     const float  x0 = p.x + ui::Dp(kRowPad + r.depth * kIndent);
-    const float  cy = p.y + rh * 0.5f;
+    const float  cy = p.y + line_h * 0.5f;
     const float  gap = ui::Dp(6.0f);
 
     if (r.kind == TreeRowKind::Hint) {
@@ -1387,8 +1625,12 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
         if (r.kind == TreeRowKind::Value && r.node.empty()) col = ui::kMuted;  // an empty value (.nm.emptyv)
         if (r.unassigned) col = ui::kUnassignedName;
         if (missing && r.kind == TreeRowKind::Node) col = ui::kMissName;
-        ui::FontScope f(ui::FontTitle());
-        ui::EllipsisTextTip(dl, ImVec2(nx, std::floor(cy - ImGui::GetTextLineHeight() * 0.5f)), rx, Faded(col, is_cut), r.label);
+        if (orphan) {
+            DrawOrphanLines(dl, lib, *orphan, r.label, nx, rx, cy, p.y + line_h - ui::Dp(2.0f), Faded(col, is_cut), is_cut);
+        } else {
+            ui::FontScope f(ui::FontTitle());
+            ui::EllipsisTextTip(dl, ImVec2(nx, std::floor(cy - ImGui::GetTextLineHeight() * 0.5f)), rx, Faded(col, is_cut), r.label);
+        }
     }
     ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + rh));
     ImGui::Dummy(ImVec2(0.0f, 0.0f));

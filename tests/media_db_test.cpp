@@ -575,6 +575,10 @@ static void TestSearchEverything()
     // A tag hit (REAPER's genre), an unknown key's value, another unknown key.
     CHECK(names("destruction") == "impact_01.wav;");
     CHECK(names("splinter") == "impact_01.wav;");
+    // 13-69 review: a field's key is not something the file holds ("ucs_category", "mytag").
+    CHECK(names("ucs_category").empty());
+    CHECK(names("mytag").empty());
+    CHECK(names("wood ucs_category") == "");
     CHECK(names("sneaky") == "fs_gravel_02.wav;");
     CHECK(names("gdc") == "fs_gravel_02.wav;");
     // Words across fields: folder + tag, folder + name.

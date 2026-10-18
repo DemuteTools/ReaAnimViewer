@@ -520,6 +520,17 @@ std::string FieldLabel(const std::string& key)
     return key;
 }
 
+// 13-69 review: the first hit of `w` outside the field keys ("key\x1evalue\x1f"): a word must
+// match what a file holds, not the name of a field it has ("d", "b", a custom key).
+size_t FindInValues(const std::string& h, const std::string& w)
+{
+    for (size_t at = h.find(w); at != std::string::npos; at = h.find(w, at + 1)) {
+        const size_t sep = h.find_first_of("\x1e\x1f", at + w.size());
+        if (sep == std::string::npos || h[sep] != '\x1e') return at;
+    }
+    return std::string::npos;
+}
+
 }  // namespace
 
 std::vector<const DbFile*> MediaDbIndex::Search(const std::string& query, const std::string& db_filter,
@@ -533,7 +544,7 @@ std::vector<const DbFile*> MediaDbIndex::Search(const std::string& query, const 
         const std::string& h = hay_[i];
         bool ok = true, in_name = true;
         for (const std::string& w : words) {
-            const size_t at = h.find(w);
+            const size_t at = FindInValues(h, w);
             if (at == std::string::npos) {
                 ok = false;
                 break;

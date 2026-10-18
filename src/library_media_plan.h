@@ -66,7 +66,7 @@ std::string MediaCommonStem(const std::vector<MediaPick>& picks);
 
 // 13-69: what a drop of `n_picks` files / variations at `row` makes (the drag tooltip), e.g.
 // "12 files -> added to the Random Wood", "12 files -> new Random in the Random Wood",
-// "Step -> a Random of 2 sounds (with Step)"; "" when refused there.
+// "2 files -> Step becomes a Random: the old sound + 2 new"; "" when refused there.
 std::string MediaDropHint(const SoundStore& store, const std::string& lib_uid, const LibraryRow* row, int n_picks,
                           bool variations, bool as_random);
 

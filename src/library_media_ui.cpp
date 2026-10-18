@@ -1549,7 +1549,7 @@ void HandleKeys()
         return;
     }
     if (io.WantTextInput) return;
-    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_A, false) && !g.results.empty()) {  // 13-69: every result
+    if (io.KeyCtrl && !io.KeyShift && !io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_A, false) && !g.results.empty()) {  // 13-69: every result
         SelRows(MediaRangeRows(0, static_cast<int>(std::min(g.results.size(), kMaxResults)) - 1, g.results.size(),
                                kMaxResults),
                 false);

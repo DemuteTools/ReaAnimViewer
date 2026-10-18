@@ -165,9 +165,10 @@ bool CanPutBack(const SoundStore& store, const SoundLibrary& lib, const std::str
 bool PutBackRows(SoundStore& store, const std::string& lib_uid, const std::vector<LibraryRow>& rows,
                  std::vector<std::string>* placed);
 // The store's assignments (Project: first "" ; a Character: its name) choosing the value an orphan
-// was on, each with its assign key ("legs.step"). Rule / item / event values live on the animation
-// items, not here.
-std::vector<std::pair<std::string, std::string>> OrphanUsedBy(const SoundStore& store, const SoundNode& n);
+// was on, each with its assign key ("legs.step"); a target set to no library or to another library
+// than lib_uid is left out. Rule / item / event values live on the animation items, not here.
+std::vector<std::pair<std::string, std::string>> OrphanUsedBy(const SoundStore& store, const std::string& lib_uid,
+                                                              const SoundNode& n);
 // "Paste onto": the target node keeps its place, name, settings and assignments.
 // Contents: its children are replaced by a copy of the source's (CopySubtree, new uids) and it takes
 // the source's type (a Switch: its group, cases, default, Unassigned); two containers, neither inside

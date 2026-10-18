@@ -843,9 +843,18 @@ static void TestOrphanStoryAndPutBack()
     CHECK((N(s, "T", "lt")->unassigned == std::vector<std::string>{"smr", "smw"}));
     CHECK(r->was_path == "LocomotionType \xE2\x80\xBA Run" && r->was_switch == "lt" && r->was_value == "vrun");
     CHECK(N(s, "T", "sr")->was_path.empty());  // its children did not move
-    const auto used = OrphanUsedBy(s, *r);
+    const auto used = OrphanUsedBy(s, "T", *r);
     CHECK(used.size() == 2 && used[0].first.empty() && used[0].second == "legs.step" && used[1].first == "Knight");
-    CHECK(OrphanUsedBy(s, *N(s, "T", "smw")).empty());
+    {  // a target playing another library, or none, does not use it
+        SoundStore o = s;
+        o.project[0].state = LibState::Library;
+        o.project[0].library = "Other";
+        o.characters[0].assigns[0].state = LibState::None;
+        CHECK(OrphanUsedBy(o, "T", *N(o, "T", "smr")).empty());
+        o.project[0].library = "T";
+        CHECK(OrphanUsedBy(o, "T", *N(o, "T", "smr")).size() == 1);
+    }
+    CHECK(OrphanUsedBy(s, "T", *N(s, "T", "smw")).empty());
     SoundStore back;
     CHECK(ParseSoundStore(SerializeSoundStore(s), &back));
     CHECK(N(back, "T", "smr")->was_value == "vrun" && N(back, "T", "smr")->was_path == r->was_path);

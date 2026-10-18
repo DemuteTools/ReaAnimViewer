@@ -663,8 +663,12 @@ void DoWrapEach(const std::vector<LibraryRow>& rows, SoundNodeType type, const s
     const std::string        lib_uid = g.lib;
     std::vector<std::string> made;
     const std::string        word = TypeWord(type);
+    std::set<std::string>    nodes;  // the toast counts nodes, each once (as WrapRows wraps them)
+    if (const SoundLibrary* lib = FindLibrary(GetSoundStore(nullptr), lib_uid))
+        for (const LibraryRow& r : rows)
+            if (!RowNode(*lib, r).empty()) nodes.insert(RowNode(*lib, r));
     if (Gesture("Wrap each in " + word, [&](SoundStore& s) { return WrapRows(s, lib_uid, rows, type, group_uid, &made); },
-                std::to_string(rows.size()) + " rows wrapped, each in its own " + word))
+                std::to_string(nodes.size()) + " rows wrapped, each in its own " + word))
         SelectMade(lib_uid, made);
 }
 
@@ -1356,7 +1360,6 @@ void DrawUnassignedHeader(const TreeRow& r)
 void DrawOrphanLines(ImDrawList* dl, const SoundLibrary& lib, const SoundNode& n, const std::string& label, float x,
                      float max_x, float cy, float y2, ImU32 name_col, bool cut)
 {
-    (void)lib;
     const SoundStore& store = GetSoundStore(nullptr);
     std::string       chip = TypeWord(n.type);
     const bool        sw = n.type == SoundNodeType::Switch;
@@ -1387,7 +1390,7 @@ void DrawOrphanLines(ImDrawList* dl, const SoundLibrary& lib, const SoundNode& n
         segs.push_back({" \xC2\xB7 ", false});
     }
     std::string used;
-    for (const auto& u : OrphanUsedBy(store, n))
+    for (const auto& u : OrphanUsedBy(store, lib.uid, n))
         used += (used.empty() ? "" : ", ") + (u.first.empty() ? std::string("Project") : u.first) + " \xC2\xB7 " + AssignKeyLabel(u.second);
     segs.push_back({"used by: ", false});
     segs.push_back({used.empty() ? std::string("nothing") : used, !used.empty()});

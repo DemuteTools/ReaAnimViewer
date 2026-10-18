@@ -1321,14 +1321,18 @@ bool PutBackRows(SoundStore& store, const std::string& lib_uid, const std::vecto
     return ok;
 }
 
-std::vector<std::pair<std::string, std::string>> OrphanUsedBy(const SoundStore& store, const SoundNode& n)
+std::vector<std::pair<std::string, std::string>> OrphanUsedBy(const SoundStore& store, const std::string& lib_uid,
+                                                              const SoundNode& n)
 {
     std::vector<std::pair<std::string, std::string>> out;
     if (n.was_value.empty()) return out;
     auto scan = [&](const std::vector<SoundAssign>& list, const std::string& who) {
-        for (const SoundAssign& a : list)
+        for (const SoundAssign& a : list) {
+            // 13-72 review: a target that plays no library, or another library, does not use it.
+            if (a.state == LibState::None || (a.state == LibState::Library && a.library != lib_uid)) continue;
             for (const ValueSet& v : a.values)
                 if (v.value_uid == n.was_value) out.emplace_back(who, a.key);
+        }
     };
     scan(store.project, std::string());
     for (const SoundCharacter& c : store.characters) scan(c.assigns, c.name.empty() ? std::string("Character") : c.name);

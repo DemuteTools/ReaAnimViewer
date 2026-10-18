@@ -33,6 +33,10 @@
 #include <cstring>
 
 namespace rav {
+void LoadZoneNewSnapMode();  // zone_wave_ui.cpp (13-67b; its header pulls ImGui)
+}  // namespace rav
+
+namespace rav {
 namespace {
 
 constexpr const char kCommandName[] = "RAV_OPEN_VIEWER";
@@ -358,6 +362,7 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
     rec->Register("accelerator", ViewerAcceleratorRegistration());
     // Spec 11-fb-3 -- the custom keys of those (REAPER ExtState), before the viewer opens.
     LoadShortcuts();
+    LoadZoneNewSnapMode();  // 13-67b: the snap offset mode new Sounds get (Sound Edit Options), before any is made
 
     // Story 11-5 -- the Video panel's render buttons check REAPER's action names (optional
     // functions, resolved here so a REAPER build without them still loads the extension).

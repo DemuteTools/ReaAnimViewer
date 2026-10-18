@@ -481,6 +481,42 @@ int main()
         Ownership o;
         CHECK(OwnershipFromWord("attached", &o) && o == Ownership::Attached && !OwnershipFromWord("x", &o));
     }
+    // ---- 13-67b: the old defaults for what a sound line leaves out; the parked variations -----------
+    {
+        SoundStore old;
+        CHECK(ParseSoundStore("RAVSOUNDS 1\nlibrary uid=l name=L root=n\nnode uid=n type=sound\nsound kind=item guid=g\n", &old));
+        const SoundData& od = old.libraries[0].nodes[0].sound;
+        CHECK(od.silence.threshold_db == -45.0 && od.sync_mode == SyncMode::Attack);  // saved before 13-67b: kept
+        const std::string ot = SerializeSoundStore(old);
+        CHECK(ot.find("thr=") == std::string::npos && ot.find("sync=") == std::string::npos);
+        SoundStore s = old;
+        SoundData& d = s.libraries[0].nodes[0].sound;
+        d = SoundData{};
+        CHECK(d.silence.threshold_db == -60.0 && d.sync_mode == SyncMode::Peak);  // a new Sound
+        d.parked_mode = DetectMode::Silence;
+        d.parked_edited = true;
+        SoundFrame pf;
+        pf.start = 0.1;
+        pf.length = 0.2;
+        EditZone z;
+        z.part = kWholePart;
+        z.a = z.slot_a = 0.1;
+        z.b = z.slot_b = 0.3;
+        pf.zones.push_back(z);
+        d.parked.push_back(pf);
+        const std::string t = SerializeSoundStore(s);
+        CHECK(t.find("thr=-60") != std::string::npos && t.find("sync=peak") != std::string::npos &&
+              t.find("park mode=silence edited=1") != std::string::npos);
+        SoundStore b;
+        CHECK(ParseSoundStore(t, &b) && SerializeSoundStore(b) == t);
+        const SoundData& bd = b.libraries[0].nodes[0].sound;
+        CHECK(bd.silence.threshold_db == -60.0 && bd.sync_mode == SyncMode::Peak && bd.frames.empty());
+        CHECK(bd.parked.size() == 1 && bd.parked[0].zones.size() == 1 && bd.parked_edited && bd.parked_mode == DetectMode::Silence);
+        SetNewSoundSyncMode(SyncMode::SliceStart);  // the Options' pick: new Sounds only
+        CHECK(SoundData{}.sync_mode == SyncMode::SliceStart && bd.sync_mode == SyncMode::Peak);
+        SetNewSoundSyncMode(SyncMode::Peak);
+    }
+
     // ---- Fades (Antho 2026-10-12): per frame and the Sound's default, optional fields -----------
     {
         // Old text (no fade field): the defaults (1 / 5 ms, no frame fade), and nothing is written.

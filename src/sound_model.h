@@ -52,8 +52,8 @@ struct AssetIdentity {
 // How a Sound's variations (frames) were detected (13-3).
 enum class DetectMode { Whole, Takes, TakeMarkers, Silence };
 
-struct SilenceParams {  // 13-17b (Antho 2026-10-12): -45 dB, 200 ms gap, 100 ms tail
-    double threshold_db = -45.0;
+struct SilenceParams {  // 13-17b (Antho 2026-10-12): 200 ms gap, 100 ms tail; 13-67b (Antho 2026-10-17): -60 dB for new Sounds
+    double threshold_db = -60.0;
     double min_gap_ms = 200.0;
     double preroll_ms = 5.0;
     double tail_ms = 100.0;
@@ -171,6 +171,15 @@ struct SoundSource {
 // 13-25: where a variation's (or part's) sync point sits before its offset: the attack, the loudest
 // bin, or the start of its first span.
 enum class SyncMode { Attack, Peak, SliceStart };
+// 13-67b: the snap offset mode a new Sound gets (Sound Edit Options, the user's pref; Peak until the pref is read).
+// Saved Sounds keep their own mode (sound_record.cpp reads a missing `sync` as the old default, Attack).
+inline SyncMode& NewSoundSyncModeRef()
+{
+    static SyncMode m = SyncMode::Peak;
+    return m;
+}
+inline SyncMode NewSoundSyncMode() { return NewSoundSyncModeRef(); }
+inline void     SetNewSoundSyncMode(SyncMode m) { NewSoundSyncModeRef() = m; }
 constexpr double kDefaultSyncOffsetMs = -2.0;
 // 13-23 (A4): the fade each part gets at a cut or zone edge (s).
 constexpr double kDefaultCutFade = 0.002;
@@ -237,7 +246,7 @@ struct SoundData {
     std::vector<std::string> divide_values;
     std::vector<RoleValue>   role_map;
     bool                     lanes_split = false;
-    SyncMode                 sync_mode = SyncMode::Attack;
+    SyncMode                 sync_mode = NewSoundSyncMode();  // 13-67b: was Attack
     double                   sync_offset_ms = kDefaultSyncOffsetMs;
     double                   cut_fade = kDefaultCutFade;
     std::vector<SoundZone>   zones;
@@ -250,6 +259,12 @@ struct SoundData {
     // 13-62i (appended): what the fader of the implicit part (kWholePart, an undivided Sound) has applied to its zones
     // (dB, a view: PartSettings::fader_db's home for the part that has no PartSettings).
     std::optional<double>    fader_db;
+    // 13-67b (appended): the variations (and their zones) of the mode last left, kept while another mode is shown, so
+    // switching back (e.g. Silence -> Takes -> Silence) gives the hand edits back (SwitchDetectMode). `parked_mode` /
+    // `parked_edited`: that mode and its `edited` flag. Saved (`park` / `pframe` / `pzone` lines).
+    std::vector<SoundFrame>  parked;
+    DetectMode               parked_mode = DetectMode::Whole;
+    bool                     parked_edited = false;
 };
 
 // A Switch's value -> child.

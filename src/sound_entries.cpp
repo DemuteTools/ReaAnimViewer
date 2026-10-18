@@ -305,6 +305,27 @@ void ResetToDetected(SoundData& data, const std::vector<SoundFrame>& detected)
     data.edited = false;
 }
 
+bool SwitchDetectMode(SoundData& data, DetectMode mode, const std::vector<SoundFrame>& detected)
+{
+    if (data.mode == mode) return false;
+    std::vector<SoundFrame> old = data.frames;
+    const DetectMode        old_mode = data.mode;
+    const bool              old_edited = data.edited;
+    if (!data.parked.empty() && data.parked_mode == mode) {
+        data.frames = data.parked;
+        data.edited = data.parked_edited;
+    } else {
+        data.frames = detected;
+        data.edited = false;
+        CarryHandMarks(data.frames, old, false);  // A7: hand sync points kept while their variation exists
+    }
+    data.mode = mode;
+    data.parked = std::move(old);
+    data.parked_mode = old_mode;
+    data.parked_edited = old_edited;
+    return true;
+}
+
 double SpanPeakDb(const PeakData& peaks, double start, double length)
 {
     if (peaks.rate <= 0.0 || peaks.max_abs.empty()) return NegInf();
@@ -1251,6 +1272,8 @@ bool SetDivide(SoundData& data, const std::string& group, const std::vector<std:
         f.owners.clear();      // 13-62 (decision 8)
     }
     data.parts.clear();  // 13-62 (decision 8): the parts' own settings go with the old division
+    data.parked.clear();  // 13-67b: the parked mode's zones belong to the old division
+    data.parked_edited = false;
     data.fader_db.reset();  // 13-62i: and the implicit part's fader (a view of what it applied)
     auto known = [&](const std::string& v) { return std::find(vals.begin(), vals.end(), v) != vals.end(); };
     data.zones.erase(std::remove_if(data.zones.begin(), data.zones.end(),

@@ -305,6 +305,20 @@ bool AuditionEnded(double pos, double length, double stalled_s)
     return pos > 0.0 && stalled_s >= 0.5;
 }
 
+std::string HandFramesText(const std::vector<SoundFrame>& frames)
+{
+    int hand = 0;
+    for (const SoundFrame& f : frames)
+        if (f.hand) ++hand;
+    const int n = static_cast<int>(frames.size());
+    if (hand <= 0) return std::string();
+    if (hand >= n)
+        return n == 1 ? "Its variation was edited by hand (an edge, a gain, a fade or the snap offset): Threshold and Min gap change nothing until Reset to detected"
+                      : "Every variation was edited by hand (an edge, a gain, a fade or a snap offset): Threshold and Min gap change nothing until Reset to detected";
+    return std::to_string(hand) + " of " + std::to_string(n) + " variations edited by hand keep their zones (Reset to detected "
+           "re-detects them)";
+}
+
 std::string VariationCountText(int detected, const std::vector<SoundFrame>& frames)
 {
     const int n = static_cast<int>(frames.size());

@@ -198,6 +198,11 @@ bool ZoneClickPlays();
 void SetZoneClickPlays(bool on);
 bool ZoneTailWins();
 void SetZoneTailWins(bool on);
+// 13-67b: the snap offset mode (Attack / Peak / Start) a new Sound gets (Options, the user's pref, default Peak); read
+// once (LoadZoneNewSnapMode at load), pushed to SetNewSoundSyncMode (sound_model.h). Saved Sounds keep their own.
+SyncMode ZoneNewSnapMode();
+void     SetZoneNewSnapMode(SyncMode m);
+void     LoadZoneNewSnapMode();
 
 // The peaks' series a zoned Sound's waveform draws (its mono, else every channel) of a WaveColumns with `series`.
 int ZoneWaveSeries(MonoMode m, int series);

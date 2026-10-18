@@ -1775,6 +1775,9 @@ static void PartSettingsRows(const char* id, int lib, const std::string& node_ui
                                       "Automatic zone ends: this much after the sound dies (never past a cut)"}};
         if (PartNumberRow(*l, *n, path, value, pname, col, kPre) || PartNumberRow(*l, *n, path, value, pname, col, kTail))
             return stop();
+        // 13-67b: why a longer Tail stops lengthening some of this part's zones
+        const std::string capped = TailCapsText(TailCappedZones(Shown(*n), ZoneCtxOf(m), value));
+        if (!capped.empty()) ui::ToneText(capped.c_str(), ui::kMuted, true);
     }
     {
         static const char* const kModes[3] = {"Attack", "Peak", "Start"};
@@ -1783,19 +1786,19 @@ static void PartSettingsRows(const char* id, int lib, const std::string& node_ui
         const PartSettings* ps = own_of();
         const bool          own = ps && ps->sync_mode;
         int                 picked = -1;
-        if (PartSegmentRow("##sync", "Sync point", kModes, kTips, 3, static_cast<int>(PartSyncMode(Shown(*n), value)), own, col,
+        if (PartSegmentRow("##sync", "Snap offset", kModes, kTips, 3, static_cast<int>(PartSyncMode(Shown(*n), value)), own, col,
                            &picked))
             ResetPartField(*l, *n, path, value, PartField::SyncMode, pname);
         else if (picked >= 0) {
             PartSettings patch;
             patch.sync_mode = static_cast<SyncMode>(picked);
-            SetPartNow(*l, *n, path, value, patch, true, pname + " \xC2\xB7 Sync point: " + kModes[picked] + " (its own)");
+            SetPartNow(*l, *n, path, value, patch, true, pname + " \xC2\xB7 Snap offset at " + kModes[picked] + " (its own)");
         }
         if (StoreReplaced()) return stop();
     }
     {
         static const PartNum kOff = {PartField::SyncOffset, {"##soff", "Offset", "ms", 0.1, -50.0, 50.0, -50.0f, 50.0f,
-                                     "The sync point's offset from the attack, the peak or the slice start (ms)"}};
+                                     "Moves the snap offset from the attack, the peak or the zone start (ms)"}};
         if (PartNumberRow(*l, *n, path, value, pname, col, kOff)) return stop();
     }
 
@@ -2942,20 +2945,18 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
             sel >= 0) {
             const DetectMode mode = modes[static_cast<size_t>(sel)];
             // A new mode starts from its own detection (hand frames belong to the old one).
+            // 13-67b: the mode left is parked with its zones; back to it, they come back (SwitchDetectMode).
             const std::vector<SoundFrame> frames = Detected(m, mode, d.silence);
-            const std::string toast = d.edited && mode != d.mode
-                                          ? (mode == DetectMode::Whole ? std::string("Whole file")
-                                                                       : std::string("Split by ") + labels[static_cast<size_t>(sel)]) +
-                                                ": the hand edits of the previous mode were dropped"
-                                          : std::string();
+            const std::string             what = mode == DetectMode::Whole ? std::string("Whole file")
+                                                                            : std::string("Split by ") + labels[static_cast<size_t>(sel)];
+            std::string toast;
+            if (mode != d.mode && d.parked_mode == mode && !d.parked.empty() && d.parked_edited)
+                toast = what + ": its zones edited by hand are back";
+            else if (mode != d.mode && d.edited)
+                toast = what + ": the previous mode's hand edits are kept, back to it to get them";
             const std::string path = m.path;
             EditNode("Detect", lib.uid, n.uid, [mode, frames, path](SoundNode& x) {
-                if (x.sound.mode == mode) return false;  // no empty undo point
-                const std::vector<SoundFrame> old = x.sound.frames;
-                x.sound.mode = mode;
-                x.sound.frames = frames;
-                x.sound.edited = false;
-                CarryHandMarks(x.sound.frames, old, false);  // A7: hand sync points kept while their variation exists
+                if (!SwitchDetectMode(x.sound, mode, frames)) return false;  // no empty undo point
                 RefreshWith(x.sound, path);
                 return true;
             }, toast);
@@ -3002,12 +3003,15 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
                 CancelLive();  // Esc: nothing re-detected or written (no undo point)
             }
         }
+        // 13-67b ("Detection has no effect"): a re-detection keeps the variations edited by hand; say so.
+        const std::string frozen = HandFramesText(Shown(n).frames);
+        if (!frozen.empty()) ui::ToneText(frozen.c_str(), ui::kWarn, true);
     }
     if (edit) {  // 13-20 / 13-23 / 13-25
         PartsControls(lib, n, m, label_col);
         if (StoreReplaced()) return;
     } else if (UsesZones(Shown(n))) {  // 13-62h review: where they went
-        ui::SubText("Pre-roll, Tail, Sync point: in the Edit window (Settings of)");
+        ui::SubText("Pre-roll, Tail, Snap offset: in the Edit window (Settings of)");
     }
     ui::SubText(VariationCountText(DetectedCount(n.uid, m, Shown(n)), Shown(n).frames).c_str());
     ui::SubText("Saved with the sound in the library (.ravlib).");
@@ -3383,7 +3387,7 @@ bool LegendChip(const char* id, const std::string& label, ImU32 col, LegendGlyph
 // The legend row above Edit's waveform: once divided, "Lanes [Combined | Lane]" (remembered per Sound,
 // one undo point), the values' chips (13-62: click = select that part, as its lane or its chip in the right
 // column; no undo point) and "Excluded"; then the
-// keys of the two handles, "Sync point (snap offset)" and "Cut (V1 | V2)".
+// keys of the two handles, "Snap offset" and "Cut (V1 | V2)".
 void EditLegend(const SoundStore& store, const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m)
 {
     const SoundData& d = Shown(n);
@@ -4244,7 +4248,7 @@ void ZoneSelectionPanel(const SoundLibrary& lib, const SoundNode& n, const Sound
                              k.pill_ink = ui::kWarn;
                          } else {
                              k.pill = std::string("= ") + kModes[mi] + " " + RoundedNumberText(PartSyncOffsetMs(d, part), true) + " ms";
-                             k.pill_tip = pname + "'s Sync point + Offset";
+                             k.pill_tip = pname + "'s Snap offset + Offset";
                          }
                          const ZoneRowOut o = ZoneNumRow(k);
                          if (ZoneNumberEdit(o, lib, n, m, r,
@@ -4256,7 +4260,7 @@ void ZoneSelectionPanel(const SoundLibrary& lib, const SoundNode& n, const Sound
                          if (o.reset &&
                              ZoneWriteNow(lib, n, m, "Zone snap offset",
                                           [r](SoundData& x, const ZoneContext& c, ZoneSel* sl) { return ResetZoneSnap(x, r, c, sl); },
-                                          pname + " snap offset: its part's Sync point again") &&
+                                          pname + " snap offset: automatic again (its part's Snap offset)") &&
                              StoreReplaced())
                              return true;
                      }
@@ -4373,13 +4377,17 @@ bool SoundZoneRows(const SoundLibrary& lib, const SoundNode& n, const SoundMedia
                                    return ApplyPreTailChange(x, std::string(), ZoneTailWins(), f, ZoneContext{EditPeaks(path), len});
                                }))
             return true;
+        if (!pre) {  // 13-67b: why a longer Tail stops lengthening some zones
+            const std::string capped = TailCapsText(TailCappedZones(Shown(n), ZoneContext{EditPeaks(path), len}));
+            if (!capped.empty()) ui::ToneText(capped.c_str(), ui::kMuted, true);
+        }
     }
     {
         static const char* const kModes[3] = {"Attack", "Peak", "Start"};
         static const char* const kTips[3] = {"Where the first transient crosses the threshold", "The loudest transient's peak",
                                              "The zone's start, pre-roll included"};
         const SoundData& d = Shown(n);
-        ui::LabelRow("Sync point", ui::Dp(120.0f), ui::Dp(64.0f), ui::kText);
+        ui::LabelRow("Snap offset", ui::Dp(120.0f), ui::Dp(64.0f), ui::kText);
         int        sel = static_cast<int>(d.sync_mode);
         const bool picked = ui::Segmented("##ssync", kModes, 3, &sel);
         const int  hov = ui::SegmentedHovered();
@@ -4393,15 +4401,15 @@ bool SoundZoneRows(const SoundLibrary& lib, const SoundNode& n, const SoundMedia
                 if (SetSyncSettings(probe, mode, off)) RefreshWith(probe, path);
                 ZoneSelAfter(n.sound, probe);
             }
-            EditNode("Sync point", lib.uid, n.uid, [mode, off, path](SoundNode& x) {
+            EditNode("Snap offset", lib.uid, n.uid, [mode, off, path](SoundNode& x) {
                 if (!SetSyncSettings(x.sound, mode, off)) return false;
                 RefreshWith(x.sound, path);
                 return true;
-            }, std::string("Sync point: ") + kModes[sel]);
+            }, std::string("Snap offset at ") + kModes[sel]);
             return StoreReplaced();  // the write is picked at the frame's end: the rest is still drawn
         }
     }
-    static const NumRow kOff = {"##soff", "Offset", "ms", 0.1, -50.0, 50.0, -50.0f, 50.0f, "Added to the sync point"};
+    static const NumRow kOff = {"##soff", "Offset", "ms", 0.1, -50.0, 50.0, -50.0f, 50.0f, "Moves the snap offset from where its mode puts it (ms)"};
     if (SoundZoneNumberRow(kOff, lib, n,
                            [](const SoundData& x) { return x.sync_offset_ms; },
                            [path](SoundData& x, double v) {
@@ -4618,7 +4626,10 @@ constexpr const char kZoneHelp[] =
     "empty space: select the zones it touches (Ctrl adds). Every change is one undo point (Ctrl+Z).";
 
 // How many Sound Edit options are off their default (the ⚙ badge).
-int ZoneOptionsChanged() { return (ZoneClickPlays() ? 0 : 1) + (ZoneTailWins() ? 0 : 1); }
+int ZoneOptionsChanged()
+{
+    return (ZoneClickPlays() ? 0 : 1) + (ZoneTailWins() ? 0 : 1) + (ZoneNewSnapMode() == SyncMode::Peak ? 0 : 1);
+}
 
 // The header's "Click plays" toggle (the speaker icon, on = accent): a pref of the user, no undo point.
 float ZoneClickPlaysWidth() { return ui::ButtonWidth("Click plays") + ui::IconRoom(); }
@@ -4640,7 +4651,8 @@ void  ZoneClickPlaysButton(float h)
 }
 
 // "⚙ Options" (the gear, its badge: the options off their default) and its popup (the mockup's optsHTML): group
-// Editing (Click plays, Pre-roll / Tail overwrite edges dragged by hand), group Later (examples, disabled), the foot.
+// Editing (Click plays, Pre-roll / Tail overwrite edges dragged by hand), group New sounds (13-67b: the snap offset mode),
+// the foot.
 float ZoneOptionsWidth()
 {
     const int n = ZoneOptionsChanged();
@@ -4694,17 +4706,10 @@ void ZoneOptionsButton(float h)
          "On: changing Pre-roll or Tail moves every edge of that part, even ones you dragged (\xE2\x96\xBC). Off: dragged edges stay; "
          "double-click one to follow again.",
          ZoneTailWins(), true},
-        {"##olater1", "Snap edges to zero crossings", "No click at a zone edge.", false, false},
-        {"##olater2", "Snap to the detected onset", "Edges and cuts stick to RAV's detections.", false, false},
-        {"##olater3", "Top / bottom half: swap", "Bottom moves the zone, top moves the cursor.", false, false},
     };
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 2; ++i) {  // 13-67b: the "Later" examples are gone (a later story makes them real)
         const Opt& o = opts[i];
         if (i == 0) ui::GroupCaption("Editing", ui::kMuted);
-        if (i == 2) {
-            ImGui::Dummy(ImVec2(1.0f, ui::Dp(4.0f)));
-            ui::GroupCaption("Later (examples of where future options go)", ui::kMuted);
-        }
         ImGui::PushID(o.id);
         ImGui::BeginDisabled(!o.live);
         ImGui::BeginGroup();
@@ -4727,6 +4732,25 @@ void ZoneOptionsButton(float h)
             ShowLibraryToast(std::string(o.t) + ": " + (now ? "on" : "off") + " (yours, every project)", false);
         }
         ImGui::Dummy(ImVec2(1.0f, ui::Dp(2.0f)));
+    }
+    {  // 13-67b: where a new Sound's snap offset sits (Antho 2026-10-17: default Peak); saved Sounds keep theirs
+        ImGui::Dummy(ImVec2(1.0f, ui::Dp(4.0f)));
+        ui::GroupCaption("New sounds", ui::kMuted);
+        static const char* const kModes[3] = {"Attack", "Peak", "Start"};
+        static const char* const kTips[3] = {"Where the first transient crosses the threshold", "The loudest transient's peak",
+                                             "The zone's start, pre-roll included"};
+        ui::LabelRow("Snap offset", ui::Dp(150.0f), ui::Dp(84.0f), ui::kText);
+        int        sel = static_cast<int>(ZoneNewSnapMode());
+        const bool picked = ui::Segmented("##osnapmode", kModes, 3, &sel);
+        const int  hov = ui::SegmentedHovered();
+        if (hov >= 0 && hov < 3) ui::ShowTip(kTips[hov]);
+        else ui::ItemTipText("Where the snap offset of a new sound's zones sits (the event lands there). A sound already "
+                             "made keeps its own: Settings of > Snap offset.");
+        if (picked && sel >= 0 && sel < 3 && sel != static_cast<int>(ZoneNewSnapMode())) {
+            SetZoneNewSnapMode(static_cast<SyncMode>(sel));
+            ShowLibraryToast(std::string("New sounds: snap offset at ") + kModes[sel] + " (yours, every project)", false);
+        }
+        ui::ToneText("For the sounds you make from now on.", ui::kMuted, true);
     }
     ImGui::Dummy(ImVec2(1.0f, ui::Dp(2.0f)));
     ui::ToneText("Your preferences, for every project. Not part of the sound: no undo point.", ui::kFaint, true);

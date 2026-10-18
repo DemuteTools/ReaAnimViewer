@@ -942,6 +942,7 @@ static void TestLinkedBlend()
 
 int main()
 {
+    SetNewSoundSyncMode(SyncMode::Attack);  // 13-67b: these fixtures were written for the old default (Attack)
     TestLinkedBlend();  // 13-68 v2
     TestPopulatePlanHelpers();  // 13-62i (D review)
     TestBlendMatrix();

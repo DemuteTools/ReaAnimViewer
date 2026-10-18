@@ -304,6 +304,19 @@ double PartFaderDb(const SoundData& d, const std::string& part);
 int ApplyPreTailChange(SoundData& d, const std::string& part, bool tail_wins, PartField field, const ZoneContext& ctx = {},
     ZoneSel* sel = nullptr);
 
+// 13-67b: the automatic zone ends the Tail does not reach (Antho 2026-10-17: a zone stops against the next one, no
+// overlap), of `part` ("" = every part following the Sound's Tail), on ctx's timeline, measured on ctx's peaks (none:
+// nothing counted). An end dragged by hand or held by a Gap is not counted; a cut counts as the next zone.
+struct TailCaps {
+    int by_next = 0;      // stopped by the next zone (or a cut)
+    int by_file_end = 0;  // stopped by the end of the file
+    int by_detected_end = 0;  // stopped at its variation's end as detected (its slot: detected with a shorter Tail)
+};
+TailCaps    TailCappedZones(const SoundData& d, const ZoneContext& ctx, const std::string& part = std::string());
+// "3 zones stopped by the next zone, 1 by the file end", "1 zone stopped by the file end", "... where their variation
+// was detected (...)"; "" when none.
+std::string TailCapsText(const TailCaps& c);
+
 // Normalize: the groups measured together and given one gain: zones of one part glued by Gaps (ChainOf, same part).
 // From a selection (part zones of it), or every part zone of `part` ("" = every part zone of the Sound).
 std::vector<std::vector<ZoneRef>> NormGroups(const SoundData& d, const ZoneSel& sel);

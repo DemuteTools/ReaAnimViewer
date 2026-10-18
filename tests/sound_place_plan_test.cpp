@@ -610,6 +610,7 @@ static void TestKeptVolume()
 }
 int main()
 {
+    SetNewSoundSyncMode(SyncMode::Attack);  // 13-67b: these fixtures were written for the old default (Attack)
     TestDivideNonePlacement();  // 13-62i
     TestUndividedPlacement();  // 13-62i
     TestKeptVolume();

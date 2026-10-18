@@ -212,9 +212,9 @@ void TestSilence()
 {
     PeakData p = Bursts();
     SilenceParams sp;
-    // 13-17b: the defaults Antho picked (-45 dB, 200 ms gap, 100 ms tail); the checks below pin
+    // 13-17b: the defaults Antho picked (200 ms gap, 100 ms tail; 13-67b: -60 dB); the checks below pin
     // their own values so they test the split, not the defaults.
-    CHECK(sp.threshold_db == -45.0 && sp.min_gap_ms == 200.0 && sp.preroll_ms == 5.0 && sp.tail_ms == 100.0);
+    CHECK(sp.threshold_db == -60.0 && sp.min_gap_ms == 200.0 && sp.preroll_ms == 5.0 && sp.tail_ms == 100.0);
     sp.threshold_db = -40;
     sp.min_gap_ms = 50;
     sp.tail_ms = 50;
@@ -433,6 +433,7 @@ void TestAttackVsPeak()
         pk.max_abs[static_cast<size_t>(1000 + k)] = static_cast<float>(std::pow(10.0, (-60.0 + 56.0 * k / 30.0) / 20.0));
     Hit(pk, 1.030, -4.0);
     SoundData d;
+    d.sync_mode = SyncMode::Attack;  // 13-67b: a new Sound's default is Peak
     d.mode = DetectMode::TakeMarkers;  // 13-62i: the variation's edges kept (P7), so the measure is over all of it
     d.frames = {F(0.9, 0.4)};
     d.sync_offset_ms = 0.0;
@@ -775,8 +776,31 @@ void TestPartRowHelpers()
     CHECK(RoundedNumberText(-2.5, true) == "-2.5" && RoundedNumberText(2.54, true) == "+2.5" && RoundedNumberText(3.0, false) == "3");
 }
 
+// 13-67b: a mode switch parks the variations left; back to that mode they come back (the 13-62h Takes bug).
+void TestSwitchDetectMode()
+{
+    SoundData d;
+    d.mode = DetectMode::Silence;
+    d.frames = {F(0.1, 0.2), F(0.5, 0.2)};
+    d.frames[0].hand = true;
+    d.edited = true;
+    CHECK(!SwitchDetectMode(d, DetectMode::Silence, {}));
+    CHECK(SwitchDetectMode(d, DetectMode::Takes, {F(0.0, 1.0), F(0.0, 0.8)}));
+    CHECK(d.mode == DetectMode::Takes && d.frames.size() == 2 && Near(d.frames[0].length, 1.0) && !d.edited);
+    CHECK(d.parked_mode == DetectMode::Silence && d.parked.size() == 2 && d.parked_edited);
+    CHECK(SwitchDetectMode(d, DetectMode::Silence, {F(0.0, 1.0)}));  // back: the parked ones, not the fresh detection
+    CHECK(d.frames.size() == 2 && d.frames[0].hand && Near(d.frames[1].start, 0.5) && d.edited);
+    CHECK(d.parked_mode == DetectMode::Takes && d.parked.size() == 2 && !d.parked_edited);
+    // Another mode: its fresh detection; the one left is parked.
+    CHECK(SwitchDetectMode(d, DetectMode::Whole, {F(0.0, 1.0)}) && d.frames.size() == 1 && !d.edited);
+    CHECK(d.parked_mode == DetectMode::Silence && d.parked.size() == 2);
+    // Divide by changed: the parked zones belonged to the old division.
+    CHECK(SetDivide(d, "g", {"a", "b"}) && d.parked.empty());
+}
+
 int main()
 {
+    TestSwitchDetectMode();  // 13-67b
     TestPartSettings();  // 13-62
     TestPartRowHelpers();
     TestPartNormalize();

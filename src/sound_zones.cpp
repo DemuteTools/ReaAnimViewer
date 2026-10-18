@@ -2331,6 +2331,54 @@ bool SetPartFader(SoundData& d, const std::string& part, double value, const Zon
     return ShiftPartGain(d, part, Round01(value) - PartFaderDb(d, part), ctx, sel);
 }
 
+TailCaps TailCappedZones(const SoundData& d, const ZoneContext& ctx, const std::string& part)
+{
+    TailCaps c;
+    if (!UsesZones(d) || !HasPeaks(ctx.peaks)) return c;
+    const int    tl = NormTl(d, ctx.tl);
+    const double T = ctx.file_len > 0.0 ? ctx.file_len : static_cast<double>(ctx.peaks->max_abs.size()) / ctx.peaks->rate;
+    for (const ZoneRef& r : AllZones(d)) {
+        const EditZone* z = ZoneOf(d, r);
+        if (!z || z->IsGap() || z->b_hand || ZoneTimeline(d, r.frame) != tl) continue;
+        if (!part.empty() ? z->part != part : [&] {
+                const PartSettings* s = PartSettingsOf(d, z->part);
+                return s && s->tail_ms.has_value();
+            }())
+            continue;
+        if (ZoneOf(d, GapAfter(d, r))) continue;  // held by a Gap
+        double on = 0.0, off = 0.0;
+        Detect(d, *ctx.peaks, z->slot_a, z->slot_b, &on, &off);
+        if (off + TailS(d, z->part) <= z->b + 1e-4) continue;  // Tail reached
+        if (z->b >= T - 1e-4) {
+            ++c.by_file_end;
+            continue;
+        }
+        // Against the next zone (a cut, a Gap, another variation's zone starting there), else at the end its variation
+        // was detected with (its slot: a Tail longer than the detection's stops there).
+        bool next = false;
+        for (const ZoneRef& q : AllZones(d)) {
+            const EditZone* y = ZoneOf(d, q);
+            if (y && q != r && ZoneTimeline(d, q.frame) == tl && std::fabs(y->a - z->b) < 1e-4) next = true;
+        }
+        ++(next ? c.by_next : c.by_detected_end);
+    }
+    return c;
+}
+
+std::string TailCapsText(const TailCaps& c)
+{
+    std::string s;
+    auto add = [&s](int k, const char* why) {
+        if (k <= 0) return;
+        s += s.empty() ? std::to_string(k) + (k > 1 ? " zones stopped" : " zone stopped") : ", " + std::to_string(k);
+        s += why;
+    };
+    add(c.by_next, " by the next zone");
+    add(c.by_file_end, " by the file end");
+    add(c.by_detected_end, " where their variation was detected (a Threshold change re-detects with this Tail)");
+    return s;
+}
+
 int ApplyPreTailChange(SoundData& d, const std::string& part, bool tail_wins, PartField field, const ZoneContext& ctx, ZoneSel* sel)
 {
     if (!UsesZones(d) || (field != PartField::Preroll && field != PartField::Tail)) return 0;

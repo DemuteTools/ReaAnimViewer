@@ -33,6 +33,8 @@ namespace {
 constexpr const char kClickPlaysPref[] = "lib_edit_click_plays";
 constexpr const char kTailWinsPref[] = "lib_edit_tail_wins";
 int g_click_plays = -1, g_tail_wins = -1;  // < 0 = not read yet
+constexpr const char kSnapModePref[] = "lib_edit_snap_mode";  // 13-67b: the snap offset mode of new Sounds
+int g_snap_mode = -1;                                       // < 0 = not read yet
 
 constexpr ImU32 kGapCol = IM_COL32(0x8B, 0x91, 0x9C, 0xFF);  // the mockup's GAPC (--muted)
 
@@ -452,7 +454,7 @@ void Double(const ZoneWaveHost& h, const ZoneHit& hit)
     case ZoneDoubleAction::ResetSnap: {
         const ZoneRef r = hit.z;
         if (!Write(h, "Snap offset automatic", [r](SoundData& x, const ZoneContext& c, ZoneSel* s) { return ResetZoneSnap(x, r, c, s); },
-                   nm + " snap offset: its part's Sync point again", true))
+                   nm + " snap offset: automatic again (its part's Snap offset)", true))
             ShowLibraryToast("Already automatic", false);
         return;
     }
@@ -1394,6 +1396,28 @@ void SetZoneTailWins(bool on)
     SavePrefBool(kTailWinsPref, on);
 }
 
+SyncMode ZoneNewSnapMode()
+{
+    if (g_snap_mode < 0) {
+        const long v = std::lround(LoadPrefFloat(kSnapModePref, static_cast<float>(SyncMode::Peak)));
+        g_snap_mode = v >= 0 && v <= 2 ? static_cast<int>(v) : static_cast<int>(SyncMode::Peak);
+        SetNewSoundSyncMode(static_cast<SyncMode>(g_snap_mode));
+    }
+    return static_cast<SyncMode>(g_snap_mode);
+}
+
+void SetZoneNewSnapMode(SyncMode m)
+{
+    g_snap_mode = static_cast<int>(m);
+    SetNewSoundSyncMode(m);
+    SavePrefFloat(kSnapModePref, static_cast<float>(g_snap_mode));
+}
+
+void LoadZoneNewSnapMode()
+{
+    (void)ZoneNewSnapMode();
+}
+
 void ZoneEditReset(ZoneEditView& v)
 {
     v = ZoneEditView{};
@@ -1968,7 +1992,12 @@ void ZoneSnapToCursor(const ZoneWaveHost& h)
         if (z && !z->IsGap()) on.push_back(r);
     }
     if (on.empty()) {
-        ShowLibraryToast(sel.empty() ? "No zone under the cursor: no snap offset to set"
+        // 13-67b (13-67a review): only Gaps selected: a Gap has no snap offset.
+        bool only_gaps = !sel.empty();
+        for (const ZoneRef& r : sel)
+            if (const EditZone* z = ZoneOf(d, r); z && !z->IsGap()) only_gaps = false;
+        ShowLibraryToast(sel.empty()  ? "No zone under the cursor: no snap offset to set"
+                         : only_gaps ? "A Gap has no snap offset: select a zone"
                                      : "The edit cursor is not inside the selected zone: no snap offset to set",
                          false);
         return;

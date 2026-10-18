@@ -232,6 +232,9 @@ bool EditLoopEndedAtEnd(const EditTransport& tp, double last_pos, double since_s
 
 // "D → N variations · K off" (decision 7): "D → " dropped when D = N, " · K off" when K = 0;
 // "1 variation" singular.
+// 13-67b: why Threshold / Min gap leave variations alone (Silence mode): those edited by hand keep their zones over a
+// re-detection (MergeHandFrames). "" when none is.
+std::string HandFramesText(const std::vector<SoundFrame>& frames);
 std::string VariationCountText(int detected, const std::vector<SoundFrame>& frames);
 
 }  // namespace rav

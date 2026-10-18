@@ -473,12 +473,25 @@ bool HasSoundLine(const SoundNode& n)
 {
     const SoundData& s = n.sound;
     return n.type == SoundNodeType::Sound || !s.kept.empty() || !s.frames.empty() || !s.zones.empty() || !s.parts.empty() ||
+           !s.parked.empty() ||
            SoundFields(s) != SoundFields(SoundData{});
+}
+
+// 13-67b: what a `sound` line leaves out reads as these (the defaults before 13-67b: -45 dB, Attack), so the Sounds
+// saved before keep their threshold and snap offset mode while a new Sound starts at -60 dB / the Options' mode.
+constexpr double   kRecordThresholdDb = -45.0;
+constexpr SyncMode kRecordSyncMode = SyncMode::Attack;
+
+void SetRecordBaseline(SoundData& s)
+{
+    s.silence.threshold_db = kRecordThresholdDb;
+    s.sync_mode = kRecordSyncMode;
 }
 
 Fields SoundFields(const SoundData& s)
 {
-    const SoundData      d;
+    SoundData d;
+    SetRecordBaseline(d);
     const AssetIdentity& a = s.source.asset;
     Fields f = {{"kind", s.source.kind == SoundSourceKind::File ? "file" : "item"}};
     if (!s.source.item_guid.empty()) f.push_back({"guid", Enc(s.source.item_guid)});
@@ -1196,6 +1209,7 @@ bool ParseStoreCore(const std::string& text, SoundStore& s)
             if (!Dec(t[1].substr(6), &id)) unknown_to->push_back(lines[i]);
             else node->unassigned.push_back(id);
         } else if (kind == "sound" && node) {
+            SetRecordBaseline(node->sound);  // 13-67b
             ReadFields(t, 1, node->sound.kept,
                        [&](const std::string& k, const std::string& v) { return SetSound(node->sound, k, v); });
         } else if (kind == "part" && node) {  // 13-62: a part's own settings
@@ -1216,6 +1230,27 @@ bool ParseStoreCore(const std::string& text, SoundStore& s)
             if (!has_sb) z.slot_b = z.b;
             ReadZoneKept(kept, z);
             node->sound.frames.back().zones.push_back(z);
+        } else if (kind == "park" && node) {  // 13-67b: the variations of the mode last left
+            Kept pk;  // its unknown fields: dropped
+            ReadFields(t, 1, pk, [&](const std::string& k, const std::string& v) {
+                if (k == "mode") return G(ModeFromWord(v, &node->sound.parked_mode));
+                if (k == "edited") return G(ReadFlag(v, &node->sound.parked_edited));
+                return Got::Unknown;
+            });
+        } else if (kind == "pframe" && node) {
+            node->sound.parked.emplace_back();
+            SoundFrame& fr = node->sound.parked.back();
+            ReadFields(t, 1, fr.kept, [&](const std::string& k, const std::string& v) { return SetFrame(fr, k, v); });
+        } else if (kind == "pzone" && node && node->sound.parked.empty()) {  // a zone before any parked frame: dropped
+        } else if (kind == "pzone" && node) {
+            EditZone z;
+            bool     has_sa = false, has_sb = false;
+            Kept     kept;
+            ReadFields(t, 1, kept, [&](const std::string& k, const std::string& v) { return SetFzone(z, &has_sa, &has_sb, k, v); });
+            if (!has_sa) z.slot_a = z.a;
+            if (!has_sb) z.slot_b = z.b;
+            ReadZoneKept(kept, z);
+            node->sound.parked.back().zones.push_back(z);
         } else if (kind == "zone" && node) {
             node->sound.zones.emplace_back();
             SoundZone& z = node->sound.zones.back();
@@ -1396,6 +1431,15 @@ std::string SerializeSoundStore(const SoundStore& s)
                     for (const EditZone& z : fr.zones) WriteLine(out, "fzone", FzoneFields(z), ZoneKept(z));  // 13-62h
                 }
                 for (const SoundZone& z : n.sound.zones) WriteLine(out, "zone", ZoneFields(z), z.kept);
+                if (!n.sound.parked.empty()) {  // 13-67b
+                    Fields pf = {{"mode", kModeWords[static_cast<int>(n.sound.parked_mode)]}};
+                    if (n.sound.parked_edited) pf.push_back({"edited", "1"});
+                    WriteLine(out, "park", pf, {});
+                    for (const SoundFrame& fr : n.sound.parked) {
+                        WriteLine(out, "pframe", FrameFields(fr), fr.kept);
+                        for (const EditZone& z : fr.zones) WriteLine(out, "pzone", FzoneFields(z), ZoneKept(z));
+                    }
+                }
             }
             WriteLines(out, n.kept_lines);
         }

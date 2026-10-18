@@ -1217,8 +1217,43 @@ void TestFuzz()
 
 }  // namespace
 
+// 13-67b: the zones a longer Tail cannot lengthen, and why.
+void TestTailCaps()
+{
+    PeakData  pk = Peaks({{0.15, 0.20}, {0.40, 0.45}, {1.00, 1.05}, {2.95, 3.00}});
+    SoundData d = Whole({W(0.10, 0.30)});
+    d.silence.tail_ms = 150.0;
+    d.frames[0].zones[0].a_hand = d.frames[0].zones[0].b_hand = false;
+    auto add = [&d](double a, double b, bool a_hand) {
+        SoundFrame f;
+        EditZone   z = W(a, b);
+        z.a_hand = a_hand;
+        z.b_hand = false;
+        f.zones = {z};
+        f.start = a;
+        f.length = b - a;
+        d.frames.push_back(f);
+    };
+    add(0.30, 0.60, true);   // starts where the first one stops (0.20 + 150 ms = 0.35 wanted)
+    add(0.95, 1.10, false);  // 1.05 + 150 ms = 1.20 wanted, detected up to 1.10
+    add(2.90, 3.00, false);  // the file end
+    RelayoutZones(d, &pk);
+    ZoneContext ctx;
+    ctx.peaks = &pk;
+    TailCaps c = TailCappedZones(d, ctx);
+    CHECK(c.by_next == 1 && c.by_file_end == 1 && c.by_detected_end == 1);
+    CHECK(TailCapsText(c) == "1 zone stopped by the next zone, 1 by the file end, 1 where their variation was detected "
+                             "(a Threshold change re-detects with this Tail)");
+    CHECK(TailCappedZones(d, ZoneContext{}).by_next == 0);  // no peaks: nothing said
+    d.frames[2].zones[0].b_hand = true;                       // an end dragged by hand is not counted
+    c = TailCappedZones(d, ctx);
+    CHECK(c.by_next == 1 && c.by_file_end == 1 && c.by_detected_end == 0);
+    CHECK(TailCapsText(TailCaps{2, 0, 0}) == "2 zones stopped by the next zone" && TailCapsText(TailCaps{}).empty());
+}
+
 int main()
 {
+    TestTailCaps();  // 13-67b
     TestMigration();
     TestHeardPieces();
     TestGapGestures();

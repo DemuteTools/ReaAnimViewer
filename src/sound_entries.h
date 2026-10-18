@@ -52,6 +52,11 @@ void ClampFrames(std::vector<SoundFrame>& frames, double source_len);
 // sync points go to the new frame that holds them (CarryHandMarks without cuts), excluded zones stay,
 // "-> value" zones and hand cuts go. The caller runs RefreshParts after (it has the peaks). 13-62: owners go too.
 void ResetToDetected(SoundData& data, const std::vector<SoundFrame>& detected);
+// 13-67b: the Sound's detection mode set to `mode`, `detected` its fresh variations. The variations left (their zones,
+// hand edits and `edited` flag) are parked (SoundData::parked); back to the parked mode, those come back instead of
+// `detected` (Silence -> Takes -> Silence keeps the hand edits). False when already in `mode`. The caller runs
+// RefreshParts after.
+bool SwitchDetectMode(SoundData& data, DetectMode mode, const std::vector<SoundFrame>& detected);
 // The frame's peak (dBFS), -inf when the peaks do not cover it.
 double FramePeakDb(const PeakData& peaks, const SoundFrame& frame);
 // The peak (dBFS) over [start, start + length) source seconds, -inf when the peaks do not cover it.

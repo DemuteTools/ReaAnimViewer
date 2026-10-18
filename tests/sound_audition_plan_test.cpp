@@ -876,8 +876,21 @@ static void TestReviewPlaceEditParity()
     std::printf("place / edit parity: %d comparisons, %d layouts with Gaps\n", compared, gaps);
 }
 
+// 13-67b: why Threshold / Min gap leave variations alone.
+void TestHandFramesText()
+{
+    std::vector<SoundFrame> f(3);
+    CHECK(HandFramesText(f).empty());
+    f[1].hand = true;
+    CHECK(HandFramesText(f) == "1 of 3 variations edited by hand keep their zones (Reset to detected re-detects them)");
+    f[0].hand = f[2].hand = true;
+    CHECK(HandFramesText(f).rfind("Every variation was edited by hand", 0) == 0);
+    CHECK(HandFramesText({f[0]}).rfind("Its variation was edited by hand", 0) == 0);
+}
+
 int main()
 {
+    TestHandFramesText();  // 13-67b
     TestReviewPlayInCrossfade();
     TestReviewTreePlayZoned();
     TestReviewListenAcrossGap();

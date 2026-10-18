@@ -16,7 +16,7 @@
 // 13-62 (spec 13-62 Contract): SoundFrame::owners, PartSettings, SoundData::parts.
 // 13-62h (spec 13-62h Contract): EditZone, SoundFrame::zones, PartSettings::fader_db, SoundData::gap_xfade.
 // 13-62i (spec 13-62i A0): kWholePart, EditZone::fade_in_shape / fade_out_shape, SoundData::fader_db.
-// 13-68 v2 (spec 13-68): SoundLibrary::attached / attached_type.
+// 13-68 v2 (spec 13-68): SoundLibrary::attached / attached_type, SoundNode::linked_variations.
 //
 // Every `kept` member holds text this version did not understand, written back as read:
 // unknown fields ("key=value" tokens) of the object's own line, and `kept_lines` the unknown
@@ -284,6 +284,10 @@ struct SoundNode {
     std::vector<std::string> layer_roles;
     // 13-31: keep offset_ms on events with a role (off: the offset applies on combined events only).
     bool                     layer_keep_offset = false;
+    // 13-68 v2 (appended): a Blend whose direct Sound children share one variation number (NVK stacks: take /
+    // take marker k of layer 1 goes with k of layer 2): the first child with a variation draws, every other one
+    // plays that index (modulo its own count; a child of 1 variation plays it). Sound_switch.cpp ResolveEvent.
+    bool                     linked_variations = false;
 };
 
 struct SwitchValue {

@@ -80,6 +80,9 @@ struct PlaceRequest {
     // are always copied as they are.
     bool as_auditioned = false;
     int  chan_mode = 0;
+    // 13-68 v2: a TakeMarkers Sound's variation index: a folder pile's members each play their own slice of
+    // that index (their take markers / NVK slices, modulo their count), as a Takes pile plays take k. -1 = none.
+    int  pile_slice = -1;
 };
 struct PlaceResult {
     bool                     ok = false;

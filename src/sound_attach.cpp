@@ -262,36 +262,19 @@ uint64_t NewSeed()
     return v ? v : 1;
 }
 
-// The take facts of an item, for a promoted Sound (D7: from takes only).
+// The facts of an item, for a promoted Sound: what a Library drop of it reads (ReadItemMedia: its takes, its
+// take markers or NVK .rpp slices), so its variations are detected the same way.
 SoundData PromotedSoundData(MediaItem* item)
 {
     SoundData d;
     d.source.kind = SoundSourceKind::Item;
     d.source.item_guid = ItemGuidOf(item);
-    EntryFacts      f;
-    MediaItem_Take* take = GetActiveTake(item);
-    f.item_len = GetMediaItemInfo_Value(item, "D_LENGTH");
-    f.item_db = ItemGainDb(item);  // the item's gain: its variations' (DetectFrames)
+    SoundMedia m;
+    ReadItemMedia(item, &m);  // false for a take with no file: its facts still hold the item's length and gain
+    const EntryFacts& f = m.facts;
     d.source.item_db = f.item_db;  // kept with the source (it outlives a conversion to a file)
-    if (take) {
-        // 13-49 review: a take that plays mono (REAPER's channel mode) makes a Sound heard mono in RAV too.
-        d.mono = MonoForChanMode(static_cast<int>(GetMediaItemTakeInfo_Value(take, "I_CHANMODE")));
-        f.start_offs = GetMediaItemTakeInfo_Value(take, "D_STARTOFFS");
-        PCM_source* src = GetMediaItemTake_Source(take);
-        bool        qn = false;
-        f.source_len = src ? GetMediaSourceLength(src, &qn) : 0.0;
-    }
-    const int n = f_count_takes(item);
-    if (n >= 2) {
-        for (int k = 0; k < n; ++k) {
-            MediaItem_Take* t = f_get_take(item, k);
-            SoundFrame      fr;
-            fr.start = t ? GetMediaItemTakeInfo_Value(t, "D_STARTOFFS") : 0.0;
-            fr.length = 0.0;  // the item's length (DetectFrames)
-            fr.db = ItemTakeGainDb(item, t);  // this take's gain: its variation's
-            f.takes.push_back(fr);
-        }
-    }
+    // 13-49 review: a take that plays mono (REAPER's channel mode) makes a Sound heard mono in RAV too.
+    if (GetActiveTake(item)) d.mono = MonoForChanMode(m.chan_mode);
     d.mode = DefaultDetectMode(f, false);
     d.frames = DetectFrames(f, d.mode, d.silence, nullptr);
     return d;

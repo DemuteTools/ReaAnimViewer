@@ -26,6 +26,7 @@
 #include "sound_attach.h"
 #include "sound_attach_plan.h"
 #include "sound_auto_assign.h"  // SetRulesLibrary
+#include "sound_peaks.h"        // ReadItemMedia
 #include "sound_place.h"        // FolderPileMembers
 #include "sound_populate.h"
 #include "sound_project.h"
@@ -221,7 +222,9 @@ std::string Run(SpreadScope scope, bool add_layer)
                 takes = std::max(takes, f_count_takes ? f_count_takes(k) : 1);
                 if (moving.insert(k).second) to_move.push_back(k);
             }
-            src.sound = PileSoundData(s.facts.guid, takes, s.facts.len);
+            SoundMedia top_media;  // take markers (NVK): the top member's slices are the pile's variations
+            if (!kids.empty()) ReadItemMedia(kids.front(), &top_media);
+            src.sound = PileSoundData(s.facts.guid, takes, s.facts.len, top_media.facts.slices);
         } else {
             src.sound = ItemSoundData(s.item);
         }

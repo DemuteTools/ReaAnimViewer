@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "reaper_item_read.h"
+#include "sound_peaks.h"  // ReadItemMedia (13-68 v2: a pile member's slices)
 #include "sound_project.h"
 #include "sound_record.h"
 #include "sound_tracks.h"
@@ -648,6 +649,16 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
             // that take plays it, so the layers keep their takes together.
             if (req.variation >= 0 && req.variation < f_count_takes(item))
                 if (MediaItem_Take* take = f_get_take(item, req.variation)) f_set_active_take(take);
+            // 13-68 v2: a TakeMarkers pile: each member plays its own slice of that index.
+            SoundMedia sm;
+            if (req.pile_slice >= 0 && ReadItemMedia(m.src, &sm) && sm.facts.slices.size() >= 2)
+                if (MediaItem_Take* take = GetActiveTake(item)) {
+                    const Slice& sl = sm.facts.slices[static_cast<size_t>(req.pile_slice) % sm.facts.slices.size()];
+                    double       rate = GetMediaItemTakeInfo_Value(take, "D_PLAYRATE");
+                    if (!(rate > 0.0)) rate = 1.0;
+                    f_set_take(take, "D_STARTOFFS", sl.start);
+                    f_set_item(item, "D_LENGTH", sl.length / rate);
+                }
             PileMemberMono(item, req);
         }
         {  // 13-11 (B9): a library source is muted; its copy plays (and does not carry the mark)

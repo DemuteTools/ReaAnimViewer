@@ -903,8 +903,46 @@ static void TestPopulatePlanHelpers()
     }
 }
 
+// 13-68 v2: a Blend with linked variations (NVK stacks): its two TakeMarkers Sounds (3 slices each) play the
+// same variation number on every event, and the number still varies across events.
+static void TestLinkedBlend()
+{
+    SoundLibrary lib;
+    lib.uid = "L";
+    lib.root = "b";
+    SoundNode b = Node("b", "", SoundNodeType::Blend);
+    b.linked_variations = true;
+    lib.nodes.push_back(b);
+    for (const char* uid : {"x", "y"}) {
+        SoundNode s = Leaf(uid, "b", 3);
+        s.sound.mode = DetectMode::TakeMarkers;
+        lib.nodes.push_back(s);
+    }
+    const SoundStore  empty;
+    PopulateDrawState ps;
+    ps.lib = &lib;
+    ps.seed = 42;
+    std::set<int> seen;
+    for (int e = 0; e < 8; ++e) {
+        EventDraw ed;
+        ed.rid = "r1";
+        ed.t = 1.0 + e;
+        const Resolution res = ResolveEvent(empty, lib, ValueLayers(), MakeDrawHooks(ps, ed, nullptr));
+        CHECK(res.sounds.size() == 2);
+        if (res.sounds.size() != 2) continue;
+        CHECK(res.sounds[0].variation >= 0 && res.sounds[0].variation < 3);
+        CHECK(res.sounds[0].variation == res.sounds[1].variation);
+        seen.insert(res.sounds[0].variation);
+    }
+    CHECK(seen.size() >= 2);
+    // Off: the layers draw alone (the flag is what links them); a child of fewer variations plays its modulo.
+    CHECK(LinkedVariation(2, 3, 0) == 2 && LinkedVariation(2, 2, 1) == 0 && LinkedVariation(2, 1, -1) == 0);
+    CHECK(LinkedVariation(-1, 3, 1) == 1 && LinkedVariation(2, 0, -1) == -1);
+}
+
 int main()
 {
+    TestLinkedBlend();  // 13-68 v2
     TestPopulatePlanHelpers();  // 13-62i (D review)
     TestBlendMatrix();
     TestLoopPassDraws();

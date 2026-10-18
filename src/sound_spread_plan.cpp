@@ -46,12 +46,22 @@ SoundNode SoundOf(const SpreadSource& s, const std::string& uid, const std::stri
 
 }  // namespace
 
-SoundData PileSoundData(const std::string& folder_guid, int takes, double len)
+SoundData PileSoundData(const std::string& folder_guid, int takes, double len, const std::vector<Slice>& slices)
 {
     SoundData d;
     d.source.kind = SoundSourceKind::Item;
     d.source.item_guid = folder_guid;
     d.linked_copies = true;
+    if (slices.size() >= 2) {  // take markers (NVK): one variation per slice of the top member
+        d.mode = DetectMode::TakeMarkers;
+        for (const Slice& s : slices) {
+            SoundFrame f;
+            f.start = s.start;
+            f.length = s.length;
+            d.frames.push_back(f);
+        }
+        return d;
+    }
     d.mode = takes >= 2 ? DetectMode::Takes : DetectMode::Whole;
     const double l = std::isfinite(len) ? std::max(len, 0.0) : 0.0;
     for (int k = 0; k < std::max(takes, 1); ++k) {
@@ -91,6 +101,7 @@ std::vector<SoundNode> SpreadLayerNodes(const std::vector<SpreadSource>& items, 
         blend.parent = root.uid;
         blend.type = SoundNodeType::Blend;
         blend.name = top.name.empty() ? std::string("Sound") : top.name;
+        blend.linked_variations = true;  // the layers play the same variation number (NVK stacks)
         out.push_back(blend);
         const double top_sync = PileAnchor(top.facts);
         for (int m : pile) {

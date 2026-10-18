@@ -75,6 +75,10 @@ enum class ValueFrom { Default, Item, Rule, Event };
 // plays every child with its offset.
 Resolution ResolveEvent(const SoundStore& store, const SoundLibrary& lib, const ValueLayers& layers,
                         const ResolveHooks& hooks);
+// 13-68 v2: the variation a linked Blend's other Sound child plays (SoundNode::linked_variations): the first
+// child's pick `lead` modulo its own variation `count` (1 variation: 0); `own` (its own pick) when the first
+// drew none (-1) or it has no variation.
+int LinkedVariation(int lead, int count, int own);
 // The value a Switch node plays for these layers ("" = none); `from` (optional) says which layer.
 // Layers: item < rule < event; a ValueSet with an empty value_uid is unset. When no layer sets it,
 // returns sw.default_value (may be "") with `from` = Default. What a Switch then plays (and what a

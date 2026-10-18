@@ -37,13 +37,16 @@ std::vector<std::vector<int>> SpreadPiles(const std::vector<AttachItem>& items);
 void SyncFromSnap(SoundData& d, double snap_s);
 
 // A folder item's Sound (an NVK pile, placed by Populate as its child items): source = the folder item,
-// copies share the takes (linked_copies); Takes mode with one variation per take when its children hold
-// `takes` >= 2 (every layer plays the same take), else Whole. `len` = the folder item's length (s).
-SoundData PileSoundData(const std::string& folder_guid, int takes, double len);
+// copies share the variation number (linked_copies): TakeMarkers mode with one variation per slice when its
+// top member has take markers (`slices` >= 2: every layer plays its own k-th slice), else Takes mode with
+// one variation per take when its children hold `takes` >= 2 (every layer plays take k), else Whole.
+// `len` = the folder item's length (s).
+SoundData PileSoundData(const std::string& folder_guid, int takes, double len, const std::vector<Slice>& slices = {});
 
 // The nodes of one layer: nodes[0] = a Random named `name` (parent ""), one child per pile in time
 // order: a pile holding a folder item = that item's Sound alone (its first folder item, top first; the
-// other items of the pile are its layers); a one-item pile = its Sound; a layered pile = a Blend named after its top item holding one
+// other items of the pile are its layers); a one-item pile = its Sound; a layered pile = a Blend with
+// linked variations (its layers play the same variation number) named after its top item holding one
 // Sound per member, each child's offset = its snap after the top item's (BlendChildOffsetMs), kept on
 // events with a role too. Every Sound is synced on its item's snap. Empty when `items` is.
 std::vector<SoundNode> SpreadLayerNodes(const std::vector<SpreadSource>& items, const std::string& name,

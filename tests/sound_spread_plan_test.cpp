@@ -97,6 +97,20 @@ int main()
             }
         }
         CHECK(blends == 3);
+        for (const SoundNode& b : n)
+            if (b.type == SoundNodeType::Blend) CHECK(b.linked_variations);
+        {
+            SoundStore st;
+            SoundLibrary l;
+            l.uid = "l";
+            SetLibraryContent(l, n);
+            st.libraries.push_back(l);
+            SoundStore back;
+            CHECK(ParseSoundStore(SerializeSoundStore(st), &back) && back.libraries.size() == 1);
+            int linked = 0;
+            for (const SoundNode& x : back.libraries[0].nodes) linked += x.linked_variations ? 1 : 0;
+            CHECK(linked == 3);
+        }
         // The piles: touching items apart (cut end to end), members top first.
         std::vector<AttachItem> f;
         for (const SpreadSource& s : items) f.push_back(s.facts);
@@ -194,6 +208,10 @@ int main()
         CHECK(d.mode == DetectMode::Takes && d.frames.size() == 4 && Near(d.frames[0].length, 0.5));
         const SoundData w = PileSoundData("fold", 1, 0.5);
         CHECK(w.mode == DetectMode::Whole && w.frames.size() == 1);
+        // Take markers (NVK): one variation per slice of the top member, taking over the takes.
+        const SoundData tm = PileSoundData("fold", 4, 0.5, {{0.0, 0.3, "1"}, {1.0, 0.25, "2"}, {2.0, 0.4, "3"}});
+        CHECK(tm.mode == DetectMode::TakeMarkers && tm.frames.size() == 3 && tm.linked_copies);
+        CHECK(Near(tm.frames[1].start, 1.0) && Near(tm.frames[1].length, 0.25));
         SpreadSource folder = Src("fold", "Steps", 1, 20.0, 0.5, 0.02);
         folder.folder = true;
         folder.sound = d;

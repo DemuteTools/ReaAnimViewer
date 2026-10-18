@@ -181,8 +181,16 @@ struct Walker {
             }
             Seg(std::string("Blend ") + kTimes + std::to_string(play.size()));
             text_open = false;
-            for (const SoundNode* c : play)
+            int lead = -1;  // 13-68 v2: linked variations, the first Sound child's pick
+            for (const SoundNode* c : play) {
+                const size_t before = res.sounds.size();
                 Walk(*c, gain, offset + (LayerOffsetApplies(*c, layers.role, uses_roles) ? c->offset_ms : 0.0));
+                if (!n.linked_variations || c->type != SoundNodeType::Sound || res.sounds.size() != before + 1) continue;
+                ResolvedSound& rs = res.sounds.back();
+                if (rs.missing) continue;
+                if (lead < 0) lead = rs.variation;
+                else rs.variation = LinkedVariation(lead, static_cast<int>(c->sound.frames.size()), rs.variation);
+            }
             break;
         }
         case SoundNodeType::Switch: {
@@ -355,6 +363,12 @@ LibraryCheck CheckLibrary(const SoundStore& store, const SoundLibrary& lib)
 LibraryCheck CheckLibrary(const SoundLibrary& lib)
 {
     return Check(nullptr, lib);
+}
+
+int LinkedVariation(int lead, int count, int own)
+{
+    if (lead < 0 || count <= 0) return own;
+    return count == 1 ? 0 : lead % count;
 }
 
 Resolution ResolveEvent(const SoundStore& store, const SoundLibrary& lib, const ValueLayers& layers,

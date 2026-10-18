@@ -389,6 +389,7 @@ PlaceRequest RequestFor(MediaItem* owner, const std::string& rid, double event_t
     }
     if (req.source.kind == SoundSourceKind::Item && v >= 0 && v < static_cast<int>(n.sound.frames.size())) {
         if (sd.mode == DetectMode::Takes) req.variation = v;  // 13-62i: its take, made active before its pieces
+        if (sd.mode == DetectMode::TakeMarkers) req.pile_slice = v;  // 13-68 v2: a folder pile's members, slice v
         else if (sd.mode == DetectMode::TakeMarkers || sd.mode == DetectMode::Silence)
             req.slice = SliceApplyFor(sd.frames[static_cast<size_t>(v)]);
         req.fades = FadeApplyFor(sd, v);  // Antho 2026-10-12: fades on every placed variation

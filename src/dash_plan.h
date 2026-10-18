@@ -46,4 +46,17 @@ inline float ClampCoord(double x, double lo, double hi, double margin = 4096.0)
     return static_cast<float>(x);
 }
 
+// Freeze audit #8: a ruler's ticks first, first + step, ... up to `last` (+ eps): how many, never more than `cap`
+// (a huge view length gave tens of thousands of labels a frame; an infinite one looped for ever). 0 for a
+// non-finite input or a step <= 0.
+constexpr int kMaxTicks = 1000;
+
+inline int TickCount(double first, double last, double step, double eps = 0.0, int cap = kMaxTicks)
+{
+    if (!std::isfinite(first) || !std::isfinite(last) || !std::isfinite(step) || !(step > 0.0) || cap <= 0) return 0;
+    const double n = std::floor((last + eps - first) / step) + 1.0;
+    if (!(n > 0.0)) return 0;
+    return static_cast<int>(std::min(static_cast<double>(cap), n));
+}
+
 }  // namespace dash

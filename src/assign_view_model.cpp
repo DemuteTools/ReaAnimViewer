@@ -61,7 +61,8 @@ std::string NotReachedText(const SoundStore& store, const SoundLibrary& lib, con
                            const SoundNode& sw)
 {
     const SoundNode* cur = &sw;
-    while (cur && !cur->parent.empty()) {
+    // Freeze audit #6: a parent loop (a damaged store) ends the walk, as library_tree_ui's RevealNode.
+    for (size_t guard = 0; cur && !cur->parent.empty() && guard <= lib.nodes.size(); ++guard) {
         const SoundNode* p = FindNode(lib, cur->parent);
         if (!p) break;
         if (path.count(p->uid)) {

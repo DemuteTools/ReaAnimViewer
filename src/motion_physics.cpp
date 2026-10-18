@@ -135,8 +135,8 @@ void YawOf(const std::vector<double>& raw, const std::vector<char>& valid, doubl
     for (size_t i = 0; i < n; ++i) {
         if (i) {
             double d = raw[i] - raw[i - 1];
-            while (d > 180.0) d -= 360.0;
-            while (d < -180.0) d += 360.0;
+            if (std::isinf(d)) d = 0.0;  // freeze audit #7: the old loops' result in one step (inf looped forever)
+            d += d > 180.0 ? -360.0 * std::ceil((d - 180.0) / 360.0) : d < -180.0 ? 360.0 * std::ceil((-180.0 - d) / 360.0) : 0.0;
             acc += d;
         }
         deg[i] = acc;

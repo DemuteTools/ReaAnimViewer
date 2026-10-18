@@ -1095,8 +1095,11 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
         ImFont*     rf = ui::FontMonoTiny();
         const float base = p0.y + rh - 4.0f;
         dl->AddLine(ImVec2(a.x, base - 0.5f), ImVec2(a.x + w, base - 0.5f), ui::kStroke);
-        for (double t = std::ceil(vs / st) * st; t <= vs + vl; t += st) {
-            const float x = std::floor(X(t)) + 0.5f;
+        const double t0 = std::ceil(vs / st) * st;
+        const int    nt = dash::TickCount(t0, vs + vl, st);  // freeze audit #8: capped, never endless
+        for (int i = 0; i < nt; ++i) {
+            const double t = t0 + i * st;
+            const float  x = std::floor(X(t)) + 0.5f;
             dl->AddLine(ImVec2(x, base - 7.0f), ImVec2(x, base - 1.0f), ui::kStrokeStrong);
             char lab[32];
             if (st < 1.0) std::snprintf(lab, sizeof(lab), "%.0f ms", t * 1000.0);
@@ -5970,7 +5973,10 @@ void DrawBlendView(const SoundStore& store, const SoundLibrary& lib, const Sound
                              : bspan > 40.0     ? 20.0
                              : bspan > 20.0     ? 10.0
                                                 : 5.0;
-        for (double t = std::ceil(bv0 / rstep - 1e-9) * rstep; t <= bv0 + bspan + 1e-6; t += rstep) {
+        const double t0 = std::ceil(bv0 / rstep - 1e-9) * rstep;
+        const int    nt = dash::TickCount(t0, bv0 + bspan, rstep, 1e-6);  // freeze audit #8: capped, never endless
+        for (int i = 0; i < nt; ++i) {
+            const double t = t0 + i * rstep;
             if ((t - bv0) / bspan > 0.94) break;  // the last label would run past the track
             char lab[32];
             std::snprintf(lab, sizeof(lab), "%.0f", t);

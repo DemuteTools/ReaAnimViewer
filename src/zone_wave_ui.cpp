@@ -695,8 +695,11 @@ void DrawRuler(const Frame& F, float y0, float y1)
         }
     ImFont*      f = ui::FontMonoTiny();
     const double v1 = F.v0 + F.vl;
-    for (double t = std::ceil(F.v0 / st) * st; t <= v1 + 1e-9; t += st) {
-        const float x = std::round(F.X(t)) + 0.5f;
+    const double t0 = std::ceil(F.v0 / st) * st;
+    const int    nt = dash::TickCount(t0, v1, st, 1e-9);  // freeze audit #8: capped, never endless
+    for (int i = 0; i < nt; ++i) {
+        const double t = t0 + i * st;
+        const float  x = std::round(F.X(t)) + 0.5f;
         dl->AddLine(ImVec2(x, y1 - 6.0f * F.dp), ImVec2(x, y1), ui::kStrokeStrong);
         char lbl[32];
         if (st < 1.0) std::snprintf(lbl, sizeof(lbl), "%d ms", Ms(t));

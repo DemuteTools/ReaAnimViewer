@@ -89,6 +89,18 @@ int main()
     CHECK(dash::ClampCoord(123.5, 0.0, 800.0) == 123.5f);
     CHECK(dash::ClampCoord(NAN, 0.0, 800.0) == -4096.0f);
 
+    // Freeze audit #8: a ruler's ticks, as the old `t <= last` loop counted them, capped, none for a bad view.
+    {
+        int old = 0;
+        for (double t = 0.2; t <= 1.7 + 1e-9; t += 0.1) ++old;
+        CHECK(dash::TickCount(0.2, 1.7, 0.1, 1e-9) == old);
+        CHECK(dash::TickCount(0.0, 10.0, 1.0) == 11 && dash::TickCount(0.5, 10.0, 1.0) == 10);
+        CHECK(dash::TickCount(5.0, 4.0, 1.0) == 0);
+        CHECK(dash::TickCount(0.0, 1e12, 60.0) == dash::kMaxTicks);
+        CHECK(dash::TickCount(0.0, INFINITY, 60.0) == 0 && dash::TickCount(NAN, 1.0, 0.1) == 0);
+        CHECK(dash::TickCount(0.0, 1.0, 0.0) == 0 && dash::TickCount(0.0, 1.0, -0.1) == 0);
+    }
+
     if (g_fails == 0) std::printf("dash_plan: all checks passed\n");
     return g_fails == 0 ? 0 : 1;
 }

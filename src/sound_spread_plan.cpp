@@ -223,7 +223,8 @@ std::vector<SoundDraw> PlayedDraws(const SoundLibrary& lib, const std::vector<st
         if (hit == played.end()) continue;
         if (hit->second >= 0) add(n.uid, hit->second);
         std::string child = n.uid;
-        for (const SoundNode* up = FindNode(lib, n.parent); up; up = FindNode(lib, up->parent)) {
+        size_t guard = 0;  // freeze audit #6: a parent loop (a damaged store) ends the walk
+        for (const SoundNode* up = FindNode(lib, n.parent); up && guard <= lib.nodes.size(); up = FindNode(lib, up->parent), ++guard) {
             if (up->type == SoundNodeType::Random) {
                 const std::vector<const SoundNode*> kids = ChildrenOf(lib, up->uid);
                 for (size_t k = 0; k < kids.size(); ++k)

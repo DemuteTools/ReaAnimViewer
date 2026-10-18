@@ -631,11 +631,22 @@ struct Frame {
     // 13-73: Left / Right on: each frame's side as played and its rule side (FrameSides / FrameRuleSides); empty = off.
     std::vector<char>     sides, rule;
     std::vector<TailCapAt> caps;  // 13-74: the zones the Tail does not reach (TailCappedZones, every part)
-    const std::vector<ZoneLook>& Looks() const { return lc->looks; }
+    // Sound Edit evening (D): the Heard strip (x = heard time; null: the timeline) and the looks drawn (its members').
+    const HeardStrip*            strip = nullptr;
+    const std::vector<ZoneLook>* looks = nullptr;
+    const std::vector<ZoneLook>& Looks() const { return looks ? *looks : lc->looks; }
     // Freeze audit #1: kept within 4096 px of the canvas, so a zone at deep zoom on a long file never hands the
     // drawing a coordinate of 1e8 px (where float steps stop moving).
-    float X(double t) const { return dash::ClampCoord(cx0 + (t - v0) / vl * cw, cx0, static_cast<double>(cx0) + cw); }
-    double T(float x) const { return v0 + static_cast<double>(x - cx0) / cw * vl; }
+    float X(double t) const
+    {
+        if (strip) return dash::ClampCoord(cx0 + HeardOfFile(*strip, t) / strip->total * cw, cx0, static_cast<double>(cx0) + cw);
+        return dash::ClampCoord(cx0 + (t - v0) / vl * cw, cx0, static_cast<double>(cx0) + cw);
+    }
+    double T(float x) const
+    {
+        if (strip) return FileOfHeard(*strip, static_cast<double>(x - cx0) / cw * strip->total);
+        return v0 + static_cast<double>(x - cx0) / cw * vl;
+    }
 };
 
 // The time selection, the edit cursor and the playheads over a row (drawOverlays). `thin`: a strip.
@@ -838,7 +849,7 @@ void DrawLane(const Frame& F, const Row& row)
     dl->AddRectFilled(ImVec2(left, row.y0), ImVec2(right, row.y1), ui::kBg);
     if (lane >= 0 && static_cast<size_t>(lane) < d.divide_values.size() && *h.part_sel == d.divide_values[static_cast<size_t>(lane)])
         dl->AddRectFilled(ImVec2(left, row.y0), ImVec2(right, row.y1), Alpha(ui::kAccent, 0.05f));
-    if (!F.have_cols) dl->AddLine(ImVec2(left, mid + 0.5f), ImVec2(right, mid + 0.5f), ui::kStroke);  // else each channel's
+    if (!F.have_cols && !F.strip) dl->AddLine(ImVec2(left, mid + 0.5f), ImVec2(right, mid + 0.5f), ui::kStroke);  // else each channel's
     const double v1 = F.v0 + F.vl;
     // Bodies.
     for (const ZoneLook& z : F.Looks()) {
@@ -901,6 +912,45 @@ void DrawLane(const Frame& F, const Row& row)
             return n;
         });
     }
+    // Sound Edit evening (D): the Heard strip -- each piece drawn as the timeline draws the file (one column per pixel),
+    // its zone's colour through its gain and envelope (fades, the Gap crossfade), the grey of the file under a fade; the
+    // overlapping pieces of a crossfade both drawn there.
+    if (F.strip) {
+        WaveDrawStyle st;
+        st.pad = 6.0f * dp;
+        st.zero = ui::kStroke;
+        st.split = ui::kStrokeStrong;
+        bool drawn = false;
+        for (const HeardSeg& g : F.strip->segs) {
+            const double len = g.b - g.a;
+            const float  xa = F.cx0 + static_cast<float>(g.at / F.strip->total) * F.cw;
+            const float  xb = F.cx0 + static_cast<float>((g.at + len) / F.strip->total) * F.cw;
+            const int    cols = std::max(1, static_cast<int>(std::floor(xb - xa)));
+            const ZoneLook* L = nullptr;
+            for (const ZoneLook& q : F.Looks())
+                if (q.ref == g.z) L = &q;
+            WaveColumns wc;
+            if (!L || !(len > 0.0) || !ReadWaveColumns(h.path, g.a, len, cols, &wc)) continue;
+            drawn = true;
+            const std::string& part = ZoneOf(d, L->ref)->part;
+            const ImU32        pc = PartColOf(h, d, part);
+            const float        al = PartHeardNow(h, part) ? 0.92f : 0.28f;
+            DrawWaveLanes(dl, wc, F.d->mono, xa, row.y0, row.y1, st, [&](double pos, double, bool line, WaveInk* out) {
+                const double t = g.a + pos / static_cast<double>(cols) * len;
+                const double e = EnvOf(*L, t);
+                int          n = 0;
+                if (!line && e < 0.999) out[n++] = WaveInk{Alpha(kGapCol, 0.14f), L->gain, 1.0, 0};
+                out[n++] = WaveInk{Alpha(pc, al), L->gain, e, 0};
+                return n;
+            });
+        }
+        if (!drawn) dl->AddLine(ImVec2(left, mid + 0.5f), ImVec2(right, mid + 0.5f), ui::kStroke);
+        // The joins (the mockup's drawHeard): dashed where each piece after the first comes in.
+        for (size_t k = 1; k < F.strip->segs.size(); ++k) {
+            const float x = std::floor(F.cx0 + static_cast<float>(F.strip->segs[k].at / F.strip->total) * F.cw) + 0.5f;
+            DashedV(dl, x, row.y0, row.y1, Alpha(ui::kText, 0.5f), 2.0f * dp, 2.0f * dp);
+        }
+    }
     ImFont* fb = ui::FontCaptionBold();
     // Gaps: hatched on every lane, their crossfade lines and two square handles.
     for (const ZoneLook& z : F.Looks()) {
@@ -933,6 +983,9 @@ void DrawLane(const Frame& F, const Row& row)
             TextAt(dl, fm, (ha + hb) * 0.5f - TextW(fm, s) * 0.5f, y1 - 6.0f * dp, ui::kText, s);
         }
         if (SelHas(v.sel, z.ref)) dl->AddRect(ImVec2(ha + 1.0f, y0 + 1.0f), ImVec2(hb - 1.0f, y1 - 1.0f), ui::kWhite);
+        // Sound Edit evening (D): on the Heard strip a Gap is its join: white there when selected or under the mouse.
+        const bool ghot = v.hover_on && v.hover.kind == ZoneHitKind::GapEdge && v.hover.z == z.ref;
+        if (F.strip && (SelHas(v.sel, z.ref) || ghot)) dl->AddRectFilled(ImVec2(ha - 1.0f * dp, y0), ImVec2(ha + 1.0f * dp, y1), ui::kWhite);
     }
     // Zones: borders, fades, labels, hand marks, snap offsets.
     const bool gain_drag = v.drag.kind == ZoneDragKind::Gain;
@@ -1657,6 +1710,27 @@ struct ThrDrag {
 };
 ThrDrag g_thr;
 
+namespace {
+
+// Sound Edit evening (D): a gesture pressed in the Heard strip is running (its strip is kept as it was).
+bool HeardHold(const ZoneEditView& v)
+{
+    return (v.drag.kind != ZoneDragKind::None && v.drag.heard) || (v.rpress.on && v.rpress.heard);
+}
+
+bool MakesSpan(ZoneDragKind k)
+{
+    return k == ZoneDragKind::MkZone || k == ZoneDragKind::MkGap || k == ZoneDragKind::Swipe;
+}
+
+}  // namespace
+
+HeardStrip ZoneHeardStripNow(const ZoneWaveHost& h)
+{
+    const ZoneEditView& v = *h.view;
+    return HeardHold(v) ? v.heard_strip : MakeHeardStrip(Shown(h), SelValid(Shown(h), v.sel));
+}
+
 ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
 {
     RAV_QUIET_SCOPE("Sound Edit", h.node ? h.node->name.c_str() : nullptr);  // freeze audit (no copy of the name)
@@ -1667,7 +1741,16 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
     const float  W = std::max(40.0f, ImGui::GetContentRegionAvail().x);
     const SoundData& d0 = Shown(h);
-    const bool   lane_view = d0.lanes_split && IsDivided(d0);  // 13-62i: no Lane view without parts
+    const bool   heard = h.heard;  // Sound Edit evening (D): the Selection panel's Heard strip
+    const int    frame_now = ImGui::GetFrameCount();
+    if (!heard && frame_now - v.heard_frame > 1) {  // a gesture pressed in a Heard strip no longer drawn: dropped
+        if (v.drag.kind != ZoneDragKind::None && v.drag.heard) {
+            if (h.live_now()) h.cancel();
+            v.drag = ZoneDrag{};
+        }
+        if (v.rpress.on && v.rpress.heard) v.rpress = ZoneRightPress{};
+    }
+    const bool   lane_view = !heard && d0.lanes_split && IsDivided(d0);  // 13-62i: no Lane view without parts
     const int    nparts = std::max(1, PartCount(d0));
     const float  head_lo = 104.0f * dp;
     const float  head_w = lane_view ? std::min(std::clamp(h.head_px * dp, head_lo, std::max(head_lo, W * 0.5f)), std::max(0.0f, W - 40.0f)) : 0.0f;
@@ -1675,15 +1758,17 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
     // Rows: the ruler, the Variations strip, (Lane) the Placed strip, the zones.
     std::vector<Row> rows;
     float            y = p0.y;
-    rows.push_back({ZoneRow::Ruler, -1, y, y + 20.0f * dp});
-    y += 20.0f * dp;
-    rows.push_back({ZoneRow::Vars, -1, y, y + 20.0f * dp});
-    y += 20.0f * dp;
+    if (!heard) {  // Sound Edit evening (D): the Heard strip is one lane (no ruler, no strips)
+        rows.push_back({ZoneRow::Ruler, -1, y, y + 20.0f * dp});
+        y += 20.0f * dp;
+        rows.push_back({ZoneRow::Vars, -1, y, y + 20.0f * dp});
+        y += 20.0f * dp;
+    }
     if (lane_view) {
         rows.push_back({ZoneRow::Placed, -1, y, y + 14.0f * dp});
         y += 14.0f * dp;
     }
-    const float rest = std::max(40.0f * dp, height - (y - p0.y));
+    const float rest = std::max((heard ? 24.0f : 40.0f) * dp, height - (y - p0.y));
     const int   nl = lane_view ? nparts : 1;
     const float lh = std::floor(rest / static_cast<float>(nl));
     for (int k = 0; k < nl; ++k) {
@@ -1708,8 +1793,27 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
     const ImGuiIO& io = ImGui::GetIO();
     const ImVec2  m = io.MousePos;
     const double  vs = *h.view_start, vl = ViewLen(h) > 0.0 ? ViewLen(h) : 1.0;
-    const double  px_per_s = cw / vl;
-    auto          time_at = [&](float x) { return Clamp(vs + static_cast<double>(x - cx0) / cw * vl, 0.0, h.file_len > 0.0 ? h.file_len : 1e300); };
+    // An undo or a write elsewhere: the selection follows by time and part; then keep it valid.
+    FollowOutside(h);
+    v.sel = SelValid(Shown(h), v.sel);
+    // Sound Edit evening (D): the Heard strip of the selection (kept while a gesture pressed in it runs) and its looks.
+    if (heard) {
+        if (!HeardHold(v)) v.heard_strip = MakeHeardStrip(Shown(h), v.sel);
+        v.heard_frame = frame_now;
+    }
+    const HeardStrip* strip = heard && !v.heard_strip.segs.empty() && v.heard_strip.total > 0.0 ? &v.heard_strip : nullptr;
+    std::vector<ZoneLook> heard_looks;
+    if (strip) heard_looks = HeardLooks(LooksNow(h).looks, *strip);
+    const double  px_per_s = strip ? cw / strip->total : cw / vl;
+    const double  hi_t = h.file_len > 0.0 ? h.file_len : 1e300;
+    // x -> source time. The Heard strip: through its pieces; a drag pressed in it on the line of the piece it was pressed
+    // on (HeardSegTime: never across a join while it runs), a new zone / Gap kept in that piece, a scrub piece by piece.
+    auto          time_at = [&](float x) {
+        if (!strip) return Clamp(vs + static_cast<double>(x - cx0) / cw * vl, 0.0, hi_t);
+        const double hh = static_cast<double>(x - cx0) / cw * strip->total;
+        const bool   mine = v.drag.kind != ZoneDragKind::None && v.drag.heard && v.drag.kind != ZoneDragKind::Scrub;
+        return Clamp(mine ? HeardSegTime(*strip, v.drag.seg, hh, MakesSpan(v.drag.kind)) : FileOfHeard(*strip, hh), 0.0, hi_t);
+    };
     auto          row_at = [&](float yy) -> int {
         for (size_t i = 0; i < rows.size(); ++i)
             if (yy >= rows[i].y0 && yy < rows[i].y1 + 1.0f) return static_cast<int>(i);
@@ -1732,18 +1836,25 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
         hv.dp = dp;
         hv.tl = h.tl;
         const LookCache& lc = LooksNow(h);
-        hv.looks = &lc.looks;
+        hv.looks = strip ? &heard_looks : &lc.looks;
         hv.blocks = &lc.blocks;
+        hv.strip = strip;
         return HitZones(Shown(h), hv, p.x - cx0, p.y - r.y0);
     };
-    // An undo or a write elsewhere: the selection follows by time and part; then keep it valid.
-    FollowOutside(h);
-    v.sel = SelValid(Shown(h), v.sel);
+    if (heard && !strip) {  // nothing selected: the strip's box only
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->AddRectFilled(ImVec2(cx0, p0.y), ImVec2(cx0 + cw, bottom), ui::kBg);
+        dl->AddRect(ImVec2(cx0, p0.y), ImVec2(cx0 + cw, bottom), ui::kStroke);
+        ImGui::SetCursorScreenPos(ImVec2(p0.x, bottom));
+        ImGui::Dummy(ImVec2(W, 1.0f));
+        ImGui::PopID();
+        return ev;
+    }
 
     // 13-62h (Antho): the detection threshold (Silence), a dashed line above and below the middle of every zone row
     // (Combined and Lane alike), at the peaks' scale (DrawLane's). 13-71 review: in each channel lane of the row, at
     // that lane's scale (WaveLaneAt, as DrawWaveLanes draws it), so the line still meets the peaks it splits.
-    const bool      thr_on = h.threshold && d0.mode == DetectMode::Silence && std::isfinite(d0.silence.threshold_db);
+    const bool      thr_on = !heard && h.threshold && d0.mode == DetectMode::Silence && std::isfinite(d0.silence.threshold_db);
     const PeakView* thr_pk = PeaksOf(h.path);
     const int       thr_n = thr_pk ? WaveLanesFor(d0.mono, WaveSeriesCount(PeakChannels(*thr_pk))).n : 1;
     auto            lane_at = [&](const Row& r, int l) { return WaveLaneAt(r.y0, r.y1, thr_n, 6.0f * dp, l); };
@@ -1826,13 +1937,16 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
             g.t0 = g.t1 = g.hit.t;
             g.kind = PressDragKind(g.hit, g.ctrl, g.alt);
             g.tl = h.tl;
+            g.heard = heard;  // Sound Edit evening (D)
+            if (strip) g.seg = HeardDragSeg(Shown(h), *strip, g.hit, static_cast<double>(m.x - cx0) / cw * strip->total);
             v.drag = g;
         }
     }
-    if (v.drag.kind != ZoneDragKind::None && v.drag.tl == h.tl) {  // 13-62i: only the host it was pressed in
+    if (v.drag.kind != ZoneDragKind::None && v.drag.tl == h.tl && v.drag.heard == heard) {  // 13-62i / D: only the host it was pressed in
         if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
             const ImVec2 dm(m.x - v.drag.m0.x, m.y - v.drag.m0.y);
             DragMove(h, time_at(m.x), dm.x, dm.y, px_per_s);
+            if (strip && MakesSpan(v.drag.kind)) v.drag.t1 = time_at(m.x);  // D: the frame it became one, kept in its piece
         }
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) DragRelease(h, px_per_s);
     }
@@ -1852,16 +1966,17 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
             rp.add = io.KeyCtrl;
             rp.hit = hit_at(ri, m);
             rp.tl = h.tl;
+            rp.heard = heard;  // Sound Edit evening (D)
             rp.empty = rows[static_cast<size_t>(ri)].row == ZoneRow::Lane && rp.hit.kind != ZoneHitKind::Grey &&
                        !ZoneOf(Shown(h), rp.hit.z);
         }
     }
     bool marquee_now = false;
-    if (rp.on && rp.tl == h.tl && ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
+    if (rp.on && rp.tl == h.tl && rp.heard == heard && ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
         if (!rp.marquee && rp.empty && (std::fabs(m.x - rp.m0.x) > 4.0f * dp || std::fabs(m.y - rp.m0.y) > 4.0f * dp))
             rp.marquee = true;
         marquee_now = rp.marquee;
-    } else if (rp.on && rp.tl == h.tl) {  // released (a release this host did not see: dropped)
+    } else if (rp.on && rp.tl == h.tl && rp.heard == heard) {  // released (a release this host did not see: dropped)
         const ZoneRightPress press = rp;
         rp = ZoneRightPress{};
         if (!ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
@@ -1875,7 +1990,13 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
                 if (r.lane < 0) every = true;
                 else if (static_cast<size_t>(r.lane) < d.divide_values.size()) parts.push_back(d.divide_values[static_cast<size_t>(r.lane)]);
             }
-            const ZoneSel hits = ZonesInSpan(d, h.tl, time_at(press.m0.x), time_at(m.x), every ? nullptr : &parts);
+            ZoneSel hits = ZonesInSpan(d, h.tl, time_at(press.m0.x), time_at(m.x), every ? nullptr : &parts);
+            if (strip) {  // Sound Edit evening (D): only what the Heard strip shows
+                ZoneSel in;
+                for (const ZoneRef& q : hits)
+                    if (strip->Has(q)) in.push_back(q);
+                hits = in;
+            }
             SelMarquee(v.sel, hits, press.add);
             if (!hits.empty() && !press.add) {
                 const EditZone* fz = nullptr;
@@ -1910,7 +2031,7 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
             ImGui::OpenPopup("##zonewavemenu");
         }
     }
-    if (active && ImGui::IsMouseDown(ImGuiMouseButton_Middle) && io.MouseDelta.x != 0.0f)  // middle-drag pans (REAPER's hand scroll)
+    if (!heard && active && ImGui::IsMouseDown(ImGuiMouseButton_Middle) && io.MouseDelta.x != 0.0f)  // middle-drag pans (REAPER's hand scroll)
         ev.scroll_s = -static_cast<double>(io.MouseDelta.x) / cw * vl;
 
     // ---- drawing
@@ -1920,11 +2041,13 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
     F.dl = ImGui::GetWindowDrawList();
     F.cx0 = cx0;
     F.cw = cw;
-    F.v0 = vs;
-    F.vl = vl;
+    F.v0 = strip ? -1e18 : vs;  // D: the Heard strip shows its members whatever their time (its looks)
+    F.vl = strip ? 2e18 : vl;
     F.dp = dp;
     F.peaks = PeaksOf(h.path);
     F.lc = &LooksNow(h);
+    F.strip = strip;
+    F.looks = strip ? &heard_looks : nullptr;
     if (F.d->sides) {  // 13-73
         F.sides = FrameSides(*F.d);
         F.rule = FrameRuleSides(*F.d);
@@ -1933,9 +2056,11 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
         SyncLoopMap(v);  // fix 2026-10-19
         F.heads = HeardHeads(v.map, AuditionPosition());
     }
-    F.caps = TailCappedZones(*F.d, Ctx(h), std::string(), true).at;  // 13-74
-    const int ncols = std::max(1, static_cast<int>(std::floor(cw)));
-    F.have_cols = ReadWaveColumns(h.path, vs, vl, ncols, &F.wc);
+    if (!strip) {  // the Heard strip draws its pieces (DrawLane) and no Tail marks
+        F.caps = TailCappedZones(*F.d, Ctx(h), std::string(), true).at;  // 13-74
+        const int ncols = std::max(1, static_cast<int>(std::floor(cw)));
+        F.have_cols = ReadWaveColumns(h.path, vs, vl, ncols, &F.wc);
+    }
     ImDrawList* dl = F.dl;
     dl->PushClipRect(ImVec2(p0.x, p0.y), ImVec2(p0.x + W, bottom), true);
     for (const Row& r : rows) {
@@ -1995,6 +2120,11 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
         const ImVec2 b(std::clamp(std::max(rp.m0.x, m.x), cx0, cx0 + cw), std::clamp(std::max(rp.m0.y, m.y), p0.y, bottom));
         dl->AddRectFilled(a, b, Alpha(ui::kAccent, 0.15f));
         dl->AddRect(a, b, ui::kAccent);
+    }
+    if (strip) {  // Sound Edit evening (D): what the strip lasts, as the Heard block said it
+        const std::string lbl = std::to_string(Ms(strip->total)) + " ms heard";
+        ImFont*           f = ui::FontMonoTiny();
+        ui::AddTextIn(dl, f, ImVec2(cx0 + 4.0f * dp, bottom - f->FontSize - 3.0f * dp), ui::kMuted, lbl.c_str());
     }
     dl->AddRect(ImVec2(cx0, p0.y), ImVec2(cx0 + cw, bottom), ui::kStroke);
     dl->PopClipRect();

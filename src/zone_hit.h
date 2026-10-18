@@ -44,6 +44,47 @@ struct ZoneLook {
 std::vector<ZoneLook> ZoneLooks(const SoundData& d, const PeakView* peaks, int tl = -1);
 
 struct ZoneVarBlock;
+struct ZoneHit;
+
+// Sound Edit evening (D, Antho 2026-10-19): the Selection panel's Heard strip -- the "surgical" view of the selected
+// zones: their chains (ChainOf: the part zones Gaps glue) glued one after the other as they are heard (each Gap jumped,
+// its crossfade overlapped; a chain right after the one before), always fitted to the strip (no scroll, no zoom). The
+// zone waveform's engine runs on it (the same hit testing, drags, store gestures and menus) through this time map.
+// One piece per part zone: file [a, b] (from its left Gap's end minus xr to its right Gap's start plus xl, as
+// HeardPieces) placed at heard time `at`; `j` = where its zone's start is heard (at + its left Gap's xr).
+struct HeardSeg {
+    double  a = 0.0, b = 0.0, at = 0.0, j = 0.0;
+    ZoneRef z;
+};
+struct HeardStrip {
+    std::vector<HeardSeg> segs;     // heard order (= time order)
+    double                total = 0.0;  // its heard length (s)
+    int                   tl = 0;   // the timeline of its zones (the selection's first zone's)
+    ZoneSel               members;  // the chains' part zones and the Gaps between them
+    int                   chains = 0;
+    bool Has(const ZoneRef& r) const;
+};
+// The strip of a selection: every selected zone (or Gap) of the first one's timeline taken with its chain, once each,
+// the chains in time order. Empty when nothing valid is selected.
+HeardStrip MakeHeardStrip(const SoundData& d, const ZoneSel& sel);
+// File time -> heard time: inside a piece, where it is heard there (a Gap's two edges both land on its join: the right
+// zone's `j`); inside a jumped Gap or between two chains: the next piece's `j`; before / after the strip: on the line
+// of the first / last piece (off the strip).
+double HeardOfFile(const HeardStrip& s, double t);
+// Heard time -> the piece it reads (decision: in a crossfade's overlap, the outgoing piece before the join `j`, the
+// incoming one from it on; before / after the strip: the first / last piece). -1 when the strip is empty.
+int HeardSegAt(const HeardStrip& s, double h);
+// Heard time -> file time, through HeardSegAt's piece, on its line (never inside a jumped Gap).
+double FileOfHeard(const HeardStrip& s, double h);
+// File time on piece `seg`'s line at heard time h (a drag maps through the piece it was pressed on, so it never jumps
+// to the other side of a join while it runs); `clamp`: kept inside the piece (a new zone / Gap drawn in the strip stays
+// in the zone it starts in).
+double HeardSegTime(const HeardStrip& s, int seg, double h, bool clamp);
+// The piece a press on `hit` drags through: a Gap's start / its left crossfade side -> its left zone's piece, its end /
+// right side -> its right zone's; a part zone's own handles / body -> its piece; else the piece under heard time h.
+int HeardDragSeg(const SoundData& d, const HeardStrip& s, const ZoneHit& hit, double h);
+// The looks of the strip's members only (Gap neighbours' indices remapped).
+std::vector<ZoneLook> HeardLooks(const std::vector<ZoneLook>& all, const HeardStrip& s);
 
 // What a row shows and where (pixels local to the row; `dp` = one logical pixel on screen).
 struct ZoneHitView {
@@ -60,6 +101,9 @@ struct ZoneHitView {
     // The caller's cached ZoneLooks / ZoneVarBlocks of the Sound (null: computed here).
     const std::vector<ZoneLook>*     looks = nullptr;
     const std::vector<ZoneVarBlock>* blocks = nullptr;
+    // Sound Edit evening (D): a lane of the Heard strip (x over w = heard time over its total; only its members hit;
+    // v0 / vl unused). `looks`, when given, are its HeardLooks. A Gap's two edges on one join: the side the mouse is on.
+    const HeardStrip*                strip = nullptr;
 };
 
 enum class ZoneHitKind { None, Ruler, TselEdge, Var, Pick, Xf, Fade, Snap, Cut, GapEdge, Edge, Zone, Grey };

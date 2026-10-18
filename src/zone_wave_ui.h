@@ -81,6 +81,10 @@ struct ZoneDrag {
     // Fix 2026-10-19: a Move / Edge / Fade / Snap pressed on a zone of a wider selection: the selection it acts on (the
     // pressed zone first, base refs; GroupDragZones), empty = the pressed zone alone.
     ZoneSel      group;
+    // Sound Edit evening (D): pressed in the Selection panel's Heard strip (only that host runs it), and the strip's
+    // piece it maps the mouse through (HeardDragSeg).
+    bool         heard = false;
+    int          seg = -1;
 };
 
 // 13-67a: a right-button press on the waveform: a drag from empty space past 4 px is a marquee (the zones it touches
@@ -93,6 +97,7 @@ struct ZoneRightPress {
     ImVec2  m0;
     ZoneHit hit;              // at the press (the menu's target)
     int     tl = -1;          // the host (a Takes-mode Sound's take) it was pressed in
+    bool    heard = false;    // Sound Edit evening (D): pressed in the Heard strip
 };
 
 struct ZoneEditView {
@@ -137,6 +142,10 @@ struct ZoneEditView {
     // -1 = none yet) and the take the zone audition plays.
     int           cur_tl = -1;
     int           play_tl = -1;
+    // Sound Edit evening (D): the Heard strip as last drawn (kept as it was while a gesture pressed in it runs: what is
+    // dragged never rescales the strip under the mouse; fitted again at its release) and the frame it was last drawn.
+    HeardStrip    heard_strip;
+    int           heard_frame = -10;
     // Sound Edit evening (A / B): the V filter -- the variation (its frame) whose V chip is on, -1 = All. Ctrl+A selects
     // its zones only; Next / Previous variation and the V chips set it (ZoneGoToVariation).
     int           var_focus = -1;
@@ -177,6 +186,11 @@ struct ZoneWaveHost {
     // 13-62h (v5): the item menu's Normalize: the selection's part zones measured as NormGroups (one gain per part's
     // zones glued by Gaps), one undo point when measured (a toast while measuring / waiting). Null = no entry.
     std::function<void(const ZoneSel& sel)> normalize;
+    // Sound Edit evening (D, Antho 2026-10-19): this host is the Selection panel's Heard strip (DrawZoneWave draws the
+    // selected zones' chains glued -- MakeHeardStrip -- on one Combined lane, no ruler / strips, always fitted: no scroll,
+    // no zoom) and every edit gesture of the timeline runs there through its time map. `tl` / `path` / `file_len`: the
+    // strip's timeline's (a Takes-mode Sound's take).
+    bool heard = false;
 };
 
 // What the waveform leaves for the caller: the lane header column (Lane), the canvas, a middle-drag's scroll.
@@ -189,8 +203,12 @@ struct ZoneWaveEvents {
     double scroll_s = 0.0;
 };
 
-// Draws the zone waveform `height` px tall at the cursor and runs its gestures and its right-click menu.
+// Draws the zone waveform `height` px tall at the cursor and runs its gestures and its right-click menu. Sound Edit
+// evening (D): a host with `heard` draws the Heard strip instead (the same engine; nothing drawn when nothing is selected).
 ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height);
+// Sound Edit evening (D): the Heard strip of the selection as DrawZoneWave shows it now (the one kept while a gesture
+// pressed in it runs), for the caller's caption.
+HeardStrip ZoneHeardStripNow(const ZoneWaveHost& h);
 // The Edit window's keys for a zoned Sound while it has the focus: Delete, Space; Esc returns true when it used
 // it (the mockup's: the right-click menu closes, and on the same press the selection goes, else the time
 // selection), else the caller's Esc runs (stop, close).

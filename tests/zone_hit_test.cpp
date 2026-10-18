@@ -609,6 +609,65 @@ static void TestVariationView()
     CHECK(near(s.start, 1.5));
 }
 
+// Sound Edit evening (D): the Heard strip's time map and its hit testing.
+static void TestHeardStrip()
+{
+    auto near = [](double x, double y) { return std::fabs(x - y) < 1e-9; };
+    const SoundData d = Sample();
+    // Heel 1 selected: its chain (Heel | Gap 0.40-0.45, 5 + 5 ms | Heel); Toe is butted, not glued: not in it.
+    HeardStrip s = MakeHeardStrip(d, {ZoneRef{0, 0}});
+    CHECK(s.segs.size() == 2 && s.chains == 1 && s.members.size() == 3 && !s.Has(ZoneRef{0, 3}) && s.Has(ZoneRef{0, 1}));
+    if (s.segs.size() != 2) return;
+    CHECK(near(s.segs[0].a, 0.10) && near(s.segs[0].b, 0.405) && near(s.segs[0].at, 0.0));
+    CHECK(near(s.segs[1].a, 0.445) && near(s.segs[1].b, 0.70) && near(s.segs[1].at, 0.295) && near(s.segs[1].j, 0.30));
+    CHECK(near(s.total, 0.55));  // 300 + 250 ms heard
+    // The Gap's two edges and its inside: on its join.
+    CHECK(near(HeardOfFile(s, 0.40), 0.30) && near(HeardOfFile(s, 0.45), 0.30) && near(HeardOfFile(s, 0.42), 0.30));
+    CHECK(near(HeardOfFile(s, 0.25), 0.15) && near(HeardOfFile(s, 0.60), 0.45));
+    CHECK(near(HeardOfFile(s, 0.05), -0.05) && near(HeardOfFile(s, 0.80), 0.65));  // off the strip, on its line
+    // The overlap: the outgoing piece before the join, the incoming one from it.
+    CHECK(HeardSegAt(s, 0.298) == 0 && near(FileOfHeard(s, 0.298), 0.398));
+    CHECK(HeardSegAt(s, 0.302) == 1 && near(FileOfHeard(s, 0.302), 0.452));
+    CHECK(HeardSegAt(s, -1.0) == 0 && HeardSegAt(s, 9.0) == 1);
+    // A drag runs on the line of the piece it was pressed on.
+    CHECK(near(HeardSegTime(s, 0, 0.35, false), 0.45) && near(HeardSegTime(s, 0, 0.35, true), 0.405));
+    // Hit testing: the strip 550 px wide (1 px = 1 ms).
+    ZoneHitView v = Lane(-1);
+    v.w = 550.0f;
+    v.strip = &s;
+    const std::vector<ZoneLook> all = ZoneLooks(d, nullptr);
+    const std::vector<ZoneLook> looks = HeardLooks(all, s);
+    CHECK(looks.size() == 3 && looks[1].gap && looks[1].li == 0 && looks[1].ri == 2);
+    v.looks = &looks;
+    ZoneHit h = HitZones(d, v, 150.0f, 60.0f);
+    CHECK(h.kind == ZoneHitKind::Zone && h.z == (ZoneRef{0, 0}) && near(h.t, 0.25));
+    h = HitZones(d, v, 450.0f, 60.0f);
+    CHECK(h.kind == ZoneHitKind::Zone && h.z == (ZoneRef{0, 2}) && std::fabs(h.t - 0.60) < 1e-6);
+    // The join: the Gap's start left of it, its end right of it.
+    h = HitZones(d, v, 299.0f, 60.0f);
+    CHECK(h.kind == ZoneHitKind::GapEdge && h.side < 0 && h.z == (ZoneRef{0, 1}));
+    h = HitZones(d, v, 301.0f, 60.0f);
+    CHECK(h.kind == ZoneHitKind::GapEdge && h.side > 0);
+    CHECK(HeardDragSeg(d, s, h, 0.301) == 1);
+    h.side = -1;
+    CHECK(HeardDragSeg(d, s, h, 0.301) == 0);
+    // Its crossfade handles at the overlap's ends: xl (the left zone's side) at its right end, xr at its left end.
+    h = HitZones(d, v, 305.0f, 5.0f);
+    CHECK(h.kind == ZoneHitKind::Xf && h.side < 0 && HeardDragSeg(d, s, h, 0.305) == 0);
+    h = HitZones(d, v, 295.0f, 5.0f);
+    CHECK(h.kind == ZoneHitKind::Xf && h.side > 0 && HeardDragSeg(d, s, h, 0.295) == 1);
+    // The last Heel's end is free here (Toe, butted, is not in the strip: no cut grab).
+    h = HitZones(d, v, 549.0f, 95.0f);
+    CHECK(h.kind == ZoneHitKind::Edge && h.z == (ZoneRef{0, 2}) && h.side > 0);
+    // Two chains (Heel 1 and variation 2's Toe): one after the other; between them, the next one's start.
+    s = MakeHeardStrip(d, {ZoneRef{1, 0}, ZoneRef{0, 2}});
+    CHECK(s.segs.size() == 3 && s.chains == 2 && s.segs[0].z == (ZoneRef{0, 0}) && s.segs[2].z == (ZoneRef{1, 0}));
+    CHECK(near(s.total, 0.95) && near(HeardOfFile(s, 1.0), 0.55) && near(FileOfHeard(s, 0.6), 1.25));
+    // A Gap selected alone: its chain; nothing valid: empty.
+    CHECK(MakeHeardStrip(d, {ZoneRef{0, 1}}).segs.size() == 2);
+    CHECK(MakeHeardStrip(d, {ZoneRef{5, 0}}).segs.empty() && MakeHeardStrip(d, {}).segs.empty());
+}
+
 int main()
 {
     TestHitLane();
@@ -624,6 +683,7 @@ int main()
     TestPrevStopAndMarquee();
     TestSelectAll();
     TestVariationView();
+    TestHeardStrip();
     if (g_fails) {
         std::printf("zone_hit_test: %d failure(s)\n", g_fails);
         return 1;

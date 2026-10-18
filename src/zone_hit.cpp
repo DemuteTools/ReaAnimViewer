@@ -113,6 +113,132 @@ std::vector<ZoneLook> ZoneLooks(const SoundData& d, const PeakView* peaks, int t
     return out;
 }
 
+// ---- Sound Edit evening (D): the Heard strip ----------------------------------------------------------------------
+
+bool HeardStrip::Has(const ZoneRef& r) const
+{
+    return std::find(members.begin(), members.end(), r) != members.end();
+}
+
+HeardStrip MakeHeardStrip(const SoundData& d, const ZoneSel& sel)
+{
+    HeardStrip s;
+    const ZoneSel v = SelValid(d, sel);
+    if (v.empty()) return s;
+    s.tl = ZoneTimeline(d, v.front().frame);
+    std::vector<ZoneSel> chains;
+    ZoneSel              seen;
+    for (const ZoneRef& r : v) {
+        if (ZoneTimeline(d, r.frame) != s.tl || SelHas(seen, r)) continue;
+        const std::vector<ZoneRef> c = ChainOf(d, r);
+        if (c.empty() || SelHas(seen, c.front())) continue;
+        for (const ZoneRef& q : c) seen.push_back(q);
+        chains.push_back(c);
+    }
+    std::stable_sort(chains.begin(), chains.end(), [&](const ZoneSel& x, const ZoneSel& y) { return Z(d, x.front()).a < Z(d, y.front()).a; });
+    double o = 0.0;
+    for (const ZoneSel& c : chains) {
+        for (size_t i = 0; i < c.size(); ++i) {
+            const ZoneRef   r = c[i];
+            const EditZone& z = Z(d, r);
+            const EditZone* lg = i > 0 ? ZoneOf(d, GapBefore(d, r)) : nullptr;
+            const ZoneRef   rgr = i + 1 < c.size() ? GapAfter(d, r) : ZoneRef{};
+            const EditZone* rg = ZoneOf(d, rgr);
+            HeardSeg        g;
+            g.z = r;
+            g.a = lg ? lg->b - lg->xr : z.a;
+            g.b = rg ? rg->a + rg->xl : z.b;
+            if (!(g.b > g.a)) g.b = g.a;
+            g.at = o;
+            g.j = o + (z.a - g.a);
+            s.segs.push_back(g);
+            s.members.push_back(r);
+            if (rg) s.members.push_back(rgr);
+            s.total = std::max(s.total, g.at + (g.b - g.a));
+            o += (g.b - g.a) - (rg ? std::min(rg->xl + rg->xr, g.b - g.a) : 0.0);
+        }
+        ++s.chains;
+    }
+    return s;
+}
+
+double HeardOfFile(const HeardStrip& s, double t)
+{
+    if (s.segs.empty()) return 0.0;
+    const HeardSeg& f = s.segs.front();
+    if (t < f.a) return f.at + (t - f.a);
+    for (size_t k = 0; k < s.segs.size(); ++k) {
+        const HeardSeg& g = s.segs[k];
+        if (t >= g.a - 1e-12 && t <= g.b + 1e-12) return g.at + (t - g.a);
+        if (k + 1 < s.segs.size() && t > g.b && t < s.segs[k + 1].a) return s.segs[k + 1].j;  // a jumped Gap / between chains
+    }
+    const HeardSeg& l = s.segs.back();
+    return l.at + (t - l.a);
+}
+
+int HeardSegAt(const HeardStrip& s, double h)
+{
+    const int n = static_cast<int>(s.segs.size());
+    if (n == 0) return -1;
+    int pick = -1;
+    for (int k = 0; k < n; ++k) {
+        const HeardSeg& g = s.segs[static_cast<size_t>(k)];
+        if (h < g.at - 1e-12 || h > g.at + (g.b - g.a) + 1e-12) continue;
+        if (pick < 0) {
+            pick = k;
+            continue;
+        }
+        // An overlap (a crossfade): the incoming piece from its zone's start on.
+        if (h >= g.j - 1e-12) pick = k;
+        break;
+    }
+    if (pick >= 0) return pick;
+    return h < s.segs.front().at ? 0 : n - 1;
+}
+
+double HeardSegTime(const HeardStrip& s, int seg, double h, bool clamp)
+{
+    if (seg < 0 || static_cast<size_t>(seg) >= s.segs.size()) return 0.0;
+    const HeardSeg& g = s.segs[static_cast<size_t>(seg)];
+    const double    t = g.a + (h - g.at);
+    return clamp ? Clamp(t, g.a, g.b) : t;
+}
+
+double FileOfHeard(const HeardStrip& s, double h)
+{
+    return HeardSegTime(s, HeardSegAt(s, h), h, false);
+}
+
+int HeardDragSeg(const SoundData& d, const HeardStrip& s, const ZoneHit& hit, double h)
+{
+    ZoneRef of = hit.z;
+    const EditZone* z = ZoneOf(d, hit.z);
+    if (z && z->IsGap()) of = hit.side > 0 ? GapRight(d, hit.z) : hit.side < 0 ? GapLeft(d, hit.z) : ZoneRef{};
+    if (ZoneOf(d, of))
+        for (size_t k = 0; k < s.segs.size(); ++k)
+            if (s.segs[k].z == of) return static_cast<int>(k);
+    return HeardSegAt(s, h);
+}
+
+std::vector<ZoneLook> HeardLooks(const std::vector<ZoneLook>& all, const HeardStrip& s)
+{
+    std::vector<ZoneLook> out;
+    std::vector<int>      at(all.size(), -1);
+    for (size_t i = 0; i < all.size(); ++i)
+        if (s.Has(all[i].ref)) {
+            at[i] = static_cast<int>(out.size());
+            out.push_back(all[i]);
+        }
+    auto remap = [&](int i) { return i >= 0 && static_cast<size_t>(i) < at.size() ? at[static_cast<size_t>(i)] : -1; };
+    for (ZoneLook& L : out) {
+        L.li = remap(L.li);
+        L.ri = remap(L.ri);
+    }
+    for (size_t i = 0; i + 1 < out.size(); ++i)  // a neighbour that is not in the strip is not butted to it there
+        out[i].butt_next = out[i].butt_next && std::fabs(out[i].b - out[i + 1].a) < kZoneTouch;
+    return out;
+}
+
 ZoneHit HitZones(const SoundData& d, const ZoneHitView& v, float x, float y)
 {
     ZoneHit h;
@@ -121,9 +247,13 @@ ZoneHit HitZones(const SoundData& d, const ZoneHitView& v, float x, float y)
     const double vl = v.vl > 0.0 ? v.vl : 1.0;
     const float  w = std::max(1.0f, v.w);
     const double hi_t = v.file_len > 0.0 ? v.file_len : 1e300;
-    h.t = Clamp(v.v0 + static_cast<double>(x) / w * vl, 0.0, hi_t);
+    // Sound Edit evening (D): the Heard strip maps x through its pieces.
+    const HeardStrip* hs = v.strip && !v.strip->segs.empty() && v.strip->total > 0.0 ? v.strip : nullptr;
+    h.t = hs ? Clamp(FileOfHeard(*hs, static_cast<double>(x) / w * hs->total), 0.0, hi_t) : Clamp(v.v0 + static_cast<double>(x) / w * vl, 0.0, hi_t);
     h.top = y < v.h * 0.5f;
-    auto X = [&](double t) { return static_cast<float>((t - v.v0) / vl * w); };
+    auto X = [&](double t) {
+        return hs ? static_cast<float>(HeardOfFile(*hs, t) / hs->total * w) : static_cast<float>((t - v.v0) / vl * w);
+    };
     const float dp = v.dp > 0.0f ? v.dp : 1.0f;
     if (v.row == ZoneRow::Ruler) {
         if (v.has_tsel) {
@@ -168,7 +298,7 @@ ZoneHit HitZones(const SoundData& d, const ZoneHitView& v, float x, float y)
     std::vector<const ZoneLook*> parts, gaps;
     const double                 v1 = v.v0 + vl;
     for (const ZoneLook& L : looks) {
-        if (L.b < v.v0 || L.a > v1) continue;
+        if (hs ? !hs->Has(L.ref) : (L.b < v.v0 || L.a > v1)) continue;
         if (L.gap) gaps.push_back(&L);
         else if (mine(L)) parts.push_back(&L);
     }
@@ -224,6 +354,13 @@ ZoneHit HitZones(const SoundData& d, const ZoneHitView& v, float x, float y)
         }
     }
     for (const ZoneLook* g : gaps) {
+        // Sound Edit evening (D): on the Heard strip a Gap's two edges are one join: the side the mouse is on.
+        if (hs && std::fabs(X(g->a) - X(g->b)) < 1.0f && std::fabs(x - X(g->a)) <= 4.0f * dp) {
+            h.kind = ZoneHitKind::GapEdge;
+            h.z = g->ref;
+            h.side = x < X(g->a) ? -1 : 1;
+            return h;
+        }
         if (std::fabs(x - X(g->a)) <= 4.0f * dp) {
             h.kind = ZoneHitKind::GapEdge;
             h.z = g->ref;
@@ -265,7 +402,7 @@ ZoneHit HitZones(const SoundData& d, const ZoneHitView& v, float x, float y)
         return h;
     }
     const ZoneRef r = ZoneAt(d, h.t, v.tl);
-    if (Valid(d, r)) {
+    if (Valid(d, r) && (!hs || hs->Has(r))) {
         h.z = r;
         h.kind = ZoneMine(d, r, v.lane) ? ZoneHitKind::Zone : ZoneHitKind::Grey;
     }

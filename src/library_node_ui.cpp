@@ -3801,122 +3801,58 @@ int ZoneVariationNumber(const SoundData& d, const ZoneRef& r)
     return 0;
 }
 
-// The mockup's heardBlock + drawHeard: the chain of `r` glued -- Gaps removed, crossfades overlapped -- coloured by
-// part through its fades and gains, a dashed line at each join, the playheads while it plays, "n ms heard".
-void ZoneHeardBlock(const SoundData& d, const ZoneRef& r, const ZoneWaveHost& zh, const SoundMedia& m)
+// The mockup's heardBlock + drawHeard: the selected zones' chains glued -- Gaps removed, crossfades overlapped --
+// coloured by part through their fades and gains, a dashed line at each join, the playheads while it plays, "n ms
+// heard". Sound Edit evening (D, Antho 2026-10-19): the "surgical" view of the selection -- the zone waveform's engine
+// (DrawZoneWave on a `heard` host: every edit gesture of the timeline, its menu and keys) through the strip's time map
+// (MakeHeardStrip), always fitted (no scroll / zoom). A Takes-mode Sound: on the take of the selection's first zone.
+void ZoneHeardBlock(const SoundData& d, const ZoneSel& sel, const ZoneWaveHost& zh, const SoundMedia& m)
 {
-    const std::vector<ZoneRef> c = ChainOf(d, r);
-    if (c.empty()) return;
-    const EditZone* z0 = ZoneOf(d, c.front());
-    const EditZone* z1 = ZoneOf(d, c.back());
-    if (!z0 || !z1) return;
-    const int                     tl = ZoneTimeline(d, r.frame);  // 13-62i: its take's timeline and file
-    const std::string             path = d.mode == DetectMode::Takes ? VariationPath(m, d, r.frame) : m.path;
-    const std::vector<HeardPiece> pcs = HeardPieces(d, z0->a, z1->b, tl);
-    struct Placed {
-        HeardPiece q;
-        double     at = 0.0;
-    };
-    std::vector<Placed> placed;
-    double              o = 0.0, heard = 0.0;
-    for (const HeardPiece& q : pcs) {
-        placed.push_back({q, o});
-        o += (q.b - q.a) - q.xo;
-        heard += (q.b - q.a) - q.xo;
-    }
-    double total = 0.0;
-    for (const Placed& p : placed) total = std::max(total, p.at + (p.q.b - p.q.a));
+    const ZoneSel L = SelValid(d, sel);
+    if (L.empty()) return;
+    const bool         takes = d.mode == DetectMode::Takes;
+    ZoneWaveHost       hh = takes ? ZoneHost(*zh.lib, *zh.node, m, ZoneTimeline(d, L.front().frame)) : zh;
+    hh.heard = true;
+    hh.threshold = nullptr;
+    const HeardStrip   s = ZoneHeardStripNow(hh);
+    if (s.segs.empty()) return;
     const std::vector<std::string> names = ZonePartNames(d);
-    std::string                    cap = "Heard \xC2\xB7 ";
-    if (c.size() > 1) {
-        std::string glued;
-        for (const ZoneRef& q : c) glued += (glued.empty() ? "" : " + ") + ZoneName(d, q, names);
-        cap += glued + " glued: " + std::to_string(ZoneMs(heard)) + " ms instead of " + std::to_string(ZoneMs(z1->b - z0->a));
-    } else {
-        cap += std::to_string(ZoneMs(heard)) + " ms";
+    double             span = 0.0, heard = 0.0;
+    std::string        glued;
+    for (const HeardSeg& g : s.segs) {
+        const EditZone* z = ZoneOf(d, g.z);
+        if (!z) continue;
+        glued += (glued.empty() ? "" : " + ") + ZoneName(d, g.z, names);
     }
+    {  // what the chains last in the file (Gaps included) and heard (s.total)
+        double a = 0.0, b = 0.0;
+        bool   any = false;
+        for (const ZoneRef& q : s.members)
+            if (const EditZone* z = ZoneOf(d, q)) {
+                a = any ? std::min(a, z->a) : z->a;
+                b = any ? std::max(b, z->b) : z->b;
+                any = true;
+            }
+        span = s.chains == 1 ? b - a : 0.0;
+        heard = s.total;
+    }
+    std::string cap = "Heard \xC2\xB7 ";
+    if (s.segs.size() > 1 && s.chains == 1) cap += glued + " glued: " + std::to_string(ZoneMs(heard)) + " ms instead of " + std::to_string(ZoneMs(span));
+    else if (s.chains > 1) cap += std::to_string(s.segs.size()) + " zones end to end: " + std::to_string(ZoneMs(heard)) + " ms";
+    else cap += std::to_string(ZoneMs(heard)) + " ms";
     ui::GroupCaption(cap.c_str(), ui::kMuted);
+    ui::ItemTipText("Edit here as on the timeline (click, drag the edges / fades / snap offset, Shift+drag a zone, Alt+drag a Gap, "
+                    "right-click, the keys); it always shows the whole selection, joined as it is heard");
     // 13-62h (Antho): as tall as the Selection panel leaves it (its own child), at least 48 px.
-    const float  W = std::max(ui::Dp(40.0f), ImGui::GetContentRegionAvail().x);
     const float  H = std::max(ui::Dp(48.0f), ImGui::GetContentRegionAvail().y - ui::kCardPad - ui::Dp(2.0f));
     const ImVec2 p = ImGui::GetCursorScreenPos();
-    // 13-67a (Antho 2026-10-17): a click places the edit cursor where it lands in the file, like the main timeline,
-    // for fine control without zooming in (view state). A crossfade's overlap: the earlier piece's time.
-    // Antho 2026-10-19: held and dragged, the cursor follows the mouse (the main timeline's scrub: cursor only).
-    ImGui::InvisibleButton("##zheard", ImVec2(W, H));
-    const bool scrub = ImGui::IsItemActive() && ImGui::IsMouseDown(ImGuiMouseButton_Left);
-    if ((ImGui::IsItemClicked(ImGuiMouseButton_Left) || scrub) && total > 0.0) {
-        const double at = std::clamp(static_cast<double>(ImGui::GetIO().MousePos.x - p.x) / W, 0.0, 1.0) * total;
-        for (const Placed& q : placed) {
-            if (at < q.at - 1e-9 || at > q.at + (q.q.b - q.q.a) + 1e-9) continue;
-            P.edit_cursor = q.q.a + (at - q.at);
-            if (d.mode == DetectMode::Takes) P.zv.cur_tl = tl;  // 13-62i: a Takes-mode Sound's cursor belongs to that take
-            break;
-        }
-    }
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(p, ImVec2(p.x + W, p.y + H), ui::kBg, ui::Dp(ui::kRadiusSm));
-    dl->AddRect(p, ImVec2(p.x + W, p.y + H), ui::kStroke, ui::Dp(ui::kRadiusSm));
-    if (!(total > 0.0)) return;
-    // 13-62h (Antho): each piece drawn as the waveform above draws the file (ReadWaveColumns: one column per pixel
-    // from the detail tiles, the samples as a line when zoomed past them), its zone's gain and fades / crossfade on.
-    // 13-71: a lane per channel (DrawWaveLanes); their zero lines under the pieces, across the whole strip.
-    dl->PushClipRect(p, ImVec2(p.x + W, p.y + H), true);
-    dl->ChannelsSplit(2);
-    dl->ChannelsSetCurrent(1);
-    int lanes = 1;
-    for (const Placed& q : placed) {
-        const EditZone* z = ZoneOf(d, q.q.z);
-        const double    len = q.q.b - q.q.a;
-        if (!z || !(len > 0.0)) continue;  // the silence of empty space
-        const float xa = p.x + static_cast<float>(q.at / total) * W;
-        const float xb = p.x + static_cast<float>((q.at + len) / total) * W;
-        const int   cols = std::max(1, static_cast<int>(std::floor(xb - xa)));
-        WaveColumns wc;
-        if (!ReadWaveColumns(path, q.q.a, len, cols, &wc)) continue;
-        const double g = std::pow(10.0, z->db / 20.0);
-        const ImU32  col = WithAlpha(PartColor(PartIndex(d, z->part)), 0xCC);
-        WaveDrawStyle st;
-        st.pad = ui::Dp(3.0f);
-        st.split = ui::kStrokeStrong;
-        lanes = DrawWaveLanes(dl, wc, d.mono, xa, p.y, p.y + H, st, [&](double pos, double, bool, WaveInk* out) {
-            out[0].col = col;
-            out[0].g = g * ZoneEnv(d, q.q.z, q.q.a + pos / static_cast<double>(cols) * len);
-            return 1;
-        });
-    }
-    dl->ChannelsSetCurrent(0);
-    for (int l = 0; l < lanes; ++l) {
-        const float y = std::floor(p.y + H * (static_cast<float>(l) + 0.5f) / static_cast<float>(lanes)) + 0.5f;
-        dl->AddLine(ImVec2(p.x, y), ImVec2(p.x + W, y), ui::kStroke);
-    }
-    dl->ChannelsMerge();
-    dl->PopClipRect();
-    for (size_t k = 1; k < placed.size(); ++k) {  // the joins
-        const float x = std::floor(p.x + static_cast<float>(placed[k].at / total) * W) + 0.5f;
-        for (float y = p.y; y < p.y + H; y += 4.0f) dl->AddLine(ImVec2(x, y), ImVec2(x, std::min(p.y + H, y + 2.0f)), WithAlpha(ui::kText, 0x80));
-    }
-    // Antho 2026-10-19: the edit cursor, as the main timeline draws it (accent, 2 px while scrubbed), where it falls in
-    // the heard chain (the first piece holding it); a Takes-mode Sound's only on its own take.
-    if (P.edit_cursor >= 0.0 && (d.mode != DetectMode::Takes || P.zv.cur_tl == tl))
-        for (const Placed& q : placed) {
-            if (P.edit_cursor < q.q.a - 1e-9 || P.edit_cursor > q.q.b + 1e-9) continue;
-            const float x = std::round(p.x + static_cast<float>((q.at + (P.edit_cursor - q.q.a)) / total) * W) + 0.5f;
-            dl->AddLine(ImVec2(x, p.y), ImVec2(x, p.y + H), ui::kAccent, scrub ? 2.0f : 1.0f);
-            break;
-        }
-    if (ZonePlaying(zh))
-        for (const HeardHead& h : HeardHeads(P.zv.map, AuditionPosition())) {
-            for (const Placed& q : placed) {
-                if (h.file_t < q.q.a || h.file_t > q.q.b || !(q.q.z == h.z)) continue;
-                const float x = p.x + static_cast<float>((q.at + (h.file_t - q.q.a)) / total) * W;
-                dl->AddLine(ImVec2(x, p.y), ImVec2(x, p.y + H), h.incoming ? ui::kWarn : ui::kWhite);
-                break;
-            }
-        }
-    const std::string lbl = std::to_string(ZoneMs(total)) + " ms heard";
-    ui::AddTextIn(dl, ui::FontMonoTiny(), ImVec2(p.x + ui::Dp(4.0f), p.y + H - ui::FontMonoTiny()->FontSize - ui::Dp(3.0f)), ui::kMuted,
-                  lbl.c_str());
+    const float  W = std::max(ui::Dp(40.0f), ImGui::GetContentRegionAvail().x);
+    // 13-74: the gain rows' wheel (Ctrl+Shift by default) over the strip too.
+    const bool hot = ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(p, ImVec2(p.x + W, p.y + H));
+    bool       taken = false;
+    const int  notches = hot && m.ok ? EditGainWheel(true, ImGui::GetID("##heardgain"), &taken) : 0;
+    DrawZoneWave("zheard", hh, H);
+    if (notches != 0 && !StoreReplaced()) ZoneGainNudge(hh, notches);
 }
 
 // 13-62h review: the Selection panel's rows keyed by their zone (its variation, index and stored start), so a value
@@ -4159,7 +4095,7 @@ void ZoneSelectionPanel(const SoundLibrary& lib, const SoundNode& n, const Sound
                              return false;
                          },
                          [&]() {
-                             ZoneHeardBlock(d, item.front(), zh, m);
+                             ZoneHeardBlock(d, item, zh, m);
                              return false;
                          }},
                         ui::Dp(230.0f));
@@ -4196,6 +4132,7 @@ void ZoneSelectionPanel(const SoundLibrary& lib, const SoundNode& n, const Sound
                          [&]() {
                              ui::SubText(nh ? "Heal: the ones edge to edge become one zone (it keeps the first one's part, like REAPER)."
                                             : "None of them touch: Heal needs zones edge to edge.");
+                             ZoneHeardBlock(d, L, zh, m);  // Sound Edit evening (D): the selection end to end
                              return false;
                          }},
                         ui::Dp(220.0f));
@@ -4243,7 +4180,7 @@ void ZoneSelectionPanel(const SoundLibrary& lib, const SoundNode& n, const Sound
                              return false;
                          },
                          [&]() {
-                             ZoneHeardBlock(d, r, zh, m);
+                             ZoneHeardBlock(d, ZoneSel{r}, zh, m);
                              return false;
                          }},
                         ui::Dp(230.0f));
@@ -4440,7 +4377,7 @@ void ZoneSelectionPanel(const SoundLibrary& lib, const SoundNode& n, const Sound
                      return false;
                  },
                  [&]() {
-                     ZoneHeardBlock(d, r, zh, m);
+                     ZoneHeardBlock(d, ZoneSel{r}, zh, m);
                      return false;
                  }},
                 ui::Dp(230.0f));

@@ -962,16 +962,34 @@ void DrawLane(const Frame& F, const Row& row)
         dl->AddLine(ImVec2(std::round(ha) + 0.5f, y0), ImVec2(std::round(ha) + 0.5f, y1), Alpha(kGapCol, 0.9f));
         dl->AddLine(ImVec2(std::round(hb) - 0.5f, y0), ImVec2(std::round(hb) - 0.5f, y1), Alpha(kGapCol, 0.9f));
         const ImU32 xc = IM_COL32(231, 233, 238, 217);
-        dl->AddLine(ImVec2(F.X(g.a - g.xr), y0 + 6.0f * dp), ImVec2(F.X(g.a + g.xl), y1), xc, 1.2f);
-        dl->AddLine(ImVec2(F.X(g.b - g.xr), y1), ImVec2(F.X(g.b + g.xl), y0 + 6.0f * dp), xc, 1.2f);
+        // The left zone's fade-out (g.a - xr .. g.a + xl), the right zone's fade-in (g.b - xr .. g.b + xl), the xl / xr
+        // handles. Late fix (2026-10-19): on the Heard strip each end is read on its own piece (HeardXfadeOf; F.X maps a
+        // file time on the first piece holding it: at the maximum the right piece's start went onto the left piece's
+        // end) and the overlap where both play is shaded.
+        float ox0 = F.X(g.a - g.xr), ox1 = F.X(g.a + g.xl), ix0 = F.X(g.b - g.xr), ix1 = F.X(g.b + g.xl);
+        if (F.strip) {
+            const HeardXfade xf = HeardXfadeOf(d, *F.strip, z.ref);
+            auto             hx = [&](double t) {
+                return dash::ClampCoord(F.cx0 + t / F.strip->total * F.cw, F.cx0, static_cast<double>(F.cx0) + F.cw);
+            };
+            if (xf.ok) {
+                ox0 = hx(xf.out0);
+                ox1 = hx(xf.out1);
+                ix0 = hx(xf.in0);
+                ix1 = hx(xf.in1);
+                if (ox1 - ox0 >= 1.0f) dl->AddRectFilled(ImVec2(ox0, y0), ImVec2(ox1, y1), Alpha(kGapCol, 0.16f));
+            }
+        }
+        dl->AddLine(ImVec2(ox0, y0 + 6.0f * dp), ImVec2(ox1, y1), xc, 1.2f);
+        dl->AddLine(ImVec2(ix0, y1), ImVec2(ix1, y0 + 6.0f * dp), xc, 1.2f);
         const bool hv = v.hover_on && v.hover.kind == ZoneHitKind::Xf && v.hover.z == z.ref && v.hover.lane == lane;
         auto       handle = [&](float hx, bool hot) {
             const ImVec2 a(hx - 4.0f * dp, y0 + 2.0f * dp), b(hx + 4.0f * dp, y0 + 10.0f * dp);
             dl->AddRectFilled(a, b, hot ? ui::kWhite : ui::kText);
             dl->AddRect(a, b, ui::kBg);
         };
-        handle(F.X(g.a + g.xl), hv && v.hover.side < 0);
-        handle(F.X(g.b - g.xr), hv && v.hover.side > 0);
+        handle(ox1, hv && v.hover.side < 0);
+        handle(ix0, hv && v.hover.side > 0);
         if (hb - ha > 50.0f * dp) {
             dl->AddRectFilled(ImVec2(ha + 2.0f * dp, y0 + 12.0f * dp), ImVec2(ha + 2.0f * dp + TextW(fb, "Gap") + 6.0f * dp, y0 + 25.0f * dp),
                               Alpha(kGapCol, 0.95f));

@@ -85,6 +85,21 @@ double HeardSegTime(const HeardStrip& s, int seg, double h, bool clamp);
 int HeardDragSeg(const SoundData& d, const HeardStrip& s, const ZoneHit& hit, double h);
 // The looks of the strip's members only (Gap neighbours' indices remapped).
 std::vector<ZoneLook> HeardLooks(const std::vector<ZoneLook>& all, const HeardStrip& s);
+// File time t heard on piece `seg`'s line (no search: the piece is given).
+double HeardOnSeg(const HeardStrip& s, int seg, double t);
+// Late fix (Antho 2026-10-19, a crossfade pushed to its maximum drawn broken): a Gap's crossfade on the Heard strip,
+// in heard time, each end read on its own piece (HeardOfFile cannot: at the maximum, xl + xr = the Gap's width, the
+// left piece's end and the right piece's start are one file time, which it maps on the left piece). The overlap is
+// [join - xr, join + xl]: the left zone's fade-out and the right zone's fade-in both span it (they cross), the xr
+// handle at its start, the xl handle at its end. ok = false when the Gap or one of its zones is not in the strip.
+struct HeardXfade {
+    bool   ok = false;
+    double join = 0.0;            // where the Gap is heard (its two edges)
+    double out0 = 0.0, out1 = 0.0;  // the left zone's fade-out (g.a - xr .. g.a + xl on its piece)
+    double in0 = 0.0, in1 = 0.0;    // the right zone's fade-in (g.b - xr .. g.b + xl on its piece)
+    double hl = 0.0, hr = 0.0;      // the xl / xr handles
+};
+HeardXfade HeardXfadeOf(const SoundData& d, const HeardStrip& s, const ZoneRef& gap);
 
 // What a row shows and where (pixels local to the row; `dp` = one logical pixel on screen).
 struct ZoneHitView {

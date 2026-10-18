@@ -220,6 +220,36 @@ int HeardDragSeg(const SoundData& d, const HeardStrip& s, const ZoneHit& hit, do
     return HeardSegAt(s, h);
 }
 
+double HeardOnSeg(const HeardStrip& s, int seg, double t)
+{
+    if (seg < 0 || static_cast<size_t>(seg) >= s.segs.size()) return HeardOfFile(s, t);
+    const HeardSeg& g = s.segs[static_cast<size_t>(seg)];
+    return g.at + (t - g.a);
+}
+
+HeardXfade HeardXfadeOf(const SoundData& d, const HeardStrip& s, const ZoneRef& gap)
+{
+    HeardXfade      x;
+    const EditZone* g = ZoneOf(d, gap);
+    if (!g || !g->IsGap() || !s.Has(gap)) return x;
+    const ZoneRef L = GapLeft(d, gap), R = GapRight(d, gap);
+    int           kl = -1, kr = -1;
+    for (size_t k = 0; k < s.segs.size(); ++k) {
+        if (s.segs[k].z == L) kl = static_cast<int>(k);
+        if (s.segs[k].z == R) kr = static_cast<int>(k);
+    }
+    if (kl < 0 || kr < 0) return x;
+    x.ok = true;
+    x.join = HeardOnSeg(s, kr, g->b);
+    x.out0 = HeardOnSeg(s, kl, g->a - g->xr);
+    x.out1 = HeardOnSeg(s, kl, g->a + g->xl);
+    x.in0 = HeardOnSeg(s, kr, g->b - g->xr);
+    x.in1 = HeardOnSeg(s, kr, g->b + g->xl);
+    x.hl = x.out1;
+    x.hr = x.in0;
+    return x;
+}
+
 std::vector<ZoneLook> HeardLooks(const std::vector<ZoneLook>& all, const HeardStrip& s)
 {
     std::vector<ZoneLook> out;
@@ -304,18 +334,29 @@ ZoneHit HitZones(const SoundData& d, const ZoneHitView& v, float x, float y)
     }
     if (y < 16.0f * dp) {
         for (const ZoneLook* g : gaps) {
-            if (std::fabs(x - X(g->a + g->xl)) <= 5.0f * dp) {
-                h.kind = ZoneHitKind::Xf;
-                h.z = g->ref;
-                h.side = -1;
-                return h;
+            // Late fix (2026-10-19): on the Heard strip each handle is read on its own piece (HeardXfadeOf).
+            float xl = X(g->a + g->xl), xr = X(g->b - g->xr);
+            if (hs) {
+                const HeardXfade xf = HeardXfadeOf(d, *hs, g->ref);
+                if (xf.ok) {
+                    xl = static_cast<float>(xf.hl / hs->total * w);
+                    xr = static_cast<float>(xf.hr / hs->total * w);
+                }
             }
-            if (std::fabs(x - X(g->b - g->xr)) <= 5.0f * dp) {
-                h.kind = ZoneHitKind::Xf;
-                h.z = g->ref;
-                h.side = 1;
-                return h;
+            const float dl = std::fabs(x - xl), dr = std::fabs(x - xr);
+            if (dl > 5.0f * dp && dr > 5.0f * dp) continue;
+            h.kind = ZoneHitKind::Xf;
+            h.z = g->ref;
+            if (std::fabs(xl - xr) < 1.0f * dp) {
+                // One spot (the timeline at the maximum: both at the Gap's middle; the strip at 0: both on the join):
+                // the side the mouse is on, so each stays grabbable -- the timeline's xl shrinks to the left, xr to
+                // the right; the strip's xl grows to the right, xr to the left.
+                const bool right = x > xl;
+                h.side = hs ? (right ? -1 : 1) : (right ? 1 : -1);
+            } else {
+                h.side = dl <= dr ? -1 : 1;
             }
+            return h;
         }
         for (const ZoneLook* L : parts) {
             if (X(L->b) - X(L->a) <= 14.0f * dp) continue;

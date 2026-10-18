@@ -668,6 +668,84 @@ static void TestHeardStrip()
     CHECK(MakeHeardStrip(d, {ZoneRef{5, 0}}).segs.empty() && MakeHeardStrip(d, {}).segs.empty());
 }
 
+// Late fix (Antho 2026-10-19): a Gap's crossfade on the Heard strip at every length up to its maximum, each end read on
+// its own piece; the handles grabbable there and on the timeline.
+static void TestHeardXfade()
+{
+    auto near = [](double x, double y) { return std::fabs(x - y) < 1e-9; };
+    const ZoneRef gap{0, 1};
+    // Gap [0.40, 0.45]: its maximum is half its width on each side (25 + 25 ms: the whole Gap overlapped).
+    for (int i = 0; i <= 25; ++i) {
+        SoundData d = Sample();
+        EditZone& g = d.frames[0].zones[1];
+        g.xl = g.xr = i / 1000.0;
+        const HeardStrip s = MakeHeardStrip(d, {ZoneRef{0, 0}});
+        const HeardXfade x = HeardXfadeOf(d, s, gap);
+        CHECK(x.ok && s.segs.size() == 2);
+        if (!x.ok || s.segs.size() != 2) return;
+        const double j = s.segs[1].j;
+        CHECK(near(x.join, j) && near(j, 0.30) && near(s.total, 0.55));
+        // Both fades span the overlap [join - xr, join + xl] (they cross), each inside its own piece.
+        CHECK(near(x.out0, j - g.xr) && near(x.out1, j + g.xl) && near(x.in0, j - g.xr) && near(x.in1, j + g.xl));
+        CHECK(near(x.hl, j + g.xl) && near(x.hr, j - g.xr));
+        CHECK(x.out0 >= s.segs[0].at - 1e-9 && near(x.out1, s.segs[0].at + (s.segs[0].b - s.segs[0].a)));
+        CHECK(near(x.in0, s.segs[1].at) && x.in1 <= s.total + 1e-9);
+        if (i == 25) {
+            // The bug: at the maximum the right piece's start is the left piece's end (one file time); HeardOfFile
+            // maps it on the left piece (join + xl), so the fade-in and the xr handle were drawn there.
+            CHECK(near(g.b - g.xr, g.a + g.xl) && near(HeardOfFile(s, g.b - g.xr), j + g.xl));
+        }
+        // The handles grabbable on the strip (1 px = 1 ms): xl right of the join, xr left of it; at 0 both on the
+        // join: the side the mouse is on.
+        ZoneHitView v = Lane(-1);
+        v.w = static_cast<float>(s.total * 1000.0);
+        v.strip = &s;
+        const std::vector<ZoneLook> looks = HeardLooks(ZoneLooks(d, nullptr), s);
+        v.looks = &looks;
+        const float xl = static_cast<float>(x.hl * 1000.0), xr = static_cast<float>(x.hr * 1000.0);
+        ZoneHit h = HitZones(d, v, xl + 0.5f, 5.0f);
+        CHECK(h.kind == ZoneHitKind::Xf && h.z == gap && h.side < 0);
+        h = HitZones(d, v, xr - 0.5f, 5.0f);
+        CHECK(h.kind == ZoneHitKind::Xf && h.z == gap && h.side > 0);
+    }
+    // Asymmetric (25 + 10 ms) and limited by the room of a short zone: Gap [0.40, 0.50], the right Heel 20 ms long:
+    // xl 20 ms (its whole length), xr 50 ms: the left piece ends with the strip.
+    {
+        SoundData d = Sample();
+        d.frames[0].zones[1].xr = 0.010;
+        d.frames[0].zones[1].xl = 0.025;
+        HeardStrip s = MakeHeardStrip(d, {ZoneRef{0, 0}});
+        HeardXfade x = HeardXfadeOf(d, s, gap);
+        CHECK(x.ok && near(x.join, 0.30) && near(x.hl, 0.325) && near(x.hr, 0.29) && near(x.in0, 0.29) && near(x.out1, 0.325));
+        SoundFrame f;
+        f.zones = {Z("heel", 0.10, 0.40), G(0.40, 0.50, 0.020, 0.050), Z("heel", 0.50, 0.52)};
+        f.start = 0.10;
+        f.length = 0.42;
+        d.frames = {f};
+        s = MakeHeardStrip(d, {ZoneRef{0, 0}});
+        x = HeardXfadeOf(d, s, gap);
+        CHECK(x.ok && near(x.join, 0.30) && near(x.hr, 0.25) && near(x.hl, 0.32) && near(s.total, 0.32));
+        CHECK(near(x.in1, x.out1) && near(x.out0, 0.25));
+    }
+    // The timeline at the maximum: both handles at the Gap's middle (425 px), each grabbable on its side (xl shrinks
+    // to the left, xr to the right).
+    {
+        SoundData d = Sample();
+        d.frames[0].zones[1].xl = d.frames[0].zones[1].xr = 0.025;
+        const ZoneHitView v = Lane(-1);
+        ZoneHit h = HitZones(d, v, 423.0f, 5.0f);
+        CHECK(h.kind == ZoneHitKind::Xf && h.z == gap && h.side < 0);
+        h = HitZones(d, v, 427.0f, 5.0f);
+        CHECK(h.kind == ZoneHitKind::Xf && h.z == gap && h.side > 0);
+        // Under the maximum (10 + 10 ms) they stay apart: the nearest one.
+        d.frames[0].zones[1].xl = d.frames[0].zones[1].xr = 0.010;
+        h = HitZones(d, v, 412.0f, 5.0f);
+        CHECK(h.kind == ZoneHitKind::Xf && h.side < 0);
+        h = HitZones(d, v, 438.0f, 5.0f);
+        CHECK(h.kind == ZoneHitKind::Xf && h.side > 0);
+    }
+}
+
 int main()
 {
     TestHitLane();
@@ -684,6 +762,7 @@ int main()
     TestSelectAll();
     TestVariationView();
     TestHeardStrip();
+    TestHeardXfade();
     if (g_fails) {
         std::printf("zone_hit_test: %d failure(s)\n", g_fails);
         return 1;

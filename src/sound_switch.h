@@ -33,6 +33,9 @@ struct ResolveHooks {
     // 13-23 (D3): the variation a Sound plays for a part (a value uid; "" = the whole variation); used
     // instead of `variation` when set (a variation whose part is empty or excluded cannot play it).
     std::function<int(const SoundNode&, const std::string& part_value)> part_variation;
+    // 13-68 (Antho 2026-10-18): how many full rounds of its variations a Sound has drawn before its current pick
+    // (a linked Blend shifts its other layers by it: LinkedVariation). Null = 0.
+    std::function<int(const SoundNode&)> rounds;
 };
 
 struct ResolvedSound {
@@ -77,8 +80,10 @@ Resolution ResolveEvent(const SoundStore& store, const SoundLibrary& lib, const 
                         const ResolveHooks& hooks);
 // 13-68 v2: the variation a linked Blend's other Sound child plays (SoundNode::linked_variations): the first
 // child's pick `lead` modulo its own variation `count` (1 variation: 0); `own` (its own pick) when the first
-// drew none (-1) or it has no variation.
-int LinkedVariation(int lead, int count, int own);
+// drew none (-1) or it has no variation. Antho 2026-10-18: once the first child has drawn all its variations
+// (`round` full rounds), the `layer`-th other child (1 = the second) shifts by round x layer, so the layers
+// mix: round 0 = 1-1 / 2-2 / 3-3, round 1 = 1-2 / 2-3 / 3-1, round 2 = 1-3 / 2-1 / 3-2.
+int LinkedVariation(int lead, int count, int own, int round = 0, int layer = 1);
 // The value a Switch node plays for these layers ("" = none); `from` (optional) says which layer.
 // Layers: item < rule < event; a ValueSet with an empty value_uid is unset. When no layer sets it,
 // returns sw.default_value (may be "") with `from` = Default. What a Switch then plays (and what a

@@ -182,14 +182,19 @@ struct Walker {
             Seg(std::string("Blend ") + kTimes + std::to_string(play.size()));
             text_open = false;
             int lead = -1;  // 13-68 v2: linked variations, the first Sound child's pick
+            int round = 0, layer = 0;  // its full rounds drawn before (Antho 2026-10-18), the other child's rank
             for (const SoundNode* c : play) {
                 const size_t before = res.sounds.size();
                 Walk(*c, gain, offset + (LayerOffsetApplies(*c, layers.role, uses_roles) ? c->offset_ms : 0.0));
                 if (!n.linked_variations || c->type != SoundNodeType::Sound || res.sounds.size() != before + 1) continue;
                 ResolvedSound& rs = res.sounds.back();
                 if (rs.missing) continue;
-                if (lead < 0) lead = rs.variation;
-                else rs.variation = LinkedVariation(lead, static_cast<int>(c->sound.frames.size()), rs.variation);
+                if (lead < 0) {
+                    lead = rs.variation;
+                    round = hooks.rounds ? hooks.rounds(*c) : 0;
+                } else {
+                    rs.variation = LinkedVariation(lead, static_cast<int>(c->sound.frames.size()), rs.variation, round, ++layer);
+                }
             }
             break;
         }
@@ -365,10 +370,12 @@ LibraryCheck CheckLibrary(const SoundLibrary& lib)
     return Check(nullptr, lib);
 }
 
-int LinkedVariation(int lead, int count, int own)
+int LinkedVariation(int lead, int count, int own, int round, int layer)
 {
     if (lead < 0 || count <= 0) return own;
-    return count == 1 ? 0 : lead % count;
+    if (count == 1) return 0;
+    const long long shift = static_cast<long long>(std::max(round, 0)) * std::max(layer, 0);
+    return static_cast<int>((lead + shift) % count);
 }
 
 Resolution ResolveEvent(const SoundStore& store, const SoundLibrary& lib, const ValueLayers& layers,

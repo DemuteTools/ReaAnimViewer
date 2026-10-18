@@ -922,22 +922,29 @@ static void TestLinkedBlend()
     PopulateDrawState ps;
     ps.lib = &lib;
     ps.seed = 42;
-    std::set<int> seen;
-    for (int e = 0; e < 8; ++e) {
+    // Antho 2026-10-18: the first round of 3 plays matching numbers, then the second layer shifts by one per
+    // round (1-2 / 2-3 / 3-1, then 1-3 / 2-1 / 3-2): nine events, the nine pairs.
+    std::set<int>                 seen;
+    std::set<std::pair<int, int>> pairs;
+    for (int e = 0; e < 9; ++e) {
         EventDraw ed;
         ed.rid = "r1";
         ed.t = 1.0 + e;
         const Resolution res = ResolveEvent(empty, lib, ValueLayers(), MakeDrawHooks(ps, ed, nullptr));
         CHECK(res.sounds.size() == 2);
         if (res.sounds.size() != 2) continue;
-        CHECK(res.sounds[0].variation >= 0 && res.sounds[0].variation < 3);
-        CHECK(res.sounds[0].variation == res.sounds[1].variation);
-        seen.insert(res.sounds[0].variation);
+        const int a = res.sounds[0].variation, b2 = res.sounds[1].variation;
+        CHECK(a >= 0 && a < 3);
+        CHECK(b2 == (a + e / 3) % 3);
+        seen.insert(a);
+        pairs.insert({a, b2});
     }
-    CHECK(seen.size() >= 2);
+    CHECK(seen.size() == 3 && pairs.size() == 9);
     // Off: the layers draw alone (the flag is what links them); a child of fewer variations plays its modulo.
     CHECK(LinkedVariation(2, 3, 0) == 2 && LinkedVariation(2, 2, 1) == 0 && LinkedVariation(2, 1, -1) == 0);
     CHECK(LinkedVariation(-1, 3, 1) == 1 && LinkedVariation(2, 0, -1) == -1);
+    CHECK(LinkedVariation(0, 3, -1, 1, 1) == 1 && LinkedVariation(2, 3, -1, 1, 1) == 0 && LinkedVariation(0, 3, -1, 2, 1) == 2);
+    CHECK(LinkedVariation(0, 3, -1, 1, 2) == 2);  // a third layer shifts twice as far
 }
 
 int main()

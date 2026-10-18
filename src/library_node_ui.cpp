@@ -3736,8 +3736,10 @@ void ZoneHeardBlock(const SoundData& d, const ZoneRef& r, const ZoneWaveHost& zh
     const ImVec2 p = ImGui::GetCursorScreenPos();
     // 13-67a (Antho 2026-10-17): a click places the edit cursor where it lands in the file, like the main timeline,
     // for fine control without zooming in (view state). A crossfade's overlap: the earlier piece's time.
+    // Antho 2026-10-19: held and dragged, the cursor follows the mouse (the main timeline's scrub: cursor only).
     ImGui::InvisibleButton("##zheard", ImVec2(W, H));
-    if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && total > 0.0) {
+    const bool scrub = ImGui::IsItemActive() && ImGui::IsMouseDown(ImGuiMouseButton_Left);
+    if ((ImGui::IsItemClicked(ImGuiMouseButton_Left) || scrub) && total > 0.0) {
         const double at = std::clamp(static_cast<double>(ImGui::GetIO().MousePos.x - p.x) / W, 0.0, 1.0) * total;
         for (const Placed& q : placed) {
             if (at < q.at - 1e-9 || at > q.at + (q.q.b - q.q.a) + 1e-9) continue;
@@ -3788,6 +3790,15 @@ void ZoneHeardBlock(const SoundData& d, const ZoneRef& r, const ZoneWaveHost& zh
         const float x = std::floor(p.x + static_cast<float>(placed[k].at / total) * W) + 0.5f;
         for (float y = p.y; y < p.y + H; y += 4.0f) dl->AddLine(ImVec2(x, y), ImVec2(x, std::min(p.y + H, y + 2.0f)), WithAlpha(ui::kText, 0x80));
     }
+    // Antho 2026-10-19: the edit cursor, as the main timeline draws it (accent, 2 px while scrubbed), where it falls in
+    // the heard chain (the first piece holding it); a Takes-mode Sound's only on its own take.
+    if (P.edit_cursor >= 0.0 && (d.mode != DetectMode::Takes || P.zv.cur_tl == tl))
+        for (const Placed& q : placed) {
+            if (P.edit_cursor < q.q.a - 1e-9 || P.edit_cursor > q.q.b + 1e-9) continue;
+            const float x = std::round(p.x + static_cast<float>((q.at + (P.edit_cursor - q.q.a)) / total) * W) + 0.5f;
+            dl->AddLine(ImVec2(x, p.y), ImVec2(x, p.y + H), ui::kAccent, scrub ? 2.0f : 1.0f);
+            break;
+        }
     if (ZonePlaying(zh))
         for (const HeardHead& h : HeardHeads(P.zv.map, AuditionPosition())) {
             for (const Placed& q : placed) {

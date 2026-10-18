@@ -1360,6 +1360,39 @@ void ToClipTime(const PhysicsAnalysis& a, std::vector<PhysicsEvent>& ev)
     ev = std::move(out);
 }
 
+// Story 10-8p: the lift-off ending the foot's contact [us, ue) (any part down): the last of the
+// heel and ball to leave (the toe tip on a rig without a ball, with p.lift_from_tip, or when no
+// other part touched during the contact), at its lift_s + offset_s. False when no part contact
+// ends inside it.
+bool FootLiftOff(const FootTrack& f, int us, int ue, const PhysicsParams& p, double offset_s, PhysicsEvent* out)
+{
+    const bool skip_tip = !p.lift_from_tip && f.part[static_cast<int>(FootPart::Ball)].present;
+    bool       found = false;
+    for (int pass = 0; pass < 2 && !found; ++pass)
+        for (int q = 0; q < kFootPartCount; ++q) {
+            if (!f.part[q].present || (pass == 0 && skip_tip && q == static_cast<int>(FootPart::Tip))) continue;
+            for (const PartContact& c : f.part[q].contacts)
+                if (c.end > us && c.end <= ue && (pass == 1 || skip_tip || c.end == ue) &&
+                    (!found || c.lift_s > out->time_s - offset_s + kTieS)) {
+                    out->kind = PhysicsKind::LiftOff;
+                    out->side = f.side;
+                    out->part = q;
+                    out->time_s = out->start_s = out->end_s = c.lift_s + offset_s;
+                    out->strength = c.departure;
+                    found = true;
+                }
+        }
+    return found;
+}
+
+// A part of the foot is in contact at sample i.
+bool FootDown(const FootTrack& f, int i)
+{
+    for (const PartTrack& pt : f.part)
+        if (pt.present && static_cast<size_t>(i) < pt.contact.size() && pt.contact[static_cast<size_t>(i)]) return true;
+    return false;
+}
+
 }  // namespace
 
 PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& rt, const PhysicsParams& p)
@@ -1432,18 +1465,7 @@ std::vector<PhysicsEvent> FootEvents(const PhysicsAnalysis& a, const PhysicsPara
             }
             if (ue < n) {
                 PhysicsEvent best;
-                bool         found = false;
-                for (int q = 0; q < kFootPartCount; ++q)
-                    for (const PartContact& c : f.part[q].contacts)
-                        if (f.part[q].present && c.end == ue && (!found || c.lift_s > best.time_s + kTieS)) {
-                            best.kind = PhysicsKind::LiftOff;
-                            best.side = f.side;
-                            best.part = q;
-                            best.time_s = best.start_s = best.end_s = c.lift_s;
-                            best.strength = c.departure;
-                            found = true;
-                        }
-                if (found) ev.push_back(best);
+                if (FootLiftOff(f, us, ue, p, p.lift_offset_s, &best)) ev.push_back(best);
             }
         }
         // Story 10-8k: a part that lands while the foot is already down, within pivot_planted_s
@@ -1617,45 +1639,46 @@ bool FeetOnMask(const PhysicsAnalysis& a, std::vector<char>& on)
     return true;
 }
 
-// The take-off before a both-feet-off run starting at sample `fs`: the last part to leave (the
-// latest lift_s of the contacts that end at fs), its foot and part. Feet within p.jump_tie_s of
-// each other leave together (a contact ending at or before fs whose lift_s lies within
-// p.jump_tie_s of that latest lift is a candidate too): the first foot (L) names it, at its own
-// last part. False when no contact ends at fs (the clip start).
+// The take-off before a both-feet-off run starting at sample `fs`: the latest foot lift-off
+// (FootLiftOff, story 10-8p: heel / ball, without p.lift_offset_s: measured on the 12 jump
+// references, the take-off's median signed error is +1.6 ms without it, -6.4 ms with it) of the
+// feet whose contact ends at fs, its foot and part. Feet within p.jump_tie_s of each other leave
+// together (a foot whose last contact ends at or before fs with its lift-off within p.jump_tie_s
+// of that latest one is a candidate too): the first foot (L) names it, at its own lift-off. False
+// when no contact ends at fs (the clip start).
 bool TakeOffAt(const PhysicsAnalysis& a, const PhysicsParams& p, int fs, PhysicsEvent* out)
 {
-    bool   at_fs = false;
-    double latest = 0.0;
-    for (const FootTrack& f : a.foot)
-        for (const PartTrack& pt : f.part)
-            if (pt.present)
-                for (const PartContact& c : pt.contacts)
-                    if (c.end == fs && (!at_fs || c.lift_s > latest)) {
-                        latest = c.lift_s;
-                        at_fs = true;
-                    }
-    if (!at_fs) return false;
-    bool found = false;
-    for (const FootTrack& f : a.foot) {
-        PhysicsEvent mine;
-        bool         have = false;
-        for (int q = 0; q < kFootPartCount; ++q) {
-            if (!f.part[q].present) continue;
-            for (const PartContact& c : f.part[q].contacts)
-                if (c.end <= fs && c.lift_s >= latest - p.jump_tie_s - kTieS &&
-                    (!have || c.lift_s > mine.time_s + kTieS)) {
-                    mine.time_s = mine.start_s = mine.end_s = c.lift_s;
-                    mine.side = f.side;
-                    mine.part = q;
-                    have = true;
-                }
-        }
-        if (have && (!found || mine.time_s > out->time_s + p.jump_tie_s + kTieS)) {
-            *out = mine;
-            found = true;
+    // Each foot's lift-off (FootLiftOff, story 10-8p) of its last contact ending at or before fs.
+    PhysicsEvent lift[2];
+    bool         have[2] = {false, false};
+    bool         at_fs = false;
+    double       latest = 0.0;
+    for (int s = 0; s < 2; ++s) {
+        const FootTrack& f = a.foot[s];
+        int              ue = fs;
+        while (ue > 0 && !FootDown(f, ue - 1)) --ue;
+        if (ue == 0) continue;
+        int us = ue;
+        while (us > 0 && FootDown(f, us - 1)) --us;
+        if (!FootLiftOff(f, us, ue, p, 0.0, &lift[s])) continue;
+        have[s] = true;
+        if (ue == fs && (!at_fs || lift[s].time_s > latest)) {
+            latest = lift[s].time_s;
+            at_fs = true;
         }
     }
-    if (found) out->kind = PhysicsKind::Jump;
+    if (!at_fs) return false;
+    bool found = false;
+    for (int s = 0; s < 2; ++s)
+        if (have[s] && lift[s].time_s >= latest - p.jump_tie_s - kTieS &&
+            (!found || lift[s].time_s > out->time_s + p.jump_tie_s + kTieS)) {
+            *out = lift[s];
+            found = true;
+        }
+    if (found) {
+        out->kind = PhysicsKind::Jump;
+        out->strength = 0.0;
+    }
     return found;
 }
 

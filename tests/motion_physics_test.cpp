@@ -1859,12 +1859,14 @@ int main()
             CHECK(jump[0].strength > 1.0 && land[0].strength > 1.0);
             CHECK(PhysicsMarkerName(jump[0]).compare(0, 11, "PHY L jump ") == 0);
             CHECK(PhysicsMarkerName(land[0]).compare(0, 11, "PHY L land ") == 0);
-            // The take-off is the L foot's last part to leave, the landing its foot step.
+            // The take-off is the L foot's lift-off without its offset (story 10-8p), the landing
+            // its foot step.
+            const double                    lift_off = PhysicsParams{}.lift_offset_s;
             const std::vector<PhysicsEvent> lifts = Of(FootEvents(a), PhysicsKind::LiftOff, 'L');
             const std::vector<PhysicsEvent> steps = Of(FootEvents(a), PhysicsKind::FootStep, 'L');
             CHECK(lifts.size() == 1 && steps.size() == 1);
             if (lifts.size() == 1 && steps.size() == 1) {
-                CHECK(lifts[0].time_s == jump[0].time_s && lifts[0].part == jump[0].part);
+                CHECK(std::fabs(lifts[0].time_s - lift_off - jump[0].time_s) < 1e-9 && lifts[0].part == jump[0].part);
                 CHECK(steps[0].time_s == land[0].time_s && steps[0].part == land[0].part);
             }
         }
@@ -1884,7 +1886,7 @@ int main()
         if (Of(ev2, PhysicsKind::Jump).size() == 1 && Of(fev2, PhysicsKind::LiftOff, 'R').size() == 1 &&
             Of(fev2, PhysicsKind::LiftOff, 'L').size() == 1) {
             CHECK(Of(ev2, PhysicsKind::Jump)[0].side == 'R');
-            CHECK(Of(ev2, PhysicsKind::Jump)[0].time_s == Of(fev2, PhysicsKind::LiftOff, 'R')[0].time_s);
+            CHECK(std::fabs(Of(ev2, PhysicsKind::Jump)[0].time_s - (Of(fev2, PhysicsKind::LiftOff, 'R')[0].time_s - SpeedTiming().lift_offset_s)) < 1e-9);
             CHECK(Of(ev2, PhysicsKind::Jump)[0].part == Of(fev2, PhysicsKind::LiftOff, 'R')[0].part);
             CHECK(Of(fev2, PhysicsKind::LiftOff, 'L')[0].time_s < Of(fev2, PhysicsKind::LiftOff, 'R')[0].time_s);
         }
@@ -1901,7 +1903,7 @@ int main()
         CHECK(Of(ev3, PhysicsKind::Jump, 'L').size() == 1 && Of(ev3, PhysicsKind::Land, 'L').size() == 1 && ev3.size() == 2);
         if (Of(ev3, PhysicsKind::Jump, 'L').size() == 1 && Of(fev3, PhysicsKind::LiftOff, 'L').size() == 1 &&
             Of(fev3, PhysicsKind::LiftOff, 'R').size() == 1) {
-            CHECK(Of(ev3, PhysicsKind::Jump, 'L')[0].time_s == Of(fev3, PhysicsKind::LiftOff, 'L')[0].time_s);
+            CHECK(std::fabs(Of(ev3, PhysicsKind::Jump, 'L')[0].time_s - (Of(fev3, PhysicsKind::LiftOff, 'L')[0].time_s - SpeedTiming().lift_offset_s)) < 1e-9);
             CHECK(Of(fev3, PhysicsKind::LiftOff, 'L')[0].time_s < Of(fev3, PhysicsKind::LiftOff, 'R')[0].time_s);
         }
         PhysicsParams no_tie = SpeedTiming();
@@ -2158,6 +2160,57 @@ int main()
         CHECK(ev.size() == 1);
         if (ev.size() == 1) CHECK(ev[0].time_s >= 0.0 && ev[0].time_s < 2.0 && std::fabs(ev[0].time_s - 1.8) < 0.03);
         CHECK(JumpEvents(a, loop).empty());
+    }
+
+    {
+        // Story 10-8p: a foot that rolls off its toes. The heel rises about the ball (0.85-0.95
+        // s), then the ball rises about the planted tip (1.0-1.08 s), then the foot swings. The
+        // lift-off is the ball's (the last of the heel and ball to leave) plus lift_offset_s;
+        // lift_from_tip (the old rule) gives the tip's, 50 ms or more later.
+        const FootFn roll = [](double t) {
+            const double kHeel = 0.4;
+            FootPose     f;
+            f.ball = Vec3d{-0.1, 0.02, 0.0};
+            f.pitch = kHeel * Ease((t - 0.85) / 0.1);
+            const Vec3d  tip0{-0.1, 0.0, 0.07};
+            const double th = -0.6 * Ease((t - 1.0) / 0.08);
+            f.toe_pitch = th;
+            const double c = std::cos(th), s = std::sin(th);
+            f.ball = Vec3d{tip0.x, tip0.y - (-0.02 * c + 0.07 * s), tip0.z - (0.02 * s + 0.07 * c)};
+            if (t > 1.08) {
+                f.ball.y += 0.5 * (t - 1.08);
+                f.ball.z += 1.0 * (t - 1.08);
+            }
+            return f;
+        };
+        Options o;
+        o.dur = 1.6;
+        const PhysicsAnalysis a = AnalyseMotion(Rig(roll, Planted(0.1, 0.0), o));
+        CHECK(a.ok);
+        const PhysicsParams             dp;
+        const std::vector<PhysicsEvent> lift = Of(FootEvents(a, dp), PhysicsKind::LiftOff, 'L');
+        PhysicsParams                   old = dp;
+        old.lift_from_tip = true;
+        old.lift_offset_s = 0.0;
+        const std::vector<PhysicsEvent> tip = Of(FootEvents(a, old), PhysicsKind::LiftOff, 'L');
+        const PartTrack&                ball = a.foot[0].part[static_cast<int>(FootPart::Ball)];
+        CHECK(lift.size() == 1 && tip.size() == 1 && ball.contacts.size() == 1);
+        if (lift.size() == 1 && tip.size() == 1 && ball.contacts.size() == 1) {
+            CHECK(lift[0].part == static_cast<int>(FootPart::Ball));
+            CHECK(std::fabs(lift[0].time_s - (ball.contacts[0].lift_s + dp.lift_offset_s)) < 1e-9);
+            CHECK(lift[0].time_s > 0.98 && lift[0].time_s < 1.05);
+            CHECK(tip[0].part == static_cast<int>(FootPart::Tip));
+            CHECK(tip[0].time_s > lift[0].time_s + 0.05);
+        }
+        // A rig without toe bones: the old rule, plus the offset.
+        Options nb = o;
+        nb.toes = false;
+        const PhysicsAnalysis           h = AnalyseMotion(Rig(roll, Planted(0.1, 0.0), nb));
+        const std::vector<PhysicsEvent> hl = Of(FootEvents(h, dp), PhysicsKind::LiftOff, 'L');
+        const std::vector<PhysicsEvent> ho = Of(FootEvents(h, old), PhysicsKind::LiftOff, 'L');
+        CHECK(hl.size() == 1 && ho.size() == 1);
+        if (hl.size() == 1 && ho.size() == 1)
+            CHECK(hl[0].part == ho[0].part && std::fabs(hl[0].time_s - ho[0].time_s - dp.lift_offset_s) < 1e-9);
     }
 
     if (g_fails == 0) std::printf("motion_physics: all tests passed\n");

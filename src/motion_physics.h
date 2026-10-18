@@ -48,8 +48,10 @@
 //                 timing and offset move the step but never add or remove it), named by
 //                 its part (the slap that ends a turn). Never at the time of another foot step of that foot; a
 //                 whole-foot pivot (no part) adds none.
-//   lift-off      an end of the foot's contact (the last part leaves), never at the clip end.
-//                 Strength = the departure speed (the peak speed over the 100 ms after).
+//   lift-off      an end of the foot's contact, never at the clip end: the last of the heel
+//                 and ball to leave (story 10-8p; the tip on a rig without a ball, or when it
+//                 alone touched), plus lift_offset_s. Strength = the departure speed (the peak
+//                 speed over the 100 ms after).
 //   slide scuff   a planted part moves horizontally in the ground frame (>= slide_speed for >=
 //                 slide_min_s, over >= slide_min_dist) while it stays at its support height.
 //                 One per foot for overlapping parts (its part = the fastest). Strength = the
@@ -158,8 +160,9 @@
 // the landing, when the flight is long enough) is at most -jump_fall_g x 9.81. So a flight the
 // hands hold up (hanging, climbing: the hips do not fall) is no jump, and a run's short flights
 // are none at the default.
-//   jump          the take-off: the last foot part leaving before the flight (the latest lift_s
-//                 of the contacts that end where it starts; take-off = the last foot leaving the
+//   jump          the take-off: the last foot leaving before the flight (the latest foot
+//                 lift-off, story 10-8p, without lift_offset_s, of the feet whose contact ends
+//                 where it starts; take-off = the last foot leaving the
 //                 ground, Linthorne 2001), never for a flight already under way at sample 0 (no
 //                 contact ends where it starts; see "Clip start" below). Feet that leave together
 //                 give one event. Strength = the peak |hips vertical speed| over approach_window_s
@@ -203,8 +206,8 @@
 // running: its mean horizontal speed over the window before the take-off (hips_vh) stays under
 // jump_impulse_max_speed (a run's stride pushes as hard as a jump; a jump taken while running is
 // left to its flight).
-//   jump         the take-off as JumpEvents' (the latest lift_s of the contacts that end where
-//                 the run starts, its side and part), never at the clip start. Strength as
+//   jump         the take-off as JumpEvents' (the latest foot lift-off of the feet whose
+//                 contact ends where the run starts, its side and part), never at the clip start. Strength as
 //                 JumpEvents'.
 //
 // A missing role drops only that part's events (PhysicsAnalysis::missing says why for the feet,
@@ -266,6 +269,16 @@ struct PhysicsParams {
     double search_back_s = 0.300;        // timing searches this far before the contact start...
     double search_fwd_s = 0.150;         // ...and this far after
     double approach_window_s = 0.100;    // step / lift-off strength window
+    // Story 10-8p, the foot's lift-off, measured on the all-trigger bench's 106 confirmed lift-off
+    // references (10-8o): the toe tip leaves 42 ms after the reference on rigs with a ball (it
+    // rolls off last), so the lift-off is the last of the heel and ball to leave (the tip only
+    // without a ball, or when it alone touched; lift_from_tip = the old rule). Then lift_offset_s
+    // (added): the median signed error of that anchor, -8.4 ms, the same left-one-clip-out.
+    // Anchors measured and dropped: the part's speed peak (+160 ms raw; with its offset median
+    // |err| 12.5 ms against 10.7 for the crossing), the vertical speed peak (34 ms), peak knee
+    // extension (Fellin et al. 2010, running toe-off: 47-58 ms here, SD 94 ms).
+    bool   lift_from_tip = false;
+    double lift_offset_s = -0.008;
     double slide_speed = 0.25;           // leg/s horizontal
     double slide_max_speed = 2.0;        // leg/s: faster is a swing, not a slide
     double slide_height = 0.015;         // leg: a slide stays this close to the support height

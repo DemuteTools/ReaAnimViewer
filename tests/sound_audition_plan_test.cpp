@@ -632,6 +632,7 @@ static void TestEditTransport()
     CHECK(EditLoopEndedAtEnd(t, 0.20, 0.07, 0.30));   // within the 50 ms slack
     CHECK(!EditLoopEndedAtEnd(t, 0.10, 0.02, 0.30));  // stopped early
     CHECK(!EditLoopEndedAtEnd(t, 0.27, 0.04, 0.0));
+    CHECK(!EditLoopEndedAtEnd(t, 0.27, 10.0, 0.30));  // review: the panel not drawn for 10 s (closed / hidden): no restart
     t = PlanEditTransport(0.8, true, 0.2, 0.5, false, 1.0);
     CHECK(!EditLoopEndedAtEnd(t, 0.29, 0.04, 0.30));  // no Loop
 }

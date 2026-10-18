@@ -1991,7 +1991,7 @@ void ZonePrevStop(const ZoneWaveHost& h)
     const double        cur = *h.cursor;
     if (!(cur > 0.0)) {
         *h.cursor = 0.0;
-        ShowLibraryToast("Already at the file start", false);
+        if (cur == 0.0) ShowLibraryToast("Already at the file start", false);  // review: no cursor yet: placed, no toast
         return;
     }
     *h.cursor = PrevEditStop(Shown(h), h.tl, cur, v.has_tsel, v.ts_a);

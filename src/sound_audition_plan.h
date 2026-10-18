@@ -226,7 +226,8 @@ bool EditLoopDue(const EditTransport& tp, double pos, double total, double block
 // 13-67a (Loop sometimes stops): a looping play that ended between two frames (the preview reached its end, so it is
 // gone before EditLoopDue could see it within a frame of its end) restarts too: true when it loops and its heard
 // position last seen (`last_pos`) plus the wall time since then (`since_s`) reaches the pass's end (`total`, 50 ms of
-// slack). A play stopped earlier (Esc, Stop) falls short of it.
+// slack). A play stopped earlier (Esc, Stop) falls short of it. Review: only when last seen at most 0.5 s ago -- an
+// Edit window not drawn for longer (closed, hidden) never restarts a play that ended meanwhile.
 bool EditLoopEndedAtEnd(const EditTransport& tp, double last_pos, double since_s, double total);
 
 // "D → N variations · K off" (decision 7): "D → " dropped when D = N, " · K off" when K = 0;

@@ -602,7 +602,7 @@ bool EditLoopDue(const EditTransport& tp, double pos, double total, double block
 bool EditLoopEndedAtEnd(const EditTransport& tp, double last_pos, double since_s, double total)
 {
     return tp.loops && total > 0.0 && std::isfinite(last_pos) && std::isfinite(since_s) &&
-           last_pos + std::max(since_s, 0.0) >= total - 0.05;
+           since_s <= 0.5 && last_pos + std::max(since_s, 0.0) >= total - 0.05;  // review: a recent end only
 }
 
 }  // namespace rav

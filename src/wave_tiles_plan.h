@@ -89,6 +89,25 @@ inline WaveLanes WaveLanesFor(MonoMode mono, int series)
     return w;
 }
 
+// 13-71 review: lane `l` of `n` between y0 and y1: its middle and the half-height full scale spans,
+// `pad` kept inside it above and below (at most a fifth of the lane, so a lane of a many-channel file in
+// a short row still shows its peaks). DrawWaveLanes (wave_draw_ui.h) draws at it; an overlay at the peaks' scale (Sound
+// Edit's threshold line) reads it, so the two stay together.
+struct WaveLaneGeom {
+    float mid = 0.0f;
+    float hh = 1.0f;
+};
+
+inline WaveLaneGeom WaveLaneAt(float y0, float y1, int n, float pad, int l)
+{
+    const float  lane_h = (y1 - y0) / static_cast<float>(n < 1 ? 1 : n);
+    const float  p = pad < lane_h * 0.2f ? pad : lane_h * 0.2f;
+    WaveLaneGeom g;
+    g.mid = y0 + lane_h * (static_cast<float>(l) + 0.5f);
+    g.hh = lane_h * 0.5f - p > 1.0f ? lane_h * 0.5f - p : 1.0f;
+    return g;
+}
+
 // The column rate (columns per second) a view of `view_len` seconds over `columns` pixels is read at
 // from a file sampled at `sample_rate`: the power of two at or above the pixel rate, capped at the
 // sample rate. 0 = no detail read: a view longer than kWaveDetailMaxSpan (the coarse peaks are at least

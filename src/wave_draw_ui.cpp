@@ -15,9 +15,9 @@ int DrawWaveLanes(ImDrawList* dl, const WaveColumns& wc, MonoMode mono, float x0
     if (!dl || !(y1 > y0)) return 0;
     const WaveLanes L = WaveLanesFor(mono, wc.series);
     const float     lane_h = (y1 - y0) / static_cast<float>(L.n);
-    const float     hh = std::max(1.0f, lane_h * 0.5f - st.pad);
+    const float     hh = WaveLaneAt(y0, y1, L.n, st.pad, 0).hh;  // the same in every lane
     float           mid[kWaveMaxLanes];
-    for (int l = 0; l < L.n; ++l) mid[l] = y0 + lane_h * (static_cast<float>(l) + 0.5f);
+    for (int l = 0; l < L.n; ++l) mid[l] = WaveLaneAt(y0, y1, L.n, st.pad, l).mid;
     if (st.zero)
         for (int l = 0; l < L.n; ++l) {
             const float y = std::floor(mid[l]) + 0.5f;

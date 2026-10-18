@@ -385,6 +385,15 @@ int main()
         CHECK(c.series == 5 && WaveLanesFor(MonoMode::Off, c.series).n == 3);
         CHECK(Near(c.hi[kWaveLeft][1], 0.5) && Near(c.hi[kWaveRight][1], 0.25) && Near(c.hi[WaveChannelSeries(2)][1], 0.75));
         CHECK(Near(c.lo[WaveChannelSeries(2)][1], -0.75) && Near(c.hi[kWaveSum][1], 0.375) && Near(c.hi[kWaveAll][1], 0.75));
+
+        // 13-71 review: lane geometry (the waveform and Sound Edit's threshold line read the same).
+        const WaveLaneGeom m0 = WaveLaneAt(0.0f, 100.0f, 1, 6.0f, 0);  // one lane: the row's middle, half less the pad
+        CHECK(Near(m0.mid, 50.0) && Near(m0.hh, 44.0));
+        const WaveLaneGeom s0 = WaveLaneAt(0.0f, 100.0f, 2, 6.0f, 0), s1 = WaveLaneAt(0.0f, 100.0f, 2, 6.0f, 1);
+        CHECK(Near(s0.mid, 25.0) && Near(s1.mid, 75.0) && Near(s0.hh, 19.0) && Near(s1.hh, 19.0));
+        const WaveLaneGeom e7 = WaveLaneAt(0.0f, 40.0f, 8, 6.0f, 7);  // a 5 px lane: the pad at most a fifth of it
+        CHECK(Near(e7.mid, 37.5) && Near(e7.hh, 1.5));
+        CHECK(Near(WaveLaneAt(0.0f, 4.0f, 8, 6.0f, 0).hh, 1.0) && Near(WaveLaneAt(0.0f, 10.0f, 0, 2.0f, 0).mid, 5.0));
     }
 
     // ---- PeakBlockFrames (13-57 review) ----

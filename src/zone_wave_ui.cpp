@@ -1377,6 +1377,7 @@ void ZoneEditReset(ZoneEditView& v)
 struct ThrDrag {
     bool   on = false, moved = false;
     int    row = -1;
+    int    lane = 0;  // 13-71 review: the channel lane whose line was grabbed
     float  m0y = 0.0f;
     double db = 0.0;
 };
@@ -1465,11 +1466,15 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
     v.sel = SelValid(Shown(h), v.sel);
 
     // 13-62h (Antho): the detection threshold (Silence), a dashed line above and below the middle of every zone row
-    // (Combined and Lane alike), at the peaks' scale (DrawLane: half the row less 6 px).
-    const bool thr_on = h.threshold && d0.mode == DetectMode::Silence && std::isfinite(d0.silence.threshold_db);
-    auto       row_mid = [&](const Row& r) { return r.y0 + (r.y1 - r.y0) * 0.5f; };
-    auto       row_hh = [&](const Row& r) { return std::max(1.0f, (r.y1 - r.y0) * 0.5f - 6.0f * dp); };
-    auto       thr_y = [&](const Row& r, double db) { return static_cast<float>(std::min(1.0, std::pow(10.0, db / 20.0))) * row_hh(r); };
+    // (Combined and Lane alike), at the peaks' scale (DrawLane's). 13-71 review: in each channel lane of the row, at
+    // that lane's scale (WaveLaneAt, as DrawWaveLanes draws it), so the line still meets the peaks it splits.
+    const bool      thr_on = h.threshold && d0.mode == DetectMode::Silence && std::isfinite(d0.silence.threshold_db);
+    const PeakView* thr_pk = PeaksOf(h.path);
+    const int       thr_n = thr_pk ? WaveLanesFor(d0.mono, WaveSeriesCount(PeakChannels(*thr_pk))).n : 1;
+    auto            lane_at = [&](const Row& r, int l) { return WaveLaneAt(r.y0, r.y1, thr_n, 6.0f * dp, l); };
+    auto            thr_y = [&](const Row& r, int l, double db) {
+        return static_cast<float>(std::min(1.0, std::pow(10.0, db / 20.0))) * lane_at(r, l).hh;
+    };
 
     // ---- input
     v.hover_on = false;
@@ -1482,13 +1487,17 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
     }
     // The threshold line is grabbed within 4 px, where nothing else is (a zone's body, a greyed zone, empty space).
     bool thr_hot = false;
+    int  thr_lane = 0;
     if (thr_on && hovered && v.hover_on && !g_thr.on && v.drag.kind == ZoneDragKind::None) {
         const int ri = row_at(m.y);
         if (ri >= 0 && rows[static_cast<size_t>(ri)].row == ZoneRow::Lane &&
             (v.hover.kind == ZoneHitKind::Zone || v.hover.kind == ZoneHitKind::Grey || v.hover.kind == ZoneHitKind::None)) {
-            const Row&  r = rows[static_cast<size_t>(ri)];
-            const float ty = thr_y(r, d0.silence.threshold_db);
-            thr_hot = std::fabs(m.y - (row_mid(r) - ty)) <= 4.0f * dp || std::fabs(m.y - (row_mid(r) + ty)) <= 4.0f * dp;
+            const Row& r = rows[static_cast<size_t>(ri)];
+            for (int l = 0; l < thr_n && !thr_hot; ++l) {
+                const float mid = lane_at(r, l).mid, ty = thr_y(r, l, d0.silence.threshold_db);
+                thr_hot = std::fabs(m.y - (mid - ty)) <= 4.0f * dp || std::fabs(m.y - (mid + ty)) <= 4.0f * dp;
+                if (thr_hot) thr_lane = l;
+            }
         }
     }
     if (thr_hot) {
@@ -1499,6 +1508,7 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
         g_thr = ThrDrag{};
         g_thr.on = true;
         g_thr.row = row_at(m.y);
+        g_thr.lane = thr_lane;
         g_thr.m0y = m.y;
         g_thr.db = d0.silence.threshold_db;
     }
@@ -1508,7 +1518,8 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
             if (std::fabs(m.y - g_thr.m0y) > 2.0f * dp) g_thr.moved = true;
             if (g_thr.moved && g_thr.row >= 0 && static_cast<size_t>(g_thr.row) < rows.size()) {
                 const Row&   r = rows[static_cast<size_t>(g_thr.row)];
-                const double amp = std::max(1e-4, static_cast<double>(std::fabs(row_mid(r) - m.y) / row_hh(r)));
+                const WaveLaneGeom lg = lane_at(r, std::min(g_thr.lane, thr_n - 1));
+                const double       amp = std::max(1e-4, static_cast<double>(std::fabs(lg.mid - m.y) / lg.hh));
                 g_thr.db = Clamp(20.0 * std::log10(amp), -90.0, 0.0);
                 h.threshold(g_thr.db, false);
                 char tip[32];
@@ -1662,11 +1673,14 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
         bool         chip = false;
         for (const Row& r : rows) {
             if (r.row != ZoneRow::Lane) continue;
-            const float mid = row_mid(r), ty = thr_y(r, thr);
-            for (float x = cx0; x < cx0 + cw; x += step)
-                for (const float yy : {std::floor(mid - ty) + 0.5f, std::floor(mid + ty) + 0.5f})
-                    dl->AddLine(ImVec2(x, yy), ImVec2(std::min(x + dash, cx0 + cw), yy), col);
+            for (int l = 0; l < thr_n; ++l) {
+                const float lm = lane_at(r, l).mid, lt = thr_y(r, l, thr);
+                for (float x = cx0; x < cx0 + cw; x += step)
+                    for (const float yy : {std::floor(lm - lt) + 0.5f, std::floor(lm + lt) + 0.5f})
+                        dl->AddLine(ImVec2(x, yy), ImVec2(std::min(x + dash, cx0 + cw), yy), col);
+            }
             if (chip) continue;
+            const float mid = lane_at(r, 0).mid, ty = thr_y(r, 0, thr);  // the chip: on the first lane's upper line
             chip = true;
             char lab[32];
             std::snprintf(lab, sizeof(lab), "%.0f dB", thr);

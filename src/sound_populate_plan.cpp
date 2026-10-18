@@ -197,9 +197,9 @@ ResolveHooks MakeDrawHooks(PopulateDrawState& state, EventDraw& ev, std::functio
         }
         return Draw(*st, *e, n, active, n.avoid_repeat, part);
     };
-    h.rounds = [st](const SoundNode& n) -> int {  // 13-68: after its pick (the history holds it)
-        const auto   it = st->history.find(n.uid);
-        const size_t count = ActiveVariations(n.sound).size();
+    h.rounds = [st](const SoundNode& n, const std::string& part) -> int {  // 13-68: after its pick (held by the history)
+        const auto   it = st->history.find(part.empty() ? n.uid : n.uid + "|" + part);  // Draw's key
+        const size_t count = part.empty() ? ActiveVariations(n.sound).size() : ActiveVariationsFor(n.sound, part).size();
         if (it == st->history.end() || it->second.empty() || count == 0) return 0;
         return static_cast<int>((it->second.size() - 1) / count);
     };

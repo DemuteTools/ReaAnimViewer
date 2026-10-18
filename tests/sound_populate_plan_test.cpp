@@ -903,16 +903,15 @@ static void TestPopulatePlanHelpers()
     }
 }
 
-// 13-68 v2: a Blend with linked variations (NVK stacks): its two TakeMarkers Sounds (3 slices each) play the
-// same variation number on every event, and the number still varies across events.
+// 13-68 v2: a Blend's layers (NVK stacks; every Blend since Antho 2026-10-18, no flag needed): its two TakeMarkers
+// Sounds (3 slices each) play the same variation number for a round, then mix.
 static void TestLinkedBlend()
 {
     SoundLibrary lib;
     lib.uid = "L";
     lib.root = "b";
     SoundNode b = Node("b", "", SoundNodeType::Blend);
-    b.linked_variations = true;
-    lib.nodes.push_back(b);
+    lib.nodes.push_back(b);  // linked_variations left off: the rule is global
     for (const char* uid : {"x", "y"}) {
         SoundNode s = Leaf(uid, "b", 3);
         s.sound.mode = DetectMode::TakeMarkers;
@@ -940,7 +939,7 @@ static void TestLinkedBlend()
         pairs.insert({a, b2});
     }
     CHECK(seen.size() == 3 && pairs.size() == 9);
-    // Off: the layers draw alone (the flag is what links them); a child of fewer variations plays its modulo.
+    // A child of fewer variations plays its modulo.
     CHECK(LinkedVariation(2, 3, 0) == 2 && LinkedVariation(2, 2, 1) == 0 && LinkedVariation(2, 1, -1) == 0);
     CHECK(LinkedVariation(-1, 3, 1) == 1 && LinkedVariation(2, 0, -1) == -1);
     CHECK(LinkedVariation(0, 3, -1, 1, 1) == 1 && LinkedVariation(2, 3, -1, 1, 1) == 0 && LinkedVariation(0, 3, -1, 2, 1) == 2);

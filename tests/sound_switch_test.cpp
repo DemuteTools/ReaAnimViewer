@@ -214,7 +214,7 @@ static void TestNested()
     // 13-62i: a variation's gain is in its zones (PieceApply::db), never in the event's: the nodes' volumes alone.
     CHECK(Near(r.sounds[0].gain_db, -6) && Near(r.sounds[1].gain_db, -6));
     CHECK(Near(r.sounds[0].offset_ms, 0) && Near(r.sounds[1].offset_ms, 40));
-    CHECK(r.sounds[1].variation == 1);
+    CHECK(r.sounds[1].variation == 0);  // Antho 2026-10-18: a Blend's layers play the first one's number (B drew 1)
     CHECK(r.path_text == "Material Concrete (default) \xE2\x80\xBA Random Bl \xE2\x80\xBA Blend \xC3\x97" "2");
 
     // Missing: one Blend part missing, the variation hook not called for it.

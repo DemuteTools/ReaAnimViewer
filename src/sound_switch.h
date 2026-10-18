@@ -33,9 +33,9 @@ struct ResolveHooks {
     // 13-23 (D3): the variation a Sound plays for a part (a value uid; "" = the whole variation); used
     // instead of `variation` when set (a variation whose part is empty or excluded cannot play it).
     std::function<int(const SoundNode&, const std::string& part_value)> part_variation;
-    // 13-68 (Antho 2026-10-18): how many full rounds of its variations a Sound has drawn before its current pick
-    // (a linked Blend shifts its other layers by it: LinkedVariation). Null = 0.
-    std::function<int(const SoundNode&)> rounds;
+    // 13-68 (Antho 2026-10-18): how many full rounds of its variations a Sound has drawn (for that part) before
+    // its current pick (a Blend shifts its other layers by it: LinkedVariation). Null = 0.
+    std::function<int(const SoundNode&, const std::string& part_value)> rounds;
 };
 
 struct ResolvedSound {
@@ -78,7 +78,7 @@ enum class ValueFrom { Default, Item, Rule, Event };
 // plays every child with its offset.
 Resolution ResolveEvent(const SoundStore& store, const SoundLibrary& lib, const ValueLayers& layers,
                         const ResolveHooks& hooks);
-// 13-68 v2: the variation a linked Blend's other Sound child plays (SoundNode::linked_variations): the first
+// 13-68 v2: the variation a Blend's other Sound child plays (every Blend since Antho 2026-10-18): the first
 // child's pick `lead` modulo its own variation `count` (1 variation: 0); `own` (its own pick) when the first
 // drew none (-1) or it has no variation. Antho 2026-10-18: once the first child has drawn all its variations
 // (`round` full rounds), the `layer`-th other child (1 = the second) shifts by round x layer, so the layers

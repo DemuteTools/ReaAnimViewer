@@ -93,7 +93,9 @@ std::string ZonesProblem(const SoundData& d, double file_len);
 
 // ---- Layout -----------------------------------------------------------------------------------------------
 // The mockup's relayout: RAV's cuts follow the right part's Pre-roll (before its onset); automatic edges follow
-// their part's Pre-roll / Tail around the sound detected in their slot (with peaks; without, they stay); a Gap
+// their part's Pre-roll / Tail around the sound detected in their slot (with peaks; without, they stay; Sound Edit
+// evening (C): an automatic end goes on past its slot over the silence after it, up to the next zone or the file end,
+// stopping before a sound no zone holds; the slot grows with it); a Gap
 // holds its neighbours' edges (one that no longer touches a zone on a side is empty space: removed); zones never
 // overlap; everything inside the file; a zone under 4 ms goes. Each variation's start / length follow its zones;
 // a variation left with no zone is turned off.
@@ -331,7 +333,8 @@ int ApplyPreTailChange(SoundData& d, const std::string& part, bool tail_wins, Pa
     ZoneSel* sel = nullptr);
 
 // 13-67b: the automatic zone ends the Tail does not reach (Antho 2026-10-17: a zone stops against the next one, no
-// overlap), of `part` ("" = every part following the Sound's Tail), on ctx's timeline, measured on ctx's peaks (none:
+// overlap; Sound Edit evening (C, Antho 2026-10-19): the Tail lengthens a zone over the silence after it up to the next
+// zone, pre-roll included, or the file end -- where its variation was detected is no limit), of `part` ("" = every part following the Sound's Tail), on ctx's timeline, measured on ctx's peaks (none:
 // nothing counted). An end dragged by hand or held by a Gap is not counted; a cut counts as the next zone.
 // 13-74 (the v1 mockup's marks, Antho 2026-10-19): each stopped zone (`at`: where it ends, where the Tail would have
 // taken it, why) for the yellow bar and dotted ghost on the waveform; `first_ms`: the Tail (ms) from which the first
@@ -340,20 +343,20 @@ struct TailCapAt {
     ZoneRef r;
     double  end = 0.0;   // its end now (stopped there)
     double  want = 0.0;  // where the Tail would have taken it (its sound's end + Tail)
-    int     why = 0;     // 1 the next zone (or a cut), 2 the file end, 3 where its variation was detected
+    int     why = 0;     // 1 the next zone (or a cut), 2 the file end, 3 a sound no zone holds (TailLimit)
 };
 struct TailCaps {
     int by_next = 0;      // stopped by the next zone (or a cut)
     int by_file_end = 0;  // stopped by the end of the file
-    int by_detected_end = 0;  // stopped at its variation's end as detected (its slot: detected with a shorter Tail)
+    int by_sound = 0;     // Sound Edit evening (C): stopped before a sound no zone holds (its Pre-roll before it)
     std::vector<TailCapAt> at;  // 13-74: each one, in the Sound's zone order
     double first_ms = -1.0;     // 13-74
 };
 // `every_part` (13-74, the waveform's marks): every part's zones, each against its own Tail (`part` unused).
 TailCaps    TailCappedZones(const SoundData& d, const ZoneContext& ctx, const std::string& part = std::string(),
                             bool every_part = false);
-// "3 zones stopped by the next zone, 1 by the file end", "1 zone stopped by the file end", "... where their variation
-// was detected (...)"; "" when none.
+// "3 zones stopped by the next zone, 1 by the file end", "1 zone stopped by the file end", "... before a sound no zone
+// holds"; "" when none.
 std::string TailCapsText(const TailCaps& c);
 
 // Normalize: the groups measured together and given one gain: zones of one part glued by Gaps (ChainOf, same part).

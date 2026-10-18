@@ -1549,8 +1549,8 @@ NumRowOut SettingsNumberRow(const std::string& key, const NumRow& f, double valu
 // 13-74: the Tail fader's tick tip (the v1 mockup's): "From 42 ms the first zone is stopped short".
 std::string TailMarkTip(double ms)
 {
-    char buf[96];
-    std::snprintf(buf, sizeof(buf), "From %.0f ms the first zone is stopped short", ms);
+    char buf[160];
+    std::snprintf(buf, sizeof(buf), "From %.0f ms the first zone is stopped short (its Tail meets the next zone or the file end)", ms);
     return buf;
 }
 
@@ -1832,7 +1832,7 @@ static void PartSettingsRows(const char* id, int lib, const std::string& node_ui
         static const PartNum kPre = {PartField::Preroll, {"##pre", "Pre-roll", "ms", 0.5, 0.0, 1000.0, 0.0f, 50.0f,
                                      "Automatic zone starts: this much before the detected onset (never before a cut)"}};
         static const PartNum kTail = {PartField::Tail, {"##tail", "Tail", "ms", 1.0, 0.0, 5000.0, 0.0f, 300.0f,
-                                      "Automatic zone ends: this much after the sound dies (never past a cut)"}};
+                                      "Automatic zone ends: this much after the sound dies, over the silence after it up to the next zone or the file end"}};
         if (PartNumberRow(*l, *n, path, value, pname, col, kPre) || PartNumberRow(*l, *n, path, value, pname, col, kTail))
             return stop();
         // 13-67b: why a longer Tail stops lengthening some of this part's zones
@@ -4512,7 +4512,7 @@ bool SoundEdgeRows(const SoundLibrary& lib, const SoundNode& n, const SoundMedia
             {"##spre", "Pre-roll", "ms", 0.5, 0.0, 1000.0, 0.0f, 50.0f,
              "Automatic zone starts: this much before the detected onset (never before a cut)"},
             {"##stail", "Tail", "ms", 1.0, 0.0, 5000.0, 0.0f, 300.0f,
-             "Automatic zone ends: this much after the sound dies (never past a cut)"}};
+             "Automatic zone ends: this much after the sound dies, over the silence after it up to the next zone or the file end"}};
         if (SoundZoneNumberRow(kRows[k], lib, n, [pre](const SoundData& x) { return pre ? x.silence.preroll_ms : x.silence.tail_ms; },
                                [pre, f, path, len](SoundData& x, double v) {
                                    (pre ? x.silence.preroll_ms : x.silence.tail_ms) = v;

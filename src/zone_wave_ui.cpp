@@ -794,7 +794,7 @@ bool Mine(const ZoneLook& z, int lane)
 }
 
 // 13-74 (the v1 mockup maquette-sound-edit-reglages-13-67.html; Antho 2026-10-19): a zone the Tail does not reach (the
-// next zone, a cut, the file end, where its variation was detected) gets a yellow bar at its stopped end and, dotted,
+// next zone, a cut, the file end, a sound no zone holds: Sound Edit evening C) gets a yellow bar at its stopped end and, dotted,
 // how far the Tail would have taken it (a line at the lane's middle in a 20 px box). Drawn only where it fits, between
 // the top handles (fade, gain chip, hand pin: 26 px) and the cut grab (12 px); left out while its end is under the
 // mouse or dragged (the white edge shows), and for a zone too narrow for it.

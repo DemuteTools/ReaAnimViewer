@@ -1190,6 +1190,18 @@ void FuzzRun(uint64_t seed, int count, FuzzStats& st, int kind = 0)
             RelayoutZones(twice, &pk, T, ctx.tl);
             if (!SameZones(once, twice)) {
                 if (bad < 5) std::printf("fuzz seed %llx step %d (%s): relayout is not stable\n", static_cast<unsigned long long>(seed), i, names[k]);
+                if (bad < 1 && std::getenv("RAV_DUMP2")) {
+                    auto dump = [](const char* w, const SoundData& x) {
+                        std::printf("%s\n", w);
+                        for (size_t f = 0; f < x.frames.size(); ++f)
+                            for (const EditZone& z : x.frames[f].zones)
+                                std::printf("  f%zu %s a=%.6f b=%.6f sa=%.6f sb=%.6f ah=%d bh=%d cut=%d on=%.6f\n", f, z.part.c_str(), z.a, z.b, z.slot_a,
+                                            z.slot_b, z.a_hand, z.b_hand, z.a_auto_cut, z.onset);
+                    };
+                    dump("d", d);
+                    dump("once", once);
+                    dump("twice", twice);
+                }
                 ++bad;
             }
         }
@@ -1388,29 +1400,125 @@ void TestTailCaps()
     ZoneContext ctx;
     ctx.peaks = &pk;
     TailCaps c = TailCappedZones(d, ctx);
-    CHECK(c.by_next == 1 && c.by_file_end == 1 && c.by_detected_end == 1);
-    CHECK(TailCapsText(c) == "1 zone stopped by the next zone, 1 by the file end, 1 where their variation was detected "
-                             "(a Threshold change re-detects with this Tail)");
+    // Sound Edit evening (C): V3 (sound 1.00-1.05, detected up to 1.10) is not stopped where it was detected: its Tail
+    // takes it on over the silence (to 1.20, the next zone is at 2.90).
+    CHECK(c.by_next == 1 && c.by_file_end == 1 && c.by_sound == 0);
+    CHECK(TailCapsText(c) == "1 zone stopped by the next zone, 1 by the file end");
+    CHECK(Near(d.frames[2].zones[0].b, 1.20));
     // 13-74: each stopped zone (the waveform's yellow bar and dotted ghost), and the Tail from which the first one stops.
     auto near = [](double x, double y) { return std::fabs(x - y) < 1e-6; };
-    CHECK(c.at.size() == 3);
-    if (c.at.size() == 3) {
+    CHECK(c.at.size() == 2);
+    if (c.at.size() == 2) {
         CHECK(c.at[0].r.frame == 0 && c.at[0].why == 1 && near(c.at[0].end, 0.30) && near(c.at[0].want, 0.35));
-        CHECK(c.at[1].r.frame == 2 && c.at[1].why == 3 && near(c.at[1].end, 1.10) && near(c.at[1].want, 1.20));
-        CHECK(c.at[2].r.frame == 3 && c.at[2].why == 2 && near(c.at[2].end, 3.00) && near(c.at[2].want, 3.15));
+        CHECK(c.at[1].r.frame == 3 && c.at[1].why == 2 && near(c.at[1].end, 3.00) && near(c.at[1].want, 3.15));
     }
     CHECK(near(c.first_ms, 0.0));  // the last zone's sound runs to the file end: any Tail stops it
     CHECK(TailCappedZones(d, ZoneContext{}).by_next == 0);  // no peaks: nothing said
     d.frames[2].zones[0].b_hand = true;                       // an end dragged by hand is not counted
     c = TailCappedZones(d, ctx);
-    CHECK(c.by_next == 1 && c.by_file_end == 1 && c.by_detected_end == 0 && c.at.size() == 2);
+    CHECK(c.by_next == 1 && c.by_file_end == 1 && c.by_sound == 0 && c.at.size() == 2);
     d.frames[3].zones[0].b_hand = true;
     c = TailCappedZones(d, ctx);
-    // The first one stopped: V1 at 100 ms (its sound ends at 0.20, V2 starts at 0.30); V2 at 150 ms (its slot).
+    // The first one stopped: V1 at 100 ms (its sound ends at 0.20, V2 starts at 0.30); V2 much later (V3 at 0.995).
     CHECK(c.at.size() == 1 && near(c.first_ms, 100.0));
     // Every part (the waveform): the same zones here (one implicit part); a part with its own Tail counts against it.
     CHECK(TailCappedZones(d, ctx, std::string(), true).at.size() == 1);
     CHECK(TailCapsText(TailCaps{2, 0, 0}) == "2 zones stopped by the next zone" && TailCapsText(TailCaps{}).empty());
+    CHECK(TailCapsText(TailCaps{0, 0, 1}) == "1 zone stopped before a sound no zone holds");
+}
+
+// Sound Edit evening (C, Antho 2026-10-19): a footstep file, 6 hits with long silences. The Tail lengthens each zone
+// into the silence after it up to the next zone (its pre-roll included) or the file end; where its variation was
+// detected is no limit. Stable through save / reload and a re-detection with the same settings.
+void TestTailIntoSilence()
+{
+    std::vector<std::pair<double, double>> hits;
+    for (int k = 0; k < 6; ++k) hits.push_back({0.10 + 0.5 * k, 0.15 + 0.5 * k});  // 0.10-0.15, 0.60-0.65 ... 2.60-2.65
+    const PeakData pk = Peaks(hits);
+    const double   T = 3.0;
+    ZoneContext    ctx{&pk, T};
+    auto detect = [&](const SilenceParams& sp) {
+        SoundData d = Whole({W(0.0, 0.1)});
+        d.silence = sp;
+        d.frames = SplitOnSilence(pk, sp, T);
+        for (SoundFrame& f : d.frames) f.zones.clear();
+        EnsureZones(d, &pk, T);
+        return d;
+    };
+    SilenceParams sp;  // -60 dB, 200 ms gap, 5 ms pre-roll, 100 ms tail
+    SoundData     d = detect(sp);
+    CHECK(d.frames.size() == 6 && ZonesProblem(d, T).empty());
+    for (size_t k = 0; k < d.frames.size() && d.frames.size() == 6; ++k) {
+        CHECK(Near(At(d, static_cast<int>(k), 0).a, 0.095 + 0.5 * k, 1e-9));
+        CHECK(Near(At(d, static_cast<int>(k), 0).b, 0.25 + 0.5 * k, 1e-9));
+    }
+    // Tail 300 ms: 300 ms tails, past where the variations were detected (100 ms then).
+    d.silence.tail_ms = 300.0;
+    ApplyPreTailChange(d, std::string(), true, PartField::Tail, ctx);
+    for (size_t k = 0; k < d.frames.size() && d.frames.size() == 6; ++k) CHECK(Near(At(d, static_cast<int>(k), 0).b, 0.45 + 0.5 * k, 1e-9));
+    CHECK(ZonesProblem(d, T).empty() && RoundTrips(d));
+    CHECK(TailCappedZones(d, ctx).at.empty());
+    // The tick: from 350 ms the first zone is stopped (the last one, by the file end: 2.65 -> 3.00); the others only from
+    // 445 ms (a sound ending at 0.15, the next zone starting at 0.595).
+    CHECK(Near(TailCappedZones(d, ctx).first_ms, 350.0, 1e-6));
+    // Laid out again (with the peaks, or without: a project read back) and saved / reloaded: the same zones.
+    {
+        SoundData again = d;
+        RelayoutZones(again, &pk, T);
+        CHECK(SameZones(again, d));
+        RelayoutZones(again, nullptr, T);
+        CHECK(SameZones(again, d));
+        SanitizeZones(again);
+        CHECK(SameZones(again, d));
+    }
+    // A re-detection with the same settings gives the same zones.
+    {
+        SilenceParams s3 = sp;
+        s3.tail_ms = 300.0;
+        const SoundData fresh = detect(s3);
+        CHECK(SameZones(fresh, d));
+    }
+    // Tail 600 ms: each tail meets the next zone there (its pre-roll included: 0.595, 1.095 ...); the last one 600 ms.
+    d.silence.tail_ms = 600.0;
+    ApplyPreTailChange(d, std::string(), true, PartField::Tail, ctx);
+    for (int k = 0; k < 5 && d.frames.size() == 6; ++k) {
+        CHECK(Near(At(d, k, 0).b, 0.595 + 0.5 * k, 1e-9));
+        CHECK(Near(At(d, k, 0).b, At(d, k + 1, 0).a, 1e-12));  // no overlap, no hole
+    }
+    if (d.frames.size() == 6) CHECK(Near(At(d, 5, 0).b, 3.0, 1e-9));  // 2.65 + 600 ms: capped by the file end
+    {
+        const TailCaps c = TailCappedZones(d, ctx);
+        CHECK(c.by_next == 5 && c.by_file_end == 1 && c.by_sound == 0);
+    }
+    CHECK(ZonesProblem(d, T).empty() && RoundTrips(d));
+    {
+        SilenceParams s6 = sp;
+        s6.tail_ms = 600.0;
+        CHECK(SameZones(detect(s6), d));
+    }
+    // Back to 100 ms: the zones as first detected (the slot grew over silence only: nothing else measured in it).
+    d.silence.tail_ms = 100.0;
+    ApplyPreTailChange(d, std::string(), true, PartField::Tail, ctx);
+    for (size_t k = 0; k < d.frames.size() && d.frames.size() == 6; ++k) CHECK(Near(At(d, static_cast<int>(k), 0).b, 0.25 + 0.5 * k, 1e-9));
+    // A zone deleted: the one before it does not take its sound (it stops before it, its pre-roll before it).
+    {
+        SoundData e = d;
+        e.silence.tail_ms = 600.0;
+        ZoneSel del = {ZoneRef{1, 0}};
+        CHECK(DeleteZones(e, del, ctx));
+        ApplyPreTailChange(e, std::string(), true, PartField::Tail, ctx);
+        CHECK(Near(At(e, 0, 0).b, 0.595, 1e-9));
+        const TailCaps c = TailCappedZones(e, ctx);
+        CHECK(c.by_sound == 1 && !c.at.empty() && c.at[0].why == 3);
+    }
+    // A hand end stays where it was dragged (Options' overwrite off); on, it follows the Tail again.
+    {
+        SoundData e = d;
+        CHECK(DragZoneEdge(e, ZoneRef{0, 0}, 1, 0.20, ctx));
+        e.silence.tail_ms = 300.0;
+        CHECK(ApplyPreTailChange(e, std::string(), false, PartField::Tail, ctx) == 1 && Near(At(e, 0, 0).b, 0.20));
+        CHECK(ApplyPreTailChange(e, std::string(), true, PartField::Tail, ctx) == 1 && Near(At(e, 0, 0).b, 0.45, 1e-9));
+    }
 }
 
 // Fix 2026-10-19 (Antho: REAPER's several selected items): a move / an edge / a fade / a snap offset dragged on one of
@@ -1541,6 +1649,7 @@ void TestLiveDragSnaps()
 int main()
 {
     TestTailCaps();  // 13-67b
+    TestTailIntoSilence();  // Sound Edit evening (C)
     TestMigration();
     TestHeardPieces();
     TestGapGestures();

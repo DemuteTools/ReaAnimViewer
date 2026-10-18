@@ -72,12 +72,12 @@ double BinDb(const PeakView& p, long long i)
 }
 
 // The mockup's detect(a, b): the first and last moment at or above the Silence threshold in [a, b); nothing
-// there: {a, b}.
-void Detect(const SoundData& d, const PeakView& p, double a, double b, double* on, double* off)
+// there: {a, b} (and false).
+bool Detect(const SoundData& d, const PeakView& p, double a, double b, double* on, double* off)
 {
     *on = a;
     *off = b;
-    if (!(b > a)) return;
+    if (!(b > a)) return false;
     const long long n = static_cast<long long>(p.max_abs.size());
     const long long lo = std::max(0LL, static_cast<long long>(std::floor(a * p.rate)));
     const long long hi = std::min(n, static_cast<long long>(std::ceil(b * p.rate)));
@@ -87,9 +87,22 @@ void Detect(const SoundData& d, const PeakView& p, double a, double b, double* o
             if (first < 0) first = i;
             last = i;
         }
-    if (first < 0) return;
+    if (first < 0) return false;
     *on = Clamp(static_cast<double>(first) / p.rate, a, b);
     *off = Clamp(static_cast<double>(last + 1) / p.rate, *on, b);
+    return true;
+}
+
+// The first moment at or above the Silence threshold in [a, b); b when there is none.
+double FirstLoud(const SoundData& d, const PeakView& p, double a, double b)
+{
+    if (!(b > a)) return b;
+    const long long n = static_cast<long long>(p.max_abs.size());
+    const long long lo = std::max(0LL, static_cast<long long>(std::floor(a * p.rate)));
+    const long long hi = std::min(n, static_cast<long long>(std::ceil(b * p.rate)));
+    for (long long i = lo; i < hi; ++i)
+        if (BinDb(p, i) >= d.silence.threshold_db) return std::max(a, std::min(b, static_cast<double>(i) / p.rate));
+    return b;
 }
 
 double PreS(const SoundData& d, const std::string& part)
@@ -102,6 +115,19 @@ double TailS(const SoundData& d, const std::string& part)
 {
     const double ms = PartTailMs(d, part);
     return std::isfinite(ms) && ms > 0.0 ? ms / 1000.0 : 0.0;
+}
+
+// Sound Edit evening (C, Antho 2026-10-19): how far a part zone's automatic end may go -- its slot (the sound measured
+// in it), then on over the silence after it up to `bound` (the next zone's start on its timeline, pre-roll included,
+// else the file end), stopping before a sound no zone holds (its Pre-roll before it: a zone deleted next to it is not
+// covered again). The detected variation's end is no limit. The slot grows with the zone (Work::sanitize), over that
+// silence only, so the sound measured in it never changes: the layout stays stable at every pass, save and reload.
+// `sound`: Detect found a sound in its slot (a silent slot has no sound end to add a Tail to: it keeps its slot).
+double TailLimit(const SoundData& d, const PeakView& p, const EditZone& z, double bound, bool sound)
+{
+    if (!sound || !(bound > z.slot_b + kTiny)) return z.slot_b;
+    const double loud = FirstLoud(d, p, z.slot_b, bound);
+    return std::max(z.slot_b, loud < bound ? loud - PreS(d, z.part) : bound);
 }
 
 bool SameZone(const EditZone& x, const EditZone& y)
@@ -345,13 +371,23 @@ void Work::relayoutPass()
             }
         }
     }
+    // Sound Edit evening (C): what follows each zone on its timeline (its start), else the file end: the farthest its
+    // Tail takes it (TailLimit). Read before this pass moves the starts (a start never depends on the end before it).
+    std::vector<double> next_a(zs.size(), kInf);
+    {
+        const std::vector<int> O = ord();
+        for (size_t k = 0; k < O.size(); ++k) {
+            const int i = O[k];
+            next_a[static_cast<size_t>(i)] = k + 1 < O.size() && sameTl(O[k + 1], i) ? std::min(Z(O[k + 1]).a, Tof(i)) : Tof(i);
+        }
+    }
     for (int i : L) {
         EditZone& z = Z(i);
         if (HasPeaks(peaksOf(i))) {  // 13-62i: only the peaks of its own timeline
-            double on = 0.0, off = 0.0;
-            Detect(*d, *peaks, z.slot_a, z.slot_b, &on, &off);
+            double     on = 0.0, off = 0.0;
+            const bool sound = Detect(*d, *peaks, z.slot_a, z.slot_b, &on, &off);
             if (!z.a_hand) z.a = z.a_auto_cut ? z.slot_a : std::max(z.slot_a, on - PreS(*d, z.part));
-            if (!z.b_hand) z.b = std::min(z.slot_b, off + TailS(*d, z.part));
+            if (!z.b_hand) z.b = std::min(TailLimit(*d, *peaks, z, next_a[static_cast<size_t>(i)], sound), off + TailS(*d, z.part));
         } else {  // no peaks: automatic edges stay where they are, inside their slot
             if (!z.a_hand) z.a = z.a_auto_cut ? z.slot_a : Clamp(z.a, z.slot_a, z.slot_b);
             if (!z.b_hand) z.b = std::min(z.b, z.slot_b);
@@ -2575,13 +2611,13 @@ TailCaps TailCappedZones(const SoundData& d, const ZoneContext& ctx, const std::
             }()))
             continue;
         if (ZoneOf(d, GapAfter(d, r))) continue;  // held by a Gap
-        double on = 0.0, off = 0.0;
-        Detect(d, *ctx.peaks, z->slot_a, z->slot_b, &on, &off);
-        // 13-74: the farthest any Tail takes it (its slot, the next zone's start, the file end): the Tail from which it
-        // stops is that minus its sound's end.
+        double     on = 0.0, off = 0.0;
+        const bool sound = Detect(d, *ctx.peaks, z->slot_a, z->slot_b, &on, &off);
+        // 13-74 / Sound Edit evening (C): the farthest any Tail takes it (the relayout's TailLimit: over the silence up to
+        // the next zone's start or the file end): the Tail from which it stops is that minus its sound's end.
+        const auto   nx = std::upper_bound(starts.begin(), starts.end(), z->a + 1e-4);
+        const double lim = std::min(TailLimit(d, *ctx.peaks, *z, std::min(T, nx != starts.end() ? *nx : T), sound), T);
         {
-            const auto   nx = std::upper_bound(starts.begin(), starts.end(), z->a + 1e-4);
-            const double lim = std::min({z->slot_b, T, nx != starts.end() ? *nx : T});
             const double ms = std::max(0.0, lim - off) * 1000.0;
             if (first < 0.0 || ms < first) first = ms;
         }
@@ -2595,11 +2631,11 @@ TailCaps TailCappedZones(const SoundData& d, const ZoneContext& ctx, const std::
             ++c.by_file_end;
             at.why = 2;
         } else {
-            // Against the next zone (a cut, a Gap, another variation's zone starting there), else at the end its
-            // variation was detected with (its slot: a Tail longer than the detection's stops there).
+            // Against the next zone (a cut, a Gap, another variation's zone starting there), else before a sound that
+            // no zone holds (TailLimit stops there).
             const auto it = std::lower_bound(starts.begin(), starts.end(), z->b - 1e-4);
             const bool next = it != starts.end() && *it < z->b + 1e-4 && z->b - z->a > 1e-4;  // not its own start
-            ++(next ? c.by_next : c.by_detected_end);
+            ++(next ? c.by_next : c.by_sound);
             at.why = next ? 1 : 3;
         }
         c.at.push_back(at);
@@ -2618,7 +2654,7 @@ std::string TailCapsText(const TailCaps& c)
     };
     add(c.by_next, " by the next zone");
     add(c.by_file_end, " by the file end");
-    add(c.by_detected_end, " where their variation was detected (a Threshold change re-detects with this Tail)");
+    add(c.by_sound, " before a sound no zone holds");
     return s;
 }
 

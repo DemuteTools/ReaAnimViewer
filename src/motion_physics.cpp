@@ -437,7 +437,7 @@ void HandReachTiming(PartTrack& pt, double rate, const PhysicsParams& p)
         if (c.start > 0) {
             const int    m = peak_at(std::max(k ? cs[k - 1].end : 0, c.start - w), c.start);
             const double th = std::max(p.hand_reach_floor, p.hand_reach_frac * sp[static_cast<size_t>(m)]);
-            for (int j = m + 1; j < std::min(c.end, c.start + fwd + 1); ++j)
+            for (int j = std::max(m + 1, c.start - fwd); j < std::min(c.end, c.start + fwd + 1); ++j)
                 if (sp[static_cast<size_t>(j - 1)] >= th && sp[static_cast<size_t>(j)] < th) {
                     c.step_s[static_cast<int>(StepTiming::Speed)] =
                         CrossTime(j, sp[static_cast<size_t>(j - 1)], sp[static_cast<size_t>(j)], th, rate);
@@ -447,7 +447,7 @@ void HandReachTiming(PartTrack& pt, double rate, const PhysicsParams& p)
         if (c.end < n) {
             const int    m = peak_at(c.end, std::min(k + 1 < cs.size() ? cs[k + 1].start : n - 1, c.end + w));
             const double th = std::max(p.hand_reach_floor, p.hand_reach_frac * sp[static_cast<size_t>(m)]);
-            for (int j = m; j > std::max(c.start, c.end - fwd - 1); --j)
+            for (int j = std::min(m, c.end + fwd); j > std::max(c.start, c.end - fwd - 1); --j)
                 if (sp[static_cast<size_t>(j - 1)] < th && sp[static_cast<size_t>(j)] >= th) {
                     c.lift_s = CrossTime(j, sp[static_cast<size_t>(j - 1)], sp[static_cast<size_t>(j)], th, rate);
                     break;

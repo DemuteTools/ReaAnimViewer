@@ -1372,6 +1372,32 @@ int main()
         CHECK(StepsNear(Of(ev_slow, PhysicsKind::Release, 'R'), {1.52}, 0.008));
     }
     {
+        // Story 10-8q review: the relative crossing is searched within search_fwd_s of the
+        // contact's start on both sides. A fast reach (20 leg/s to 0.5 s) glides at 1.5 leg/s
+        // (under 10 % of its peak, over the contact speed) to 0.8 s, then brakes evenly to rest
+        // at 1.0 s: the glide's start (0.55 s) is no grab; the absolute crossing (0.4 leg/s at
+        // 0.947 s) stays.
+        Options o;
+        o.dur = 2.0;
+        std::vector<BoneTrack> t = Rig(walk_l, walk_r, o);
+        const HandFn glide = [](double time) {
+            auto v = [](double s) {  // leg/s
+                if (s < 0.5) return 20.0;
+                if (s < 0.55) return 20.0 + (1.5 - 20.0) * (s - 0.5) / 0.05;
+                if (s < 0.8) return 1.5;
+                if (s < 1.0) return 1.5 * (1.0 - (s - 0.8) / 0.2);
+                return 0.0;
+            };
+            double d = 0.0;
+            const int steps = 2000;
+            for (int i = 0; i < steps; ++i) d += v((i + 0.5) * time / steps) * time / steps;
+            d *= kLeg;
+            return Vec3d{0.3 + 0.6 * d, 1.0, 0.8 * d};  // level
+        };
+        AddHands(t, HandStill(-0.3), glide, o);
+        CHECK(StepsNear(Of(HandEvents(AnalyseMotion(t)), PhysicsKind::Grab, 'R'), {0.947}, 0.01));
+    }
+    {
         // Still in the air: the right hand approaches at 0.7 leg/s (under the min approach), then
         // drifts at 0.2 leg/s (under the contact speed) to the end: no Grab, no Release.
         Options o;

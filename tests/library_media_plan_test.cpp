@@ -216,28 +216,117 @@ int main()
         CHECK(n && n->sound.source.asset.last_path == "C:\\Sfx\\steps_wood.wav" && n->sound.source.asset.mtime == 42);
         CHECK(toast == "Wood plays steps_wood.wav");
     }
-    // Slices on an empty value: a Random of "stem 1/2/3", each one hand frame.
+    // Antho 2026-10-19: variations of one file (picked out of order) on an empty value: ONE Sound "hit" holding
+    // exactly them, hand frames in time order, zoned at creation.
     {
         SoundStore s = Store();
         LibraryRow r{"sw", "vwood"};
         std::vector<std::string> created;
         std::string toast;
-        CHECK(UseMediaAt(s, "L", &r, {SlicePick("/a/hit.wav", 0), SlicePick("/a/hit.wav", 1), SlicePick("/a/hit.wav", 2)}, &created,
-                         &toast, nullptr));
+        CHECK(UseMediaAt(s, "L", &r, {SlicePick("/a/hit.wav", 2), SlicePick("/a/hit.wav", 0), SlicePick("/a/hit.wav", 3)},
+                         &created, &toast, nullptr));
+        const SoundLibrary& lib = *FindLibrary(s, "L");
+        const SoundNode* n = FindNode(lib, Case(s, "L", "sw", "vwood"));
+        CHECK(created.size() == 1 && n && n->type == SoundNodeType::Sound && n->name == "hit");
+        if (n) {
+            CHECK(n->sound.mode == DetectMode::Silence && n->sound.edited && n->sound.frames.size() == 3);
+            CHECK(n->sound.source.kind == SoundSourceKind::File && n->sound.source.asset.last_path == "/a/hit.wav");
+            if (n->sound.frames.size() == 3) {
+                CHECK(n->sound.frames[0].start == 0.0 && n->sound.frames[1].start == 1.0 && n->sound.frames[2].start == 1.5);
+                for (const SoundFrame& f : n->sound.frames) CHECK(f.hand && std::fabs(f.length - 0.3) < 1e-9 && !f.zones.empty());
+            }
+        }
+        CHECK(toast == "Wood plays hit.wav (3 variations)");
+    }
+    // Into a Random: one new child Sound with the chosen variations; a lone variation stays "stem N".
+    {
+        SoundStore s = Store();
+        LibraryRow r{"sw", "vconc"};
+        std::vector<std::string> created;
+        std::string toast;
+        CHECK(UseMediaAt(s, "L", &r, {SlicePick("/a/hit.wav", 1), SlicePick("/a/hit.wav", 1), SlicePick("/a/hit.wav", 4)},
+                         &created, &toast, nullptr));
+        const SoundLibrary& lib = *FindLibrary(s, "L");
+        std::vector<const SoundNode*> kids = ChildrenOf(lib, "cr");
+        CHECK(kids.size() == 2 && created.size() == 1);
+        if (kids.size() == 2) {
+            CHECK(kids[1]->name == "hit" && kids[1]->sound.frames.size() == 2);  // the same variation twice: once
+            CHECK(kids[1]->sound.frames.size() == 2 && kids[1]->sound.frames[1].start == 2.0);
+        }
+        CHECK(toast == "1 sound added to the Random (2 variations)");
+        SoundStore s2 = Store();
+        CHECK(UseMediaAt(s2, "L", &r, {SlicePick("/a/hit.wav", 1)}, &created, &toast, nullptr));
+        const SoundNode* one = created.size() == 1 ? FindNode(*FindLibrary(s2, "L"), created[0]) : nullptr;
+        CHECK(one && one->name == "hit 2" && one->sound.frames.size() == 1 && one->sound.frames[0].hand);
+        CHECK(toast == "1 sound added to the Random");
+    }
+    // Onto a Sound: its slot becomes a Random [X, the one new Sound].
+    {
+        SoundStore s = Store();
+        LibraryRow r{"cr", "x"};
+        std::vector<std::string> created;
+        std::string toast;
+        CHECK(UseMediaAt(s, "L", &r, {SlicePick("/a/hit.wav", 0), SlicePick("/a/hit.wav", 1)}, &created, &toast, nullptr));
+        CHECK(created.size() == 1);
+        CHECK(toast == "X is now a Random of 2 sounds (the old one + 1 new) (2 variations)");
+    }
+    // Alt (as_random) with variations: one Sound per variation ("stem N", one hand frame each) in one new Random.
+    {
+        SoundStore s = Store();
+        LibraryRow r{"sw", "vwood"};
+        std::vector<std::string> created;
+        std::string toast, rnd;
+        CHECK(UseMediaAt(s, "L", &r, {SlicePick("/a/hit.wav", 0), SlicePick("/a/hit.wav", 1), SlicePick("/a/hit.wav", 2)},
+                         &created, &toast, nullptr, true, &rnd));
         const SoundLibrary& lib = *FindLibrary(s, "L");
         const SoundNode* h = FindNode(lib, Case(s, "L", "sw", "vwood"));
-        CHECK(h && h->type == SoundNodeType::Random);
+        CHECK(h && h->type == SoundNodeType::Random && h->uid == rnd && h->name == "hit");
         std::vector<const SoundNode*> kids = ChildrenOf(lib, h ? h->uid : "");
         CHECK(kids.size() == 3 && created.size() == 3);
         if (kids.size() == 3) {
             CHECK(kids[0]->name == "hit 1" && kids[1]->name == "hit 2" && kids[2]->name == "hit 3");
-            for (const SoundNode* k : kids) {
-                CHECK(k->sound.mode == DetectMode::Silence && k->sound.frames.size() == 1);
-                CHECK(k->sound.frames.size() == 1 && k->sound.frames[0].hand && k->sound.edited);
-            }
+            for (const SoundNode* k : kids)
+                CHECK(k->sound.mode == DetectMode::Silence && k->sound.frames.size() == 1 && k->sound.frames[0].hand &&
+                      k->sound.edited);
             CHECK(kids[1]->sound.frames[0].start == 0.5);
         }
-        CHECK(toast == "Wood is now a Random of 3 sounds");
+    }
+    // MergeVariationPicks: each file's slices into its first one; whole picks and other files untouched, in order.
+    {
+        std::vector<MediaPick> m = MergeVariationPicks({Whole("/a/w.wav", 1, 2), SlicePick("/a/b.wav", 3), SlicePick("/a/c.wav", 0),
+                                                        SlicePick("/a/b.wav", 1), Whole("/a/b.wav", 1, 0)});
+        CHECK(m.size() == 4);
+        if (m.size() == 4) {
+            CHECK(!m[0].slice && m[0].frames.size() == 2);
+            CHECK(m[1].path == "/a/b.wav" && m[1].slice && m[1].slices.size() == 2 && m[1].index == 1);
+            CHECK(m[1].slices.size() == 2 && m[1].slices[0].start == 0.5 && m[1].frame.start == 0.5);
+            CHECK(m[2].path == "/a/c.wav" && m[2].slices.empty());
+            CHECK(!m[3].slice && m[3].path == "/a/b.wav");
+        }
+    }
+    // The results row's drag: the previewed file alone with chosen variations drags them, else the files.
+    {
+        const std::vector<MediaPick> vars = {SlicePick("/a/hit.wav", 0), SlicePick("/a/hit.wav", 2)};
+        const std::vector<MediaPick> one = {Whole("/a/hit.wav", 2, 4)};
+        std::vector<MediaPick> d = MediaListDragPicks("/a/hit.wav", one, vars);
+        CHECK(d.size() == 2 && d[0].slice && d[1].index == 2);
+        CHECK(MediaDragLabel(d) == "2 variations");
+        CHECK(MediaDragLabel({vars[1]}) == "hit 3" && MediaDragLabel(MergeVariationPicks(d)) == "2 variations");
+        CHECK(MediaListDragPicks("/a/hit.wav", one, {}).size() == 1);                          // none chosen: whole
+        CHECK(!MediaListDragPicks("/a/hit.wav", one, {}).front().slice && MediaDragLabel(one) == "hit.wav");
+        const std::vector<MediaPick> other = {Whole("/a/o.wav", 2, 4)};
+        CHECK(!MediaListDragPicks("/a/o.wav", other, vars).front().slice);                     // another file's row
+        const std::vector<MediaPick> two = {Whole("/a/hit.wav", 2, 4), Whole("/a/o.wav", 2, 4)};
+        d = MediaListDragPicks("/a/hit.wav", two, vars);                                        // a 2-file selection
+        CHECK(d.size() == 2 && !d[0].slice && !d[1].slice && MediaDragLabel(d) == "2 files");
+        // Dropped: the same Sound as the waveform's drag.
+        SoundStore s = Store();
+        LibraryRow r{"sw", "vwood"};
+        std::vector<std::string> created;
+        std::string toast;
+        CHECK(UseMediaAt(s, "L", &r, MediaListDragPicks("/a/hit.wav", one, vars), &created, &toast, nullptr));
+        const SoundNode* n = created.size() == 1 ? FindNode(*FindLibrary(s, "L"), created[0]) : nullptr;
+        CHECK(n && n->name == "hit" && n->sound.frames.size() == 2);
     }
     // Onto a Sound: its slot becomes a Random [X, a, b].
     {
@@ -619,6 +708,11 @@ int main()
         CHECK(MediaDropHint(s, "L", &x, 2, false, false) == "2 files -> X becomes a Random: the old sound + 2 new");
         CHECK(MediaDropHint(s, "L", &x, 2, false, true) == "2 files -> X becomes a Random: the old sound + a new Random of 2");
         CHECK(MediaDropHint(s, "L", &wood, 3, true, true) == "3 variations -> a new Random for Wood");
+        // Antho 2026-10-19: one file's variations make one Sound (Alt: one per variation, as above).
+        CHECK(MediaDropHint(s, "L", &wood, 3, true, false) == "3 variations -> one sound plays for Wood");
+        CHECK(MediaDropHint(s, "L", &conc, 3, true, false) == "3 variations -> one sound added to the Random Concrete");
+        CHECK(MediaDropHint(s, "L", &x, 3, true, false) == "3 variations -> X becomes a Random: the old sound + 1 new");
+        CHECK(MediaDropHint(s, "L", &wood, 1, true, false) == "1 variation -> plays for Wood");
         CHECK(MediaDropHint(s, "L", &wood, 1, false, true) == "1 file -> plays for Wood");
         CHECK(MediaDropHint(s, "L", &swr, 2, false, false).empty());
         CHECK(MediaDropHint(s, "nolib", nullptr, 2, false, false).empty());

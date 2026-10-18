@@ -28,6 +28,9 @@ struct MediaPick {
     bool                    slice = false;  // one variation (`frame`), else the whole file
     SoundFrame              frame;          // slice: the variation
     int                     index = 0;      // slice: its 0-based number (named "stem N", N = index + 1)
+    // slice of 2+ variations of the file (MergeVariationPicks): all of them, in time order (`frame` / `index` = the
+    // first); {} = the one `frame`.
+    std::vector<SoundFrame> slices;
     std::vector<SoundFrame> frames;         // whole: the detected variations ({} = none / not ready)
     bool                    frames_known = false;  // whole: `frames` is the file's read result (no read needed)
 };
@@ -36,8 +39,23 @@ struct MediaPick {
 std::string MediaFileName(const std::string& path);
 std::string MediaFileStem(const std::string& path);
 
-// Decision 12: the Sound a pick makes (File source, identity from the pick).
+// Decision 12: the Sound a pick makes (File source, identity from the pick). A slice: its variation(s) as hand
+// frames (edited), named "stem N" for one variation, "stem" for several.
 NewNodeSpec SoundSpecFor(const MediaPick& pick);
+
+// Antho 2026-10-19: the variations of one file picked together make ONE Sound holding exactly them: every slice pick
+// of a file is merged into the first one of that file (its `slices`, time order, each variation once); whole picks
+// and a file's lone slice are unchanged, the order of first appearance kept.
+std::vector<MediaPick> MergeVariationPicks(const std::vector<MediaPick>& picks);
+
+// Antho 2026-10-19: what a results row drags. `files`: today's picks (the selection's whole files when the row is one
+// of 2+ selected, else the row's file); `variations`: the preview's chosen variations (slice picks of the previewed
+// file, {} = none). The row's own file alone with chosen variations of it drags those variations; anything else
+// drags `files`.
+std::vector<MediaPick> MediaListDragPicks(const std::string& row_path, const std::vector<MediaPick>& files,
+                                          const std::vector<MediaPick>& variations);
+// The drag's label: "3 variations", "hit 2" (one variation), "3 files", "hit.wav".
+std::string MediaDragLabel(const std::vector<MediaPick>& picks);
 
 // Decision 13: the footer label for a use at `row` (null = the library root): "Add to Random",
 // "Use for Wood", + " (N files)" / " (N variations)" / " (1 variation)". False (label "") when
@@ -51,11 +69,12 @@ bool MediaUseAddsInside(const SoundStore& store, const std::string& lib_uid, con
 // Decision 13: adds the picks' Sounds at `row` (null / empty key = the library root), one
 // transaction: false and the store unchanged when refused (`why` says why). `created` gets the
 // new Sounds' uids, `toast` the message.
+// Variations of one file (slice picks) make ONE Sound of them (MergeVariationPicks), unless `as_random`.
 // 13-69 `as_random` (Alt held at the drop, "Make a Random of the selection"): 2+ picks always become
 // ONE new Random holding their Sounds, named after the files' common stem: inside a Random / Blend
 // as one new child, onto a Sound as a child of the Random that wraps it, on a value / empty slot the
 // Random the use makes anyway. `new_random` gets its uid ("" when no Random was made). One pick: the
-// plain use.
+// plain use. With variations, Alt keeps one Sound per variation, all in that new Random.
 // 13-67c: every new Sound is laid out as zones at once (RefreshParts, the Edit window's model), on its file's peaks
 // when `peaks` gives them (null / false: proposed without, as a loaded Sound), so the main window and Edit show the
 // same variations and opening Edit changes nothing.
@@ -71,7 +90,8 @@ std::string MediaCommonStem(const std::vector<MediaPick>& picks);
 
 // 13-69: what a drop of `n_picks` files / variations at `row` makes (the drag tooltip), e.g.
 // "12 files -> added to the Random Wood", "12 files -> new Random in the Random Wood",
-// "2 files -> Step becomes a Random: the old sound + 2 new"; "" when refused there.
+// "2 files -> Step becomes a Random: the old sound + 2 new"; "" when refused there. Variations (one file's) make one
+// Sound unless `as_random`: "3 variations -> one sound added to the Random Wood".
 std::string MediaDropHint(const SoundStore& store, const std::string& lib_uid, const LibraryRow* row, int n_picks,
                           bool variations, bool as_random);
 

@@ -874,7 +874,12 @@ void BeginDrag(const std::vector<MediaPick>& picks, const std::string& what)
         if (hint.empty())
             ui::ToneText("Drop on a container, a value row or empty space in the tree,\n"
                          "or on a Sound's waveform to replace its audio");
-        if (picks.size() >= 2 && !g.drag_alt) ui::ToneText("Hold Alt at the drop: one new Random of them");
+        if (picks.size() >= 2 && !g.drag_alt) {
+            bool variations = false;
+            for (const MediaPick& p : picks) variations = variations || p.slice;
+            ui::ToneText(variations ? "Hold Alt at the drop: one sound per variation, in a new Random"
+                                    : "Hold Alt at the drop: one new Random of them");
+        }
         ImGui::EndDragDropSource();
     }
 }
@@ -1276,7 +1281,10 @@ void DrawResults(float h)
                 } else {
                     picks.push_back(WholePick(f));
                 }
-                BeginDrag(picks, picks.size() > 1 ? std::to_string(picks.size()) + " files" : MediaFileName(f.path));
+                // Antho 2026-10-19: the previewed file's row drags its chosen variations (one Sound of them).
+                if (g.has_cur && g.cur.path == f.path && !g.vsel.empty() && g.an.ready)
+                    picks = MediaListDragPicks(f.path, picks, SlicePicks(g.vsel));
+                BeginDrag(picks, MediaDragLabel(picks));
             }
             // 13-69: right-click = the selection's menu (an unselected row becomes the selection).
             if (hov && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
@@ -1457,8 +1465,7 @@ void DrawPreview(float wave_h)
     }
     if (!g.vsel.empty() && g.an.ready) {
         std::vector<MediaPick> picks = SlicePicks(g.vsel);
-        BeginDrag(picks, picks.size() > 1 ? std::to_string(picks.size()) + " variations"
-                                          : MediaFileStem(g.cur.path) + " " + std::to_string(picks.front().index + 1));
+        if (!picks.empty()) BeginDrag(picks, MediaDragLabel(picks));
     }
 }
 

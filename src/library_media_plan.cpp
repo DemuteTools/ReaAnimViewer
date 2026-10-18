@@ -83,11 +83,10 @@ NewNodeSpec SoundSpecFor(const MediaPick& pick)
     d.source.asset.last_path = pick.path;
     d.source.asset.mtime = pick.mtime;
     if (pick.slice) {
-        sp.name += " " + std::to_string(pick.index + 1);
+        if (pick.slices.size() < 2) sp.name += " " + std::to_string(pick.index + 1);
         d.mode = DetectMode::Silence;
-        SoundFrame f = pick.frame;
-        f.hand = true;
-        d.frames = {f};
+        d.frames = pick.slices.empty() ? std::vector<SoundFrame>{pick.frame} : pick.slices;
+        for (SoundFrame& f : d.frames) f.hand = true;
         d.edited = true;
     } else if (!pick.frames.empty()) {
         d.mode = DetectMode::Silence;
@@ -102,6 +101,63 @@ NewNodeSpec SoundSpecFor(const MediaPick& pick)
         }
     }
     return sp;
+}
+
+std::vector<MediaPick> MergeVariationPicks(const std::vector<MediaPick>& picks)
+{
+    std::vector<MediaPick> out;
+    out.reserve(picks.size());
+    for (const MediaPick& p : picks) {
+        MediaPick* into = nullptr;
+        if (p.slice)
+            for (MediaPick& o : out)
+                if (o.slice && o.path == p.path) {
+                    into = &o;
+                    break;
+                }
+        if (!into) {
+            out.push_back(p);
+            continue;
+        }
+        if (into->slices.empty()) into->slices = {into->frame};
+        const std::vector<SoundFrame> add = p.slices.empty() ? std::vector<SoundFrame>{p.frame} : p.slices;
+        for (const SoundFrame& f : add) {
+            bool dup = false;
+            for (const SoundFrame& e : into->slices) dup = dup || (e.start == f.start && e.length == f.length);
+            if (!dup) into->slices.push_back(f);
+        }
+        if (p.index < into->index) into->index = p.index;
+    }
+    for (MediaPick& o : out) {
+        if (o.slices.size() < 2) continue;
+        std::stable_sort(o.slices.begin(), o.slices.end(),
+                         [](const SoundFrame& a, const SoundFrame& b) { return a.start < b.start; });
+        o.frame = o.slices.front();
+    }
+    return out;
+}
+
+std::vector<MediaPick> MediaListDragPicks(const std::string& row_path, const std::vector<MediaPick>& files,
+                                          const std::vector<MediaPick>& variations)
+{
+    if (variations.empty() || files.size() != 1 || files.front().path != row_path) return files;
+    for (const MediaPick& v : variations)
+        if (!v.slice || v.path != row_path) return files;
+    return variations;
+}
+
+std::string MediaDragLabel(const std::vector<MediaPick>& picks)
+{
+    if (picks.empty()) return {};
+    int n = 0;
+    bool variations = false;
+    for (const MediaPick& p : picks) {
+        variations = variations || p.slice;
+        n += p.slice && p.slices.size() >= 2 ? static_cast<int>(p.slices.size()) : 1;
+    }
+    if (n >= 2) return Plural(n, variations ? "variation" : "file");
+    const MediaPick& p = picks.front();
+    return p.slice ? MediaFileStem(p.path) + " " + std::to_string(p.index + 1) : MediaFileName(p.path);
 }
 
 bool MediaUseAddsInside(const SoundStore& store, const std::string& lib_uid, const LibraryRow* row)
@@ -134,9 +190,9 @@ bool MediaUseLabel(const SoundStore& store, const std::string& lib_uid, const Li
     return true;
 }
 
-bool UseMediaAt(SoundStore& store, const std::string& lib_uid, const LibraryRow* row, const std::vector<MediaPick>& picks,
-                std::vector<std::string>* created, std::string* toast, std::string* why, bool as_random,
-                std::string* new_random, const MediaPeaksFn& peaks)
+bool UseMediaAt(SoundStore& store, const std::string& lib_uid, const LibraryRow* row,
+                const std::vector<MediaPick>& picks_in, std::vector<std::string>* created, std::string* toast,
+                std::string* why, bool as_random, std::string* new_random, const MediaPeaksFn& peaks)
 {
     if (new_random) new_random->clear();
     if (why) why->clear();
@@ -145,7 +201,9 @@ bool UseMediaAt(SoundStore& store, const std::string& lib_uid, const LibraryRow*
         if (why) *why = "Create a library first";
         return false;
     }
-    if (picks.empty()) return false;
+    if (picks_in.empty()) return false;
+    // Antho 2026-10-19: one file's variations make one Sound of them; Alt (as_random) keeps a Sound per variation.
+    const std::vector<MediaPick> picks = as_random ? picks_in : MergeVariationPicks(picks_in);
     const LibraryRow r = RowOrRoot(*clib, row);
     const SoundNode* n = FindNode(*clib, RowNode(*clib, r));
     if (n && n->type == SoundNodeType::Switch) {
@@ -238,6 +296,8 @@ bool UseMediaAt(SoundStore& store, const std::string& lib_uid, const LibraryRow*
                 const bool has = peaks && peaks(sn->sound.source.asset.last_path, &pk);
                 RefreshParts(sn->sound, has ? &pk : nullptr);
             }
+    if (k == 1 && picks.front().slices.size() >= 2)
+        msg += " (" + std::to_string(picks.front().slices.size()) + " variations)";
     if (created) *created = sounds;
     if (toast) *toast = msg;
     if (why) why->clear();
@@ -274,12 +334,15 @@ std::string MediaDropHint(const SoundStore& store, const std::string& lib_uid, c
     const std::string what = Plural(n_picks, variations ? "variation" : "file");
     const std::string label = SlotLabel(store, *lib, r);
     const bool        grouped = as_random && n_picks >= 2;
+    const bool        one_sound = variations && n_picks >= 2 && !as_random;  // one file's variations: one Sound
+    const int         sounds = one_sound ? 1 : n_picks;
     if (n && (n->type == SoundNodeType::Random || n->type == SoundNodeType::Blend))
-        return what + (grouped ? " -> new Random in the " : " -> added to the ") + TypeWord(n->type) + " " + label;
+        return what + (grouped ? " -> new Random in the " : one_sound ? " -> one sound added to the " : " -> added to the ") +
+               TypeWord(n->type) + " " + label;
     if (n && n->type == SoundNodeType::Sound)
         return what + " -> " + label + " becomes a Random: the old sound + " +
-               (grouped ? "a new Random of " + std::to_string(n_picks) : std::to_string(n_picks) + " new");
-    return what + " -> " + (n_picks >= 2 ? "a new Random for " : "plays for ") + label;
+               (grouped ? "a new Random of " + std::to_string(n_picks) : std::to_string(sounds) + " new");
+    return what + " -> " + (sounds >= 2 ? "a new Random for " : one_sound ? "one sound plays for " : "plays for ") + label;
 }
 
 std::vector<size_t> MediaRangeRows(int anchor, int clicked, size_t n, size_t cap)

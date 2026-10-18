@@ -131,6 +131,19 @@ int main()
         CHECK(n.size() == 2 && Near(n[1].sound.sync_offset_ms, 50.0 * 1.33483985417003, 1e-6));
     }
 
+    // Add to stack (Antho 2026-10-18): the pile put against the stack's event is the one nearest it (top item's snap).
+    {
+        std::vector<AttachItem> f(3);
+        f[0].pos = 10.0, f[0].len = 0.2, f[0].snap = 0.05, f[0].track = 5;  // snap 10.05
+        f[1].pos = 12.0, f[1].len = 0.2, f[1].snap = 0.05, f[1].track = 5;  // snap 12.05
+        f[2].pos = 12.01, f[2].len = 0.2, f[2].snap = 0.0, f[2].track = 6;  // under it, same pile
+        const std::vector<std::vector<int>> p = SpreadPiles(f);
+        CHECK(p.size() == 2);
+        const int k = NearestPile(f, p, 12.07);
+        CHECK(k >= 0 && p[static_cast<size_t>(k)].size() == 2 && p[static_cast<size_t>(k)][0] == 1);
+        CHECK(NearestPile(f, {}, 1.0) == -1);
+    }
+
     // Antho 2026-10-18: the pile moved onto the selected marker records what it plays (its Sounds' variations,
     // the Random's child on its path), so the copies avoid repeating it.
     {
@@ -319,7 +332,7 @@ int main()
         a.variations = 1;
         a.layers = 1;
         a.animations = 1;
-        CHECK(SpreadRunReport(a) == "FS L (this animation): layer added to library FS L, 1 variation, 1 animation, no marker to place on");
+        CHECK(SpreadRunReport(a) == "FS L: layer added to library FS L, 1 variation, 1 animation, no marker to place on");
     }
 
     if (g_fail) {

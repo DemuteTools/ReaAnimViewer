@@ -255,12 +255,29 @@ std::string Count(int n, const char* one, const char* many)
 
 }  // namespace
 
+int NearestPile(const std::vector<AttachItem>& items, const std::vector<std::vector<int>>& piles, double t)
+{
+    int    best = -1;
+    double best_d = 0.0;
+    for (size_t k = 0; k < piles.size(); ++k) {
+        const int top = TopmostOf(items, piles[k]);
+        if (top < 0) continue;
+        const double d = std::fabs(PileAnchor(items[static_cast<size_t>(top)]) - t);
+        if (best < 0 || d < best_d) {
+            best = static_cast<int>(k);
+            best_d = d;
+        }
+    }
+    return best;
+}
+
 std::string SpreadRunReport(const SpreadRunCounts& c)
 {
     std::string out;
     if (c.selected_markers > 1)
         out += "Used " + c.type + " (" + std::to_string(c.selected_markers) + " markers selected)\n";
-    out += c.type + (c.all_instances ? " (all instances): " : " (this animation): ");
+    // Add to stack: wherever the library is (no scope of its own).
+    out += c.type + (c.add_layer ? ": " : c.all_instances ? " (all instances): " : " (this animation): ");
     std::vector<std::string> parts;
     std::string              lib = c.add_layer ? "layer added to library " + c.type
                                                : std::string(c.reused ? "library " : "new library ") + c.type;

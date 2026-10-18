@@ -86,6 +86,10 @@ std::vector<double> SourceZonePositions(double project_end, const std::vector<do
 // GUID, any case), the variation that item plays; for each Random above it, the child on its path.
 std::vector<SoundDraw> PlayedDraws(const SoundLibrary& lib, const std::vector<std::pair<std::string, int>>& played);
 
+// Add to stack (Antho 2026-10-18): the pile of `piles` whose top item's snap is nearest `t` (the stack's event, project
+// s): the one the user put against the stack, attached there. -1 when there is none.
+int NearestPile(const std::vector<AttachItem>& items, const std::vector<std::vector<int>>& piles, double t);
+
 // What a run did, for its toast.
 struct SpreadRunCounts {
     std::string type;                  // the marker type (= the library's name)

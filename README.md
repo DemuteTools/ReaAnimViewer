@@ -645,7 +645,7 @@ Your first selected variation (with its layers) is not copied: it moves onto the
 
 #### Adding a layer (Add to pile)
 
-Cut the new layer's variations and put the first one where you want it against an attached sound (for example 20 ms after the footstep's snap point). Select the new items with the attached sound: the original or any copy RAV placed for it. Clicking that sound also selects its linked instances (see below): that is fine, the one nearest the new items is used. Sounds of two different layers (or of two markers that are not linked): RAV refuses and changes nothing. No marker to select. Then run one of:
+Cut the new layer's variations and put the first one where you want it against an attached sound (for example 20 ms after the footstep's snap point). Select the new items with the attached sound: the original or any copy RAV placed for it. Several linked instances of that sound may be selected with them: the one nearest the new items is used. Sounds of two different layers (or of two markers that are not linked): RAV refuses and changes nothing. No marker to select. Then run one of:
 
 - **RAV: Tagging - Add selected items to stack (all animations with this marker)**: Add to pile with **Apply to Project** (below): the layer goes on every instance of the kind, in every animation.
 - **RAV: Tagging - Add selected items to stack (this animation)**: Add to pile with **Apply to Anim**: the layer goes on every instance of this animation (every item with the same animation name, linked copies included); the other animations are unchanged.
@@ -663,16 +663,9 @@ Every sound Attach or Add to pile places is an **instance**: the copies on the m
 - **Selection**: **Attach** or **Add to pile**, chosen from the item selection (an attached sound plus new items: Add to pile on that sound's marker; switch back with the two buttons). The line under it says what will happen, and the blue button runs it (**Attach · Anim**): one undo point, the report at the bottom right of REAPER. When it cannot run, it is greyed and the reason shows above it.
   - **Attach** puts the selected sound on the marker and, with **Anim** or **Project**, on every marker of that kind in scope: L and R together, or only the marker's side once L and R are separated. It replaces the sound those markers had (the previous original goes after the end of the project). With **Item**, only that marker gets it, nothing is copied elsewhere and the library is unchanged.
   - **Add to pile** adds the new items as a layer to every linked instance in scope, at the same distance from the marker. With **Item**, only that instance gets it.
-- **L and R** says whether the marker's kind plays one sound on both sides (**Together**) or two (**Separate**), in the marker's animation. **Separate L and R** (Anim or Project; greyed with Item): L and R keep the same sound but become two groups: selecting, adding to the pile and deleting then reach one side only. **Merge L and R (keep the L sound)**: both sides play the chosen marker's side's sound again; the other side's sounds are replaced.
+- **L and R** says whether the marker's kind plays one sound on both sides (**Together**) or two (**Separate**), in the marker's animation. **Separate L and R** (Anim or Project; greyed with Item): L and R keep the same sound but become two groups: adding to the pile and deleting then reach one side only. **Merge L and R (keep the L sound)**: both sides play the chosen marker's side's sound again; the other side's sounds are replaced.
 
-**In REAPER, with the window open or closed**, a gesture on one instance reaches its linked instances, as **Apply to** says (with **Item**, nothing else is touched):
-
-- **Click** an instance: its linked instances are selected with it (L and R together, or one side after Separate). **Ctrl+click** selects that one only.
-- **Delete** an instance (or the original): its layer is gone from every linked instance and from the library in scope. An original a library still plays from is never deleted: it goes after the end of the project with the other sources.
-- **Volume and fades**: the same change on its linked instances (the volume by the same amount in dB).
-- **Moving** an instance does not propagate: only the item you drag moves, even when its linked instances are selected with it.
-
-Each of these is one RAV undo point right after yours (Ctrl+Z twice puts both back).
+**In REAPER, with the window open or closed**, deleting an instance deletes its linked instances in **Anim** or **Project** (as **Apply to** says; with **Item**, only that one): its layer is gone from every linked instance and from the library in scope. An original a library still plays from is never lost: it goes after the end of the project with the other sources. Nothing else follows: clicking an instance selects only it, and its volume, fades and position are its own. The delete of the linked instances is one RAV undo point right after yours (Ctrl+Z twice puts both back).
 
 RAV keeps this in the kind's one `FS` library, under Switches it manages: **RAV - FS animations** (one value per animation, shared by all its items, the default value for the others) and **RAV - Side** (L and R, once separated). It never makes a track or a folder, never moves an item other than the sounds concerned, and never touches another marker kind.
 

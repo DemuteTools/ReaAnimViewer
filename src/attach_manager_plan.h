@@ -85,8 +85,8 @@ struct StackRef {
     std::string layer;  // "<library uid>|<layer uid>" of the instance ("" = not from the library: its marker alone)
     double      pos = 0.0;  // its event's project time
 };
-// Add to pile's reference among the selected instances: they must be one layer's linked instances (a plain click selects
-// them all) or sit on one marker; the one whose event is nearest the new items (`anchor`, project s; the first when
+// Add to pile's reference among the selected instances: they must be one layer's linked instances (selected together)
+// or sit on one marker; the one whose event is nearest the new items (`anchor`, project s; the first when
 // `has_anchor` is false). `distinct` gets how many layers / markers they span; -1 when more than one (or none).
 int PileReference(const std::vector<StackRef>& refs, bool has_anchor, double anchor, int* distinct);
 
@@ -118,7 +118,7 @@ bool TagListed(const ItemSounds& owner_rec, const std::string& guid);
 
 enum class Scope { Item, Anim, Project };
 // The project's setting (SoundStore::attach_scope), default Anim. Readable with the window closed: the
-// REAPER-side gestures (selection, delete, volume, fades) follow it too.
+// REAPER-side delete of an instance (the only gesture that propagates) follows it too.
 Scope ScopeOf(const SoundStore& store);
 // False when it already was `s`.
 bool SetScope(SoundStore& store, Scope s);
@@ -319,9 +319,6 @@ struct Instance {
 // itself.
 std::vector<int> Linked(const std::vector<Instance>& all, int i, Scope scope);
 
-// A click selected exactly one instance (`now`, not Ctrl): the items to select (its linked set, `now` first); empty
-// = leave the selection alone (Item scope, Ctrl, several selected, not an instance, linked to nothing).
-std::vector<std::string> ExpandSelection(const std::vector<Instance>& all, const std::set<std::string>& now, Scope scope, bool ctrl);
 
 // Instances deleted by hand (`gone`, upper case GUIDs; the others still present): what their layers' removal takes.
 struct LayerRemoval {
@@ -336,41 +333,10 @@ struct DeletePlan {
 };
 DeletePlan PlanPropagatedDelete(const std::vector<Instance>& before, const std::set<std::string>& gone, Scope scope);
 
-// What a gesture on an item's look changes: its volume and fades (REAPER's D_VOL, D_FADEINLEN / D_FADEOUTLEN,
-// C_FADEINSHAPE / C_FADEOUTSHAPE, D_FADEINDIR / D_FADEOUTDIR).
-struct Look {
-    double vol = 1.0;
-    double fade_in = 0.0, fade_out = 0.0;
-    int    in_shape = 0, out_shape = 0;
-    double in_dir = 0.0, out_dir = 0.0;
-};
-bool SameLook(const Look& a, const Look& b);
-struct LookWrite {
-    std::string guid;
-    Look        look;
-};
-// Instances whose look changed (`before` -> `now`, by GUID): their linked instances (unchanged ones) take the same
-// change: the volume by the same ratio, a changed fade side as set. Each item written once (the first changed
-// instance reaching it wins).
-std::vector<LookWrite> PlanPropagatedLooks(const std::vector<Instance>& all, const std::map<std::string, Look>& before,
-                                           const std::map<std::string, Look>& now, Scope scope);
-
-// A drag of one instance moved its whole expanded selection (REAPER moves every selected item): the others go back
-// (Antho 2026-10-19: moving an instance never propagates). `dragged` = the item under the mouse at the drop (else the
-// expansion's anchor). Positions by GUID. Empty when it was not that (fewer than 2 moved, moved apart, not all ours).
-struct MoveBack {
-    std::string guid;
-    double      pos = 0.0;
-};
-std::vector<MoveBack> PlanMoveBack(const std::set<std::string>& expanded, const std::string& dragged,
-                                   const std::map<std::string, double>& before, const std::map<std::string, double>& now);
-
 // ---- The watcher's decision (sound_spread_selection.cpp AttachWatchTick), from two reads and REAPER's state ------
 
 struct WatchSnap {
     std::vector<Instance>         inst;
-    std::map<std::string, Look>   looks;
-    std::map<std::string, double> pos;        // the instances' positions
     std::set<std::string>         present;    // every item's GUID (upper case)
     std::map<std::string, double> owners;     // the RAV items' GUIDs (upper case) and positions
     std::set<std::string>         selected;
@@ -381,24 +347,13 @@ struct WatchIn {
     bool                  redo = false;     // a redo waits: an undo just ran
     bool                  new_undo = false; // an undo point (or a delete action) since the last read
     std::vector<std::string> cut_names, delete_names;  // REAPER's localized names
-    bool                  clicked = false;  // a mouse click (down and up) seen since the last read
-    bool                  ctrl = false;     // Ctrl held when that button went down (else Ctrl now)
-    std::string           under_mouse;      // the item under the mouse now (upper case; a click too quick to be seen is
-                                            // read from it: one item selected, the one under the mouse)
-    std::set<std::string> expanded;         // the linked selection RAV made last
-    std::string           anchor;
 };
 struct WatchOut {
-    std::set<std::string>    gone;      // a user delete: the instances to propagate
-    std::vector<LookWrite>   looks;
-    std::vector<MoveBack>    back;
-    std::vector<std::string> select;    // a click: the linked selection to make
-    bool                     clear_expanded = false;
+    std::set<std::string> gone;  // a user delete: the instances to propagate
 };
-// A gesture of the user's = a new undo point that is not RAV's, not a cut, no redo waiting. A delete (its name is one)
-// propagates the instances it removed that were selected, their animation still there; else a volume / fade change
-// propagates; a drag of one instance of the expanded selection (a click, no animation item moved) moves the others
-// back; with nothing written, a click that selected one instance selects its linked instances (not with Ctrl).
+// Antho 2026-10-20: the only gesture made in REAPER that reaches linked instances is a delete. A gesture of the user's
+// = a new undo point that is not RAV's, not a cut, no redo waiting; a delete (its name is one) propagates the instances
+// it removed that were selected, their animation still there (Anim / Project).
 WatchOut DecideWatch(const WatchSnap& last, const WatchSnap& now, const WatchIn& in);
 
 }  // namespace am

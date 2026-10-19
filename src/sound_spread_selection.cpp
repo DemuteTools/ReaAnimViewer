@@ -50,25 +50,17 @@ namespace {
 using SetMediaItemInfo_ValueFn = bool (*)(MediaItem* item, const char* parmname, double newvalue);
 
 using CountTakesFn = int (*)(MediaItem* item);
-using SelectAllMediaItemsFn = void (*)(ReaProject* proj, bool selected);    // 13-68e
-using SetMediaItemSelectedFn = void (*)(MediaItem* item, bool selected);    // 13-68e
 
 SetMediaItemInfo_ValueFn f_set_item = nullptr;
 CountTakesFn             f_count_takes = nullptr;
-SelectAllMediaItemsFn    f_select_all = nullptr;
-SetMediaItemSelectedFn   f_set_selected = nullptr;
-// 13-68e v5 (the watcher): a redo waiting (an undo just ran), the item under a screen point.
+// 13-68e v5 (the watcher): a redo waiting (an undo just ran).
 using Undo_CanRedo2Fn = const char* (*)(ReaProject* proj);
-using GetItemFromPointFn = MediaItem* (*)(int x, int y, bool allow_locked, MediaItem_Take** take);
 Undo_CanRedo2Fn    f_can_redo = nullptr;
-GetItemFromPointFn f_item_from_point = nullptr;
 // An original deleted by hand put back (its last read state).
 using GetItemStateChunkFn = bool (*)(MediaItem* item, char* buf, int buf_sz, bool isundo);
 using SetItemStateChunkFn = bool (*)(MediaItem* item, const char* str, bool isundo);
 using AddMediaItemToTrackFn = MediaItem* (*)(MediaTrack* tr);
 GetItemStateChunkFn   f_get_chunk = nullptr;
-using PreventUIRefreshFn = void (*)(int prevent_count);
-PreventUIRefreshFn    f_prevent_refresh = nullptr;  // selection writes drawn once
 SetItemStateChunkFn   f_set_chunk = nullptr;
 AddMediaItemToTrackFn f_add_item = nullptr;
 
@@ -956,7 +948,7 @@ std::string RunPile(am::Scope scope)
     if (!f_set_item) return Finish("REAPER functions missing");
     ReaProject*      proj = EnumProjects(-1, nullptr, 0);
     const SoundStore store = GetSoundStore(proj);
-    // The selected instances: one layer's linked instances (a plain click selects them all) or those of one marker.
+    // The selected instances: one layer's linked instances (selected together by hand) or those of one marker.
     std::vector<PlacedTag>                  tags;
     std::vector<am::StackRef>               refs;
     std::string                             lib_uid, key;
@@ -1376,29 +1368,6 @@ void ReadManager(AttachManagerState* out)
     }
 }
 
-// 13-68e v5 (Antho 2026-10-19: no flicker): the selection becomes exactly `guids` without ever unselecting one of them
-// first (no SelectAllMediaItems(false)): the others are unselected, the missing ones added, the arrange redrawn once.
-int SelectItems(const std::vector<std::string>& guids)
-{
-    if (!f_set_selected) return 0;
-    ReaProject*                             proj = EnumProjects(-1, nullptr, 0);
-    const std::map<std::string, MediaItem*> items = ItemsByGuid(proj);
-    std::set<MediaItem*>                    want;
-    for (const std::string& g : guids) {
-        const auto hit = items.find(GuidKey(g));
-        if (hit != items.end()) want.insert(hit->second);
-    }
-    if (f_prevent_refresh) f_prevent_refresh(1);
-    std::vector<MediaItem*> off;
-    for (int i = 0, n = CountSelectedMediaItems(proj); i < n; ++i)
-        if (MediaItem* it = GetSelectedMediaItem(proj, i); it && !want.count(it)) off.push_back(it);
-    for (MediaItem* it : off) f_set_selected(it, false);
-    for (MediaItem* it : want)
-        if (GetMediaItemInfo_Value(it, "B_UISEL") == 0.0) f_set_selected(it, true);
-    if (f_prevent_refresh) f_prevent_refresh(-1);
-    UpdateArrange();
-    return static_cast<int>(want.size());
-}
 
 
 // ---- 13-68e v5: linked instances, gestures made in REAPER (a timer: also with the window closed) ---------------
@@ -1411,19 +1380,6 @@ struct WatchRead {
     std::map<std::string, std::string> chunks;  // original's GUID (upper case) -> its state chunk
     std::map<std::string, std::string> tracks;  // original's GUID (upper case) -> its track's GUID
 };
-
-am::Look LookOf(MediaItem* it)
-{
-    am::Look l;
-    l.vol = GetMediaItemInfo_Value(it, "D_VOL");
-    l.fade_in = GetMediaItemInfo_Value(it, "D_FADEINLEN");
-    l.fade_out = GetMediaItemInfo_Value(it, "D_FADEOUTLEN");
-    l.in_shape = static_cast<int>(GetMediaItemInfo_Value(it, "C_FADEINSHAPE"));
-    l.out_shape = static_cast<int>(GetMediaItemInfo_Value(it, "C_FADEOUTSHAPE"));
-    l.in_dir = GetMediaItemInfo_Value(it, "D_FADEINDIR");
-    l.out_dir = GetMediaItemInfo_Value(it, "D_FADEOUTDIR");
-    return l;
-}
 
 std::string TrackGuid(MediaTrack* t)
 {
@@ -1474,8 +1430,6 @@ void ReadWatch(ReaProject* proj, WatchRead* w)
         in.sig = la.layer.empty() ? std::string() : am::LayerSig(*lib, la.layer);
         in.slot = la.slot;
         s.inst.push_back(in);
-        s.looks[kv.first] = LookOf(kv.second);
-        s.pos[kv.first] = GetMediaItemInfo_Value(kv.second, "D_POSITION");
         if (sources.count(kv.first) && f_get_chunk) {  // an original: kept as it is, to be put back if deleted by hand
             std::vector<char> buf(1u << 20);
             if (f_get_chunk(kv.second, buf.data(), static_cast<int>(buf.size()), false)) {
@@ -1596,12 +1550,6 @@ struct Watch {
     WatchRead             last;
     std::string           last_top;           // REAPER's last undo point at the last read
     bool                  delete_cmd = false; // a delete action ran since the last read (AttachWatchPostCommand)
-    bool                  down = false;       // the mouse button, polled every tick
-    bool                  clicked = false;    // it went down and up since the last read
-    bool                  ctrl = false;       // Ctrl when it went down
-    int                   click_ticks = 0;    // ticks a seen click stays alive with no change to read
-    std::set<std::string> expanded;           // the linked selection RAV made (a drag of one of them moves only that one)
-    std::string           anchor;
 };
 Watch g_watch;
 
@@ -1616,14 +1564,6 @@ std::string SelectionSig(ReaProject* proj)
     return out;
 }
 
-// The item under the mouse (the one a drag held), "" when none.
-std::string ItemUnderMouse()
-{
-    POINT pt;
-    if (!f_item_from_point || !GetCursorPos(&pt)) return std::string();
-    MediaItem* it = f_item_from_point(pt.x, pt.y, true, nullptr);
-    return it ? GuidKey(ItemGuidOf(it)) : std::string();
-}
 
 const std::vector<std::string>& DeleteNames()
 {
@@ -1640,21 +1580,13 @@ void WatchTick()
         g_watch = Watch();
         g_watch.proj = proj;
     }
-    // The mouse, every tick: a click (Ctrl latched when the button goes down) is read after the drop.
+    // A drag in progress (the mouse button down): what it did is read after the drop.
     const bool down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-    if (down && !g_watch.down) g_watch.ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-    if (!down && g_watch.down) {
-        g_watch.clicked = true;
-        g_watch.click_ticks = 15;  // kept ~0.5 s: the selection may be committed on a later tick than the release
-    }
-    g_watch.down = down;
     const SoundStore& st = GetSoundStore(proj);
     bool              any = false;
     for (const SoundLibrary& l : st.libraries) any = any || l.attached;
     if (!any) {
         g_watch.primed = false;
-        g_watch.expanded.clear();
-        g_watch.clicked = false;
         return;
     }
     const int         count = GetProjectStateChangeCount(proj);
@@ -1663,39 +1595,13 @@ void WatchTick()
     if (!g_watch.primed || count != g_watch.count || sel_changed) g_watch.pending = true;
     g_watch.count = count;
     g_watch.sel_sig = sel;
-    // A selection change is acted on at the first tick it is seen (no 0.25 s wait, no rescan): the last read's instances
-    // with the selection as it is now. The full read stays throttled (it follows for the other changes).
-    if (g_watch.primed && sel_changed && !down) {
-        am::WatchSnap fast = g_watch.last.snap;
-        fast.selected.clear();
+    // A selection change is noted at once (no rescan): a delete read right after it knows what was selected.
+    if (g_watch.primed && sel_changed) {
+        g_watch.last.snap.selected.clear();
         for (int i = 0, n = CountSelectedMediaItems(proj); i < n; ++i)
-            if (MediaItem* it = GetSelectedMediaItem(proj, i)) fast.selected.insert(GuidKey(ItemGuidOf(it)));
-        am::WatchIn fin;  // no new undo point: only the click rules apply
-        fin.scope = am::ScopeOf(st);
-        fin.clicked = g_watch.clicked;
-        fin.ctrl = g_watch.clicked ? g_watch.ctrl : (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-        fin.under_mouse = ItemUnderMouse();
-        fin.expanded = g_watch.expanded;
-        fin.anchor = g_watch.anchor;
-        const am::WatchOut out = am::DecideWatch(g_watch.last.snap, fast, fin);
-        if (!out.select.empty()) {
-            SelectItems(out.select);
-            g_watch.expanded = std::set<std::string>(out.select.begin(), out.select.end());
-            g_watch.anchor = out.select.front();
-            fast.selected = g_watch.expanded;
-            g_watch.sel_sig = SelectionSig(proj);
-            g_watch.count = GetProjectStateChangeCount(proj);
-            g_watch.clicked = false;
-        } else if (out.clear_expanded) {
-            g_watch.expanded.clear();
-            g_watch.anchor.clear();
-        }
-        g_watch.last.snap.selected = fast.selected;  // this change is handled: the full read does not take it again
+            if (MediaItem* it = GetSelectedMediaItem(proj, i)) g_watch.last.snap.selected.insert(GuidKey(ItemGuidOf(it)));
     }
-    if (!g_watch.pending) {
-        if (!down && g_watch.click_ticks > 0 && --g_watch.click_ticks == 0) g_watch.clicked = false;  // it changed nothing
-        return;
-    }
+    if (!g_watch.pending) return;
     if (down) return;  // a click or a drag in progress: what it did is read after the drop
     const double now_s = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     if (now_s < g_watch.next_read) return;
@@ -1709,7 +1615,6 @@ void WatchTick()
         g_watch.primed = true;
         g_watch.last = now;
         g_watch.last_top = top;
-        g_watch.clicked = false;
         g_watch.delete_cmd = false;
         return;
     }
@@ -1720,46 +1625,10 @@ void WatchTick()
     in.new_undo = top != g_watch.last_top || g_watch.delete_cmd;
     in.cut_names = FollowCutNames();
     in.delete_names = DeleteNames();
-    in.clicked = g_watch.clicked;
-    // Ctrl latched at the down edge when it was seen, else (a click too quick for the timer) Ctrl now.
-    in.ctrl = g_watch.clicked ? g_watch.ctrl : (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-    in.under_mouse = ItemUnderMouse();
-    in.expanded = g_watch.expanded;
-    in.anchor = g_watch.anchor;
     const am::WatchOut out = am::DecideWatch(g_watch.last.snap, now.snap, in);
     bool               wrote = false;
     if (!out.gone.empty()) {
         wrote = PropagateDelete(proj, g_watch.last, out.gone, in.scope);
-    } else if (!out.looks.empty() || !out.back.empty()) {  // one undo point for both
-        const std::string undo = std::string(out.looks.empty() ? "RAV: Only the dragged instance moves" : "RAV: Linked instances follow (volume, fades)") +
-                                 ScopeText(in.scope);
-        SoundUndoScope                          scope_undo(proj, undo.c_str());
-        const std::map<std::string, MediaItem*> items = ItemsByGuid(proj);
-        for (const am::LookWrite& w : out.looks) {
-            const auto hit = items.find(w.guid);
-            if (hit == items.end()) continue;
-            f_set_item(hit->second, "D_VOL", w.look.vol);
-            f_set_item(hit->second, "D_FADEINLEN", w.look.fade_in);
-            f_set_item(hit->second, "D_FADEOUTLEN", w.look.fade_out);
-            f_set_item(hit->second, "C_FADEINSHAPE", w.look.in_shape);
-            f_set_item(hit->second, "C_FADEOUTSHAPE", w.look.out_shape);
-            f_set_item(hit->second, "D_FADEINDIR", w.look.in_dir);
-            f_set_item(hit->second, "D_FADEOUTDIR", w.look.out_dir);
-        }
-        for (const am::MoveBack& b : out.back) {
-            const auto hit = items.find(b.guid);
-            if (hit != items.end()) f_set_item(hit->second, "D_POSITION", b.pos);
-        }
-        UpdateArrange();
-        wrote = true;
-    } else if (!out.select.empty()) {
-        SelectItems(out.select);
-        g_watch.expanded = std::set<std::string>(out.select.begin(), out.select.end());
-        g_watch.anchor = out.select.front();
-        wrote = true;
-    } else if (out.clear_expanded) {
-        g_watch.expanded.clear();
-        g_watch.anchor.clear();
     }
     if (wrote) {
         ReadWatch(proj, &now);
@@ -1771,7 +1640,6 @@ void WatchTick()
         g_watch.last_top = top;
     }
     g_watch.last = now;
-    g_watch.clicked = false;
     g_watch.delete_cmd = false;
 }
 
@@ -1782,12 +1650,8 @@ void InitSoundSpreadSelection(void* (*get_func)(const char* name))
     if (!get_func) return;
     f_set_item = reinterpret_cast<SetMediaItemInfo_ValueFn>(get_func("SetMediaItemInfo_Value"));
     f_count_takes = reinterpret_cast<CountTakesFn>(get_func("CountTakes"));
-    f_select_all = reinterpret_cast<SelectAllMediaItemsFn>(get_func("SelectAllMediaItems"));      // 13-68e
-    f_set_selected = reinterpret_cast<SetMediaItemSelectedFn>(get_func("SetMediaItemSelected"));  // 13-68e
     f_can_redo = reinterpret_cast<Undo_CanRedo2Fn>(get_func("Undo_CanRedo2"));                    // 13-68e v5
-    f_item_from_point = reinterpret_cast<GetItemFromPointFn>(get_func("GetItemFromPoint"));      // 13-68e v5
     f_get_chunk = reinterpret_cast<GetItemStateChunkFn>(get_func("GetItemStateChunk"));
-    f_prevent_refresh = reinterpret_cast<PreventUIRefreshFn>(get_func("PreventUIRefresh"));
     f_set_chunk = reinterpret_cast<SetItemStateChunkFn>(get_func("SetItemStateChunk"));
     f_add_item = reinterpret_cast<AddMediaItemToTrackFn>(get_func("AddMediaItemToTrack"));
 }
@@ -1891,15 +1755,6 @@ std::string ClickedMarkersKey()
     return out;
 }
 
-int SelectItemsByGuid(const std::vector<std::string>& guids)
-{
-    try {
-        return SelectItems(guids);
-    } catch (...) {
-        return 0;
-    }
-}
-
 void AttachWatchTick()
 {
     try {
@@ -1933,7 +1788,6 @@ void        ReadAttachManager(AttachManagerState* out)
 }
 std::string AttachManagerSignature() { return {}; }
 std::string ClickedMarkersKey() { return {}; }
-int         SelectItemsByGuid(const std::vector<std::string>&) { return 0; }
 void        AttachWatchTick() {}
 void        AttachWatchPostCommand(int, int) {}
 }  // namespace rav

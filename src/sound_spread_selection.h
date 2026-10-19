@@ -12,9 +12,9 @@
 // main window (reaper_toast.h).
 //
 // The watcher (AttachWatchTick, a REAPER timer: also with the window closed) makes a gesture made in REAPER on one
-// instance reach its linked instances, as the project's Apply to setting says: a click selects them (Ctrl+click: that
-// one only), a delete removes the layer from them and from the library in scope, a volume or fade change is made on
-// them too; a move stays the dragged item's own. Each propagation is one RAV undo point right after the user's.
+// instance reach its linked instances, as the project's Apply to setting says: only a delete (Antho 2026-10-20), which
+// removes the layer from them and from the library in scope; nothing else follows (selection, volume, fades, moves).
+// The propagation is one RAV undo point right after the user's.
 
 #pragma once
 
@@ -74,8 +74,6 @@ void ReadAttachManager(AttachManagerState* out);
 std::string AttachManagerSignature();
 // The RAV project markers whose label is selected in REAPER, as a key ("" = none): their change reads the project again.
 std::string ClickedMarkersKey();
-// Selects these items in REAPER (every other item unselected); the arrange scrolls nowhere. Returns how many.
-int SelectItemsByGuid(const std::vector<std::string>& guids);
 
 // The watcher's tick (a REAPER timer, main thread): the linked selection and the propagated gestures. Never throws.
 void AttachWatchTick();

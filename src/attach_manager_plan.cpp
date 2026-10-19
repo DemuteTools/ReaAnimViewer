@@ -1074,21 +1074,6 @@ std::vector<int> Linked(const std::vector<Instance>& all, int i, Scope scope)
     return out;
 }
 
-std::vector<std::string> ExpandSelection(const std::vector<Instance>& all, const std::set<std::string>& now, Scope scope, bool ctrl)
-{
-    std::vector<std::string> out;
-    if (scope == Scope::Item || ctrl || now.size() != 1) return out;
-    const std::string g = GuidKey(*now.begin());
-    for (size_t i = 0; i < all.size(); ++i)
-        if (all[i].guid == g) {
-            const std::vector<int> l = Linked(all, static_cast<int>(i), scope);
-            if (l.size() < 2) return out;
-            for (int k : l) out.push_back(all[static_cast<size_t>(k)].guid);
-            return out;
-        }
-    return out;
-}
-
 DeletePlan PlanPropagatedDelete(const std::vector<Instance>& before, const std::set<std::string>& gone, Scope scope)
 {
     DeletePlan p;
@@ -1114,76 +1099,6 @@ DeletePlan PlanPropagatedDelete(const std::vector<Instance>& before, const std::
     return p;
 }
 
-bool SameLook(const Look& a, const Look& b)
-{
-    auto eq = [](double x, double y) { return std::fabs(x - y) <= 1e-9; };
-    return eq(a.vol, b.vol) && eq(a.fade_in, b.fade_in) && eq(a.fade_out, b.fade_out) && a.in_shape == b.in_shape &&
-           a.out_shape == b.out_shape && eq(a.in_dir, b.in_dir) && eq(a.out_dir, b.out_dir);
-}
-
-std::vector<LookWrite> PlanPropagatedLooks(const std::vector<Instance>& all, const std::map<std::string, Look>& before,
-                                           const std::map<std::string, Look>& now, Scope scope)
-{
-    std::vector<LookWrite> out;
-    if (scope == Scope::Item) return out;
-    auto eq = [](double x, double y) { return std::fabs(x - y) <= 1e-9; };
-    std::set<std::string> changed, written;
-    for (const Instance& a : all) {
-        const auto b = before.find(a.guid), n = now.find(a.guid);
-        if (b != before.end() && n != now.end() && !SameLook(b->second, n->second)) changed.insert(a.guid);
-    }
-    for (size_t i = 0; i < all.size(); ++i) {
-        if (!changed.count(all[i].guid)) continue;
-        const Look& was = before.at(all[i].guid);
-        const Look& is = now.at(all[i].guid);
-        const bool  vol = !eq(was.vol, is.vol);
-        const bool  fin = !eq(was.fade_in, is.fade_in) || was.in_shape != is.in_shape || !eq(was.in_dir, is.in_dir);
-        const bool  fout = !eq(was.fade_out, is.fade_out) || was.out_shape != is.out_shape || !eq(was.out_dir, is.out_dir);
-        for (int j : Linked(all, static_cast<int>(i), scope)) {
-            const std::string& g = all[static_cast<size_t>(j)].guid;
-            const auto         cur = now.find(g);
-            if (changed.count(g) || written.count(g) || cur == now.end()) continue;
-            Look l = cur->second;
-            if (vol) l.vol = was.vol > 1e-12 ? l.vol * (is.vol / was.vol) : is.vol;
-            if (fin) {
-                l.fade_in = is.fade_in;
-                l.in_shape = is.in_shape;
-                l.in_dir = is.in_dir;
-            }
-            if (fout) {
-                l.fade_out = is.fade_out;
-                l.out_shape = is.out_shape;
-                l.out_dir = is.out_dir;
-            }
-            if (SameLook(l, cur->second)) continue;
-            written.insert(g);
-            out.push_back({g, l});
-        }
-    }
-    return out;
-}
-
-std::vector<MoveBack> PlanMoveBack(const std::set<std::string>& expanded, const std::string& dragged,
-                                   const std::map<std::string, double>& before, const std::map<std::string, double>& now)
-{
-    std::vector<MoveBack> out;
-    std::vector<std::string> moved;
-    double                   delta = 0.0;
-    for (const auto& kv : now) {
-        const auto b = before.find(kv.first);
-        if (b == before.end() || std::fabs(kv.second - b->second) <= 1e-9) continue;
-        const double d = kv.second - b->second;
-        if (!expanded.count(kv.first)) return {};  // something else moved too: not ours
-        if (!moved.empty() && std::fabs(d - delta) > 1e-6) return {};  // moved apart: not one drag
-        delta = d;
-        moved.push_back(kv.first);
-    }
-    if (moved.size() < 2 || std::find(moved.begin(), moved.end(), dragged) == moved.end()) return out;
-    for (const std::string& g : moved)
-        if (g != dragged) out.push_back({g, before.at(g)});
-    return out;
-}
-
 WatchOut DecideWatch(const WatchSnap& last, const WatchSnap& now, const WatchIn& in)
 {
     WatchOut out;
@@ -1201,25 +1116,6 @@ WatchOut DecideWatch(const WatchSnap& last, const WatchSnap& now, const WatchIn&
                 if (!now.present.count(i.guid) && now.owners.count(i.owner) && last.selected.count(i.guid)) out.gone.insert(i.guid);
             return out;  // a delete: nothing else is read from it
         }
-        out.looks = PlanPropagatedLooks(last.inst, last.looks, now.looks, in.scope);
-        // A drag: only after a click, never when an animation item moved (RAV's follow moved its sounds).
-        bool owner_moved = false;
-        for (const auto& kv : now.owners) {
-            const auto b = last.owners.find(kv.first);
-            owner_moved = owner_moved || (b != last.owners.end() && std::fabs(b->second - kv.second) > 1e-9);
-        }
-        if (in.clicked && !owner_moved && !in.expanded.empty()) {
-            const std::string dragged = in.expanded.count(in.under_mouse) ? in.under_mouse : in.anchor;
-            out.back = PlanMoveBack(in.expanded, dragged, last.pos, now.pos);
-        }
-    }
-    if (!out.looks.empty() || !out.back.empty()) return out;
-    // A click: one seen (down then up), or one too quick for the timer to see: the selection changed to exactly one item,
-    // the one under the mouse (a script's selection is not under it; RAV's own selections are never read as a change).
-    const bool click = in.clicked || (now.selected.size() == 1 && !in.under_mouse.empty() && now.selected.count(in.under_mouse));
-    if (click && now.selected != last.selected) {
-        out.select = ExpandSelection(now.inst, now.selected, in.scope, in.ctrl);
-        out.clear_expanded = out.select.empty() && now.selected != in.expanded;
     }
     return out;
 }

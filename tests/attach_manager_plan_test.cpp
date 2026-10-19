@@ -328,7 +328,8 @@ int main()
         CHECK(!AddPileLayer(empty, "LIB", Scope::Project, Pool("W"), 'L', {Node("z", "", SoundNodeType::Random)}, 0.0, &Uid).ok);
     }
 
-    // ---- Linked select: one instance's layer in the animation (L + R), Item = itself, Project = every copy.
+    // ---- Linked instances (what a delete reaches): one instance's layer in the animation (L + R), Item = itself,
+    // Project = every copy.
     {
         std::vector<Instance> all = {In("A1", "W", "lay", "{STEP}"), In("A2", "W", "lay", "{STEP}"), In("A3", "W", "cl", "{CLOTH}"),
                                      In("B1", "R", "lay2", "{STEP}"), In("X1", "W", "", "")};
@@ -338,12 +339,6 @@ int main()
         l = Linked(all, 0, Scope::Project);
         CHECK(l.size() == 3 && Has(l, 3));  // Run's copy of the same sound
         CHECK(Linked(all, 4, Scope::Anim).size() == 1);  // attached on one marker only: itself
-        std::vector<std::string> sel = ExpandSelection(all, {"A2"}, Scope::Anim, false);
-        CHECK(sel.size() == 2 && sel[0] == "A2" && sel[1] == "A1");
-        CHECK(ExpandSelection(all, {"A2"}, Scope::Anim, true).empty());       // Ctrl+click: that one only
-        CHECK(ExpandSelection(all, {"A2"}, Scope::Item, false).empty());
-        CHECK(ExpandSelection(all, {"A1", "A2"}, Scope::Anim, false).empty());
-        CHECK(ExpandSelection(all, {"A3"}, Scope::Anim, false).empty());       // linked to nothing else
         // After Separate: L and R are two groups (their layers differ), not linked; Project keeps sides apart.
         all = {In("L1", "W", "lay", "{STEP}", 'L'), In("L2", "W", "lay", "{STEP}", 'L'), In("R1", "W", "layR", "{STEP}", 'R'),
                In("Q1", "R", "q", "{STEP}", 0)};
@@ -473,48 +468,6 @@ int main()
         const std::string before = SerializeSoundStore(st);
         CHECK(!AddPileLayer(st, "LIB", Scope::Anim, Pool("Walk_01", {a.anim_value}), 'R', {Node("z", "", SoundNodeType::Random)}, 0.0, &Uid).ok);
         CHECK(SerializeSoundStore(st) == before);
-    }
-
-    // ---- Volume / fades: the same change on the linked instances (volume by the same ratio); Item: none.
-    {
-        std::vector<Instance> all = {In("A1", "W", "lay", "s"), In("A2", "W", "lay", "s"), In("A3", "W", "other", "o")};
-        Look l0;
-        Look half = l0;
-        half.vol = 0.5;
-        Look quiet = l0;
-        quiet.vol = 0.8;
-        std::map<std::string, Look> before = {{"A1", l0}, {"A2", quiet}, {"A3", l0}}, now = before;
-        now["A1"] = half;
-        std::vector<LookWrite> w = PlanPropagatedLooks(all, before, now, Scope::Anim);
-        CHECK(w.size() == 1 && w[0].guid == "A2" && std::fabs(w[0].look.vol - 0.4) < 1e-9);
-        CHECK(PlanPropagatedLooks(all, before, now, Scope::Item).empty());
-        Look faded = l0;
-        faded.fade_in = 0.05;
-        faded.in_shape = 2;
-        now["A1"] = faded;
-        w = PlanPropagatedLooks(all, before, now, Scope::Anim);
-        CHECK(w.size() == 1 && std::fabs(w[0].look.fade_in - 0.05) < 1e-9 && w[0].look.in_shape == 2 && std::fabs(w[0].look.vol - 0.8) < 1e-9);
-        CHECK(SameLook(l0, l0) && !SameLook(l0, faded));
-    }
-
-    // ---- Move: the drag of one instance moved its expanded selection: the others go back; a move apart is left.
-    {
-        const std::set<std::string>   ex = {"A1", "A2", "A3"};
-        std::map<std::string, double> before = {{"A1", 1.0}, {"A2", 2.0}, {"A3", 3.0}, {"Z", 9.0}}, now = before;
-        now["A1"] = 1.5;
-        now["A2"] = 2.5;
-        now["A3"] = 3.5;
-        std::vector<MoveBack> m = PlanMoveBack(ex, "A2", before, now);
-        CHECK(m.size() == 2 && m[0].guid == "A1" && std::fabs(m[0].pos - 1.0) < 1e-9 && m[1].guid == "A3");
-        CHECK(PlanMoveBack(ex, "Q", before, now).empty());  // the dragged item is none of them
-        now["A3"] = 3.2;
-        CHECK(PlanMoveBack(ex, "A2", before, now).empty());  // moved apart
-        now = before;
-        now["A2"] = 2.5;
-        CHECK(PlanMoveBack(ex, "A2", before, now).empty());  // only the dragged one moved
-        now["A1"] = 1.5;
-        now["Z"] = 9.5;
-        CHECK(PlanMoveBack(ex, "A2", before, now).empty());  // something else moved too
     }
 
     // ---- Records and tags renamed after an edit (Separate's R copy, an animation's own copy).
@@ -670,7 +623,6 @@ int main()
         all[1].owner = "{ITEM2}";
         const std::vector<int> l = Linked(all, 0, Scope::Anim);
         CHECK(l.size() == 2 && Has(l, 1) && !Has(l, 2));
-        CHECK(ExpandSelection(all, {"S2"}, Scope::Anim, false).size() == 2);
     }
 
     // ---- An original (its tag has no node) plays the Sound with its source in its own animation's content: after the
@@ -715,13 +667,9 @@ int main()
         last.present = {"A1", "A2", "{OWN}"};
         last.owners = {{"{OWN}", 0.0}};
         last.selected = {"A1"};
-        last.pos = {{"A1", 1.0}, {"A2", 2.0}};
-        last.looks = {{"A1", Look()}, {"A2", Look()}};
         WatchSnap now = last;
         now.present.erase("A1");
         now.inst.erase(now.inst.begin());
-        now.looks.erase("A1");
-        now.pos.erase("A1");
         now.selected.clear();
         WatchIn in;
         in.top = "Remove items";
@@ -751,56 +699,10 @@ int main()
         in.top = "Remove items";
         CHECK(DecideWatch(last, now, in).gone.empty());
         in.scope = Scope::Anim;
-
-        // Moves: the expanded selection dragged moves back; a ripple shift (no click) or an animation moved does not.
-        WatchSnap m0 = last;
-        m0.selected = {"A1", "A2"};
-        WatchSnap m1 = m0;
-        m1.pos = {{"A1", 1.5}, {"A2", 2.5}};
-        WatchIn mv;
-        mv.top = "Move items";
-        mv.new_undo = true;
-        mv.clicked = true;
-        mv.expanded = {"A1", "A2"};
-        mv.anchor = "A1";
-        mv.under_mouse = "A2";
-        o = DecideWatch(m0, m1, mv);
-        CHECK(o.back.size() == 1 && o.back[0].guid == "A1" && std::fabs(o.back[0].pos - 1.0) < 1e-9);
-        mv.clicked = false;  // ripple editing, insert time, a keyboard nudge
-        CHECK(DecideWatch(m0, m1, mv).back.empty());
-        mv.clicked = true;
-        m1.owners["{OWN}"] = 0.5;  // the animation item moved: RAV's follow moved its sounds
-        CHECK(DecideWatch(m0, m1, mv).back.empty());
-
-        // A click on one instance selects its linked instances; Ctrl+click: that one only; no click (undo, keyboard): nothing.
-        WatchSnap c0 = last;
-        c0.selected.clear();
-        WatchSnap c1 = last;
-        c1.selected = {"A2"};
-        WatchIn ck;
-        ck.top = "Change media item selection";
-        ck.clicked = true;
-        o = DecideWatch(c0, c1, ck);
-        CHECK(o.select.size() == 2 && o.select[0] == "A2");
-        ck.ctrl = true;
-        CHECK(DecideWatch(c0, c1, ck).select.empty());
-        ck.ctrl = false;
-        ck.clicked = false;
-        CHECK(DecideWatch(c0, c1, ck).select.empty());
-        // A click too quick for the timer (down and up between two ticks): the one item selected is under the mouse.
-        ck.under_mouse = "A2";
-        CHECK(DecideWatch(c0, c1, ck).select.size() == 2);
-        ck.ctrl = true;  // Ctrl held then: that one only
-        CHECK(DecideWatch(c0, c1, ck).select.empty());
-        ck.ctrl = false;
-        ck.under_mouse = "OTHER";  // a script's selection (not under the mouse): nothing
-        CHECK(DecideWatch(c0, c1, ck).select.empty());
-        // The selection committed on a later tick than the release: the seen click still counts (kept alive), and with
-        // the selection unchanged nothing happens.
-        ck.under_mouse.clear();
-        ck.clicked = true;
-        CHECK(DecideWatch(c0, c1, ck).select.size() == 2);
-        CHECK(DecideWatch(c1, c1, ck).select.empty());
+        // A volume / fade change, a move, a selection: nothing follows (Antho 2026-10-20: only a delete propagates).
+        WatchSnap same = last;
+        in.top = "Item volume";
+        CHECK(DecideWatch(last, same, in).gone.empty());
     }
 
     if (g_fail) {

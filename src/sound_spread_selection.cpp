@@ -1595,9 +1595,10 @@ void WatchTick()
     if (!g_watch.primed || count != g_watch.count || sel_changed) g_watch.pending = true;
     g_watch.count = count;
     g_watch.sel_sig = sel;
-    // A selection change is noted at once (no rescan): a delete read right after it knows what was selected.
+    // A selection change is noted at once (no rescan): a delete read right after it knows what was selected. Merged,
+    // never replaced: a delete changes the selection too (the deleted item leaves it), and the delete needs to know it
+    // was selected (Antho 2026-10-20: "le delete marche pas"). The next full read sets the selection again.
     if (g_watch.primed && sel_changed) {
-        g_watch.last.snap.selected.clear();
         for (int i = 0, n = CountSelectedMediaItems(proj); i < n; ++i)
             if (MediaItem* it = GetSelectedMediaItem(proj, i)) g_watch.last.snap.selected.insert(GuidKey(ItemGuidOf(it)));
     }

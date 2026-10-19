@@ -457,6 +457,9 @@ struct SoundStore {
     // 13-15a: the project's and the characters' assignments.
     std::vector<SoundAssign>     project;
     std::vector<SoundCharacter>  characters;
+    // 13-68e v5 (appended): the Attach manager's "Apply to" (0 Item, 1 Anim, 2 Project; header field `amscope`, written
+    // only when not Anim): how far an Attach manager gesture, or a gesture on an instance in REAPER, goes.
+    int                          attach_scope = 1;
 };
 
 // ---- Per-animation-item state (the take's P_EXT:RAV_SOUNDS) -------------------------------------

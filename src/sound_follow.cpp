@@ -594,6 +594,16 @@ void DrawHandEditRow(ReaProject* proj)
 
 }  // namespace
 
+std::vector<std::string> LocalizedUndoNames(std::initializer_list<const char*> names)
+{
+    return LocalizedNames(names);
+}
+
+const std::vector<std::string>& FollowCutNames()
+{
+    return CutNames();
+}
+
 void InitSoundFollow(void* (*get_func)(const char* name))
 {
     if (!get_func) return;

@@ -9,6 +9,8 @@
 
 #ifdef _WIN32
 
+#include <initializer_list>
+#include <string>
 #include <vector>
 
 #include "reaper_api.h"
@@ -26,6 +28,11 @@ void DrawSoundsMenuSection();
 // Story 13-17 (N6): the menu's Library tab, its Tracks section: where placed sounds land (the
 // Tracks option, moved from Tagging > Sounds) and the separator of joined track names.
 void DrawLibraryTracksSection();
+
+// 13-68e v5 (the Attach manager's watcher): REAPER's localized forms of these undo names (those that differ from the
+// English; empty without a language pack), and the follow's cut names.
+std::vector<std::string>        LocalizedUndoNames(std::initializer_list<const char*> names);
+const std::vector<std::string>& FollowCutNames();
 
 // The follow report of a project (13-9 F12): session memory, the last 200 lines, oldest first.
 std::vector<ReportLine> FollowReport(ReaProject* proj);

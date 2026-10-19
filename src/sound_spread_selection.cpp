@@ -7,12 +7,16 @@
 #ifdef _WIN32
 
 #include <algorithm>
+#include <chrono>
 #include <map>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <set>
 #include <vector>
+
+#include <windows.h>  // 13-68e v5: GetAsyncKeyState, GetCursorPos (read only)
 
 #include "auto_detect.h"  // IsActiveAutoBlock, AutoBlockKind
 #include "auto_types.h"   // AutoKindRow
@@ -28,6 +32,7 @@
 #include "sound_assign.h"  // EventSide
 #include "sound_attach.h"
 #include "sound_attach_plan.h"
+#include "sound_follow.h"       // 13-68e v5: LocalizedUndoNames, FollowCutNames
 #include "sound_auto_assign.h"  // SetRulesLibrary, SetRulesValue
 #include "sound_peaks.h"        // ReadItemMedia
 #include "sound_place.h"        // FolderPileMembers
@@ -52,6 +57,18 @@ SetMediaItemInfo_ValueFn f_set_item = nullptr;
 CountTakesFn             f_count_takes = nullptr;
 SelectAllMediaItemsFn    f_select_all = nullptr;
 SetMediaItemSelectedFn   f_set_selected = nullptr;
+// 13-68e v5 (the watcher): a redo waiting (an undo just ran), the item under a screen point.
+using Undo_CanRedo2Fn = const char* (*)(ReaProject* proj);
+using GetItemFromPointFn = MediaItem* (*)(int x, int y, bool allow_locked, MediaItem_Take** take);
+Undo_CanRedo2Fn    f_can_redo = nullptr;
+GetItemFromPointFn f_item_from_point = nullptr;
+// An original deleted by hand put back (its last read state).
+using GetItemStateChunkFn = bool (*)(MediaItem* item, char* buf, int buf_sz, bool isundo);
+using SetItemStateChunkFn = bool (*)(MediaItem* item, const char* str, bool isundo);
+using AddMediaItemToTrackFn = MediaItem* (*)(MediaTrack* tr);
+GetItemStateChunkFn   f_get_chunk = nullptr;
+SetItemStateChunkFn   f_set_chunk = nullptr;
+AddMediaItemToTrackFn f_add_item = nullptr;
 
 constexpr const char kNoMarker[] = "Select a RAV marker (click its label)";
 constexpr const char kTakeOnly[] = "RAV markers are take markers only: set Markers to Project or Both";
@@ -226,12 +243,6 @@ void ApplySideValues(ReaProject* proj, const std::string& lib_uid)
     }
 }
 
-// 13-68e v4: `other_none` = the other side plays nothing.
-std::string SideText(char side, bool other_none = false)
-{
-    if (!side) return std::string();
-    return " " + std::string(1, side) + " only" + (other_none ? ", " + std::string(1, side == 'L' ? 'R' : 'L') + " plays nothing" : std::string());
-}
 
 // The selection read as the library reads it (an NVK folder item: its pile, its layers' takes shared), and the
 // items each pile moves: `first` = the pile that is not copied (it is attached to an event).
@@ -323,8 +334,11 @@ void AttachToEvent(ReaProject* proj, MediaItem* owner, const AttachEvent& ev, co
                    const std::vector<MediaItem*>& items, double offset_s,
                    const std::vector<std::pair<std::string, std::vector<MediaItem*>>>& folders = {})
 {
-    const SoundLibrary* lib = FindLibrary(GetSoundStore(proj), lib_uid);
-    if (!lib || ev.rid.empty()) return;
+    // 13-68e v5 (Item scope): no library (nothing attached on the kind yet): the items are attached all the same.
+    static const SoundLibrary kNoLibrary;
+    const SoundLibrary*       lib = lib_uid.empty() ? nullptr : FindLibrary(GetSoundStore(proj), lib_uid);
+    if (!lib) lib = &kNoLibrary;
+    if (ev.rid.empty()) return;
     std::vector<SoundPlacement>              placements;
     std::vector<std::pair<std::string, int>> played;
     std::map<MediaItem*, int>                kid_variation;  // a folder pile's children: the pile's variation
@@ -464,9 +478,10 @@ int DropEarlierSounds(ReaProject* proj, const std::vector<MediaItem*>& targets, 
 // Populate on `targets`, only the rules holding the library (Antho 2026-10-18: never the project's other
 // libraries), then the report as a toast.
 // 13-68 v3: both actions count the animations the same way: the items (linked copies included) holding the library.
-// 13-68e: `only` (non-null) = only these rules (one side's).
+// 13-68e: `only` (non-null) = only these rules (one side's). v5: `head` (non-empty) = the report's first words instead of
+// SpreadRunReport's, Populate's counts after them.
 std::string PopulateLibrary(const std::vector<MediaItem*>& targets, const std::string& lib_uid, SpreadRunCounts& counts,
-                            const std::set<std::string>* only = nullptr)
+                            const std::set<std::string>* only = nullptr, const std::string& head = std::string())
 {
     std::vector<std::string> type_rids;
     counts.animations = 0;
@@ -479,7 +494,9 @@ std::string PopulateLibrary(const std::vector<MediaItem*>& targets, const std::s
             }
         counts.animations += holds ? 1 : 0;
     }
-    if (type_rids.empty()) return Finish("No " + counts.type + " rule holds the library " + counts.type + ": nothing placed");
+    if (type_rids.empty())
+        return Finish((head.empty() ? std::string() : head + ". ") + "No " + counts.type + " rule holds the library " + counts.type +
+                      ": nothing placed");
     PopulateCounts    pc;
     int               events = 0;
     const SoundReport rep = PopulateItemsCounted(targets, &events, &pc, false, nullptr, type_rids);
@@ -488,6 +505,12 @@ std::string PopulateLibrary(const std::vector<MediaItem*>& targets, const std::s
     counts.replaced += pc.replaced;
     counts.kept = pc.kept;
     std::string text = SpreadRunReport(counts);
+    if (!head.empty()) {
+        text = head;
+        if (counts.placed > 0) text += ", " + std::to_string(counts.placed) + (counts.placed == 1 ? " sound placed" : " sounds placed");
+        if (counts.to_source > 0) text += ", " + std::to_string(counts.to_source) + " earlier to the source zone";
+        text += ".";
+    }
     for (const ReportLine& l : rep.lines)
         if (l.kind == ReportKind::Blocked) {
             text += "\n" + l.text;
@@ -508,349 +531,6 @@ std::string TagLibrary(ReaProject* proj, const PlacedTag& t)
     return std::string();
 }
 
-std::string ScopeText(SpreadScope scope)
-{
-    return scope == SpreadScope::AllInstances ? " (all animations with this marker)" : " (this animation)";
-}
-
-// 13-68e: `given` = the Attach manager's marker (else the clicked label); `side_mode` MarkerSide = that marker's side only.
-// 13-68e v4: `other_none` (with MarkerSide) = the other side plays nothing: its content goes and its markers lose the
-// library's sounds (both sides' rules emptied and Populated).
-std::string Run(SpreadScope scope, SpreadSide side_mode = SpreadSide::Both, const SpreadMarker* given = nullptr,
-                bool other_none = false)
-{
-    if (!f_set_item) return Finish("REAPER functions missing");
-    // P3b: no project marker to select (13-68e: the window passes its marker).
-    if (!given && GetTaggingMarkerMode() == MarkerMode::Take) return Finish(kTakeOnly);
-    ReaProject*                   proj = EnumProjects(-1, nullptr, 0);
-    const std::vector<MediaItem*> rav_items = ProjectRavItems();
-    // P3: the selected RAV marker.
-    SelectedMarker mk;
-    int            n_selected = 0;
-    if (given) {
-        if (!given->item || !IsLiveItem(given->item)) return Finish("The marker's animation item is gone: nothing changed");
-        mk.item = given->item;
-        mk.name = given->name;
-        mk.pos = given->pos;
-        n_selected = 1;
-    } else {
-        n_selected = FindSelectedMarker(rav_items, &mk);
-    }
-    if (n_selected == 0 || !mk.item) return Finish(kNoMarker);
-    // 13-68 v3: its kind with its sides (from its rule): an L marker's kind is also its R rules'.
-    SpreadKind kind;
-    int        mk_block = -1;
-    char       side = 0;  // 13-68e
-    {
-        ItemRulesRead rr;
-        if (ReadItemRules(mk.item, &rr) && rr.valid) {
-            kind = KindOfRuleMarker(rr.rules, mk.name, &mk_block);
-            if (mk_block >= 0 && side_mode == SpreadSide::MarkerSide) side = EventSide(rr.rules.blocks[static_cast<size_t>(mk_block)]);
-        }
-    }
-    if (kind.key.empty()) return Finish("No rule of this animation writes the marker " + MarkerTypeName(mk.name));
-    if (side_mode == SpreadSide::MarkerSide && !side)
-        return Finish("The " + MarkerTypeName(mk.name) + " marker has no side: attach it on both sides. Nothing changed");
-    const std::string& type = kind.name;
-    // The selection (an NVK folder item is one pile).
-    std::vector<SelectedSound> sel;
-    int                        skipped = 0;
-    std::string                skip;
-    ReadSelectedSounds(&sel, &skipped, &skip, true, true);
-    if (sel.empty()) return Finish("Select the sound items first" + (skip.empty() ? std::string() : " (" + skip + ")"));
-    std::vector<AttachItem> facts;
-    for (const SelectedSound& s : sel) facts.push_back(s.facts);
-
-    // The animation items: this one (Populate adds its linked copies), or every RAV item with a rule of the kind.
-    const bool              all = scope == SpreadScope::AllInstances;
-    std::vector<MediaItem*> anims = {mk.item};
-    if (all)
-        for (MediaItem* it : rav_items) {
-            if (it == mk.item) continue;
-            ItemRulesRead rr;
-            if (!ReadItemRules(it, &rr) || !rr.valid) continue;
-            const std::vector<char> on = BlocksOfType(rr.rules, kind.key);
-            if (std::find(on.begin(), on.end(), 1) != on.end()) anims.push_back(it);
-        }
-
-    // Checks before anything is written: the kind's markers (both sides) on the selected marker's item.
-    std::vector<AttachEvent> type_events;
-    {
-        BusyScope busy("Reading markers");
-        MarkersOfType(mk.item, kind.key, &type_events);
-    }
-    if (type_events.empty()) {
-        // A rule of the kind this build no longer runs (an auto block from an older RAV, such as a sideless Land).
-        ItemRulesRead rr;
-        if (ReadItemRules(mk.item, &rr) && rr.valid)
-            for (const Block& b : rr.rules.blocks)
-                if (b.enabled && KindOfBlock(b).key == kind.key && IsAutoBlock(b) && !IsActiveAutoBlock(b))
-                    return Finish("The " + type + " rule is from an older RAV: press Detect on this animation");
-        return Finish("No " + type + " marker on this animation");
-    }
-    // Antho 2026-10-18 (the concept): the first pile is not copied, it moves onto the selected marker (the event
-    // nearest it, of its own rule first: the other side's may sit close) and stays attached there; Populate places
-    // the copies on the other markers.
-    AttachEvent at_marker = type_events.front();
-    bool        own_rule = at_marker.block == mk_block;
-    for (const AttachEvent& e : type_events) {
-        const bool mine = e.block == mk_block;
-        if ((mine && !own_rule) || (mine == own_rule && std::fabs(e.project_t - mk.pos) < std::fabs(at_marker.project_t - mk.pos))) {
-            at_marker = e;
-            own_rule = mine;
-        }
-    }
-    const std::vector<std::vector<int>> piles = SpreadPiles(facts);
-    const std::vector<int>              first_pile = piles.empty() ? std::vector<int>() : piles.front();
-    const int                           first_top = TopmostOf(facts, first_pile);
-    const double first_anchor = first_top >= 0 ? PileAnchor(facts[static_cast<size_t>(first_top)]) : at_marker.project_t;
-    const ReadSounds rs = ReadSources(sel, first_pile);
-
-    other_none = other_none && side;  // v4
-    const std::string undo = "RAV: Spread selection to " + type + SideText(side, other_none) + ScopeText(scope);
-    SoundUndoScope    scope_undo(proj, undo.c_str());
-
-    // The rules of the kind (given ids): the selected marker's item must have one, and its event's rule an id
-    // (13-68 v3 review: read before any write; an empty one would leave the original untagged on the marker).
-    // 13-68e: "<side> only": that side's rules only (the other side keeps what it had).
-    std::vector<std::vector<std::string>> rids_of(anims.size());
-    for (size_t i = 0; i < anims.size(); ++i) rids_of[i] = TypeRids(anims[i], kind.key, side);
-    if (rids_of[0].empty()) return Finish("Could not give the " + type + " rules an id: nothing changed");
-    at_marker.rid = EventRid(mk.item, at_marker);
-    if (at_marker.rid.empty()) return Finish("Could not give the " + MarkerTypeName(mk.name) + " rule an id: nothing changed");
-
-    // The kind's Attached library (one for both sides, side-free name): made, or its content replaced.
-    SpreadRunCounts counts;
-    counts.type = type;
-    counts.marker = MarkerTypeName(mk.name);
-    counts.all_instances = all;
-    counts.selected_markers = n_selected;
-    counts.variations = static_cast<int>(piles.size());
-    counts.layers = static_cast<int>(sel.size());
-    counts.skip_note = skip;
-    counts.side = side;  // 13-68e
-    counts.other_none = other_none;
-    std::string lib_uid;
-    {
-        const std::vector<SoundNode> layer = SpreadLayerNodes(rs.sources, type, &NewSoundUid);
-        const bool                   wrote = ModifySoundStore(proj, nullptr, [&](SoundStore& st) {
-            SoundLibrary* lib = FindAttachedLibrary(st, kind.key);
-            counts.reused = lib != nullptr;
-            if (!lib) {
-                SoundLibrary l;
-                l.uid = NewSoundUid();
-                l.name = type;
-                l.attached = true;
-                st.libraries.push_back(l);
-                lib = &st.libraries.back();
-            }
-            lib->attached_type = kind.key;  // found by it from now on, whatever its name
-            lib_uid = lib->uid;
-            if (side) return SetSideContent(st, lib_uid, side, layer, &NewSoundUid, other_none);  // 13-68e: the other side kept or emptied
-            SetLibraryContent(*lib, layer);
-            return true;
-        });
-        if (!wrote || lib_uid.empty()) return Finish("Could not write the library " + type + ": nothing changed");
-    }
-
-    // The assignment: every rule of the kind (both sides), on each animation item and its linked copies.
-    for (size_t i = 0; i < anims.size(); ++i) {
-        const std::vector<std::string>& of_type = rids_of[i];
-        if (of_type.empty()) continue;
-        for (MediaItem* m : WithPoolMembers({anims[i]}))
-            ModifyItemSounds(m, nullptr, [&](ItemSounds& r) { return SetRulesLibrary(r, of_type, LibState::Library, lib_uid); });
-    }
-
-    ApplySideValues(proj, lib_uid);  // 13-68e: each rule plays its side's content
-    LeaveOldPlaces(proj, sel);
-    // The first pile onto the selected marker (its top item's snap on it), the others to the source zone.
-    {
-        const double delta = at_marker.project_t - first_anchor;
-        for (MediaItem* it : rs.first_items) f_set_item(it, "D_POSITION", GetMediaItemInfo_Value(it, "D_POSITION") + delta);
-    }
-    ToSourceZone(proj, rs.to_move, rs.first_items);
-
-    const std::vector<MediaItem*> targets = LibraryTargets(anims, lib_uid);
-    // 13-68e: "<side> only": the side's rules alone are emptied and placed again.
-    // v4: "plays nothing": the other side's rules too, on every item holding the library (targets holds them all).
-    std::set<std::string> side_rids = side ? SideRids(targets, kind.key, side) : std::set<std::string>();
-    if (other_none) {
-        const std::set<std::string> o = SideRids(targets, kind.key, side == 'L' ? 'R' : 'L');
-        side_rids.insert(o.begin(), o.end());
-    }
-    const std::set<std::string>* only = side ? &side_rids : nullptr;
-    counts.to_source = DropEarlierSounds(proj, targets, lib_uid, only, rs.to_move);
-
-    AttachToEvent(proj, mk.item, at_marker, lib_uid, rs.attach_items, 0.0, rs.first_folders);
-    return PopulateLibrary(targets, lib_uid, counts, only);
-}
-
-// Add to stack (Antho 2026-10-18): no marker to select. The selection holds the new items and one or more items
-// already in a stack (the original an Attach left on its marker, or a copy Populate placed: its tag names the event,
-// its rule the Attached library), all on one marker (13-68 v3: several markers are refused). The new items are a
-// new layer of that library at their offset from the stack's event (top item's snap minus the event: the same
-// offset as from the stack item's own snap, which sits on it): all animations = in the shared content; this
-// animation = under the library's RAV-owned per-animation Switch (AddAnimationLayer), the stack's animation item
-// and its linked copies given that animation's value. The pile nearest the event stays where it is, attached to it;
-// the other piles go to the source zone; Populate (the library's rules only) places the new layer on the other markers.
-// 13-68e: `side_mode` MarkerSide = the stack's side only (the layer under the library's RAV - Side Switch).
-std::string RunStack(SpreadScope scope, SpreadSide side_mode = SpreadSide::Both, bool other_none = false)
-{
-    if (!f_set_item) return Finish("REAPER functions missing");
-    ReaProject*      proj = EnumProjects(-1, nullptr, 0);
-    const SoundStore store = GetSoundStore(proj);
-    // The stack items: the selected items placed on an event of an Attached library; the first one's is the stack.
-    PlacedTag              ref;
-    std::vector<PlacedTag> refs;
-    MediaItem*             owner = nullptr;
-    std::string            lib_uid, key;
-    for (int i = 0, n = CountSelectedMediaItems(proj); i < n; ++i) {
-        MediaItem* it = GetSelectedMediaItem(proj, i);
-        PlacedTag  t;
-        if (!it || !ReadPlacedTag(it, &t)) continue;
-        const SoundLibrary* l = FindLibrary(store, TagLibrary(proj, t));
-        if (!l || !l->attached || l->attached_type.empty()) continue;
-        refs.push_back(t);
-        if (owner) continue;
-        ref = t;
-        owner = ScanItemByGuid(proj, t.owner);
-        lib_uid = l->uid;
-        key = l->attached_type;
-    }
-    if (!owner) return Finish("Select one item of the stack (a sound the Attach action placed) with the items to add");
-    if (SeveralStackEvents(refs))
-        return Finish("The selected stack items are on several markers: select the stack of one marker. Nothing changed");
-    const SoundLibrary* lib = FindLibrary(store, lib_uid);
-    const std::string   type = KindNameOn(owner, key, lib ? lib->name : key);
-    // The new items: the selected sounds that are not the stack's (placed for this library: the stack items, the
-    // stack's other sounds, its copies on other markers; the attached pile's folder item; the library's own
-    // sources); any other one, even one RAV placed, is taken over.
-    std::vector<SelectedSound> all_sel, sel;
-    int                        skipped = 0;
-    std::string                skip;
-    ReadSelectedSounds(&all_sel, &skipped, &skip, true, true);
-    for (const SelectedSound& s : all_sel) {
-        const bool placed_for = s.tagged && TagLibrary(proj, s.tag) == lib_uid;
-        bool       kid_in = false;
-        if (s.folder)
-            for (MediaItem* k : FolderPileMembers(s.item)) {
-                PlacedTag kt;
-                if (ReadPlacedTag(k, &kt) && TagLibrary(proj, kt) == lib_uid) kid_in = true;
-            }
-        if (!lib || !IsStackItem(*lib, s.facts.guid, placed_for, kid_in)) sel.push_back(s);
-    }
-    if (sel.empty()) return Finish("Select the items to add with one item of the stack");
-
-    const bool all = scope == SpreadScope::AllInstances;
-    // 13-68e: the stack's side, from its rule (read before the undo point opens).
-    char side = 0;
-    if (side_mode == SpreadSide::MarkerSide) {
-        ItemRulesRead rr;
-        if (ReadItemRules(owner, &rr) && rr.valid)
-            for (const Block& b : rr.rules.blocks)
-                if (!b.rid.empty() && b.rid == ref.rid) side = EventSide(b);
-        if (!side) return Finish("The stack's " + type + " marker has no side: add it on both sides. Nothing changed");
-    }
-    other_none = other_none && side;  // 13-68e v4
-    const std::string undo = "RAV: Add selection to stack " + type + SideText(side, other_none) + ScopeText(scope);
-    // 13-68 v3 review: the scope opens before the rules are given ids (ItemRuleIds may write them).
-    SoundUndoScope scope_undo(proj, undo.c_str());
-    // The stack's event, in project time.
-    AttachEvent ev;
-    bool        found = false;
-    {
-        BusyScope                busy("Reading markers");
-        std::vector<std::string> rids;
-        std::string              err;
-        std::vector<AttachEvent> evs;
-        if (ItemRuleIds(owner, &rids, &err) && MarkersOfType(owner, key, &evs))
-            for (const AttachEvent& e : evs)
-                if (e.block >= 0 && static_cast<size_t>(e.block) < rids.size() && rids[static_cast<size_t>(e.block)] == ref.rid &&
-                    std::fabs(e.clip_t - ref.t) <= kEventMatchSeconds) {
-                    ev = e;
-                    ev.rid = ref.rid;
-                    found = true;
-                }
-    }
-    if (!found) return Finish("The stack's " + type + " marker is not on its animation now: nothing changed");
-
-    std::vector<AttachItem> facts;
-    for (const SelectedSound& s : sel) facts.push_back(s.facts);
-    const std::vector<std::vector<int>> piles = SpreadPiles(facts);
-    const int                           at = NearestPile(facts, piles, ev.project_t);
-    const std::vector<int>              first_pile = at >= 0 ? piles[static_cast<size_t>(at)] : std::vector<int>();
-    const int                           first_top = TopmostOf(facts, first_pile);
-    if (first_top < 0) return Finish("Select the items to add with one item of the stack");
-    const double     offset_s = PileAnchor(facts[static_cast<size_t>(first_top)]) - ev.project_t;
-    const ReadSounds rs = ReadSources(sel, first_pile);
-
-    SpreadRunCounts counts;
-    counts.type = type;
-    counts.add_layer = true;
-    counts.all_instances = all;
-    counts.reused = true;
-    counts.variations = static_cast<int>(piles.size());
-    counts.layers = static_cast<int>(sel.size());
-    counts.skip_note = skip;  // what is not a sound (an animation item...); the stack items are read, then left out
-    counts.side = side;       // 13-68e
-    counts.other_none = other_none;
-    // 13-68 v3 review: the values the RAV items outside the stack item's pool hold (another animation's, never reused).
-    std::set<std::string> held_elsewhere;
-    if (!all) {
-        const std::vector<MediaItem*> pool = WithPoolMembers({owner});
-        const std::set<MediaItem*>    mine(pool.begin(), pool.end());
-        for (MediaItem* it : ProjectRavItems())
-            if (!mine.count(it))
-                for (const ValueSet& v : ReadItemSounds(it).item_values) held_elsewhere.insert(v.value_uid);
-    }
-    ValueSet anim_value;
-    {
-        std::vector<SoundNode> layer = SpreadLayerNodes(rs.sources, type, &NewSoundUid);
-        const std::string      anim_name = ItemSoundName(owner);
-        const ItemSounds       owner_rec = ReadItemSounds(owner);
-        bool                   added = false;
-        const bool             wrote = ModifySoundStore(proj, nullptr, [&](SoundStore& st) {
-            if (!FindLibrary(st, lib_uid) || layer.empty()) return false;
-            // 13-68e: "<side> only": the side's own layers Blend (under the RAV - Side Switch), else the root.
-            if (other_none) EmptySide(st, lib_uid, side == 'L' ? 'R' : 'L', &NewSoundUid);  // 13-68e v4
-            const std::string top = side ? SideLayerTop(st, lib_uid, side, &NewSoundUid) : std::string();
-            if (side && top.empty()) return false;
-            SoundLibrary* l = FindLibrary(st, lib_uid);
-            if (all) {
-                layer[0].name = StackLayerName(*l);
-                AddStackLayer(*l, layer, offset_s * 1000.0, NewSoundUid(), top);
-                added = true;
-            } else {
-                layer[0].name = "Layer";
-                anim_value = AddAnimationLayer(st, lib_uid, layer, offset_s * 1000.0, anim_name, owner_rec.item_values, type,
-                                               &NewSoundUid, held_elsewhere, top);  // 13-68 v3 review; 13-68e: top
-                added = !anim_value.group_uid.empty();
-            }
-            return added;
-        });
-        if (!wrote || !added) return Finish("Could not write the library " + type + ": nothing changed");
-    }
-    // This animation: its value of the per-animation Switch, on the item and its linked copies.
-    if (!all)
-        for (MediaItem* m : WithPoolMembers({owner}))
-            ModifyItemSounds(m, nullptr,
-                             [&](ItemSounds& r) { return SetValueIn(r.item_values, anim_value.group_uid, anim_value.value_uid); });
-    ApplySideValues(proj, lib_uid);  // 13-68e
-    LeaveOldPlaces(proj, sel);
-    ToSourceZone(proj, rs.to_move, rs.first_items);
-    AttachToEvent(proj, owner, ev, lib_uid, rs.attach_items, offset_s, rs.first_folders);
-    // All animations: wherever the library is; this animation: the stack's item (Populate adds its linked copies).
-    std::vector<MediaItem*> targets = all ? LibraryTargets({owner}, lib_uid) : std::vector<MediaItem*>{owner};
-    std::set<std::string>   side_rids = side ? SideRids(targets, key, side) : std::set<std::string>();  // 13-68e
-    if (other_none) {  // v4: the other side's rules on every item holding the library: earlier sounds out, Populated
-        const std::vector<MediaItem*> every = LibraryTargets(targets, lib_uid);
-        const std::set<std::string>   o = SideRids(every, key, side == 'L' ? 'R' : 'L');
-        counts.to_source = DropEarlierSounds(proj, every, lib_uid, &o, {});
-        side_rids.insert(o.begin(), o.end());
-        targets = every;
-    }
-    return PopulateLibrary(targets, lib_uid, counts, side ? &side_rids : nullptr);
-}
 
 // ---- 13-68e: the Attach manager ----------------------------------------------------------------------------------
 
@@ -887,6 +567,32 @@ std::set<std::string> AllSourceGuids(const SoundStore& st, const std::map<std::s
     return out;
 }
 
+// 13-68e v5: what one read knows of each Attached library (its layout, its sources, an earlier version's layout).
+struct LayerCache {
+    std::map<std::string, am::Layout>                         lay;
+    std::map<std::string, std::map<std::string, std::string>> src;
+    std::map<std::string, bool>                               legacy;
+};
+// The layer a placed item plays (its tag's node, else the Sound its item is the source of). None for a library an
+// earlier version laid out (its gestures are refused: nothing is linked).
+am::LayerAt InstanceLayer(const SoundStore& st, const SoundLibrary& lib, const PlacedTag& t, const std::string& guid_key,
+                          const std::map<std::string, MediaItem*>& items, LayerCache& c)
+{
+    auto lg = c.legacy.find(lib.uid);
+    if (lg == c.legacy.end()) lg = c.legacy.emplace(lib.uid, am::LegacyLayout(st, lib, nullptr)).first;
+    if (lg->second) return am::LayerAt();
+    auto lay = c.lay.find(lib.uid);
+    if (lay == c.lay.end()) lay = c.lay.emplace(lib.uid, am::ReadLayout(st, lib)).first;
+    std::string node = t.node;
+    if (node.empty()) {
+        auto s = c.src.find(lib.uid);
+        if (s == c.src.end()) s = c.src.emplace(lib.uid, SourceNodes(lib, items)).first;
+        const auto hit = s->second.find(guid_key);
+        if (hit != s->second.end()) node = hit->second;
+    }
+    return node.empty() ? am::LayerAt() : am::LayerOfNode(lib, lay->second, node);
+}
+
 // The project time of clip time `t` on `anim` (its first pass).
 double EventPos(MediaItem* anim, double t)
 {
@@ -906,53 +612,524 @@ std::string LabelOf(const std::string& name)
 // The GUIDs of the RAV project markers the last read listed (polled for their selected label).
 std::vector<std::string> g_marker_guids;
 
-// The items leave: Keep = untagged in place; Delete = deleted, but an item a library Sound plays from goes to the
-// source zone (untagged) instead. Counts what happened.
-struct Released {
-    int kept = 0, deleted = 0, to_source = 0;
-};
-// `sources` (non-null) = the source GUIDs read before the gesture changed the store (Remove from library: the removed
-// variation's original stays the user's item, never deleted).
-Released ReleaseItems(ReaProject* proj, const std::vector<std::string>& guids, bool keep,
-                      const std::set<std::string>* sources_before = nullptr)
+// 13-68e v5: "(this instance)" / "(this animation)" / "(the project)".
+std::string ScopeText(am::Scope scope)
 {
-    Released                                r;
-    const std::map<std::string, MediaItem*> items = ItemsByGuid(proj);
-    const std::set<std::string> sources = sources_before ? *sources_before : AllSourceGuids(GetSoundStore(proj), items);
-    std::vector<MediaItem*>                 to_zone;
-    std::set<std::string>                   done;
-    for (const std::string& g : guids) {
-        const std::string key = GuidKey(g);
-        if (!done.insert(key).second) continue;
-        const auto hit = items.find(key);
-        if (hit == items.end()) continue;
-        MediaItem* it = hit->second;
-        if (keep) {
-            ClearPlacedTag(it);
-            ++r.kept;
-        } else if (sources.count(key)) {
-            ClearPlacedTag(it);
-            to_zone.push_back(it);
-            ++r.to_source;
-        } else if (IsFolderItem(it) || !RemovePlacedAny(proj, it)) {  // never a folder item (its members would stay)
-            ClearPlacedTag(it);
-            ++r.kept;
-        } else {
-            ++r.deleted;
-        }
-    }
-    if (!to_zone.empty()) ToSourceZone(proj, to_zone, {});
-    return r;
+    return std::string(" (") + am::ScopeWords(scope) + ")";
 }
 
-std::string ReleasedText(const Released& r, bool keep)
+am::Scope ScopeOfAction(SpreadScope s)
 {
-    const int n = r.kept + r.deleted + r.to_source;
-    std::string out = std::to_string(n) + (n == 1 ? " item " : " items ");
-    if (keep) return out + "kept in place, no longer following";
-    out += "deleted";
-    if (r.to_source) out += " (" + std::to_string(r.to_source) + " the library plays from: moved to the source zone)";
-    return out;
+    return s == SpreadScope::AllInstances ? am::Scope::Project : am::Scope::Anim;
+}
+
+// The animation an Anim gesture acts for: its name, its item-level values, the values held by RAV items outside its
+// pool (never reused: another animation's), the kind's name (the AnimSwitch's group "<kind> animations").
+am::PoolKey PoolKeyOf(MediaItem* anim, const std::string& kind_name)
+{
+    am::PoolKey p;
+    p.anim_name = ItemSoundName(anim);
+    p.item_values = ReadItemSounds(anim).item_values;
+    p.kind_name = kind_name;
+    const std::vector<MediaItem*> pool = WithPoolMembers({anim});
+    const std::set<MediaItem*>    mine(pool.begin(), pool.end());
+    for (MediaItem* it : ProjectRavItems())
+        if (!mine.count(it))
+            for (const ValueSet& v : ReadItemSounds(it).item_values) p.held_elsewhere.insert(v.value_uid);
+    return p;
+}
+
+// Every item's tag of `guids` renamed by `uids` (RemapTagNodes).
+void RemapTags(ReaProject* proj, const std::set<std::string>& guids, const std::map<std::string, std::string>& uids)
+{
+    if (guids.empty() || uids.empty()) return;
+    for (int i = 0, n = CountMediaItems(proj); i < n; ++i) {
+        MediaItem* it = GetMediaItem(proj, i);
+        PlacedTag  t;
+        if (!it || !guids.count(GuidKey(ItemGuidOf(it))) || !ReadPlacedTag(it, &t)) continue;
+        if (am::RemapTagNodes(t, uids)) WritePlacedTag(it, t);
+    }
+}
+
+// After an edit (EditOut): an Anim gesture's value on the animation item and its linked copies, their records and tags
+// renamed to their own copy (remap_pool), and Separate's R copy on every R event holding the library (remap_side).
+void ApplyEdit(ReaProject* proj, MediaItem* anim, const std::string& lib_uid, const std::string& kind_key, const am::EditOut& o)
+{
+    std::set<std::string> guids;
+    if (anim && !o.anim_value.group_uid.empty())
+        for (MediaItem* m : WithPoolMembers({anim}))
+            ModifyItemSounds(m, nullptr, [&](ItemSounds& r) {
+                bool changed = SetValueIn(r.item_values, o.anim_value.group_uid, o.anim_value.value_uid);
+                if (!o.remap_pool.empty())
+                    for (EventSounds& ev : r.events)
+                        if (am::RemapEventNodes(ev, o.remap_pool)) {
+                            changed = true;
+                            for (const SoundPlacement& p : ev.placed) guids.insert(GuidKey(p.item_guid));
+                        }
+                return changed;
+            });
+    RemapTags(proj, guids, o.remap_pool);
+    if (o.remap_side.empty()) return;
+    guids.clear();
+    for (MediaItem* it : LibraryTargets({}, lib_uid)) {
+        const std::set<std::string> r_rids = SideRids({it}, kind_key, 'R');
+        ModifyItemSounds(it, nullptr, [&](ItemSounds& r) {
+            bool changed = false;
+            for (EventSounds& ev : r.events)
+                if (r_rids.count(ev.rid) && am::RemapEventNodes(ev, o.remap_side)) {
+                    changed = true;
+                    for (const SoundPlacement& p : ev.placed) guids.insert(GuidKey(p.item_guid));
+                }
+            return changed;
+        });
+    }
+    RemapTags(proj, guids, o.remap_side);
+}
+
+// The rules a gesture empties and places again: every rule of the kind when it wrote both sides (slot 0), else the
+// sides written. Null = every rule of the library.
+const std::set<std::string>* OnlyRids(const am::EditOut& o, const std::vector<MediaItem*>& targets, const std::string& kind_key,
+                                      std::set<std::string>* store)
+{
+    if (o.slots.empty() || o.slots.count(0)) return nullptr;
+    for (char s : o.slots) {
+        const std::set<std::string> r = SideRids(targets, kind_key, s);
+        store->insert(r.begin(), r.end());
+    }
+    return store;
+}
+
+// Item scope: the sounds the marker had leave it (an attached / spread sound to the source zone, untagged; a populated
+// copy deleted), so the selection is that marker's sound alone. Returns how many.
+int ClearEvent(ReaProject* proj, MediaItem* owner, const std::string& rid, double t, const std::vector<MediaItem*>& keep)
+{
+    const ItemSounds   rec = ReadItemSounds(owner);
+    const EventSounds* e = FindEventSounds(rec, rid, t);
+    if (!e) return 0;
+    std::set<std::string> keep_guids;
+    for (MediaItem* it : keep) keep_guids.insert(GuidKey(ItemGuidOf(it)));
+    const std::map<std::string, MediaItem*> items = ItemsByGuid(proj);
+    std::vector<MediaItem*>                 to_zone;
+    std::vector<std::string>                gone;
+    for (const SoundPlacement& p : e->placed) {
+        if (p.own == Ownership::Deleted) continue;
+        const std::string key = GuidKey(p.item_guid);
+        const auto        hit = items.find(key);
+        if (keep_guids.count(key)) continue;
+        gone.push_back(p.item_guid);
+        if (hit == items.end()) continue;  // its item no longer exists: only its placement goes
+        if (p.own == Ownership::Populated && !IsFolderItem(hit->second) && RemovePlacedAny(proj, hit->second)) continue;
+        ClearPlacedTag(hit->second);
+        to_zone.push_back(hit->second);
+    }
+    if (gone.empty()) return 0;
+    ModifyItemSounds(owner, nullptr, [&](ItemSounds& r) {
+        bool any = false;
+        for (const std::string& g : gone) any = DetachFromRecord(r, g) || any;
+        if (EventSounds* ev = FindEventSounds(r, rid, t)) ev->draws.clear();
+        return any;
+    });
+    ToSourceZone(proj, to_zone, {});
+    return static_cast<int>(gone.size());
+}
+
+// Attach (13-68 v3, 13-68e v5): the selection onto the marker (the window's, else the clicked label) and, in Anim /
+// Project, onto every marker of its kind in scope: L and R together until separated, else the marker's side. The
+// first pile moves onto the marker, attached there; the other piles go to the source zone. Item: that marker only,
+// the library unchanged. One undo point.
+std::string RunAttach(am::Scope scope, const SpreadMarker* given)
+{
+    if (!f_set_item) return Finish("REAPER functions missing");
+    // P3b: no project marker to select (13-68e: the window passes its marker).
+    if (!given && GetTaggingMarkerMode() == MarkerMode::Take) return Finish(kTakeOnly);
+    ReaProject*                   proj = EnumProjects(-1, nullptr, 0);
+    const std::vector<MediaItem*> rav_items = ProjectRavItems();
+    SelectedMarker                mk;
+    int                           n_selected = 0;
+    if (given) {
+        if (!given->item || !IsLiveItem(given->item)) return Finish("The marker's animation item is gone: nothing changed");
+        mk.item = given->item;
+        mk.name = given->name;
+        mk.pos = given->pos;
+        n_selected = 1;
+    } else {
+        n_selected = FindSelectedMarker(rav_items, &mk);
+    }
+    if (n_selected == 0 || !mk.item) return Finish(kNoMarker);
+    // 13-68 v3: its kind with its sides (from its rule): an L marker's kind is also its R rules'.
+    SpreadKind kind;
+    int        mk_block = -1;
+    char       side = 0;
+    {
+        ItemRulesRead rr;
+        if (ReadItemRules(mk.item, &rr) && rr.valid) {
+            kind = KindOfRuleMarker(rr.rules, mk.name, &mk_block);
+            if (mk_block >= 0) side = EventSide(rr.rules.blocks[static_cast<size_t>(mk_block)]);
+        }
+    }
+    if (kind.key.empty()) return Finish("No rule of this animation writes the marker " + MarkerTypeName(mk.name));
+    const std::string& type = kind.name;
+    std::vector<SelectedSound> sel;
+    int                        skipped = 0;
+    std::string                skip;
+    ReadSelectedSounds(&sel, &skipped, &skip, true, true);
+    if (sel.empty()) return Finish("Select the sound items first" + (skip.empty() ? std::string() : " (" + skip + ")"));
+    std::vector<AttachItem> facts;
+    for (const SelectedSound& s : sel) facts.push_back(s.facts);
+
+    // The animation items: this one (Populate adds its linked copies), or every RAV item with a rule of the kind.
+    std::vector<MediaItem*> anims = {mk.item};
+    if (scope == am::Scope::Project)
+        for (MediaItem* it : rav_items) {
+            if (it == mk.item) continue;
+            ItemRulesRead rr;
+            if (!ReadItemRules(it, &rr) || !rr.valid) continue;
+            const std::vector<char> on = BlocksOfType(rr.rules, kind.key);
+            if (std::find(on.begin(), on.end(), 1) != on.end()) anims.push_back(it);
+        }
+
+    std::vector<AttachEvent> type_events;
+    {
+        BusyScope busy("Reading markers");
+        MarkersOfType(mk.item, kind.key, &type_events);
+    }
+    if (type_events.empty()) {
+        ItemRulesRead rr;
+        if (ReadItemRules(mk.item, &rr) && rr.valid)
+            for (const Block& b : rr.rules.blocks)
+                if (b.enabled && KindOfBlock(b).key == kind.key && IsAutoBlock(b) && !IsActiveAutoBlock(b))
+                    return Finish("The " + type + " rule is from an older RAV: press Detect on this animation");
+        return Finish("No " + type + " marker on this animation");
+    }
+    // The event nearest the marker, of its own rule first (the other side's may sit close).
+    AttachEvent at_marker = type_events.front();
+    bool        own_rule = at_marker.block == mk_block;
+    for (const AttachEvent& e : type_events) {
+        const bool mine = e.block == mk_block;
+        if ((mine && !own_rule) || (mine == own_rule && std::fabs(e.project_t - mk.pos) < std::fabs(at_marker.project_t - mk.pos))) {
+            at_marker = e;
+            own_rule = mine;
+        }
+    }
+    const std::vector<std::vector<int>> piles = SpreadPiles(facts);
+    const std::vector<int>              first_pile = piles.empty() ? std::vector<int>() : piles.front();
+    const int                           first_top = TopmostOf(facts, first_pile);
+    const double first_anchor = first_top >= 0 ? PileAnchor(facts[static_cast<size_t>(first_top)]) : at_marker.project_t;
+    const ReadSounds rs = ReadSources(sel, first_pile);
+    const am::PoolKey pool = scope == am::Scope::Item ? am::PoolKey() : PoolKeyOf(mk.item, type);
+
+    const std::string undo = "RAV: Attach to " + MarkerTypeName(mk.name) + ScopeText(scope);
+    SoundUndoScope    scope_undo(proj, undo.c_str());
+    std::vector<std::vector<std::string>> rids_of(anims.size());
+    for (size_t i = 0; i < anims.size(); ++i) rids_of[i] = TypeRids(anims[i], kind.key);
+    if (rids_of[0].empty()) return Finish("Could not give the " + type + " rules an id: nothing changed");
+    at_marker.rid = EventRid(mk.item, at_marker);
+    if (at_marker.rid.empty()) return Finish("Could not give the " + MarkerTypeName(mk.name) + " rule an id: nothing changed");
+
+    SpreadRunCounts counts;
+    counts.type = type;
+    counts.marker = MarkerTypeName(mk.name);
+    counts.all_instances = scope == am::Scope::Project;
+    counts.item = scope == am::Scope::Item;
+    counts.selected_markers = n_selected;
+    counts.variations = static_cast<int>(piles.size());
+    counts.layers = static_cast<int>(sel.size());
+    counts.skip_note = skip;
+
+    if (scope == am::Scope::Item) {  // this marker only: the library and the other markers unchanged
+        const SoundLibrary* lib = FindAttachedLibrary(GetSoundStore(proj), kind.key);
+        LeaveOldPlaces(proj, sel);
+        const int cleared = ClearEvent(proj, mk.item, at_marker.rid, at_marker.clip_t, rs.attach_items);
+        const double delta = at_marker.project_t - first_anchor;
+        for (MediaItem* it : rs.first_items) f_set_item(it, "D_POSITION", GetMediaItemInfo_Value(it, "D_POSITION") + delta);
+        ToSourceZone(proj, rs.to_move, rs.first_items);
+        AttachToEvent(proj, mk.item, at_marker, lib ? lib->uid : std::string(), rs.attach_items, 0.0, rs.first_folders);
+        counts.animations = 1;
+        counts.events = 1;
+        counts.reused = lib != nullptr;
+        counts.to_source = cleared;
+        UpdateArrange();
+        return Finish(SpreadRunReport(counts));
+    }
+
+    // The kind's Attached library (one for both sides, side-free name): made, or its content in scope replaced.
+    std::string lib_uid;
+    am::EditOut edit;
+    {
+        const std::vector<SoundNode> layer = SpreadLayerNodes(rs.sources, type, &NewSoundUid);
+        const bool                   wrote = ModifySoundStore(proj, nullptr, [&](SoundStore& st) {
+            SoundLibrary* lib = FindAttachedLibrary(st, kind.key);
+            counts.reused = lib != nullptr;
+            if (!lib) {
+                SoundLibrary l;
+                l.uid = NewSoundUid();
+                l.name = type;
+                l.attached = true;
+                st.libraries.push_back(l);
+                lib = &st.libraries.back();
+            }
+            lib->attached_type = kind.key;  // found by it from now on, whatever its name
+            lib_uid = lib->uid;
+            edit = am::AttachContent(st, lib_uid, scope, pool, side, layer, &NewSoundUid);
+            return edit.ok;
+        });
+        if (!wrote || lib_uid.empty())
+            return Finish("Could not write the library " + type + ": " + (edit.why.empty() ? std::string("nothing changed") : edit.why));
+    }
+    // Which side was written (a separated Group: the marker's side only).
+    if (!edit.slots.empty() && !edit.slots.count(0)) counts.side = side;
+
+    // The assignment: every rule of the kind (both sides), on each animation item and its linked copies.
+    for (size_t i = 0; i < anims.size(); ++i) {
+        const std::vector<std::string>& of_type = rids_of[i];
+        if (of_type.empty()) continue;
+        for (MediaItem* m : WithPoolMembers({anims[i]}))
+            ModifyItemSounds(m, nullptr, [&](ItemSounds& r) { return SetRulesLibrary(r, of_type, LibState::Library, lib_uid); });
+    }
+    ApplyEdit(proj, scope == am::Scope::Anim ? mk.item : nullptr, lib_uid, kind.key, edit);
+    ApplySideValues(proj, lib_uid);  // each rule plays its side's content
+    LeaveOldPlaces(proj, sel);
+    {
+        const double delta = at_marker.project_t - first_anchor;
+        for (MediaItem* it : rs.first_items) f_set_item(it, "D_POSITION", GetMediaItemInfo_Value(it, "D_POSITION") + delta);
+    }
+    ToSourceZone(proj, rs.to_move, rs.first_items);
+
+    // Anim: this animation (Populate adds its linked copies); Project: every item holding the library.
+    const std::vector<MediaItem*> targets = scope == am::Scope::Anim ? std::vector<MediaItem*>{mk.item} : LibraryTargets(anims, lib_uid);
+    std::set<std::string>         only_store;
+    const std::set<std::string>*  only = OnlyRids(edit, targets, kind.key, &only_store);
+    counts.to_source = DropEarlierSounds(proj, targets, lib_uid, only, rs.to_move);
+    AttachToEvent(proj, mk.item, at_marker, lib_uid, rs.attach_items, 0.0, rs.first_folders);
+    return PopulateLibrary(targets, lib_uid, counts, only);
+}
+
+// Add to pile (13-68 v3 "Add to stack", 13-68e v5): the selection holds the new items and one or more instances of
+// one marker (an Attach's original or a placed copy; several markers: refused). The new items become a layer at their
+// offset from that instance's event (top item's snap minus the event): Anim = in the animation's Group, Project = in
+// every Group; the pile nearest the event stays there, attached; the other piles go to the source zone; Populate
+// (that library's rules only). Item: the new items on that marker only, the library unchanged.
+std::string RunPile(am::Scope scope)
+{
+    if (!f_set_item) return Finish("REAPER functions missing");
+    ReaProject*      proj = EnumProjects(-1, nullptr, 0);
+    const SoundStore store = GetSoundStore(proj);
+    // The selected instances: one layer's linked instances (a plain click selects them all) or those of one marker.
+    std::vector<PlacedTag>                  tags;
+    std::vector<am::StackRef>               refs;
+    std::string                             lib_uid, key;
+    const std::map<std::string, MediaItem*> items = ItemsByGuid(proj);
+    LayerCache                              layers;
+    for (int i = 0, n = CountSelectedMediaItems(proj); i < n; ++i) {
+        MediaItem* it = GetSelectedMediaItem(proj, i);
+        PlacedTag  t;
+        if (!it || !ReadPlacedTag(it, &t)) continue;
+        const SoundLibrary* l = FindLibrary(store, TagLibrary(proj, t));
+        if (!l || !l->attached || l->attached_type.empty()) continue;
+        am::StackRef r;
+        r.owner = t.owner;
+        r.rid = t.rid;
+        r.t = t.t;
+        const am::LayerAt la = InstanceLayer(store, *l, t, GuidKey(ItemGuidOf(it)), items, layers);
+        if (!la.layer.empty()) r.layer = l->uid + "|" + la.layer;
+        if (MediaItem* o = ScanItemByGuid(proj, t.owner)) r.pos = EventPos(o, t.t);
+        if (lib_uid.empty()) {
+            lib_uid = l->uid;
+            key = l->attached_type;
+        }
+        tags.push_back(t);
+        refs.push_back(r);
+    }
+    if (refs.empty()) return Finish("Select one attached instance (a sound the Attach placed) with the items to add");
+    const SoundLibrary* lib = FindLibrary(store, lib_uid);
+    MediaItem* const    first_owner = ScanItemByGuid(proj, tags.front().owner);
+    const std::string   type = first_owner ? KindNameOn(first_owner, key, lib ? lib->name : key) : (lib ? lib->name : key);
+    std::vector<SelectedSound> all_sel, sel;
+    int                        skipped = 0;
+    std::string                skip;
+    ReadSelectedSounds(&all_sel, &skipped, &skip, true, true);
+    for (const SelectedSound& s : all_sel) {
+        const bool placed_for = s.tagged && TagLibrary(proj, s.tag) == lib_uid;
+        bool       kid_in = false;
+        if (s.folder)
+            for (MediaItem* k : FolderPileMembers(s.item)) {
+                PlacedTag kt;
+                if (ReadPlacedTag(k, &kt) && TagLibrary(proj, kt) == lib_uid) kid_in = true;
+            }
+        if (!lib || !IsStackItem(*lib, s.facts.guid, placed_for, kid_in)) sel.push_back(s);
+    }
+    if (sel.empty()) return Finish("Select the items to add with one attached instance");
+    // The reference: the instance whose marker is nearest the new items (their first pile's top snap).
+    double anchor = 0.0;
+    bool   has_anchor = false;
+    {
+        std::vector<AttachItem> f;
+        for (const SelectedSound& s : sel) f.push_back(s.facts);
+        const std::vector<std::vector<int>> pl = SpreadPiles(f);
+        const int top = pl.empty() ? -1 : TopmostOf(f, pl.front());
+        if (top >= 0) {
+            anchor = PileAnchor(f[static_cast<size_t>(top)]);
+            has_anchor = true;
+        }
+    }
+    int       distinct = 0;
+    const int at_ref = am::PileReference(refs, has_anchor, anchor, &distinct);
+    if (at_ref < 0)
+        return Finish("The selected instances are of " + std::to_string(distinct) +
+                      " different layers or markers: select instances of one layer. Nothing changed");
+    const PlacedTag ref = tags[static_cast<size_t>(at_ref)];
+    MediaItem*      owner = ScanItemByGuid(proj, ref.owner);
+    if (!owner) return Finish("The instance's animation item is gone: nothing changed");
+    char side = 0;  // the instance's side, from its rule
+    {
+        ItemRulesRead rr;
+        if (ReadItemRules(owner, &rr) && rr.valid)
+            for (const Block& b : rr.rules.blocks)
+                if (!b.rid.empty() && b.rid == ref.rid) side = EventSide(b);
+    }
+    const am::PoolKey pool = scope == am::Scope::Item ? am::PoolKey() : PoolKeyOf(owner, type);
+    const std::string undo = "RAV: Add to pile " + type + ScopeText(scope);
+    SoundUndoScope    scope_undo(proj, undo.c_str());
+    AttachEvent ev;
+    bool        found = false;
+    {
+        BusyScope                busy("Reading markers");
+        std::vector<std::string> rids;
+        std::string              err;
+        std::vector<AttachEvent> evs;
+        if (ItemRuleIds(owner, &rids, &err) && MarkersOfType(owner, key, &evs))
+            for (const AttachEvent& e : evs)
+                if (e.block >= 0 && static_cast<size_t>(e.block) < rids.size() && rids[static_cast<size_t>(e.block)] == ref.rid &&
+                    std::fabs(e.clip_t - ref.t) <= kEventMatchSeconds) {
+                    ev = e;
+                    ev.rid = ref.rid;
+                    found = true;
+                }
+    }
+    if (!found) return Finish("The instance's " + type + " marker is not on its animation now: nothing changed");
+
+    std::vector<AttachItem> facts;
+    for (const SelectedSound& s : sel) facts.push_back(s.facts);
+    const std::vector<std::vector<int>> piles = SpreadPiles(facts);
+    const int                           at = NearestPile(facts, piles, ev.project_t);
+    const std::vector<int>              first_pile = at >= 0 ? piles[static_cast<size_t>(at)] : std::vector<int>();
+    const int                           first_top = TopmostOf(facts, first_pile);
+    if (first_top < 0) return Finish("Select the items to add with one attached instance");
+    const double     offset_s = PileAnchor(facts[static_cast<size_t>(first_top)]) - ev.project_t;
+    const ReadSounds rs = ReadSources(sel, first_pile);
+
+    SpreadRunCounts counts;
+    counts.type = type;
+    counts.add_layer = true;
+    counts.all_instances = scope == am::Scope::Project;
+    counts.item = scope == am::Scope::Item;
+    counts.reused = true;
+    counts.variations = static_cast<int>(piles.size());
+    counts.layers = static_cast<int>(sel.size());
+    counts.skip_note = skip;
+    if (scope == am::Scope::Item) {  // this instance only: the new items on its marker, the library unchanged
+        LeaveOldPlaces(proj, sel);
+        ToSourceZone(proj, rs.to_move, rs.first_items);
+        AttachToEvent(proj, owner, ev, lib_uid, rs.attach_items, offset_s, rs.first_folders);
+        counts.animations = 1;
+        counts.events = 1;
+        UpdateArrange();
+        return Finish(SpreadRunReport(counts));
+    }
+    am::EditOut edit;
+    {
+        std::vector<SoundNode> layer = SpreadLayerNodes(rs.sources, type, &NewSoundUid);
+        const bool             wrote = ModifySoundStore(proj, nullptr, [&](SoundStore& st) {
+            edit = am::AddPileLayer(st, lib_uid, scope, pool, side, layer, offset_s * 1000.0, &NewSoundUid);
+            return edit.ok;
+        });
+        if (!wrote) return Finish("Could not write the library " + type + ": " + (edit.why.empty() ? std::string("nothing changed") : edit.why));
+    }
+    if (!edit.slots.empty() && !edit.slots.count(0)) counts.side = side;
+    ApplyEdit(proj, scope == am::Scope::Anim ? owner : nullptr, lib_uid, key, edit);
+    ApplySideValues(proj, lib_uid);
+    LeaveOldPlaces(proj, sel);
+    ToSourceZone(proj, rs.to_move, rs.first_items);
+    AttachToEvent(proj, owner, ev, lib_uid, rs.attach_items, offset_s, rs.first_folders);
+    const std::vector<MediaItem*> targets = scope == am::Scope::Anim ? std::vector<MediaItem*>{owner} : LibraryTargets({owner}, lib_uid);
+    std::set<std::string>         only_store;
+    return PopulateLibrary(targets, lib_uid, counts, OnlyRids(edit, targets, key, &only_store));
+}
+
+// The marker the L and R card acts from: its animation item, its kind and side, the kind's Attached library.
+struct LrTarget {
+    MediaItem*  item = nullptr;
+    SpreadKind  kind;
+    char        side = 0;
+    std::string lib_uid;
+};
+std::string ReadLrTarget(const SpreadMarker& m, LrTarget* out)
+{
+    if (!m.item || !IsLiveItem(m.item)) return "The marker's animation item is gone: nothing changed";
+    out->item = m.item;
+    ItemRulesRead rr;
+    int           block = -1;
+    if (ReadItemRules(m.item, &rr) && rr.valid) {
+        out->kind = KindOfRuleMarker(rr.rules, m.name, &block);
+        if (block >= 0) out->side = EventSide(rr.rules.blocks[static_cast<size_t>(block)]);
+    }
+    if (out->kind.key.empty()) return "No rule of this animation writes the marker " + MarkerTypeName(m.name);
+    const SoundLibrary* lib = FindAttachedLibrary(GetSoundStore(nullptr), out->kind.key);
+    if (!lib) return "Nothing attached on " + out->kind.name + " yet: nothing changed";
+    out->lib_uid = lib->uid;
+    return std::string();
+}
+
+// Separate L and R (Anim / Project): the same sound on both sides, two groups from now on. No sound moves.
+std::string RunSeparate(am::Scope scope, const SpreadMarker& m)
+{
+    LrTarget          t;
+    const std::string err = ReadLrTarget(m, &t);
+    if (!err.empty()) return Finish(err);
+    if (!t.side) return Finish("The " + t.kind.name + " marker has no side: nothing to separate");
+    ReaProject*       proj = EnumProjects(-1, nullptr, 0);
+    const am::PoolKey pool = PoolKeyOf(t.item, t.kind.name);
+    const std::string undo = "RAV: Separate L and R " + t.kind.name + ScopeText(scope);
+    SoundUndoScope    scope_undo(proj, undo.c_str());
+    am::EditOut       edit;
+    const bool        wrote = ModifySoundStore(proj, nullptr, [&](SoundStore& st) {
+        edit = am::SeparateSides(st, t.lib_uid, scope, pool, &NewSoundUid);
+        return edit.ok;
+    });
+    if (!wrote) return Finish(undo + ": " + (edit.why.empty() ? std::string("nothing changed") : edit.why) + ".");
+    ApplyEdit(proj, scope == am::Scope::Anim ? t.item : nullptr, t.lib_uid, t.kind.key, edit);
+    ApplySideValues(proj, t.lib_uid);
+    UpdateArrange();
+    return Finish(undo + ": same sound for now, L and R are two groups.");
+}
+
+// Merge L and R (Anim / Project): both sides play the chosen marker's side's sound; the other side's are replaced.
+std::string RunMerge(am::Scope scope, const SpreadMarker& m)
+{
+    LrTarget          t;
+    const std::string err = ReadLrTarget(m, &t);
+    if (!err.empty()) return Finish(err);
+    if (!t.side) return Finish("The " + t.kind.name + " marker has no side: nothing to merge");
+    ReaProject*       proj = EnumProjects(-1, nullptr, 0);
+    const am::PoolKey pool = PoolKeyOf(t.item, t.kind.name);
+    const std::string undo = "RAV: Merge L and R " + t.kind.name + ScopeText(scope);
+    SoundUndoScope    scope_undo(proj, undo.c_str());
+    am::EditOut       edit;
+    const bool        wrote = ModifySoundStore(proj, nullptr, [&](SoundStore& st) {
+        edit = am::MergeSides(st, t.lib_uid, scope, pool, t.side, &NewSoundUid);
+        return edit.ok;
+    });
+    if (!wrote) return Finish(undo + ": " + (edit.why.empty() ? std::string("nothing changed") : edit.why) + ".");
+    ApplyEdit(proj, scope == am::Scope::Anim ? t.item : nullptr, t.lib_uid, t.kind.key, edit);
+    const std::vector<MediaItem*> targets = scope == am::Scope::Anim ? std::vector<MediaItem*>{t.item} : LibraryTargets({}, t.lib_uid);
+    const std::set<std::string>   other = SideRids(targets, t.kind.key, edit.dropped_side);
+    SpreadRunCounts counts;
+    counts.type = t.kind.name;
+    counts.reused = true;
+    counts.all_instances = scope == am::Scope::Project;
+    counts.to_source = DropEarlierSounds(proj, targets, t.lib_uid, &other, {});
+    const std::string head = undo + ": " + std::string(1, edit.dropped_side) + " markers now play the " + std::string(1, t.side) + " sound";
+    return PopulateLibrary(targets, t.lib_uid, counts, &other, head);
 }
 
 void ReadManager(AttachManagerState* out)
@@ -983,6 +1160,7 @@ void ReadManager(AttachManagerState* out)
         an.guid = ItemGuidOf(it);
         an.name = ItemSoundName(it);
         an.selected = GetMediaItemInfo_Value(it, "B_UISEL") != 0.0;
+        an.values = ReadItemSounds(it).item_values;  // 13-68e v5: its per-animation value (its Group)
         s.anims.push_back(an);
         ItemRulesRead rr;
         if (!ReadItemRules(it, &rr) || !rr.valid) continue;
@@ -1060,6 +1238,7 @@ void ReadManager(AttachManagerState* out)
             for (const Block& bl : rr.rules.blocks)
                 if (bl.rid == ev.rid) {
                     e.label = MarkerTypeName(bl.marker);
+                    e.kind_name = KindOfBlock(bl).name;
                     e.side = EventSide(bl);
                 }
             for (const SoundPlacement& p : ev.placed) {
@@ -1094,6 +1273,7 @@ void ReadManager(AttachManagerState* out)
     for (const SelectedSound& x : sel) facts.push_back(x.facts);
     s.piles = static_cast<int>(SpreadPiles(facts).size());
     std::string stack_lib;
+    LayerCache  layers;
     for (int i = 0, n = CountSelectedMediaItems(proj); i < n; ++i) {
         MediaItem* it = GetSelectedMediaItem(proj, i);
         PlacedTag  t;
@@ -1105,6 +1285,9 @@ void ReadManager(AttachManagerState* out)
         r.owner = t.owner;
         r.rid = t.rid;
         r.t = t.t;
+        const am::LayerAt la = InstanceLayer(store, *l, t, GuidKey(ItemGuidOf(it)), items, layers);  // v5: linked instances
+        if (!la.layer.empty()) r.layer = l->uid + "|" + la.layer;
+        if (MediaItem* o = ScanItemByGuid(proj, t.owner)) r.pos = EventPos(o, t.t);
         for (size_t k = 0; k < s.events.size(); ++k) {
             const am::AttachedEvent& e = s.events[k];
             if (e.rid == r.rid && std::fabs(e.t - r.t) <= kEventMatchSeconds && e.anim >= 0 &&
@@ -1113,6 +1296,7 @@ void ReadManager(AttachManagerState* out)
         }
         s.stack_refs.push_back(r);
     }
+    std::vector<AttachItem> fresh_facts;
     if (const SoundLibrary* l = stack_lib.empty() ? nullptr : FindLibrary(store, stack_lib))
         for (const SelectedSound& x : sel) {
             const bool placed_for = x.tagged && TagLibrary(proj, x.tag) == stack_lib;
@@ -1122,143 +1306,32 @@ void ReadManager(AttachManagerState* out)
                     PlacedTag kt;
                     if (ReadPlacedTag(k, &kt) && TagLibrary(proj, kt) == stack_lib) kid_in = true;
                 }
-            if (!IsStackItem(*l, x.facts.guid, placed_for, kid_in)) ++s.fresh;
-        }
-}
-
-std::string Detach(const std::vector<DetachTarget>& targets, bool keep)
-{
-    if (targets.empty()) return Finish("Nothing to detach");
-    ReaProject*       proj = EnumProjects(-1, nullptr, 0);
-    const SoundStore  store = GetSoundStore(proj);
-    const std::string where = targets.size() > 1 ? std::to_string(targets.size()) + " markers"
-                                                 : (targets.front().label.empty() ? std::string("the marker") : targets.front().label);
-    const std::string undo = "RAV: Detach from " + where;
-    SoundUndoScope    scope_undo(proj, undo.c_str());
-    std::vector<std::string> released;
-    int                      events = 0;
-    for (const DetachTarget& t : targets) {
-        MediaItem* owner = ScanItemByGuid(proj, t.owner);
-        if (!owner) continue;
-        const ItemSounds    rec = ReadItemSounds(owner);
-        const RuleSounds*   rs = FindRuleSounds(rec, t.rid);
-        const SoundLibrary* lib = rs && !rs->none ? FindLibrary(store, rs->library) : nullptr;
-        if (!lib) continue;
-        ModifyItemSounds(owner, nullptr, [&](ItemSounds& r) {
-            EventSounds* e = FindEventSounds(r, t.rid, t.t);
-            if (!e) return false;
-            const std::vector<std::string> g = am::DetachEventInRecord(*e, *lib);
-            if (g.empty()) return false;  // nothing live there: unchanged, not counted
-            released.insert(released.end(), g.begin(), g.end());
-            ++events;
-            return true;
-        });
-    }
-    if (events == 0) return Finish(undo + ": nothing attached there now. Nothing changed");
-    const Released r = ReleaseItems(proj, released, keep);
-    UpdateArrange();
-    return Finish(undo + ": " + ReleasedText(r, keep) + "; " + (events > 1 ? "those markers stay" : "the marker stays") + " empty.");
-}
-
-// 13-68e v4: `side` ('L' / 'R') = from that side only: a variation both sides share is split first (SplitForSide), the
-// other side's records and tags moved to its copy; only that side's markers lose it (and are drawn again).
-std::string RemoveVariation(const std::string& lib_uid, const std::string& node, bool keep, char side)
-{
-    ReaProject*         proj = EnumProjects(-1, nullptr, 0);
-    const SoundStore    store = GetSoundStore(proj);
-    const SoundLibrary* lib = FindLibrary(store, lib_uid);
-    const SoundNode*    n = lib ? FindNode(*lib, node) : nullptr;
-    if (!lib || !n) return Finish("That variation is no longer in the library: nothing changed");
-    const std::string name = n->name.empty() ? std::string("the variation") : n->name;
-    const std::string lib_name = lib->name;
-    const std::map<std::string, MediaItem*>  all_items = ItemsByGuid(proj);
-    const std::map<std::string, std::string> node_of = SourceNodes(*lib, all_items);
-    const std::set<std::string>              sources = AllSourceGuids(store, all_items);  // before the variation leaves
-    const std::string undo = "RAV: Remove " + name + " from the " + lib_name + " library" +
-                             (side ? " (" + std::string(1, side) + " only)" : std::string());
-    SoundUndoScope    scope_undo(proj, undo.c_str());
-    am::RemovedVariation               rv;
-    std::map<std::string, std::string> other;  // v4: the other side's old uid -> its copy's
-    int                                left = 0;
-    const bool                         wrote = ModifySoundStore(proj, nullptr, [&](SoundStore& st) {
-        if (side && !SplitForSide(st, lib_uid, node, side, &NewSoundUid, &other)) return false;
-        SoundLibrary* l = FindLibrary(st, lib_uid);
-        if (!l || !am::RemoveVariationFromLibrary(*l, node, &rv)) return false;
-        left = rv.random.empty() ? 0 : static_cast<int>(ChildrenOf(*l, rv.random).size());
-        return true;
-    });
-    if (!wrote) return Finish("Could not write the library " + lib_name + ": nothing changed");
-    std::vector<std::string> released;
-    std::vector<MediaItem*>  owners;
-    std::set<std::string>    lib_rids;
-    int                      events = 0;
-    std::vector<std::string> moved;  // v4: the other side's placed items, their tags to move to the copy
-    for (MediaItem* it : ProjectRavItems()) {
-        const ItemSounds      before = ReadItemSounds(it);
-        std::map<std::string, char> side_of;  // v4: rid -> its rule's side
-        if (side) {
-            ItemRulesRead rr;
-            if (ReadItemRules(it, &rr) && rr.valid)
-                for (const Block& b : rr.rules.blocks)
-                    if (!b.rid.empty()) side_of[b.rid] = EventSide(b);
-        }
-        std::set<std::string> holding, rids, other_rids;
-        for (const RuleSounds& r : before.rules)
-            if (r.library == lib_uid && !r.none && !r.rid.empty()) holding.insert(r.rid);
-        am::SplitRidsBySide(holding, side_of, side, &rids, &other_rids);  // a sideless or unread rule: left alone
-        if (rids.empty() && (other.empty() || other_rids.empty())) continue;
-        lib_rids.insert(rids.begin(), rids.end());
-        const std::string was = SerializeItemSounds(before);
-        int               here = 0;
-        ModifyItemSounds(it, nullptr, [&](ItemSounds& r) {
-            const std::vector<std::string> g = am::RemoveVariationInRecord(r, rids, rv, keep, node_of, &here);
-            released.insert(released.end(), g.begin(), g.end());
-            if (!other.empty())
-                for (EventSounds& ev : r.events)
-                    if (other_rids.count(ev.rid) && am::RemapEventNodes(ev, other))
-                        for (const SoundPlacement& p : ev.placed)
-                            if (p.own != Ownership::Deleted) moved.push_back(p.item_guid);
-            return SerializeItemSounds(r) != was;
-        });
-        events += here;
-        if (here > 0) owners.push_back(it);
-    }
-    if (!moved.empty()) {  // v4: the other side's sounds now play the copy: their tags say so
-        const std::map<std::string, MediaItem*> items = ItemsByGuid(proj);
-        for (const std::string& g : moved) {
-            const auto hit = items.find(GuidKey(g));
-            PlacedTag  t;
-            if (hit == items.end() || !ReadPlacedTag(hit->second, &t)) continue;
-            bool changed = false;
-            if (other.count(t.node)) {
-                t.node = other[t.node];
-                changed = true;
+            if (!IsStackItem(*l, x.facts.guid, placed_for, kid_in)) {
+                ++s.fresh;
+                fresh_facts.push_back(x.facts);
             }
-            for (PlacedTag::NodePrint& np : t.lib)
-                if (other.count(np.node)) {
-                    np.node = other[np.node];
-                    changed = true;
-                }
-            if (changed) WritePlacedTag(hit->second, t);
+        }
+    // 13-68e v5: the new items' anchor (the first pile's top snap), the reference instance nearest it (PileReference),
+    // and Add to pile's offset (the new pile nearest that instance's event: its top snap minus the event).
+    if (!fresh_facts.empty()) {
+        const std::vector<std::vector<int>> piles = SpreadPiles(fresh_facts);
+        const int top = piles.empty() ? -1 : TopmostOf(fresh_facts, piles.front());
+        if (top >= 0) {
+            s.fresh_anchor = PileAnchor(fresh_facts[static_cast<size_t>(top)]);
+            s.has_fresh_anchor = true;
         }
     }
-    ApplySideValues(proj, lib_uid);  // v4: a library split by side: each rule its side's value
-    const Released r = ReleaseItems(proj, released, keep, &sources);
-    std::string    text = undo + ": " + ReleasedText(r, keep);
-    if (!keep && !owners.empty()) {
-        if (!rv.random.empty() && left > 0) {
-            int            n_events = 0;
-            PopulateCounts pc;
-            PopulateItemsCounted(owners, &n_events, &pc, false, nullptr, std::vector<std::string>(lib_rids.begin(), lib_rids.end()));
-            text += ", " + std::to_string(events) + (events == 1 ? " marker" : " markers") + " drawn again from the " +
-                    std::to_string(left) + (left == 1 ? " variation left" : " variations left");
-        } else if (!rv.random.empty()) {
-            text += side ? ", nothing is left on " + std::string(1, side) + ": those markers stay empty"
-                         : ", the library is now empty: those markers stay empty";
+    const int ref = am::PileReference(s.stack_refs, s.has_fresh_anchor, s.fresh_anchor, nullptr);
+    if (ref >= 0 && s.stack_refs[static_cast<size_t>(ref)].event >= 0 && !fresh_facts.empty()) {
+        const am::AttachedEvent&            e = s.events[static_cast<size_t>(s.stack_refs[static_cast<size_t>(ref)].event)];
+        const std::vector<std::vector<int>> piles = SpreadPiles(fresh_facts);
+        const int                           at = NearestPile(fresh_facts, piles, e.pos);
+        const int top = at >= 0 ? TopmostOf(fresh_facts, piles[static_cast<size_t>(at)]) : -1;
+        if (top >= 0) {
+            s.pile_offset_s = PileAnchor(fresh_facts[static_cast<size_t>(top)]) - e.pos;
+            s.has_pile_offset = true;
         }
     }
-    UpdateArrange();
-    return Finish(text + ".");
 }
 
 int SelectItems(const std::vector<std::string>& guids)
@@ -1278,6 +1351,345 @@ int SelectItems(const std::vector<std::string>& guids)
     return n;
 }
 
+
+// ---- 13-68e v5: linked instances, gestures made in REAPER (a timer: also with the window closed) ---------------
+// The decisions are attach_manager_plan.h DecideWatch's (pure, host-tested); here the reads and the writes.
+
+// What the watcher last read of the current project, and the originals (items a library plays from) as they were,
+// so one deleted by hand can be put back in the source zone.
+struct WatchRead {
+    am::WatchSnap                      snap;
+    std::map<std::string, std::string> chunks;  // original's GUID (upper case) -> its state chunk
+    std::map<std::string, std::string> tracks;  // original's GUID (upper case) -> its track's GUID
+};
+
+am::Look LookOf(MediaItem* it)
+{
+    am::Look l;
+    l.vol = GetMediaItemInfo_Value(it, "D_VOL");
+    l.fade_in = GetMediaItemInfo_Value(it, "D_FADEINLEN");
+    l.fade_out = GetMediaItemInfo_Value(it, "D_FADEOUTLEN");
+    l.in_shape = static_cast<int>(GetMediaItemInfo_Value(it, "C_FADEINSHAPE"));
+    l.out_shape = static_cast<int>(GetMediaItemInfo_Value(it, "C_FADEOUTSHAPE"));
+    l.in_dir = GetMediaItemInfo_Value(it, "D_FADEINDIR");
+    l.out_dir = GetMediaItemInfo_Value(it, "D_FADEOUTDIR");
+    return l;
+}
+
+std::string TrackGuid(MediaTrack* t)
+{
+    char buf[64] = {};
+    return t && GetSetMediaTrackInfo_String(t, "GUID", buf, false) ? std::string(buf) : std::string();
+}
+
+// Every placed item of an Attached library as an instance (its layer, its animation's pool), its look and position.
+void ReadWatch(ReaProject* proj, WatchRead* w)
+{
+    *w = WatchRead();
+    am::WatchSnap&                          s = w->snap;
+    const SoundStore&                       st = GetSoundStore(proj);
+    const std::map<std::string, MediaItem*> items = ItemsByGuid(proj);
+    for (const auto& kv : items) s.present.insert(kv.first);
+    std::vector<int>                                   pool_of;
+    const std::vector<MediaItem*>                      ravs = WithPoolMembers(ProjectRavItems(), proj, &pool_of);
+    std::map<std::string, std::pair<MediaItem*, int>> owners;
+    for (size_t i = 0; i < ravs.size(); ++i) {
+        const std::string g = GuidKey(ItemGuidOf(ravs[i]));
+        owners[g] = {ravs[i], i < pool_of.size() ? pool_of[i] : static_cast<int>(i)};
+        s.owners[g] = GetMediaItemInfo_Value(ravs[i], "D_POSITION");
+    }
+    const std::set<std::string>       sources = AllSourceGuids(st, items);
+    std::map<std::string, ItemSounds> recs;
+    LayerCache                        cache;
+    for (const auto& kv : items) {
+        PlacedTag t;
+        if (!ReadPlacedTag(kv.second, &t) || t.own == Ownership::Deleted) continue;
+        const std::string ok = GuidKey(t.owner);
+        const auto        o = owners.find(ok);
+        if (o == owners.end()) continue;
+        auto rec = recs.find(ok);
+        if (rec == recs.end()) rec = recs.emplace(ok, ReadItemSounds(o->second.first)).first;
+        const RuleSounds*   rs = FindRuleSounds(rec->second, t.rid);
+        const SoundLibrary* lib = rs && !rs->none ? FindLibrary(st, rs->library) : nullptr;
+        if (!lib || !lib->attached) continue;
+        const am::LayerAt la = InstanceLayer(st, *lib, t, kv.first, items, cache);
+        am::Instance      in;
+        in.guid = kv.first;
+        in.owner = ok;
+        in.pool = std::to_string(o->second.second);
+        in.rid = t.rid;
+        in.t = t.t;
+        in.lib = lib->uid;
+        in.layer = la.layer;
+        in.sig = la.layer.empty() ? std::string() : am::LayerSig(*lib, la.layer);
+        in.slot = la.slot;
+        s.inst.push_back(in);
+        s.looks[kv.first] = LookOf(kv.second);
+        s.pos[kv.first] = GetMediaItemInfo_Value(kv.second, "D_POSITION");
+        if (sources.count(kv.first) && f_get_chunk) {  // an original: kept as it is, to be put back if deleted by hand
+            std::vector<char> buf(1u << 20);
+            if (f_get_chunk(kv.second, buf.data(), static_cast<int>(buf.size()), false)) {
+                buf.back() = '\0';
+                w->chunks[kv.first] = buf.data();
+                w->tracks[kv.first] = TrackGuid(GetMediaItem_Track(kv.second));
+            }
+        }
+    }
+    for (int i = 0, n = CountSelectedMediaItems(proj); i < n; ++i)
+        if (MediaItem* it = GetSelectedMediaItem(proj, i)) s.selected.insert(GuidKey(ItemGuidOf(it)));
+}
+
+// An original deleted by hand that a library still plays from: made again from its last read state, untagged, in the
+// source zone; a new GUID is given to the library's Sounds. Returns how many.
+int BringBackOriginals(ReaProject* proj, const WatchRead& last, const std::set<std::string>& gone)
+{
+    if (!f_add_item || !f_set_chunk) return 0;
+    const std::map<std::string, MediaItem*> items = ItemsByGuid(proj);
+    const std::set<std::string>             sources = AllSourceGuids(GetSoundStore(proj), items);
+    std::vector<MediaItem*>                 back;
+    std::map<std::string, std::string>      renamed;  // old GUID (upper) -> the new item's
+    for (const std::string& g : gone) {
+        const auto chunk = last.chunks.find(g);
+        if (!sources.count(g) || chunk == last.chunks.end() || items.count(g)) continue;
+        MediaTrack* track = nullptr;
+        for (int i = 0, n = CountTracks(proj); i < n && !track; ++i)
+            if (MediaTrack* t = GetTrack(proj, i); t && TrackGuid(t) == last.tracks.at(g)) track = t;
+        if (!track) continue;
+        MediaItem* it = f_add_item(track);
+        if (!it) continue;
+        f_set_chunk(it, chunk->second.c_str(), false);
+        ClearPlacedTag(it);
+        back.push_back(it);
+        const std::string now = GuidKey(ItemGuidOf(it));
+        if (now != g) renamed[g] = ItemGuidOf(it);
+    }
+    if (!renamed.empty())
+        ModifySoundStore(proj, nullptr, [&](SoundStore& st) {
+            bool any = false;
+            for (SoundLibrary& l : st.libraries)
+                for (SoundNode& n : l.nodes) {
+                    const auto hit = renamed.find(GuidKey(n.sound.source.item_guid));
+                    if (n.type != SoundNodeType::Sound || hit == renamed.end()) continue;
+                    n.sound.source.item_guid = hit->second;
+                    any = true;
+                }
+            return any;
+        });
+    ToSourceZone(proj, back, {});
+    return static_cast<int>(back.size());
+}
+
+// Instances deleted by hand (Anim / Project): their layer leaves every linked instance and the library in scope. The
+// linked items are deleted, but an item a library Sound still plays from goes to the source zone (an original the user
+// deleted is put back there). One RAV undo point right after the user's.
+bool PropagateDelete(ReaProject* proj, const WatchRead& last, const std::set<std::string>& gone, am::Scope scope)
+{
+    const am::DeletePlan dp = am::PlanPropagatedDelete(last.snap.inst, gone, scope);
+    if (dp.delete_guids.empty() && dp.removals.empty()) return false;
+    const std::string undo = "RAV: Delete linked instances" + ScopeText(scope);
+    SoundUndoScope    scope_undo(proj, undo.c_str());
+    int               layers = 0;
+    for (const am::LayerRemoval& r : dp.removals) {
+        MediaItem*          owner = ScanItemByGuid(proj, r.owner);
+        const SoundLibrary* lib = owner ? FindLibrary(GetSoundStore(proj), r.lib) : nullptr;
+        if (!lib) continue;
+        const std::string key = lib->attached_type;
+        const std::string kind = KindNameOn(owner, key, lib->name);
+        const am::PoolKey pool = PoolKeyOf(owner, kind);
+        am::EditOut       edit;
+        if (ModifySoundStore(proj, nullptr, [&](SoundStore& st) {
+                edit = am::RemoveLayer(st, r.lib, scope, pool, r.layer, r.slot, &NewSoundUid);
+                return edit.ok;
+            })) {
+            ApplyEdit(proj, scope == am::Scope::Anim ? owner : nullptr, r.lib, key, edit);
+            ++layers;
+        }
+    }
+    const std::map<std::string, MediaItem*> items = ItemsByGuid(proj);
+    const std::set<std::string>             sources = AllSourceGuids(GetSoundStore(proj), items);
+    std::map<std::string, std::string>      owner_of;
+    for (const am::Instance& i : last.snap.inst) owner_of[i.guid] = i.owner;
+    std::vector<MediaItem*> zone;
+    int                     deleted = 0;
+    for (const std::string& g : dp.delete_guids) {
+        const auto hit = items.find(g);
+        if (hit == items.end()) continue;
+        if (MediaItem* owner = ScanItemByGuid(proj, owner_of[g]))
+            ModifyItemSounds(owner, nullptr, [&](ItemSounds& r) { return DetachFromRecord(r, g); });
+        if (sources.count(g) || IsFolderItem(hit->second)) {
+            ClearPlacedTag(hit->second);
+            zone.push_back(hit->second);
+        } else if (RemovePlacedAny(proj, hit->second)) {
+            ++deleted;
+        } else {
+            ClearPlacedTag(hit->second);
+        }
+    }
+    ToSourceZone(proj, zone, {});
+    const int restored = BringBackOriginals(proj, last, gone);
+    UpdateArrange();
+    std::string text = undo + ": " + std::to_string(deleted) + (deleted == 1 ? " linked instance deleted" : " linked instances deleted");
+    if (!zone.empty() || restored)
+        text += ", " + std::to_string(zone.size() + static_cast<size_t>(restored)) + " the library plays from in the source zone";
+    if (layers) text += ", the layer left the library";
+    Finish(text + ".");
+    return true;
+}
+
+struct Watch {
+    ReaProject*           proj = nullptr;
+    bool                  primed = false;
+    int                   count = -1;
+    std::string           sel_sig;
+    bool                  pending = false;    // a change waits to be read (the interval, the mouse button)
+    double                next_read = 0.0;    // read at most every 0.25 s
+    WatchRead             last;
+    std::string           last_top;           // REAPER's last undo point at the last read
+    bool                  delete_cmd = false; // a delete action ran since the last read (AttachWatchPostCommand)
+    bool                  down = false;       // the mouse button, polled every tick
+    bool                  clicked = false;    // it went down and up since the last read
+    bool                  ctrl = false;       // Ctrl when it went down
+    std::set<std::string> expanded;           // the linked selection RAV made (a drag of one of them moves only that one)
+    std::string           anchor;
+};
+Watch g_watch;
+
+std::string SelectionSig(ReaProject* proj)
+{
+    std::string out;
+    for (int i = 0, n = CountSelectedMediaItems(proj); i < n; ++i) {
+        char p[32];
+        std::snprintf(p, sizeof(p), "%p,", static_cast<void*>(GetSelectedMediaItem(proj, i)));
+        out += p;
+    }
+    return out;
+}
+
+// The item under the mouse (the one a drag held), "" when none.
+std::string ItemUnderMouse()
+{
+    POINT pt;
+    if (!f_item_from_point || !GetCursorPos(&pt)) return std::string();
+    MediaItem* it = f_item_from_point(pt.x, pt.y, true, nullptr);
+    return it ? GuidKey(ItemGuidOf(it)) : std::string();
+}
+
+const std::vector<std::string>& DeleteNames()
+{
+    static const std::vector<std::string> v =
+        LocalizedUndoNames({"Remove items", "Delete items", "Remove items/tracks/envelope points", "Remove selected items"});
+    return v;
+}
+
+void WatchTick()
+{
+    ReaProject* proj = EnumProjects(-1, nullptr, 0);
+    if (!proj) return;
+    if (proj != g_watch.proj) {
+        g_watch = Watch();
+        g_watch.proj = proj;
+    }
+    // The mouse, every tick: a click (Ctrl latched when the button goes down) is read after the drop.
+    const bool down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+    if (down && !g_watch.down) g_watch.ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    if (!down && g_watch.down) g_watch.clicked = true;
+    g_watch.down = down;
+    const SoundStore& st = GetSoundStore(proj);
+    bool              any = false;
+    for (const SoundLibrary& l : st.libraries) any = any || l.attached;
+    if (!any) {
+        g_watch.primed = false;
+        g_watch.expanded.clear();
+        g_watch.clicked = false;
+        return;
+    }
+    const int         count = GetProjectStateChangeCount(proj);
+    const std::string sel = SelectionSig(proj);
+    if (!g_watch.primed || count != g_watch.count || sel != g_watch.sel_sig) g_watch.pending = true;
+    g_watch.count = count;
+    g_watch.sel_sig = sel;
+    if (!g_watch.pending) {
+        g_watch.clicked = g_watch.clicked && down;  // a click that changed nothing is forgotten
+        return;
+    }
+    if (down) return;  // a click or a drag in progress: what it did is read after the drop
+    const double now_s = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (now_s < g_watch.next_read) return;
+    g_watch.next_read = now_s + 0.25;
+    g_watch.pending = false;
+    WatchRead now;
+    ReadWatch(proj, &now);
+    const char*       top_c = Undo_CanUndo2(proj);
+    const std::string top = top_c ? top_c : "";
+    if (!g_watch.primed) {
+        g_watch.primed = true;
+        g_watch.last = now;
+        g_watch.last_top = top;
+        g_watch.clicked = false;
+        g_watch.delete_cmd = false;
+        return;
+    }
+    am::WatchIn in;
+    in.scope = am::ScopeOf(st);
+    in.top = top;
+    in.redo = f_can_redo && f_can_redo(proj);
+    in.new_undo = top != g_watch.last_top || g_watch.delete_cmd;
+    in.cut_names = FollowCutNames();
+    in.delete_names = DeleteNames();
+    in.clicked = g_watch.clicked;
+    in.ctrl = g_watch.ctrl;
+    in.under_mouse = g_watch.clicked ? ItemUnderMouse() : std::string();
+    in.expanded = g_watch.expanded;
+    in.anchor = g_watch.anchor;
+    const am::WatchOut out = am::DecideWatch(g_watch.last.snap, now.snap, in);
+    bool               wrote = false;
+    if (!out.gone.empty()) {
+        wrote = PropagateDelete(proj, g_watch.last, out.gone, in.scope);
+    } else if (!out.looks.empty() || !out.back.empty()) {  // one undo point for both
+        const std::string undo = std::string(out.looks.empty() ? "RAV: Only the dragged instance moves" : "RAV: Linked instances follow (volume, fades)") +
+                                 ScopeText(in.scope);
+        SoundUndoScope                          scope_undo(proj, undo.c_str());
+        const std::map<std::string, MediaItem*> items = ItemsByGuid(proj);
+        for (const am::LookWrite& w : out.looks) {
+            const auto hit = items.find(w.guid);
+            if (hit == items.end()) continue;
+            f_set_item(hit->second, "D_VOL", w.look.vol);
+            f_set_item(hit->second, "D_FADEINLEN", w.look.fade_in);
+            f_set_item(hit->second, "D_FADEOUTLEN", w.look.fade_out);
+            f_set_item(hit->second, "C_FADEINSHAPE", w.look.in_shape);
+            f_set_item(hit->second, "C_FADEOUTSHAPE", w.look.out_shape);
+            f_set_item(hit->second, "D_FADEINDIR", w.look.in_dir);
+            f_set_item(hit->second, "D_FADEOUTDIR", w.look.out_dir);
+        }
+        for (const am::MoveBack& b : out.back) {
+            const auto hit = items.find(b.guid);
+            if (hit != items.end()) f_set_item(hit->second, "D_POSITION", b.pos);
+        }
+        UpdateArrange();
+        wrote = true;
+    } else if (!out.select.empty()) {
+        SelectItems(out.select);
+        g_watch.expanded = std::set<std::string>(out.select.begin(), out.select.end());
+        g_watch.anchor = out.select.front();
+        wrote = true;
+    } else if (out.clear_expanded) {
+        g_watch.expanded.clear();
+        g_watch.anchor.clear();
+    }
+    if (wrote) {
+        ReadWatch(proj, &now);
+        const char* t2 = Undo_CanUndo2(proj);
+        g_watch.last_top = t2 ? t2 : "";
+        g_watch.count = GetProjectStateChangeCount(proj);
+        g_watch.sel_sig = SelectionSig(proj);
+    } else {
+        g_watch.last_top = top;
+    }
+    g_watch.last = now;
+    g_watch.clicked = false;
+    g_watch.delete_cmd = false;
+}
+
 }  // namespace
 
 void InitSoundSpreadSelection(void* (*get_func)(const char* name))
@@ -1287,41 +1699,74 @@ void InitSoundSpreadSelection(void* (*get_func)(const char* name))
     f_count_takes = reinterpret_cast<CountTakesFn>(get_func("CountTakes"));
     f_select_all = reinterpret_cast<SelectAllMediaItemsFn>(get_func("SelectAllMediaItems"));      // 13-68e
     f_set_selected = reinterpret_cast<SetMediaItemSelectedFn>(get_func("SetMediaItemSelected"));  // 13-68e
+    f_can_redo = reinterpret_cast<Undo_CanRedo2Fn>(get_func("Undo_CanRedo2"));                    // 13-68e v5
+    f_item_from_point = reinterpret_cast<GetItemFromPointFn>(get_func("GetItemFromPoint"));      // 13-68e v5
+    f_get_chunk = reinterpret_cast<GetItemStateChunkFn>(get_func("GetItemStateChunk"));
+    f_set_chunk = reinterpret_cast<SetItemStateChunkFn>(get_func("SetItemStateChunk"));
+    f_add_item = reinterpret_cast<AddMediaItemToTrackFn>(get_func("AddMediaItemToTrack"));
 }
 
 std::string SpreadSelectionToMarkerType(SpreadScope scope)
 {
     try {
-        return Run(scope);
+        return RunAttach(ScopeOfAction(scope), nullptr);
     } catch (...) {
-        return Finish("Spread selection failed");
+        return Finish("Attach failed");
     }
 }
 
 std::string AddSelectionToStack(SpreadScope scope)
 {
     try {
-        return RunStack(scope);
+        return RunPile(ScopeOfAction(scope));
     } catch (...) {
-        return Finish("Add to stack failed");
+        return Finish("Add to pile failed");
     }
 }
 
-std::string SpreadSelectionToMarker(SpreadScope scope, SpreadSide side, const SpreadMarker* marker, bool other_none)
+std::string AttachToMarker(am::Scope scope, const SpreadMarker* marker)
 {
     try {
-        return Run(scope, side, marker, other_none);
+        return RunAttach(scope, marker);
     } catch (...) {
         return Finish("Attach failed");
     }
 }
 
-std::string AddSelectionToStackSide(SpreadScope scope, SpreadSide side, bool other_none)
+std::string AddToPile(am::Scope scope)
 {
     try {
-        return RunStack(scope, side, other_none);
+        return RunPile(scope);
     } catch (...) {
-        return Finish("Add to stack failed");
+        return Finish("Add to pile failed");
+    }
+}
+
+std::string SeparateLR(am::Scope scope, const SpreadMarker& marker)
+{
+    try {
+        return RunSeparate(scope, marker);
+    } catch (...) {
+        return Finish("Separate L and R failed");
+    }
+}
+
+std::string MergeLR(am::Scope scope, const SpreadMarker& marker)
+{
+    try {
+        return RunMerge(scope, marker);
+    } catch (...) {
+        return Finish("Merge L and R failed");
+    }
+}
+
+bool SetApplyTo(am::Scope scope)
+{
+    try {
+        const std::string undo = std::string("RAV: Attach manager - Apply to ") + am::ScopeLabel(scope);
+        return ModifySoundStore(EnumProjects(-1, nullptr, 0), undo.c_str(), [scope](SoundStore& st) { return am::SetScope(st, scope); });
+    } catch (...) {
+        return false;
     }
 }
 
@@ -1360,24 +1805,6 @@ std::string ClickedMarkersKey()
     return out;
 }
 
-std::string DetachFromMarkers(const std::vector<DetachTarget>& targets, bool keep)
-{
-    try {
-        return Detach(targets, keep);
-    } catch (...) {
-        return Finish("Detach failed");
-    }
-}
-
-std::string RemoveFromAttachedLibrary(const std::string& lib_uid, const std::string& node, bool keep, char side)
-{
-    try {
-        return RemoveVariation(lib_uid, node, keep, side);
-    } catch (...) {
-        return Finish("Remove from library failed");
-    }
-}
-
 int SelectItemsByGuid(const std::vector<std::string>& guids)
 {
     try {
@@ -1387,6 +1814,21 @@ int SelectItemsByGuid(const std::vector<std::string>& guids)
     }
 }
 
+void AttachWatchTick()
+{
+    try {
+        WatchTick();
+    } catch (...) {
+    }
+}
+
+void AttachWatchPostCommand(int command, int)
+{
+    // REAPER's "Item: Remove items" and "Remove items/tracks/envelope points (depending on focus)" (the Delete key):
+    // a new delete even when its undo point has the same name as the last one.
+    if (command == 40006 || command == 40697) g_watch.delete_cmd = true;
+}
+
 }  // namespace rav
 
 #else  // host builds
@@ -1394,17 +1836,20 @@ int SelectItemsByGuid(const std::vector<std::string>& guids)
 namespace rav {
 std::string SpreadSelectionToMarkerType(SpreadScope) { return {}; }
 std::string AddSelectionToStack(SpreadScope) { return {}; }
-std::string SpreadSelectionToMarker(SpreadScope, SpreadSide, const SpreadMarker*, bool) { return {}; }
-std::string AddSelectionToStackSide(SpreadScope, SpreadSide, bool) { return {}; }
+std::string AttachToMarker(am::Scope, const SpreadMarker*) { return {}; }
+std::string AddToPile(am::Scope) { return {}; }
+std::string SeparateLR(am::Scope, const SpreadMarker&) { return {}; }
+std::string MergeLR(am::Scope, const SpreadMarker&) { return {}; }
+bool        SetApplyTo(am::Scope) { return false; }
 void        ReadAttachManager(AttachManagerState* out)
 {
     if (out) *out = AttachManagerState();
 }
 std::string AttachManagerSignature() { return {}; }
 std::string ClickedMarkersKey() { return {}; }
-std::string DetachFromMarkers(const std::vector<DetachTarget>&, bool) { return {}; }
-std::string RemoveFromAttachedLibrary(const std::string&, const std::string&, bool, char) { return {}; }
 int         SelectItemsByGuid(const std::vector<std::string>&) { return 0; }
+void        AttachWatchTick() {}
+void        AttachWatchPostCommand(int, int) {}
 }  // namespace rav
 
 #endif

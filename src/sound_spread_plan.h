@@ -13,7 +13,6 @@
 #pragma once
 
 #include <functional>
-#include <map>  // 13-68e v4
 #include <set>  // 13-68 v3
 #include <string>
 #include <vector>
@@ -81,12 +80,12 @@ void SetLibraryContent(SoundLibrary& lib, std::vector<SoundNode> nodes);
 // Add to stack: `layer` (SpreadLayerNodes) becomes a child of the root Blend at `offset_ms`. A root
 // that is not a Blend is wrapped first: a new Blend root `blend_uid` named after the library holding
 // the old root (offset 0) then the layer. No root: the layer becomes the root (its offset 0).
-// 13-68e: `top` (non-empty) = the node the layer goes beside instead of the root (a Side Switch's case content,
-// SideLayerTop): that node wrapped in a Blend the same way (a Blend already: the layer joins it).
+// 13-68e: `top` (non-empty) = the node the layer goes beside instead of the root: that node wrapped in a Blend the
+// same way (a Blend already: the layer joins it).
 void AddStackLayer(SoundLibrary& lib, std::vector<SoundNode> layer, double offset_ms, const std::string& blend_uid,
                    const std::string& top = std::string());
 
-// ---- 13-68e: "<side> only" (the RAV-owned Switch Group "Side", shown "RAV - Side") ---------------------------
+// ---- 13-68e: Separate L and R (the RAV-owned Switch Group "Side", shown "RAV - Side") ------------------------
 
 // The group's name (rav_owned; values "L" and "R").
 constexpr const char kSideGroupName[] = "Side";
@@ -109,54 +108,9 @@ struct RuleSide {
 // Before Populate places: each rule of `rules` with a side that holds (at rule level) a library using the Side group
 // gets its side's value when it has none for that group; a value already set is kept. True when `rec` changed.
 bool FillMissingSideValues(const SoundStore& store, ItemSounds& rec, const std::vector<RuleSide>& rules);
-// Attach "<side> only": `nodes` (SpreadLayerNodes) become the content of the side's value of the library's root Side
-// Switch; the other side keeps what it had: a root that is not the Side Switch becomes the other side's content (no
-// content at first: no case, that side plays nothing). The side's earlier content is removed. False when the
-// library is not in `store`, `nodes` is empty or `side` is not 'L' / 'R'.
-// 13-68e v4: `other_none` = the other side plays nothing from now on (EmptySide).
-bool SetSideContent(SoundStore& store, const std::string& lib_uid, char side, std::vector<SoundNode> nodes,
-                    const std::function<std::string()>& new_uid, bool other_none = false);
-// Add to stack "<side> only": the uid of the Blend the side's own layers go in. A root Side Switch: its side's
-// content (wrapped in a Blend; a new empty Blend case when the side had none). Else a Side Switch in the root Blend
-// (the root wrapped first, as AddStackLayer), its side's case a Blend (made when absent): the base stays shared,
-// the other side gets nothing of it. "" when the library is not in `store` or `side` is not 'L' / 'R'.
-std::string SideLayerTop(SoundStore& store, const std::string& lib_uid, char side, const std::function<std::string()>& new_uid);
-// 13-68e v4 ("<side> only", the other side "Plays nothing"): `empty_side`'s content goes (its case of the root Side
-// Switch removed with everything under it); a root that is not the Side Switch becomes the other side's content
-// alone. The other side keeps what it plays. False when the library is not in `store`, has no content or `empty_side`
-// is not 'L' / 'R'.
-bool EmptySide(SoundStore& store, const std::string& lib_uid, char empty_side, const std::function<std::string()>& new_uid);
-// 13-68e v4 (Remove from library on one side): the side ('L' / 'R') a node plays on, from the Side Switch case above
-// it; 0 = both (no Side Switch above it).
-char NodeSide(const SoundStore& store, const SoundLibrary& lib, const std::string& node);
-// 13-68e v4: before `node` leaves `side` only, a variation both sides share is split through the RAV - Side Switch:
-// its parent Random (else the node itself) is replaced in its place by a Side Switch whose `side` case holds it (the
-// same nodes: that side's draws stay valid) and whose other case holds a copy with new uids, `other_uids` = old uid ->
-// copy's uid (the other side's records and tags are moved to the copy with it). Nothing to split (the node already
-// plays on `side` only): true, `other_uids` empty. False when the node is absent, plays on the other side only, or
-// `side` is not 'L' / 'R'.
-bool SplitForSide(SoundStore& store, const std::string& lib_uid, const std::string& node, char side,
-                  const std::function<std::string()>& new_uid, std::map<std::string, std::string>* other_uids);
 // Removes `uid` and everything under it from `lib` (the Switch cases naming a removed child too). Returns the removed
 // uids (empty when absent). A removed root leaves the library empty.
 std::vector<std::string> RemoveSubtree(SoundLibrary& lib, const std::string& uid);
-
-// 13-68 v3, Add to stack (this animation): `layer` goes under the library's RAV-owned per-animation Switch, in the
-// root Blend (a root that is not a Blend is wrapped first, as AddStackLayer). The Switch's group (rav_owned, named
-// "<kind_name> layers", one per library, reused) has a default value "Other animations" with no sound (adds
-// nothing); the animation's value (`item_values`' value of that group when it has one, else the value named
-// `anim_name`, else a new one) holds a Blend named after the animation, the layer at `offset_ms` in it (a later
-// add for that animation joins it). Returns the value to set at animation level on the item and its linked copies;
-// empty group_uid when the library is not in `store` or `layer` is empty. 13-68 v3 review: a new Switch takes a
-// RAV group of that name when one is left (an orphan) before making one; the Switch's own default counts as the
-// default; a value in `held_elsewhere` (held by RAV items outside the item's pool) is never reused: a new value
-// then, named "<anim_name>", "<anim_name> 2"... (unique in the group).
-ValueSet AddAnimationLayer(SoundStore& store, const std::string& lib_uid, std::vector<SoundNode> layer, double offset_ms,
-                           const std::string& anim_name, const std::vector<ValueSet>& item_values,
-                           const std::string& kind_name, const std::function<std::string()>& new_uid,
-                           const std::set<std::string>& held_elsewhere = {}, const std::string& top = std::string());
-// 13-68e: `top` (non-empty) = the Blend the Switch goes in instead of the root Blend (SideLayerTop: the layer for
-// this animation on one side only). The Side group's Switch is never taken for the per-animation one.
 
 // 13-68 v3, Add to stack: the selected stack items' tags (items placed on an event of an Attached library) are on
 // several events (owner, rule, clip time within kEventMatchSeconds): the gesture refuses.
@@ -203,13 +157,13 @@ struct SpreadRunCounts {
     int         placed = 0, replaced = 0, kept = 0;  // Populate's counts
     std::string skip_note;             // "2 skipped: placed by RAV" ("" = none)
     int         to_source = 0;         // 13-68 v3: an earlier run's sounds on the library's events moved to the source zone
-    char        side = 0;              // 13-68e: "<side> only" ('L' / 'R'; 0 = both sides)
-    bool        other_none = false;    // 13-68e v4: the other side plays nothing
+    char        side = 0;              // 13-68e v5: the side written in a separated Group ('L' / 'R'; 0 = both sides)
+    bool        item = false;          // 13-68e v5: Item scope (this marker only, the library unchanged)
 };
 // The report: "Used FS L (2 markers selected)" first when several, then e.g. "FS (this animation):
 // library FS, 3 variations (6 items), 2 animations, 16 sounds placed" (zero counts left out); the scope reads
-// "(all animations with this marker)"; Add to stack: "layer added to library FS" (this animation: "for this animation").
-// 13-68e: "<side> only": "FS L only (this animation): ..."; v4: "FS L only, R plays nothing (this animation): ...".
+// "(the project)"; Add to pile: "layer added to library FS" (this animation: "for this animation"). 13-68e v5: a
+// separated Group's side "FS L (this animation): ..."; Item scope "FS (this instance): on this marker only, ...".
 std::string SpreadRunReport(const SpreadRunCounts& c);
 
 }  // namespace rav

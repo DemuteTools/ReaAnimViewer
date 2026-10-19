@@ -336,7 +336,7 @@ int main()
         c.kept = 1;
         c.skip_note = "1 skipped: placed by RAV";
         CHECK(SpreadRunReport(c)
-              == "Used FS L (2 markers selected)\nFS L (all animations with this marker): library FS L, 3 variations, 3 animations, 24 sounds placed, "
+              == "Used FS L (2 markers selected)\nFS L (the project): library FS L, 3 variations, 3 animations, 24 sounds placed, "
                  "2 changed, 1 already in place, 1 skipped: placed by RAV");
         SpreadRunCounts a;
         a.type = "FS L";
@@ -350,8 +350,27 @@ int main()
         a.type = "FS";
         a.marker = "FS R";
         a.selected_markers = 3;
-        CHECK(SpreadRunReport(a) == "Used FS R (3 markers selected)\nFS (all animations with this marker): layer added to library FS, "
+        CHECK(SpreadRunReport(a) == "Used FS R (3 markers selected)\nFS (the project): layer added to library FS, "
                                     "1 variation, 1 animation, no marker to place on");
+        // 13-68e v5: a separated Group's side; Item scope.
+        SpreadRunCounts s;
+        s.type = "FS";
+        s.side = 'R';
+        s.reused = true;
+        s.variations = 1;
+        s.layers = 1;
+        s.animations = 2;
+        s.events = 4;
+        s.placed = 3;
+        CHECK(SpreadRunReport(s) == "FS R (this animation): library FS, 1 variation, 2 animations, 3 sounds placed");
+        s.side = 0;
+        s.item = true;
+        s.animations = 1;
+        s.placed = 0;
+        s.events = 1;
+        CHECK(SpreadRunReport(s) == "FS (this instance): on this marker only, 1 variation, 1 animation");
+        s.add_layer = true;
+        CHECK(SpreadRunReport(s) == "FS (this instance): layer on this instance only, 1 variation, 1 animation");
     }
 
     // 13-68 v3, both sides by default: the kind from the rule (an auto block's key without its side, its side-free
@@ -409,115 +428,6 @@ int main()
         CHECK(IsStackItem(lib, "{SRC2}", false, false));
         CHECK(!IsStackItem(lib, "{new}", false, false));   // a new item
         CHECK(!IsStackItem(lib, "", false, false));
-    }
-
-    // 13-68 v3, Add to stack (this animation): the layer under the library's RAV-owned per-animation Switch.
-    {
-        SoundStore   st;
-        SoundLibrary lib;
-        lib.uid = "L";
-        lib.name = "FS";
-        lib.attached = true;
-        SetLibraryContent(lib, SpreadLayerNodes({Src("s1", "A", 1, 0.0, 0.2, 0.0), Src("s2", "B", 1, 1.0, 0.2, 0.0)}, "FS", &Uid));
-        const std::string old_root = lib.root;
-        st.libraries.push_back(lib);
-        const ValueSet v = AddAnimationLayer(st, "L", SpreadLayerNodes({Src("n1", "N", 2, 0.0, 0.1, 0.0)}, "Layer", &Uid), 20.0, "Walk",
-                                             {}, "FS", &Uid);
-        const SoundLibrary& L = st.libraries[0];
-        CHECK(!v.group_uid.empty() && !v.value_uid.empty() && st.groups.size() == 1);
-        const SwitchGroup& g = st.groups[0];
-        CHECK(g.uid == v.group_uid && g.rav_owned && g.name == "FS layers" && g.values.size() == 2);
-        CHECK(g.default_value == g.values[0].uid && g.values[0].name == "Other animations");  // the default adds nothing
-        CHECK(g.values[1].uid == v.value_uid && g.values[1].name == "Walk");
-        const SoundNode* root = FindNode(L, L.root);
-        CHECK(root && root->type == SoundNodeType::Blend && L.root != old_root);  // the old root wrapped
-        const SoundNode* o = FindNode(L, old_root);
-        CHECK(o && o->parent == L.root);
-        const SoundNode* sw = nullptr;
-        for (const SoundNode& n : L.nodes)
-            if (n.type == SoundNodeType::Switch) sw = &n;
-        CHECK(sw && sw->parent == L.root && sw->group_uid == g.uid && sw->cases.size() == 1);
-        CHECK(sw && sw->cases[0].value_uid == v.value_uid);  // no case for the default value
-        const SoundNode* ab = sw ? FindNode(L, sw->cases[0].child_uid) : nullptr;
-        CHECK(ab && ab->type == SoundNodeType::Blend && ab->parent == sw->uid && ab->name == "Walk");
-        int layers = 0;
-        for (const SoundNode& n : L.nodes)
-            if (ab && n.parent == ab->uid) {
-                ++layers;
-                CHECK(n.type == SoundNodeType::Random && Near(n.offset_ms, 20.0) && n.layer_keep_offset);
-            }
-        CHECK(layers == 1);
-        // A second layer for that animation (its value set at animation level): joins its Blend, no new group / Switch.
-        const size_t   nodes_before = L.nodes.size();
-        const ValueSet v2 = AddAnimationLayer(st, "L", SpreadLayerNodes({Src("n2", "M", 2, 0.0, 0.1, 0.0)}, "Layer", &Uid), -5.0,
-                                              "Walk renamed", {v}, "FS", &Uid);
-        CHECK(v2.group_uid == v.group_uid && v2.value_uid == v.value_uid && st.groups.size() == 1 && st.groups[0].values.size() == 2);
-        CHECK(st.libraries[0].nodes.size() == nodes_before + 2);
-        // Another animation: a new value and its own Blend under the same Switch.
-        const ValueSet v3 = AddAnimationLayer(st, "L", SpreadLayerNodes({Src("n3", "K", 2, 0.0, 0.1, 0.0)}, "Layer", &Uid), 0.0, "Run",
-                                              {}, "FS", &Uid);
-        CHECK(v3.group_uid == v.group_uid && v3.value_uid != v.value_uid && st.groups[0].values.size() == 3);
-        int switches = 0;
-        for (const SoundNode& n : st.libraries[0].nodes)
-            if (n.type == SoundNodeType::Switch) {
-                ++switches;
-                CHECK(n.cases.size() == 2);
-            }
-        CHECK(switches == 1);
-        // The store round-trips; nothing for an unknown library or an empty layer.
-        SoundStore back;
-        CHECK(ParseSoundStore(SerializeSoundStore(st), &back) && back.groups.size() == 1 && back.groups[0].rav_owned);
-        CHECK(AddAnimationLayer(st, "nope", SpreadLayerNodes({Src("x", "X", 1, 0.0, 0.1, 0.0)}, "L", &Uid), 0.0, "W", {}, "FS", &Uid)
-                  .group_uid.empty());
-        CHECK(AddAnimationLayer(st, "L", {}, 0.0, "W", {}, "FS", &Uid).group_uid.empty());
-    }
-
-    // 13-68 v3 review: an orphan RAV group of that name is reused (no second "FS layers"); a value held by an item
-    // outside the pool (another animation of that name) is never reused: "Walk 2"; the Switch's own default counts.
-    {
-        SoundStore  st;
-        SwitchGroup og;
-        og.uid = "gold";
-        og.name = "FS layers";
-        og.rav_owned = true;
-        og.values = {{"vo", "Other animations", {}}, {"vw", "Walk", {}}};
-        og.default_value = "vo";
-        st.groups.push_back(og);
-        SoundLibrary lib;
-        lib.uid = "L";
-        lib.name = "FS";
-        SetLibraryContent(lib, SpreadLayerNodes({Src("s1", "A", 1, 0.0, 0.2, 0.0)}, "FS", &Uid));
-        st.libraries.push_back(lib);
-        const ValueSet v = AddAnimationLayer(st, "L", SpreadLayerNodes({Src("n1", "N", 2, 0.0, 0.1, 0.0)}, "Layer", &Uid), 0.0,
-                                             "Walk", {}, "FS", &Uid);
-        CHECK(st.groups.size() == 1 && v.group_uid == "gold" && v.value_uid == "vw");  // the orphan and its "Walk"
-        const SoundNode* sw = nullptr;
-        for (const SoundNode& n : st.libraries[0].nodes)
-            if (n.type == SoundNodeType::Switch) sw = &n;
-        CHECK(sw && sw->group_uid == "gold" && sw->name == "FS layers");
-        const std::string sw_uid = sw ? sw->uid : std::string();  // the nodes move as they grow
-        // Another (unlinked) item named Walk: "vw" is held by the first one's pool: a new value "Walk 2", its own Blend.
-        ValueSet held;
-        held.group_uid = "gold";
-        held.value_uid = "vw";
-        const ValueSet v2 = AddAnimationLayer(st, "L", SpreadLayerNodes({Src("n2", "M", 2, 0.0, 0.1, 0.0)}, "Layer", &Uid), 0.0,
-                                              "Walk", {held}, "FS", &Uid, {"vw"});
-        CHECK(v2.group_uid == "gold" && v2.value_uid != "vw" && st.groups[0].values.size() == 3 &&
-              st.groups[0].values[2].uid == v2.value_uid && st.groups[0].values[2].name == "Walk 2");
-        int blends = 0;
-        for (const SoundNode& n : st.libraries[0].nodes)
-            if (n.parent == sw_uid && n.type == SoundNodeType::Blend) ++blends;
-        CHECK(blends == 2);
-        // Its own value is reused when only its pool holds it.
-        const ValueSet v3 = AddAnimationLayer(st, "L", SpreadLayerNodes({Src("n3", "K", 2, 0.0, 0.1, 0.0)}, "Layer", &Uid), 0.0,
-                                              "Walk", {v2}, "FS", &Uid, {"vw"});
-        CHECK(v3.value_uid == v2.value_uid && st.groups[0].values.size() == 3);
-        // The Switch's own default (here "vw") is never an animation's value: a third "Walk 3".
-        for (SoundNode& n : st.libraries[0].nodes)
-            if (n.type == SoundNodeType::Switch) n.default_value = "vw";
-        const ValueSet v4 = AddAnimationLayer(st, "L", SpreadLayerNodes({Src("n4", "J", 2, 0.0, 0.1, 0.0)}, "Layer", &Uid), 0.0,
-                                              "Walk", {held}, "FS", &Uid);
-        CHECK(v4.value_uid != "vw" && v4.value_uid != v2.value_uid && st.groups[0].values.back().name == "Walk 3");
     }
 
     // 13-68 v3 review: an NVK folder pile moved onto the marker records its draw: the library Sound's source is the

@@ -1154,7 +1154,11 @@ bool ParseStoreCore(const std::string& text, SoundStore& s)
     size_t                         i = 0;
     std::vector<std::string>       rest;
     if (!ReadHeader(lines, kSoundStoreMagic, &i, &s.version, &rest)) return false;
-    ReadFields(rest, 0, s.kept, [](const std::string&, const std::string&) { return Got::Unknown; });
+    ReadFields(rest, 0, s.kept, [&s](const std::string& k, const std::string& v) {
+        if (k != "amscope") return Got::Unknown;  // 13-68e v5
+        s.attach_scope = v == "item" ? 0 : v == "project" ? 2 : 1;
+        return Got::Ok;
+    });
     Kept*         unknown_to = &s.kept_lines;
     SwitchGroup*  group = nullptr;
     SoundLibrary* lib = nullptr;
@@ -1427,14 +1431,16 @@ bool ParseSoundStore(const std::string& text, SoundStore* out)
 bool SoundStoreEmpty(const SoundStore& s)
 {
     return s.groups.empty() && s.libraries.empty() && s.kept.empty() && s.kept_lines.empty() && s.auto_sounds.empty() &&
-           s.project.empty() && s.characters.empty();
+           s.project.empty() && s.characters.empty() && s.attach_scope == 1;
 }
 
 std::string SerializeSoundStore(const SoundStore& s)
 {
     if (SoundStoreEmpty(s)) return std::string();
     std::string out;
-    WriteHeader(out, kSoundStoreMagic, s.version, {}, s.kept);
+    Fields head;  // 13-68e v5: the Attach manager's Apply to, when not Anim
+    if (s.attach_scope == 0 || s.attach_scope == 2) head.push_back({"amscope", s.attach_scope == 0 ? "item" : "project"});
+    WriteHeader(out, kSoundStoreMagic, s.version, head, s.kept);
     WriteLines(out, s.kept_lines);
     // Right after the header: a version without them keeps them there (the header's unknown lines).
     for (const AutoSoundAssign& a : s.auto_sounds) {

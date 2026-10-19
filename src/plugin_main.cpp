@@ -111,13 +111,15 @@ constexpr const char kStackAllName[]  = "RAV_ADD_SELECTION_TO_STACK_ALL_INSTANCE
 constexpr const char kStackAllDesc[]  = "RAV: Tagging - Add selected items to stack (all animations with this marker)";
 int                  g_stack_all_id     = 0;
 gaccel_register_t    g_stack_all_accel  = {};
-// 13-68e -- the Attach manager, opened at the mouse on its Attach or its Detach tab.
+// 13-68e -- the Attach manager, opened at the mouse (v5: one window, no Detach tab; the id of v1's Attach tab action
+// kept, so its bindings still open it).
 constexpr const char kAttachMgrName[]  = "RAV_ATTACH_MANAGER_ATTACH";
-constexpr const char kAttachMgrDesc[]  = "RAV: Attach manager - Attach (at mouse)";
-constexpr const char kDetachMgrName[]  = "RAV_ATTACH_MANAGER_DETACH";
-constexpr const char kDetachMgrDesc[]  = "RAV: Attach manager - Detach (at mouse)";
+constexpr const char kAttachMgrDesc[]  = "RAV: Attach manager (at mouse)";
 int                  g_attach_mgr_id     = 0;
 gaccel_register_t    g_attach_mgr_accel  = {};
+// v1's Detach tab action: kept as an alias that opens the window, so its bindings still work.
+constexpr const char kDetachMgrName[]  = "RAV_ATTACH_MANAGER_DETACH";
+constexpr const char kDetachMgrDesc[]  = "RAV: Attach manager (at mouse) - alias";
 int                  g_detach_mgr_id     = 0;
 gaccel_register_t    g_detach_mgr_accel  = {};
 
@@ -251,7 +253,7 @@ bool OnHookCommandBody(int command)
     if (command == g_attach_mgr_id || command == g_detach_mgr_id) {  // 13-68e
         // The window draws through the viewer's GL context: the viewer is made when it does not exist yet.
         if (!ViewerWindowExists()) OpenViewerWindow(g_hinstance, g_reaper_main);
-        OpenAttachManager(command == g_detach_mgr_id ? AttachManagerTab::Detach : AttachManagerTab::Attach);
+        OpenAttachManager();
         RefreshToolbar(g_command_id);
         return true;
     }
@@ -333,6 +335,8 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
             if (g_stack_all_id) g_register("-gaccel", &g_stack_all_accel);
             if (g_attach_mgr_id) g_register("-gaccel", &g_attach_mgr_accel);  // 13-68e
             if (g_detach_mgr_id) g_register("-gaccel", &g_detach_mgr_accel);
+            g_register("-hookpostcommand", (void*)&AttachWatchPostCommand);  // 13-68e v5
+            g_register("-timer", reinterpret_cast<void*>(&AttachWatchTick));  // 13-68e v5: the linked instances' watcher
             if (g_make_unique_id) g_register("-gaccel", &g_make_unique_accel);
             if (g_measure_detection_id) g_register("-gaccel", &g_measure_detection_accel);
             if (g_video_bg_id) g_register("-gaccel", &g_video_bg_accel);
@@ -418,7 +422,10 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
     g_stack_this_id = RegisterAction(rec, kStackThisName, kStackThisDesc, &g_stack_this_accel);
     g_stack_all_id = RegisterAction(rec, kStackAllName, kStackAllDesc, &g_stack_all_accel);
     g_attach_mgr_id = RegisterAction(rec, kAttachMgrName, kAttachMgrDesc, &g_attach_mgr_accel);  // 13-68e
+    // 13-68e v5: a gesture on one instance in REAPER reaches its linked instances (also with the window closed).
+    rec->Register("timer", reinterpret_cast<void*>(&AttachWatchTick));
     g_detach_mgr_id = RegisterAction(rec, kDetachMgrName, kDetachMgrDesc, &g_detach_mgr_accel);
+    rec->Register("hookpostcommand", (void*)&AttachWatchPostCommand);
 
     rec->Register("hookcommand", (void*)&OnHookCommand);
     rec->Register("toggleaction", (void*)&OnToggleAction);

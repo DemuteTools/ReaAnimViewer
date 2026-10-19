@@ -103,7 +103,7 @@ const char* ScopeTip(Scope s)
 {
     switch (s) {
     case Scope::Item: return "This instance only";
-    case Scope::Anim: return "This animation and its linked copies";
+    case Scope::Anim: return "Every item of this animation (same name), linked copies included";
     case Scope::Project: return "Every instance of these markers in the project";
     }
     return "";

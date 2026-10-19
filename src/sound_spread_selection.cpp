@@ -626,16 +626,28 @@ am::Scope ScopeOfAction(SpreadScope s)
     return s == SpreadScope::AllInstances ? am::Scope::Project : am::Scope::Anim;
 }
 
-// The animation an Anim gesture acts for: its name, its item-level values, the values held by RAV items outside its
-// pool (never reused: another animation's), the kind's name (the AnimSwitch's group "<kind> animations").
+// Antho 2026-10-19 (Apply to = Anim): "this animation" = every RAV item playing the same animation, by the name RAV
+// shows (its take's name, "Two Cycle Sprint"), linked copies included, pooled or not.
+std::vector<MediaItem*> SameAnimation(MediaItem* anim)
+{
+    std::vector<MediaItem*> out = {anim};
+    const std::string       name = ItemSoundName(anim);
+    for (MediaItem* it : ProjectRavItems())
+        if (it != anim && ItemSoundName(it) == name) out.push_back(it);
+    return WithPoolMembers(out);
+}
+
+// The animation an Anim gesture acts for: its name, the item-level values its items hold, the values held by RAV items
+// of another animation (never reused), the kind's name (the AnimSwitch's group "<kind> animations").
 am::PoolKey PoolKeyOf(MediaItem* anim, const std::string& kind_name)
 {
     am::PoolKey p;
     p.anim_name = ItemSoundName(anim);
-    p.item_values = ReadItemSounds(anim).item_values;
     p.kind_name = kind_name;
-    const std::vector<MediaItem*> pool = WithPoolMembers({anim});
-    const std::set<MediaItem*>    mine(pool.begin(), pool.end());
+    const std::vector<MediaItem*> same = SameAnimation(anim);
+    const std::set<MediaItem*>    mine(same.begin(), same.end());
+    for (MediaItem* it : same)
+        for (const ValueSet& v : ReadItemSounds(it).item_values) p.item_values.push_back(v);
     for (MediaItem* it : ProjectRavItems())
         if (!mine.count(it))
             for (const ValueSet& v : ReadItemSounds(it).item_values) p.held_elsewhere.insert(v.value_uid);
@@ -660,7 +672,7 @@ void ApplyEdit(ReaProject* proj, MediaItem* anim, const std::string& lib_uid, co
 {
     std::set<std::string> guids;
     if (anim && !o.anim_value.group_uid.empty())
-        for (MediaItem* m : WithPoolMembers({anim}))
+        for (MediaItem* m : SameAnimation(anim))  // every item of that animation shares its value
             ModifyItemSounds(m, nullptr, [&](ItemSounds& r) {
                 bool changed = SetValueIn(r.item_values, o.anim_value.group_uid, o.anim_value.value_uid);
                 if (!o.remap_pool.empty())
@@ -781,7 +793,8 @@ std::string RunAttach(am::Scope scope, const SpreadMarker* given)
     for (const SelectedSound& s : sel) facts.push_back(s.facts);
 
     // The animation items: this one (Populate adds its linked copies), or every RAV item with a rule of the kind.
-    std::vector<MediaItem*> anims = {mk.item};
+    // Anim: every item of the marker's animation (same name, linked copies included); Project: every one with the kind.
+    std::vector<MediaItem*> anims = scope == am::Scope::Anim ? SameAnimation(mk.item) : std::vector<MediaItem*>{mk.item};
     if (scope == am::Scope::Project)
         for (MediaItem* it : rav_items) {
             if (it == mk.item) continue;
@@ -899,7 +912,7 @@ std::string RunAttach(am::Scope scope, const SpreadMarker* given)
     ToSourceZone(proj, rs.to_move, rs.first_items);
 
     // Anim: this animation (Populate adds its linked copies); Project: every item holding the library.
-    const std::vector<MediaItem*> targets = scope == am::Scope::Anim ? std::vector<MediaItem*>{mk.item} : LibraryTargets(anims, lib_uid);
+    const std::vector<MediaItem*> targets = scope == am::Scope::Anim ? SameAnimation(mk.item) : LibraryTargets(anims, lib_uid);
     std::set<std::string>         only_store;
     const std::set<std::string>*  only = OnlyRids(edit, targets, kind.key, &only_store);
     counts.to_source = DropEarlierSounds(proj, targets, lib_uid, only, rs.to_move);
@@ -1054,7 +1067,7 @@ std::string RunPile(am::Scope scope)
     LeaveOldPlaces(proj, sel);
     ToSourceZone(proj, rs.to_move, rs.first_items);
     AttachToEvent(proj, owner, ev, lib_uid, rs.attach_items, offset_s, rs.first_folders);
-    const std::vector<MediaItem*> targets = scope == am::Scope::Anim ? std::vector<MediaItem*>{owner} : LibraryTargets({owner}, lib_uid);
+    const std::vector<MediaItem*> targets = scope == am::Scope::Anim ? SameAnimation(owner) : LibraryTargets({owner}, lib_uid);
     std::set<std::string>         only_store;
     return PopulateLibrary(targets, lib_uid, counts, OnlyRids(edit, targets, key, &only_store));
 }
@@ -1124,7 +1137,7 @@ std::string RunMerge(am::Scope scope, const SpreadMarker& m)
     });
     if (!wrote) return Finish(undo + ": " + (edit.why.empty() ? std::string("nothing changed") : edit.why) + ".");
     ApplyEdit(proj, scope == am::Scope::Anim ? t.item : nullptr, t.lib_uid, t.kind.key, edit);
-    const std::vector<MediaItem*> targets = scope == am::Scope::Anim ? std::vector<MediaItem*>{t.item} : LibraryTargets({}, t.lib_uid);
+    const std::vector<MediaItem*> targets = scope == am::Scope::Anim ? SameAnimation(t.item) : LibraryTargets({}, t.lib_uid);
     const std::set<std::string>   other = SideRids(targets, t.kind.key, edit.dropped_side);
     SpreadRunCounts counts;
     counts.type = t.kind.name;
@@ -1420,7 +1433,7 @@ void ReadWatch(ReaProject* proj, WatchRead* w)
         am::Instance      in;
         in.guid = kv.first;
         in.owner = ok;
-        in.pool = std::to_string(o->second.second);
+        in.pool = ItemSoundName(o->second.first);  // Anim links every item of the same animation (by its name)
         in.rid = t.rid;
         in.t = t.t;
         in.lib = lib->uid;

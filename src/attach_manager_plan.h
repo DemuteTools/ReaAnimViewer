@@ -9,11 +9,12 @@
 // through RAV-owned Switches, never another library:
 //   root   := AnimSwitch | Group
 //   AnimSwitch := a Switch on the RAV group "<kind> animations": one case per animation (its value set at item level
-//             on the animation item and its linked copies), its default value's case = what the other animations play
+//             on every item of that animation: the same name, linked copies included), its default value's case = what
+//             the other animations play
 //   Group  := SideSwitch (RAV - Side: L / R cases, each a Pile: L and R separated) | Pile (L and R together)
 //   Pile   := the content: a Blend of layers (Add to pile), else one layer (an Attach: a Random of the piles)
 // A gesture's reach, the "Apply to" switch (a project-level setting, default Anim): Item = this instance only (the
-// library unchanged), Anim = this animation and its linked copies (its own case: copied from the shared content the
+// library unchanged), Anim = every item of this animation (same name, linked copies included; its own case: copied from the shared content the
 // first time), Project = every instance of the kind (every Group of the library).
 // No REAPER: host-tested (tests/attach_manager_plan_test.cpp). The window: attach_manager_ui.h.
 
@@ -224,14 +225,14 @@ std::string LayerSig(const SoundLibrary& lib, const std::string& layer);
 struct PoolKey {
     std::string                 anim_name;       // its take's name (its value's name)
     std::vector<ValueSet>       item_values;     // its item-level values
-    std::set<std::string>       held_elsewhere;  // values held by animation items outside its pool (never reused)
+    std::set<std::string>       held_elsewhere;  // values held by items of another animation (never reused)
     std::string                 kind_name;       // "FS": the AnimSwitch's group is "FS animations"
 };
 
 struct EditOut {
     bool                               ok = false;
     std::string                        why;           // !ok: what went wrong
-    ValueSet                           anim_value;    // Anim: the value to set on the animation and its linked copies
+    ValueSet                           anim_value;    // Anim: the value to set on every item of the animation
     // Uids copied when an animation got its own case from the shared content: the old uid -> its copy's, for the
     // records and tags of that animation's events (both sides).
     std::map<std::string, std::string> remap_pool;
@@ -299,7 +300,7 @@ LrCard LrCardOf(const LrInput& in, Scope scope);
 struct Instance {
     std::string guid;   // upper case
     std::string owner;  // its animation item's GUID (upper case)
-    std::string pool;   // its animation's pool (the animation item and its linked copies share it)
+    std::string pool;   // its animation's key: its name (every item of that animation shares it, pooled or not)
     std::string rid;
     double      t = 0.0;
     std::string lib;

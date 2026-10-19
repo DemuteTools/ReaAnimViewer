@@ -649,6 +649,30 @@ int main()
         CHECK(g.gesture == Gesture::Pile && g.pile_ok && g.reason.empty() && g.stack_event == 0);
     }
 
+    // ---- Anim = every item of the same animation (by its name), pooled or not (Antho's REAPER test of 55dbe97): two
+    // unpooled "Two Cycle Sprint" items share one value of RAV - FS animations and their instances are linked; another
+    // animation's are not.
+    {
+        SoundStore    st = Store();
+        const EditOut a = AttachContent(st, "LIB", Scope::Anim, Pool("Two Cycle Sprint"), 'L', Content("a", "{STEP}"), &Uid);
+        // The second item of that animation holds no value yet (never pooled with the first): the same value, same Group.
+        const EditOut b = AddPileLayer(st, "LIB", Scope::Anim, Pool("Two Cycle Sprint"), 'L',
+                                       {Node("c", "", SoundNodeType::Random), Snd("cs", "c", "{CLOTH}")}, 0.0, &Uid);
+        CHECK(a.ok && b.ok && b.anim_value.value_uid == a.anim_value.value_uid && b.remap_pool.empty());
+        CHECK(ReadLayout(st, st.libraries[0]).groups.size() == 2);
+        // Another animation: a value of its own.
+        const EditOut o = AttachContent(st, "LIB", Scope::Anim, Pool("Walk"), 'L', Content("w", "{GRAVEL}"), &Uid);
+        CHECK(o.ok && o.anim_value.value_uid != a.anim_value.value_uid && ReadLayout(st, st.libraries[0]).groups.size() == 3);
+        // Instances keyed by the animation's name: the two items' instances are linked in Anim, Walk's are not.
+        std::vector<Instance> all = {In("S1", "Two Cycle Sprint", "lay", "{STEP}"), In("S2", "Two Cycle Sprint", "lay", "{STEP}"),
+                                     In("W1", "Walk", "lay", "{STEP}")};
+        all[0].owner = "{ITEM1}";
+        all[1].owner = "{ITEM2}";
+        const std::vector<int> l = Linked(all, 0, Scope::Anim);
+        CHECK(l.size() == 2 && Has(l, 1) && !Has(l, 2));
+        CHECK(ExpandSelection(all, {"S2"}, Scope::Anim, false).size() == 2);
+    }
+
     // ---- The watcher's decisions.
     {
         WatchSnap last;

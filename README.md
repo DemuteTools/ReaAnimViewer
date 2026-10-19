@@ -632,7 +632,7 @@ Cut a footstep (one item, or a stack of layers) and its variations, then tell RA
 
 1. Select the sound items. Items that overlap in time are one variation and its layers; items apart in time (or touching end to end) are separate variations. An item holding its variations as takes (NVK style) is one Sound whose takes are its variations. A selected NVK folder item is one variation holding its child items: when its layers hold their variations as takes, every placement plays the same take on all its layers.
 2. Click the label of one RAV project marker of the kind you want, for example `FS L`. With several RAV markers selected, the first in time is used and the report says so. With **Markers written** set to **Take** only, there is no project marker to select: the action does nothing and says so.
-3. Run **RAV: Tagging - Attach selected items to selected marker (this animation)** for this animation item and its linked copies, or **(all animations with this marker)** for every animation item that has that marker.
+3. Run **RAV: Tagging - Attach selected items to selected marker (this animation)** for every item of this animation (the same animation name, linked copies included), or **(all animations with this marker)** for every animation item that has that marker.
 
 **Both sides.** The marker's kind is taken with its sides: selecting an `FS L` marker also gives the sounds to the `FS R` markers, and the reverse. RAV reads the side from the rule that writes the marker, not from its name. A kind with no side (a body marker, or a rule of your own) is that kind alone.
 
@@ -640,7 +640,7 @@ RAV turns your selection into one library per kind, named without its side (`FS`
 
 Your first selected variation (with its layers) is not copied: it moves onto the marker you selected, its snap point on it, and stays attached to that marker. It follows the marker, Populate leaves that marker alone, and the copies on the other markers avoid repeating it. The other selected items (and the child items of a selected folder item) move after the end of the project, side by side as you cut them. All of them are the library's sources, so keep them. The result shows at the bottom right of REAPER's window, and Ctrl+Z undoes the whole run (library, assignment, moved items, placed sounds).
 
-- **Run it again.** Run the action again with a new selection on the same kind: the same `FS` library gets the new sounds in place of the old ones, for this animation (and its linked copies) or for every animation, and those markers are populated again (your hand edits are kept, as with Populate). The sounds an earlier run (or you, by hand) attached to these markers are never deleted: they move after the end of the project with the other sources, and the report counts them. You can edit the library like any other (rename it too: it stays the `FS` library, reshuffle, change a variation).
+- **Run it again.** Run the action again with a new selection on the same kind: the same `FS` library gets the new sounds in place of the old ones, for this animation (every item of it) or for every animation, and those markers are populated again (your hand edits are kept, as with Populate). The sounds an earlier run (or you, by hand) attached to these markers are never deleted: they move after the end of the project with the other sources, and the report counts them. You can edit the library like any other (rename it too: it stays the `FS` library, reshuffle, change a variation).
 - **Takes and tracks.** Variations made with take markers (NVK) are read like takes, and the layers of a stack play the same variation number (take or take marker 2 of one layer goes with 2 of the others), with or without the NVK folder item. The copies land on your source items' own tracks, where you cut them: RAV never makes a track or a folder for them and never moves your items (copies that overlap simply overlap there).
 
 #### Adding a layer (Add to pile)
@@ -648,7 +648,7 @@ Your first selected variation (with its layers) is not copied: it moves onto the
 Cut the new layer's variations and put the first one where you want it against an attached sound (for example 20 ms after the footstep's snap point). Select the new items with the attached sound: the original or any copy RAV placed for it. Clicking that sound also selects its linked instances (see below): that is fine, the one nearest the new items is used. Sounds of two different layers (or of two markers that are not linked): RAV refuses and changes nothing. No marker to select. Then run one of:
 
 - **RAV: Tagging - Add selected items to stack (all animations with this marker)**: Add to pile with **Apply to Project** (below): the layer goes on every instance of the kind, in every animation.
-- **RAV: Tagging - Add selected items to stack (this animation)**: Add to pile with **Apply to Anim**: the layer goes on every instance of this animation item and its linked copies; the other animations are unchanged.
+- **RAV: Tagging - Add selected items to stack (this animation)**: Add to pile with **Apply to Anim**: the layer goes on every instance of this animation (every item with the same animation name, linked copies included); the other animations are unchanged.
 
 The layer keeps the offset you gave it (measured between snap points). The new items never include the pile's own sounds (its folder item, the library's sources). The new variation you put against the sound stays there, attached to that marker; the others go after the end of the project with the other sources. Ctrl+Z undoes it in one step.
 
@@ -658,7 +658,7 @@ The layer keeps the offset you gave it (measured between snap points). The new i
 
 Every sound Attach or Add to pile places is an **instance**: the copies on the markers and the original you put there alike. Each instance draws its variation (takes, take markers) as Populate does, and has the original's length and window.
 
-- **Apply to**: **Item**, **Anim** or **Project** says how far each gesture goes: **Item** = this instance only; **Anim** = this animation item and its linked copies; **Project** = every instance of these markers in the project. It is a setting of the project (Anim at first, one undo point when you change it), and it also applies to what you do in REAPER with the window closed (see below).
+- **Apply to**: **Item**, **Anim** or **Project** says how far each gesture goes: **Item** = this instance only; **Anim** = every item of this animation (the same animation name, as RAV shows it, linked copies included); **Project** = every instance of these markers in the project. It is a setting of the project (Anim at first, one undo point when you change it), and it also applies to what you do in REAPER with the window closed (see below).
 - **Marker**: make a time selection over the markers you want. The list holds one entry per marker kind and side in it (`FS L`, `FS R`, `Scuff L`...), each at its first marker in time, plus the marker label you clicked, if any. It picks your choice, else the clicked label, else the first in time. **On** names its animation.
 - **Selection**: **Attach** or **Add to pile**, chosen from the item selection (an attached sound plus new items: Add to pile on that sound's marker; switch back with the two buttons). The line under it says what will happen, and the blue button runs it (**Attach · Anim**): one undo point, the report at the bottom right of REAPER. When it cannot run, it is greyed and the reason shows above it.
   - **Attach** puts the selected sound on the marker and, with **Anim** or **Project**, on every marker of that kind in scope: L and R together, or only the marker's side once L and R are separated. It replaces the sound those markers had (the previous original goes after the end of the project). With **Item**, only that marker gets it, nothing is copied elsewhere and the library is unchanged.
@@ -674,7 +674,7 @@ Every sound Attach or Add to pile places is an **instance**: the copies on the m
 
 Each of these is one RAV undo point right after yours (Ctrl+Z twice puts both back).
 
-RAV keeps this in the kind's one `FS` library, under Switches it manages: **RAV - FS animations** (one value per animation item and its linked copies, the default value for the others) and **RAV - Side** (L and R, once separated). It never makes a track or a folder, never moves an item other than the sounds concerned, and never touches another marker kind.
+RAV keeps this in the kind's one `FS` library, under Switches it manages: **RAV - FS animations** (one value per animation, shared by all its items, the default value for the others) and **RAV - Side** (L and R, once separated). It never makes a track or a folder, never moves an item other than the sounds concerned, and never touches another marker kind.
 
 ### Syncing placed sounds with the Library
 

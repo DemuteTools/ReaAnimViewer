@@ -17,6 +17,8 @@ namespace rav {
 void MergeSyncTreeHooks();
 // The card of library `lib` (nothing when no placed sound plays from it).
 void DrawPlacedSoundsCard(const std::string& lib);
+// The width of the marks' column (every row reserves it, a mark or not).
+float SyncMarkColumnWidth(const std::string& lib);
 // The ↻ N mark of `node`, its right edge at `right_x`, centred on `cy`; its click opens the dialog limited to the node.
 // Returns the width it took (0 = none).
 float DrawSyncMark(const std::string& lib, const std::string& node, float right_x, float cy);

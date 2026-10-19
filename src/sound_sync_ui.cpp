@@ -442,9 +442,10 @@ void DrawHand(const SyncState& st)
 void MergeSyncTreeHooks()
 {
     const LibraryTreeHooks& h = GetLibraryTreeHooks();
-    if (h.sync_card && h.sync_mark) return;
+    if (h.sync_card && h.sync_mark && h.sync_col) return;
     LibraryTreeHooks m = h;
     m.sync_card = [](const std::string& lib) { DrawPlacedSoundsCard(lib); };
+    m.sync_col = [](const std::string& lib) { return SyncMarkColumnWidth(lib); };
     m.sync_mark = [](const std::string& lib, const std::string& node, float right_x, float cy) {
         return DrawSyncMark(lib, node, right_x, cy);
     };
@@ -496,6 +497,17 @@ void DrawPlacedSoundsCard(const std::string& lib)
     // Its amber edge (the mockup's .sync): over the card's own.
     const float bottom = ImGui::GetItemRectMin().y;
     dl->AddRect(a, ImVec2(a.x + w, bottom), ui::kWarnLine, ui::kRadiusLg);
+}
+
+// Antho 2026-10-19: the marks' column at the right of every row, one width for the whole tree (the widest mark, at
+// least "↻ 99"), so a mark never moves and an empty column reads as padding.
+float SyncMarkColumnWidth(const std::string& lib)
+{
+    int most = 99;
+    for (const auto& kv : MarksNow(PlacedSyncState(), lib)) most = std::max(most, kv.second);
+    char text[32];
+    std::snprintf(text, sizeof text, "%s %d", kSyncGlyph, most);
+    return ui::TextSizeIn(ui::FontSmall(), text).x + ui::Dp(12.0f);
 }
 
 float DrawSyncMark(const std::string& lib, const std::string& node, float right_x, float cy)

@@ -112,7 +112,7 @@ struct TreeState {
     char                     title[256] = {};
     // 13-17c: the tree's search field (session; kept across libraries, Esc clears it).
     char                     search[128] = {};
-    // The row menu was open last frame (its row keeps its ⋯ lit).
+    // The row menu was open last frame (its row keeps its tools shown).
     bool                     row_menu_open = false;
     // SoundStoreGeneration when the part being drawn began (StoreReplaced).
     uint64_t                 gen = 0;
@@ -1420,8 +1420,8 @@ void DrawOrphanLines(ImDrawList* dl, const SoundLibrary& lib, const SoundNode& n
 // 13-7a (audit C3.3 - C3.5, B10): the mockup's .trow, 28 px: from the left 4 px + 18 px a level,
 // the 18 px chevron (or its empty room), the type icon (a container's a 20 px button in the
 // accent ink, framed while hovered or selected; a Sound's 16 px muted; an empty value's dot),
-// the name in 13 px; from the right, each shown only while the row is hovered / selected and
-// taking no room otherwise: the ⋯ menu, ▶ / ■, the "default" tag or ☆, then "missing".
+// the name in 13 px; from the right: the ↻ marks' column (always reserved, 13-35), then, each shown only while the row
+// is hovered / selected and taking no room otherwise: ▶ / ■, the "default" tag or ☆, then "missing". The menu: right-click.
 void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
 {
     if (r.kind == TreeRowKind::UnassignedHeader) {
@@ -1522,19 +1522,15 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
     float      rx = p.x + w - ui::Dp(4.0f);
     const bool more_on = (g.open_row_menu || g.row_menu_open) && g.menu_row == r.row;
     const bool show_tools = hovered || selected || more_on || ImGui::IsPopupOpen("##typemenu");
-    if (show_tools) {
-        const float bw = ui::Dp(22.0f), bh = ui::Dp(20.0f);
-        rx -= bw;
-        bool hov = false;
-        if (RowToolButton("##more", ImVec2(rx, std::floor(cy - bh * 0.5f)), bw, bh, more_on, &hov)) {
-            if (!selected) SelectOnly(r.row);
-            g.menu_row = r.row;
-            g.menu_rows = IsSel(r.row) ? g.sel : std::vector<LibraryRow>{r.row};
-            g.open_row_menu = true;
-        }
-        CentredGlyph(dl, ui::FontTitle(), ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), hov ? ui::kText : ui::kMuted,
-                     "\xE2\x8B\xAF");
-        rx -= gap;
+    // 13-35 (Antho 2026-10-19): the marks' column at the right edge of every row, its width the same on every row, so a
+    // ↻ mark never moves when the row's play button shows; empty, it reads as padding. No ⋯ button: the right-click
+    // opens the row's menu.
+    if (g.hooks.sync_col) {
+        const float cw = g.hooks.sync_col(lib.uid);
+        if (n && (r.kind == TreeRowKind::Node || r.kind == TreeRowKind::Value) && g.hooks.sync_mark)  // a value row: its content
+            g.hooks.sync_mark(lib.uid, n->uid, rx, cy);
+        if (StoreReplaced()) return;
+        rx -= cw + gap;
     }
     if ((show_tools || lit) && n && g.hooks.play) {
         const float bs = ui::Dp(20.0f);
@@ -1577,11 +1573,6 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
         }
     }
     if (StoreReplaced()) return;
-    // 13-35: its placed sounds behind the Library (the ↻ N mark; a click: the Sync dialog of this node).
-    if (n && (r.kind == TreeRowKind::Node || r.kind == TreeRowKind::Value) && g.hooks.sync_mark) {  // a value row: its content
-        const float mw = g.hooks.sync_mark(lib.uid, n->uid, rx, cy);
-        if (mw > 0.0f) rx -= mw + gap;
-    }
     // 13-21: a library gap on this node, or hidden under it (folded, searched out): an amber "!",
     // the reasons on hover.
     if (n && r.kind != TreeRowKind::UnassignedHeader) {

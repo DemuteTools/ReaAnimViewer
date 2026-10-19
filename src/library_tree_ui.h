@@ -69,6 +69,8 @@ struct LibraryTreeHooks {
     // its row (its right edge at `right_x`, centred on `cy`; returns the width it took, 0 = none).
     std::function<void(const std::string& lib)>                                                  sync_card;
     std::function<float(const std::string& lib, const std::string& node, float right_x, float cy)> sync_mark;
+    // The width of the marks' column, reserved at the right of every row (Antho 2026-10-19: a mark never moves).
+    std::function<float(const std::string& lib)> sync_col;
 };
 void SetLibraryTreeHooks(const LibraryTreeHooks& hooks);
 // 13-17d: the tree has the focus (its rows walk with the arrow keys; REAPER must not take them).

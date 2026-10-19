@@ -787,6 +787,20 @@ int main()
         ck.ctrl = false;
         ck.clicked = false;
         CHECK(DecideWatch(c0, c1, ck).select.empty());
+        // A click too quick for the timer (down and up between two ticks): the one item selected is under the mouse.
+        ck.under_mouse = "A2";
+        CHECK(DecideWatch(c0, c1, ck).select.size() == 2);
+        ck.ctrl = true;  // Ctrl held then: that one only
+        CHECK(DecideWatch(c0, c1, ck).select.empty());
+        ck.ctrl = false;
+        ck.under_mouse = "OTHER";  // a script's selection (not under the mouse): nothing
+        CHECK(DecideWatch(c0, c1, ck).select.empty());
+        // The selection committed on a later tick than the release: the seen click still counts (kept alive), and with
+        // the selection unchanged nothing happens.
+        ck.under_mouse.clear();
+        ck.clicked = true;
+        CHECK(DecideWatch(c0, c1, ck).select.size() == 2);
+        CHECK(DecideWatch(c1, c1, ck).select.empty());
     }
 
     if (g_fail) {

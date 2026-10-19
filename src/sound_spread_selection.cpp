@@ -1590,6 +1590,7 @@ struct Watch {
     bool                  down = false;       // the mouse button, polled every tick
     bool                  clicked = false;    // it went down and up since the last read
     bool                  ctrl = false;       // Ctrl when it went down
+    int                   click_ticks = 0;    // ticks a seen click stays alive with no change to read
     std::set<std::string> expanded;           // the linked selection RAV made (a drag of one of them moves only that one)
     std::string           anchor;
 };
@@ -1633,7 +1634,10 @@ void WatchTick()
     // The mouse, every tick: a click (Ctrl latched when the button goes down) is read after the drop.
     const bool down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
     if (down && !g_watch.down) g_watch.ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-    if (!down && g_watch.down) g_watch.clicked = true;
+    if (!down && g_watch.down) {
+        g_watch.clicked = true;
+        g_watch.click_ticks = 15;  // kept ~0.5 s: the selection may be committed on a later tick than the release
+    }
     g_watch.down = down;
     const SoundStore& st = GetSoundStore(proj);
     bool              any = false;
@@ -1650,7 +1654,7 @@ void WatchTick()
     g_watch.count = count;
     g_watch.sel_sig = sel;
     if (!g_watch.pending) {
-        g_watch.clicked = g_watch.clicked && down;  // a click that changed nothing is forgotten
+        if (!down && g_watch.click_ticks > 0 && --g_watch.click_ticks == 0) g_watch.clicked = false;  // it changed nothing
         return;
     }
     if (down) return;  // a click or a drag in progress: what it did is read after the drop
@@ -1678,8 +1682,9 @@ void WatchTick()
     in.cut_names = FollowCutNames();
     in.delete_names = DeleteNames();
     in.clicked = g_watch.clicked;
-    in.ctrl = g_watch.ctrl;
-    in.under_mouse = g_watch.clicked ? ItemUnderMouse() : std::string();
+    // Ctrl latched at the down edge when it was seen, else (a click too quick for the timer) Ctrl now.
+    in.ctrl = g_watch.clicked ? g_watch.ctrl : (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    in.under_mouse = ItemUnderMouse();
     in.expanded = g_watch.expanded;
     in.anchor = g_watch.anchor;
     const am::WatchOut out = am::DecideWatch(g_watch.last.snap, now.snap, in);

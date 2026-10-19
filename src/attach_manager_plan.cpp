@@ -1214,7 +1214,10 @@ WatchOut DecideWatch(const WatchSnap& last, const WatchSnap& now, const WatchIn&
         }
     }
     if (!out.looks.empty() || !out.back.empty()) return out;
-    if (in.clicked && now.selected != last.selected) {
+    // A click: one seen (down then up), or one too quick for the timer to see: the selection changed to exactly one item,
+    // the one under the mouse (a script's selection is not under it; RAV's own selections are never read as a change).
+    const bool click = in.clicked || (now.selected.size() == 1 && !in.under_mouse.empty() && now.selected.count(in.under_mouse));
+    if (click && now.selected != last.selected) {
         out.select = ExpandSelection(now.inst, now.selected, in.scope, in.ctrl);
         out.clear_expanded = out.select.empty() && now.selected != in.expanded;
     }

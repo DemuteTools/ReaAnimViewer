@@ -381,9 +381,10 @@ struct WatchIn {
     bool                  redo = false;     // a redo waits: an undo just ran
     bool                  new_undo = false; // an undo point (or a delete action) since the last read
     std::vector<std::string> cut_names, delete_names;  // REAPER's localized names
-    bool                  clicked = false;  // a mouse click (down and up) since the last read
-    bool                  ctrl = false;     // Ctrl held when that button went down
-    std::string           under_mouse;      // the item under the mouse at the drop (upper case)
+    bool                  clicked = false;  // a mouse click (down and up) seen since the last read
+    bool                  ctrl = false;     // Ctrl held when that button went down (else Ctrl now)
+    std::string           under_mouse;      // the item under the mouse now (upper case; a click too quick to be seen is
+                                            // read from it: one item selected, the one under the mouse)
     std::set<std::string> expanded;         // the linked selection RAV made last
     std::string           anchor;
 };

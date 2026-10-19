@@ -570,14 +570,18 @@ std::set<std::string> AllSourceGuids(const SoundStore& st, const std::map<std::s
     return out;
 }
 
-// 13-68e v5: what one read knows of each Attached library (its layout, its sources, an earlier version's layout).
+// 13-68e v5: what one read knows of each Attached library (its layout, its sources, an earlier version's layout) and of
+// each owner (its item-level values, its rules' sides).
 struct LayerCache {
     std::map<std::string, am::Layout>                         lay;
     std::map<std::string, std::map<std::string, std::string>> src;
     std::map<std::string, bool>                               legacy;
+    std::map<std::string, std::vector<ValueSet>>              values;  // owner GUID (upper) -> its item values
+    std::map<std::string, std::map<std::string, char>>       sides;   // owner GUID (upper) -> rid -> its rule's side
 };
-// The layer a placed item plays (its tag's node, else the Sound its item is the source of). None for a library an
-// earlier version laid out (its gestures are refused: nothing is linked).
+// The layer a placed item plays: its tag's node; an original (its tag has no node: it is a Sound's source) = the Sound
+// with its source in the content its event plays (its animation's case, its rule's side once separated), never another
+// animation's or side's copy of it. None for a library an earlier version laid out (its gestures are refused).
 am::LayerAt InstanceLayer(const SoundStore& st, const SoundLibrary& lib, const PlacedTag& t, const std::string& guid_key,
                           const std::map<std::string, MediaItem*>& items, LayerCache& c)
 {
@@ -591,7 +595,27 @@ am::LayerAt InstanceLayer(const SoundStore& st, const SoundLibrary& lib, const P
         auto s = c.src.find(lib.uid);
         if (s == c.src.end()) s = c.src.emplace(lib.uid, SourceNodes(lib, items)).first;
         const auto hit = s->second.find(guid_key);
-        if (hit != s->second.end()) node = hit->second;
+        const SoundNode* any = hit == s->second.end() ? nullptr : FindNode(lib, hit->second);
+        if (any) {
+            const std::string owner = GuidKey(t.owner);
+            if (!c.values.count(owner)) {
+                const auto o = items.find(owner);
+                std::map<std::string, char>& sd = c.sides[owner];
+                if (o != items.end()) {
+                    c.values[owner] = ReadItemSounds(o->second).item_values;
+                    ItemRulesRead rr;
+                    if (ReadItemRules(o->second, &rr) && rr.valid)
+                        for (const Block& b : rr.rules.blocks)
+                            if (!b.rid.empty()) sd[b.rid] = EventSide(b);
+                } else {
+                    c.values[owner] = {};
+                }
+            }
+            const auto side = c.sides[owner].find(t.rid);
+            node = am::PlayedSoundOf(st, lib, lay->second, c.values[owner], side == c.sides[owner].end() ? 0 : side->second,
+                                     any->sound.source.item_guid);
+            if (node.empty()) node = any->uid;
+        }
     }
     return node.empty() ? am::LayerAt() : am::LayerOfNode(lib, lay->second, node);
 }

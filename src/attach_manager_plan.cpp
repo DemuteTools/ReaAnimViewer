@@ -428,6 +428,28 @@ LayerAt LayerOfNode(const SoundLibrary& lib, const Layout& lay, const std::strin
     return out;
 }
 
+std::string PlayedSoundOf(const SoundStore&, const SoundLibrary& lib, const Layout& lay, const std::vector<ValueSet>& item_values,
+                          char side, const std::string& source_guid)
+{
+    const int gi = GroupOf(lay, item_values);
+    if (gi < 0 || source_guid.empty()) return std::string();
+    const std::string     pile = PileOf(lay.groups[static_cast<size_t>(gi)], side);
+    std::set<std::string> in = {pile};
+    if (pile.empty()) return std::string();
+    for (bool grew = true; grew;) {
+        grew = false;
+        for (const SoundNode& n : lib.nodes)
+            if (!in.count(n.uid) && in.count(n.parent)) {
+                in.insert(n.uid);
+                grew = true;
+            }
+    }
+    const std::string key = GuidKey(source_guid);
+    for (const SoundNode& n : lib.nodes)
+        if (in.count(n.uid) && n.type == SoundNodeType::Sound && GuidKey(n.sound.source.item_guid) == key) return n.uid;
+    return std::string();
+}
+
 std::string LayerSig(const SoundLibrary& lib, const std::string& layer)
 {
     std::set<std::string> in = {layer}, src;

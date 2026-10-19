@@ -673,6 +673,40 @@ int main()
         CHECK(ExpandSelection(all, {"S2"}, Scope::Anim, false).size() == 2);
     }
 
+    // ---- An original (its tag has no node) plays the Sound with its source in its own animation's content: after the
+    // shared content was copied into Walk's and Run's cases, three Sounds share its source; Walk's original resolves to
+    // Walk's copy (linked to Walk's instances), never to Run's or the default's (Antho's REAPER test of 7a77003).
+    {
+        SoundStore st = Store();
+        SetLibraryContent(st.libraries[0], Content("a", "{STEP}"));  // shared (a Project Attach)
+        const EditOut w = AddPileLayer(st, "LIB", Scope::Anim, Pool("Walk"), 'L', {Node("c", "", SoundNodeType::Random), Snd("cs", "c", "{CLOTH}")},
+                                       0.0, &Uid);
+        const EditOut r = AddPileLayer(st, "LIB", Scope::Anim, Pool("Run"), 'L', {Node("d", "", SoundNodeType::Random), Snd("ds", "d", "{CLOTH2}")},
+                                       0.0, &Uid);
+        CHECK(w.ok && r.ok);
+        const SoundLibrary& lib = st.libraries[0];
+        const Layout        lay = ReadLayout(st, lib);
+        const std::string   walk_s = PlayedSoundOf(st, lib, lay, {w.anim_value}, 'L', "{step}");
+        const std::string   run_s = PlayedSoundOf(st, lib, lay, {r.anim_value}, 'L', "{STEP}");
+        CHECK(walk_s == w.remap_pool.at("as") && run_s == r.remap_pool.at("as") && walk_s != run_s);
+        CHECK(PlayedSoundOf(st, lib, lay, {}, 'L', "{STEP}") == "as");  // the other animations: the default's
+        CHECK(PlayedSoundOf(st, lib, lay, {w.anim_value}, 'L', "{NOPE}").empty());
+        // Its layer = the layer of Walk's copies: linked in Anim; Run's are not.
+        const LayerAt orig = LayerOfNode(lib, lay, walk_s);
+        CHECK(orig.layer == w.remap_pool.at("a"));
+        std::vector<Instance> all = {In("ORIG", "Walk", orig.layer.c_str(), "{STEP}"), In("C1", "Walk", w.remap_pool.at("a").c_str(), "{STEP}"),
+                                     In("R1", "Run", LayerOfNode(lib, lay, run_s).layer.c_str(), "{STEP}")};
+        const std::vector<int> l = Linked(all, 0, Scope::Anim);
+        CHECK(l.size() == 2 && Has(l, 1) && !Has(l, 2));
+        // After Separate, an R original plays R's copy.
+        SoundStore    sp = Store();
+        const EditOut a = AttachContent(sp, "LIB", Scope::Anim, Pool("Walk"), 'L', Content("a", "{STEP}"), &Uid);
+        const EditOut s = SeparateSides(sp, "LIB", Scope::Anim, Pool("Walk", {a.anim_value}), &Uid);
+        const Layout  sl = ReadLayout(sp, sp.libraries[0]);
+        CHECK(PlayedSoundOf(sp, sp.libraries[0], sl, {a.anim_value}, 'R', "{STEP}") == s.remap_side.at("as"));
+        CHECK(PlayedSoundOf(sp, sp.libraries[0], sl, {a.anim_value}, 'L', "{STEP}") == "as");
+    }
+
     // ---- The watcher's decisions.
     {
         WatchSnap last;

@@ -216,6 +216,12 @@ struct LayerAt {
     std::string layer;
 };
 LayerAt LayerOfNode(const SoundLibrary& lib, const Layout& lay, const std::string& node);
+// The Sound an original (an item a Sound plays from, `source_guid`) plays as: the one with that source in the content an
+// animation with `item_values` hears on `side` (its Group's Pile for that side). "" when that content has none (the
+// caller then takes any). A copy (another animation's case, the other side after Separate) has the same source: never
+// taken for it.
+std::string PlayedSoundOf(const SoundStore& store, const SoundLibrary& lib, const Layout& lay, const std::vector<ValueSet>& item_values,
+                          char side, const std::string& source_guid);
 // A layer's identity across Groups (a copy has the same sources): its Sounds' source item GUIDs, sorted.
 std::string LayerSig(const SoundLibrary& lib, const std::string& layer);
 

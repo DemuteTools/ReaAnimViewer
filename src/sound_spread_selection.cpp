@@ -67,6 +67,8 @@ using GetItemStateChunkFn = bool (*)(MediaItem* item, char* buf, int buf_sz, boo
 using SetItemStateChunkFn = bool (*)(MediaItem* item, const char* str, bool isundo);
 using AddMediaItemToTrackFn = MediaItem* (*)(MediaTrack* tr);
 GetItemStateChunkFn   f_get_chunk = nullptr;
+using PreventUIRefreshFn = void (*)(int prevent_count);
+PreventUIRefreshFn    f_prevent_refresh = nullptr;  // selection writes drawn once
 SetItemStateChunkFn   f_set_chunk = nullptr;
 AddMediaItemToTrackFn f_add_item = nullptr;
 
@@ -1374,21 +1376,28 @@ void ReadManager(AttachManagerState* out)
     }
 }
 
+// 13-68e v5 (Antho 2026-10-19: no flicker): the selection becomes exactly `guids` without ever unselecting one of them
+// first (no SelectAllMediaItems(false)): the others are unselected, the missing ones added, the arrange redrawn once.
 int SelectItems(const std::vector<std::string>& guids)
 {
-    if (!f_select_all || !f_set_selected) return 0;
-    ReaProject* proj = EnumProjects(-1, nullptr, 0);
+    if (!f_set_selected) return 0;
+    ReaProject*                             proj = EnumProjects(-1, nullptr, 0);
     const std::map<std::string, MediaItem*> items = ItemsByGuid(proj);
-    f_select_all(proj, false);
-    int n = 0;
+    std::set<MediaItem*>                    want;
     for (const std::string& g : guids) {
         const auto hit = items.find(GuidKey(g));
-        if (hit == items.end()) continue;
-        f_set_selected(hit->second, true);
-        ++n;
+        if (hit != items.end()) want.insert(hit->second);
     }
+    if (f_prevent_refresh) f_prevent_refresh(1);
+    std::vector<MediaItem*> off;
+    for (int i = 0, n = CountSelectedMediaItems(proj); i < n; ++i)
+        if (MediaItem* it = GetSelectedMediaItem(proj, i); it && !want.count(it)) off.push_back(it);
+    for (MediaItem* it : off) f_set_selected(it, false);
+    for (MediaItem* it : want)
+        if (GetMediaItemInfo_Value(it, "B_UISEL") == 0.0) f_set_selected(it, true);
+    if (f_prevent_refresh) f_prevent_refresh(-1);
     UpdateArrange();
-    return n;
+    return static_cast<int>(want.size());
 }
 
 
@@ -1650,9 +1659,39 @@ void WatchTick()
     }
     const int         count = GetProjectStateChangeCount(proj);
     const std::string sel = SelectionSig(proj);
-    if (!g_watch.primed || count != g_watch.count || sel != g_watch.sel_sig) g_watch.pending = true;
+    const bool        sel_changed = sel != g_watch.sel_sig;
+    if (!g_watch.primed || count != g_watch.count || sel_changed) g_watch.pending = true;
     g_watch.count = count;
     g_watch.sel_sig = sel;
+    // A selection change is acted on at the first tick it is seen (no 0.25 s wait, no rescan): the last read's instances
+    // with the selection as it is now. The full read stays throttled (it follows for the other changes).
+    if (g_watch.primed && sel_changed && !down) {
+        am::WatchSnap fast = g_watch.last.snap;
+        fast.selected.clear();
+        for (int i = 0, n = CountSelectedMediaItems(proj); i < n; ++i)
+            if (MediaItem* it = GetSelectedMediaItem(proj, i)) fast.selected.insert(GuidKey(ItemGuidOf(it)));
+        am::WatchIn fin;  // no new undo point: only the click rules apply
+        fin.scope = am::ScopeOf(st);
+        fin.clicked = g_watch.clicked;
+        fin.ctrl = g_watch.clicked ? g_watch.ctrl : (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+        fin.under_mouse = ItemUnderMouse();
+        fin.expanded = g_watch.expanded;
+        fin.anchor = g_watch.anchor;
+        const am::WatchOut out = am::DecideWatch(g_watch.last.snap, fast, fin);
+        if (!out.select.empty()) {
+            SelectItems(out.select);
+            g_watch.expanded = std::set<std::string>(out.select.begin(), out.select.end());
+            g_watch.anchor = out.select.front();
+            fast.selected = g_watch.expanded;
+            g_watch.sel_sig = SelectionSig(proj);
+            g_watch.count = GetProjectStateChangeCount(proj);
+            g_watch.clicked = false;
+        } else if (out.clear_expanded) {
+            g_watch.expanded.clear();
+            g_watch.anchor.clear();
+        }
+        g_watch.last.snap.selected = fast.selected;  // this change is handled: the full read does not take it again
+    }
     if (!g_watch.pending) {
         if (!down && g_watch.click_ticks > 0 && --g_watch.click_ticks == 0) g_watch.clicked = false;  // it changed nothing
         return;
@@ -1748,6 +1787,7 @@ void InitSoundSpreadSelection(void* (*get_func)(const char* name))
     f_can_redo = reinterpret_cast<Undo_CanRedo2Fn>(get_func("Undo_CanRedo2"));                    // 13-68e v5
     f_item_from_point = reinterpret_cast<GetItemFromPointFn>(get_func("GetItemFromPoint"));      // 13-68e v5
     f_get_chunk = reinterpret_cast<GetItemStateChunkFn>(get_func("GetItemStateChunk"));
+    f_prevent_refresh = reinterpret_cast<PreventUIRefreshFn>(get_func("PreventUIRefresh"));
     f_set_chunk = reinterpret_cast<SetItemStateChunkFn>(get_func("SetItemStateChunk"));
     f_add_item = reinterpret_cast<AddMediaItemToTrackFn>(get_func("AddMediaItemToTrack"));
 }

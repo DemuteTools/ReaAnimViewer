@@ -195,7 +195,7 @@ bool TaggingEditEvent(const char* undo_desc, const std::function<bool(ItemRules&
 // point. False when the item cannot be analysed (missing roles, no tracks).
 bool TaggingAnalyse();
 
-// Story 10-8b -- Detect in the Auto detection section: the item's auto blocks become these
+// Story 10-8b -- Detect in the Smart Detection section: the item's auto blocks become these
 // settings (ApplyAutoSettings: ticked types added, unticked ones removed with their events, steps
 // switched between separate and combined), the event list remapped. One undo point ("RAV: Detect
 // auto events"); nothing is written when the blocks would not change.
@@ -204,7 +204,7 @@ bool TaggingAnalyse();
 // set), and the model's auto_searched / auto_none are updated. Written also when only a
 // sensitivity was raised.
 bool TaggingDetectAuto(const AutoSettings& settings);
-// Story 10-8i -- "Is looping" in the Auto detection section: the item's ClipSettings::loop
+// Story 10-8i -- "Is looping" in the Smart Detection section: the item's ClipSettings::loop
 // (rule_record.h) set to `on`, one undo point ("RAV: Set looping"); the auto events are read
 // again at once (no Detect needed). Nothing is written when it already is `on`, or when
 // `for_item` is no longer the current item. A change clears

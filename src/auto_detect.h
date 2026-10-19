@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 //
-// Auto detection (Epic 10, story 10-8b; hands: 10-8c, 10-8e): foot and hand events from the motion
+// Smart Detection (Epic 10, story 10-8b; hands: 10-8c, 10-8e): foot and hand events from the motion
 // physics (motion_physics.h), as blocks of the item next to its rules. The model only: no ImGui,
 // no REAPER.
 //
-// The user ticks event types in the Tagging view's "Auto detection" section and presses Detect.
+// The user ticks event types in the Tagging view's "Smart Detection" section and presses Detect.
 // Each type belongs to one category (AutoCategory), a foldable group of the section.
 //   Legs
 //   step       heel and toe separate (one marker per part contact: Heel L, Toe L...) or combined

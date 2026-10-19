@@ -25,7 +25,7 @@ namespace rav {
 // Under the selected rule's settings (13-15b): its sound as one summary line and an Assign... button that opens the
 // Sound assignment window (tagging_assign_ui.h) on the rule (both sides of its marker pair).
 void DrawRuleSoundSection(const TaggingSoundContext& ctx);
-// In the Auto detection section, under a marker type's row (or one of its per-side rows): the sound of these auto
+// In the Smart Detection section, under a marker type's row (or one of its per-side rows): the sound of these auto
 // marker keys (sound_auto_assign.h) as a summary line and Assign.... With no block of those keys on the item yet
 // the line shows what a new one would get and Assign... is off ("Detect first, or set it at Project / Character level").
 void DrawAutoSoundRow(MediaItem* item, const ItemRules& rules, const std::vector<std::string>& keys);

@@ -969,7 +969,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
         } else if (!m.sample_error.empty()) {
             msg1 = m.sample_error.c_str();
         } else if (rules.blocks.empty()) {
-            msg1 = "Nothing to detect yet. Tick event types under Auto detection and press Detect,";
+            msg1 = "Nothing to detect yet. Tick event types under Smart Detection and press Detect,";
             msg2 = "or add a rule (+ Rule), or pick a preset.";
         }
 
@@ -3102,7 +3102,7 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
                             m.missing.c_str());
             else if (m.missing_count > 0)  // 10-8b fb-1
                 ui::ItemTip("No bone plays: %s.\nOnly the rules that read them are skipped: their markers "
-                            "stay as last committed.\nThe other rules and Auto detection still run.\n"
+                            "stay as last committed.\nThe other rules and Smart Detection still run.\n"
                             "Click to pick their bones.",
                             m.missing.c_str());
             else if (no_rule)
@@ -3125,7 +3125,7 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
 
     // The rules.
     ImGui::Dummy(ImVec2(0.0f, ui::Dp(2.0f)));
-    // 13-15b: the section folds, as the mockup's strip (its Auto detection section already does).
+    // 13-15b: the section folds, as the mockup's strip (its Smart Detection section already does).
     static bool s_rules_folded = false;
     if (ui::Chevron("##rulesfold", !s_rules_folded)) s_rules_folded = !s_rules_folded;
     ui::ItemTipText(s_rules_folded ? "Show the rules" : "Fold the rules");
@@ -3150,7 +3150,7 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
     int do_toggle = -1, do_dup = -1, do_del = -1;
     for (int b = 0; b < (s_rules_folded ? 0 : nb); ++b) {
         const Block& blk = rules.blocks[static_cast<size_t>(b)];
-        if (IsAutoBlock(blk)) continue;  // story 10-8b: the Auto detection section's
+        if (IsAutoBlock(blk)) continue;  // story 10-8b: the Smart Detection section's
         ImGui::PushID(b);
         const ImVec2 p = ImGui::GetCursorScreenPos();
         const float w = ImGui::GetContentRegionAvail().x;
@@ -3738,7 +3738,7 @@ void DrawEventInspector(const TaggingModel& m, const ItemRules& rules, const Sho
     DrawEventSoundSection(SoundContextOf(m, rules, e.block), e);
 }
 
-// ---- Story 10-8b: the Auto detection section -------------------------------------------------------
+// ---- Story 10-8b: the Smart Detection section -------------------------------------------------------
 
 // What Detect will write: the ticks, Separate / Combined, and the values of the types not detected
 // yet. The types the item has (its auto blocks) are read again when they change (Detect, an undo,
@@ -3939,7 +3939,7 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
     const AutoSettings  shown = ReadAutoSettings(rules.blocks);  // the values a drag previews
     const AutoSettings& item = g_auto_seen;
     ui::Section sec;
-    if (ui::BeginSection(sec, "Auto detection")) {
+    if (ui::BeginSection(sec, "Smart Detection")) {
         // Two number columns on the right, under their captions; the type's tick on the left.
         // Story 10-8h: the columns from the width inside the card (its right padding too), the
         // fields narrowed on a narrow panel, so the last field and its unit always fit.
@@ -3982,7 +3982,7 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
             bool loop = rules.clip.loop;
             if (ui::Checkbox("Is looping##autoloop", &loop))
                 Later([loop, item = m.item]() { TaggingSetLooping(loop, item); });
-            ui::ItemTip("The animation loops: its end continues into its start.\nAuto detection reads the "
+            ui::ItemTip("The animation loops: its end continues into its start.\nSmart Detection reads the "
                         "motion as a cycle, so a contact, step, grab or release\nthat crosses the loop point "
                         "is found whole. Saved on the item.");
         }
@@ -4673,7 +4673,7 @@ void DrawFooter(const TaggingModel& m)
             std::snprintf(roles, sizeof(roles), RAV_DOT " %d skipped: roles", m.sel_roles_skipped);
             ui::ToneText(roles, ui::kBadInk, true);
             ui::ItemTip("Items where nothing can run: every rule that is on reads a role with no bone\n"  // 10-8b fb-1
-                        "and no Auto detection type is ticked, or the animation file did not load or has no skeleton.\n"
+                        "and no Smart Detection type is ticked, or the animation file did not load or has no skeleton.\n"
                         "Their markers stay as they are.");
         }
         if (m.detected && !m.rules.blocks.empty()) {  // 10-3 fb-1: no rule = nothing to write, no warning

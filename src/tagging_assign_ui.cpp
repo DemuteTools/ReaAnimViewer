@@ -582,7 +582,7 @@ std::vector<Row> BuildRows(const Frame& f)
         }
     };
     section("rules", "Bone rules", f.tg.rules, f.pool_text, "No bone rule on this item.");
-    section("auto", "Auto detection", f.tg.autos, "this item's auto blocks", "No auto type ticked.");
+    section("auto", "Smart Detection", f.tg.autos, "this item's auto blocks", "No auto type ticked.");
     return rows;
 }
 
@@ -733,7 +733,7 @@ void SectionAll(const std::string& id, const std::vector<std::string>& fold_ids)
     g.folded[id] = false;
     for (const std::string& q : fold_ids) g.closed[q] = all_open;
     NoteView(std::string(all_open ? "Collapsed" : "Expanded") + " every row of " +
-             (id == "rules" ? "Bone rules" : id == "auto" ? "Auto detection" : "Body parts") + " (view only, no undo point).");
+             (id == "rules" ? "Bone rules" : id == "auto" ? "Smart Detection" : "Body parts") + " (view only, no undo point).");
 }
 
 void ActivateRow(const Row& r, const std::vector<std::string>& visible, bool shift, bool ctrl)
@@ -1995,7 +1995,7 @@ void DrawOverview(const Frame& f, float height)
             }
     };
     block_rows("Bone rules", f.tg.rules, f.pool_text);
-    block_rows("Auto detection", f.tg.autos, "this item");
+    block_rows("Smart Detection", f.tg.autos, "this item");
     ImGui::Dummy(ImVec2(0.0f, ui::Dp(4.0f)));
     ui::ToneText("Grey = inherited (from the character, the project, the item or the Switch default). Click a row to edit it in the tree.",
                  ui::kMuted, true);

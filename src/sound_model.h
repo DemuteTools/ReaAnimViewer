@@ -405,7 +405,7 @@ struct ValueSet {
 };
 
 // The sound an auto marker type gets (Antho 2026-10-12, 13-8): the library and rule-level Switch
-// values the Tagging view's Auto detection section sets per marker type, before or after Detect.
+// values the Tagging view's Smart Detection section sets per marker type, before or after Detect.
 // Detect gives it to the rule of each auto block of that key with no library yet; an edit in the
 // section or in an auto block's Sound card writes both (sound_auto_assign.h).
 struct AutoSoundAssign {

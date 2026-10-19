@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //
 // Each auto marker type's sound on the item (13-8, reworked by 13-15a, pure, no REAPER): the
-// Tagging view's Auto detection section edits, per marker type, the library and the rule-level
+// Tagging view's Smart Detection section edits, per marker type, the library and the rule-level
 // Switch values of the item's auto blocks (and its pool's). The rule is the item's layer of the
 // assignment (sound_assign.h); the defaults of a marker type now live at Project / Character level
 // (body part + type), set in the assignment window, never copied into the rules by Detect.

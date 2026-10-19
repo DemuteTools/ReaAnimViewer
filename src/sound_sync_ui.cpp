@@ -138,6 +138,16 @@ std::string ChipText(const SyncState& st, const std::string& node)
     return t;
 }
 
+// The dialog's list fills the tool's height (BeginModalCard's cap: the viewport less 32 px), its footer row kept in view;
+// `min_h` at least (a short tool: the card scrolls).
+float FillListHeight(float min_h)
+{
+    const float cap = ImGui::GetMainViewport()->Size.y - ui::Dp(32.0f);
+    const float used = ImGui::GetCursorScreenPos().y - ImGui::GetWindowPos().y;
+    const float footer = ImGui::GetStyle().ItemSpacing.y + ImGui::GetFrameHeight() + ui::Dp(14.0f) + ui::Dp(4.0f);
+    return std::max(min_h, std::floor(cap - used - footer));
+}
+
 void Close()
 {
     g.step = -1;
@@ -239,7 +249,7 @@ void DrawWhere(const SyncState& st)
     }
     ImGui::Dummy(ImVec2(1.0f, ui::Dp(2.0f)));
     // The animation items, by track.
-    const float list_h = std::min(ui::Dp(320.0f), std::max(ui::Dp(80.0f), lines.size() * ui::Dp(44.0f) + ui::Dp(40.0f)));
+    const float list_h = FillListHeight(ui::Dp(80.0f));  // Antho 2026-10-19: the whole tool height
     if (ImGui::BeginChild("##syncitems", ImVec2(0.0f, list_h), ImGuiChildFlags_Borders)) {
         std::string track;
         bool        first = true;
@@ -359,7 +369,7 @@ void DrawHand(const SyncState& st)
         all_keep = all_keep && !r.over;
         all_over = all_over && r.over;
     }
-    const float list_h = std::min(ui::Dp(320.0f), std::max(ui::Dp(80.0f), g.hand.size() * ui::Dp(44.0f) + ui::Dp(44.0f)));
+    const float list_h = FillListHeight(ui::Dp(80.0f));
     if (ImGui::BeginChild("##synchandlist", ImVec2(0.0f, list_h), ImGuiChildFlags_Borders)) {
         // All of them.
         {

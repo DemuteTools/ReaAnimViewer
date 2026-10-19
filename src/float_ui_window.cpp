@@ -186,9 +186,8 @@ void FloatUiWindow::Frame(bool show, bool activate, const std::function<void()>&
         POINT pt = {};
         RECT  wr = {};
         if (GetCursorPos(&pt) && GetWindowRect(hwnd_, &wr)) {
-            const int   off = static_cast<int>(12.0f * std::max(1.0f, ui::UiScale()));
             int         w = wr.right - wr.left, h = wr.bottom - wr.top;
-            int         x = pt.x + off, y = pt.y + off;
+            int         x = pt.x - w / 2, y = pt.y - header_mid_;  // the pointer at the title row's middle
             MONITORINFO mi = {};
             mi.cbSize = sizeof(mi);
             if (GetMonitorInfoW(MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST), &mi)) {
@@ -243,9 +242,10 @@ void FloatUiWindow::Frame(bool show, bool activate, const std::function<void()>&
     if (rect_dirty_ && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) == 0) SaveRect();
 }
 
-void FloatUiWindow::PlaceAtMouse()
+void FloatUiWindow::PlaceAtMouse(int header_mid)
 {
     place_mouse_ = true;
+    header_mid_ = std::max(0, header_mid);
 }
 
 void FloatUiWindow::SetDragArea(float x0, float y0, float x1, float y1, bool over_widget)

@@ -49,10 +49,11 @@ public:
     HWND Hwnd() const { return hwnd_; }
     bool IsShown() const;
 
-    // 13-68e: the next Frame puts the window at the mouse (its top-left just below-right of the pointer), wholly on
-    // that monitor's work area, its size kept. A window placed this way keeps only its size in ExtState (it opens at
-    // the mouse each time).
-    void PlaceAtMouse();
+    // 13-68e: the next Frame puts the window at the mouse, wholly on that monitor's work area, its size kept. Antho
+    // 2026-10-19: the pointer at the middle of its title row: x = mouse - width / 2, y = mouse - `header_mid` (the
+    // title row's middle from the window's top, screen pixels). A window placed this way keeps only its size in
+    // ExtState (it opens at the mouse each time).
+    void PlaceAtMouse(int header_mid);
 
     // Hides it now (the viewer is parked: no frame will run).
     void Hide();
@@ -89,6 +90,7 @@ private:
     bool           failed_ = false;  // creation failed once: not retried every tick
     bool           close_requested_ = false;
     bool           place_mouse_ = false;  // 13-68e: PlaceAtMouse pending
+    int            header_mid_ = 0;       // its title row's middle (screen px from the top)
     bool           at_mouse_ = false;     // 13-68e: placed at the mouse: its position is not saved
 };
 

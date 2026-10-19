@@ -903,7 +903,8 @@ void DrawAttachManagerFloat(HWND viewer, HDC viewer_dc, HGLRC rc)
     if (!ImGui::GetCurrentContext()) return;
     if (!g.open && !g_host.IsShown()) return;
     g_host.Bind(viewer, viewer_dc, rc);
-    if (g.place && g.open) g_host.PlaceAtMouse();
+    // The pointer at the middle of the title row: the window's 8 px top padding + half the 30 px row (DrawTitle).
+    if (g.place && g.open) g_host.PlaceAtMouse(static_cast<int>(std::lround(ui::Dp(8.0f + 15.0f))));
     g.place = false;
     const bool activate = g.open && g.focus;
     g.focus = false;

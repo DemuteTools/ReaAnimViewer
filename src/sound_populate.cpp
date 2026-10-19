@@ -1208,15 +1208,17 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                 req.track_mark = TrackMarkOf(req.track);  // 13-11's "layer N" track: RAV's, it spills too (B6)
             }
             if (lib->attached && n->sound.source.kind == SoundSourceKind::Item) {
-                // 13-68 v2: an Attached library's sounds land on their source items' own tracks, overlaps
-                // spilling to their child tracks (13-11 B6); a folder pile's members on their own tracks.
+                // 13-68 v2: an Attached library's sounds land on their source items' own tracks; a folder pile's
+                // members on their own tracks. 13-68e (Antho 2026-10-19, "in on-the-fly mode never create a track"):
+                // with no track mark, so they never settle on lanes (13-11 B6 is for the other libraries): no new
+                // track or folder, no item moved; overlapping copies simply overlap on the user's track.
                 if (MediaItem* src = FindItemByGuid(n->sound.source.item_guid)) {
+                    req.track_mark.clear();
                     if (!IsFolderItem(src)) {
                         req.track = GetMediaItem_Track(src);
-                        req.track_mark = TrackMarkOf(req.track);
                     } else {
                         req.pile_track = [](MediaTrack* src_track, std::string* mark) -> MediaTrack* {
-                            if (mark) *mark = TrackMarkOf(src_track);
+                            if (mark) mark->clear();
                             return src_track;
                         };
                     }

@@ -254,12 +254,23 @@ std::vector<SoundFrame> DetectFramesAt0(const EntryFacts& facts, DetectMode mode
         // (marker = the variation's sync point, e.g. 58 ms in, 208 ms long) says what a variation is: that
         // same window around each marker. Marker-to-marker slices gave 2.4 s copies with the next variation's
         // sound at their end. An item playing a whole slice (or several markers) keeps the slices.
-        int in_window = -1, n_in = 0;
-        for (size_t k = 0; k < facts.slices.size(); ++k)
+        // 13-68e (Antho 2026-10-19, a Pivots layer playing 1.724..1.990 between markers 1.524 and 3.102 got 0.3-1.1 s
+        // copies): with NO marker inside the window, the slice holding it (its last marker before the window) is the
+        // reference: the item's offset from that marker and its length, around every marker, as with one inside.
+        int in_window = -1, n_in = 0, before = -1;
+        for (size_t k = 0; k < facts.slices.size(); ++k) {
             if (facts.slices[k].start >= facts.start_offs && facts.slices[k].start < facts.start_offs + src_len) {
                 in_window = static_cast<int>(k);
                 ++n_in;
             }
+            if (facts.slices[k].start < facts.start_offs &&
+                (before < 0 || facts.slices[k].start > facts.slices[static_cast<size_t>(before)].start))
+                before = static_cast<int>(k);
+        }
+        if (n_in == 0 && before >= 0) {
+            in_window = before;
+            n_in = 1;
+        }
         if (n_in == 1 && src_len > kMinLen) {
             const Slice& cur = facts.slices[static_cast<size_t>(in_window)];
             const double cur_len = cur.length < 0.0 ? facts.source_len - cur.start : cur.length;

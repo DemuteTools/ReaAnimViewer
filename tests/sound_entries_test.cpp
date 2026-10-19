@@ -183,6 +183,36 @@ void TestTakeMarkers()
         CHECK(Near(fr[1].start, 1.959 - pre) && Near(fr[2].start, 3.769 - pre));
         CHECK(Near(fr[0].length, 0.16666666666669 * 1.33483985417003));
     }
+
+    // 13-68e (Antho 2026-10-19, "Two Cycle Sprint", a pile of 2 layers): the Pivots layer plays 1.724..1.990 (length
+    // 0.1881 at rate 1.414) with NO marker inside (markers 2 = 1.524, 3 = 3.102): the slice holding it is the
+    // reference, its offset (0.2 s after marker 2) and its length around every marker -- never whole slices.
+    EntryFacts pivots;
+    pivots.source_len = 5;
+    pivots.start_offs = 1.724;
+    pivots.item_len = 0.1881;
+    pivots.playrate = 1.414;
+    pivots.slices = SlicesFromTakeMarkers({{0.25, "1"}, {1.524, "2"}, {3.102, "3"}}, 5);
+    fr = DetectFrames(pivots, DetectMode::TakeMarkers, SilenceParams{}, nullptr);
+    CHECK(fr.size() == 3);
+    if (fr.size() == 3) {
+        const double off = 1.724 - 1.524;
+        CHECK(Near(fr[0].start, 0.25 + off) && Near(fr[1].start, 1.724) && Near(fr[2].start, 3.102 + off));
+        for (const SoundFrame& f : fr) CHECK(Near(f.length, 0.1881 * 1.414));  // each copy as long as the original
+    }
+    // Its Run layer (window 0.1..0.282 around marker 1 at 0.182): as before, the window around every marker.
+    EntryFacts run;
+    run.source_len = 5;
+    run.start_offs = 0.1;
+    run.item_len = 0.182;
+    run.slices = SlicesFromTakeMarkers({{0.182, "1"}, {1.6, "2"}, {3.2, "3"}}, 5);
+    fr = DetectFrames(run, DetectMode::TakeMarkers, SilenceParams{}, nullptr);
+    CHECK(fr.size() == 3);
+    if (fr.size() == 3) {
+        const double pre = 0.182 - 0.1;
+        CHECK(Near(fr[0].start, 0.1) && Near(fr[1].start, 1.6 - pre) && Near(fr[2].start, 3.2 - pre));
+        for (const SoundFrame& f : fr) CHECK(Near(f.length, 0.182));
+    }
 }
 
 void TestRpp()

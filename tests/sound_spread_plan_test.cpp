@@ -11,6 +11,8 @@
 #include <string>
 
 #include "sound_record.h"
+#include "sound_zones.h"
+#include "sound_entries.h"
 
 using namespace rav;
 
@@ -504,6 +506,29 @@ int main()
         src.sound = s;
         const std::vector<SoundNode> nodes = SpreadLayerNodes({src}, "FS", &Uid);
         CHECK(nodes.size() == 2 && nodes[1].sound.sync_mode != SyncMode::SliceStart);
+
+        // Antho 2026-10-20: every copy as long as the original, cut around its variation's own snap (its zone's S):
+        // an original of 0.30 s with its snap 0.08 s in -> each variation [S - 0.08, S + 0.22], S unchanged.
+        SoundData w = s;
+        RefreshParts(w, &pk);
+        std::vector<double> snaps;
+        for (size_t v = 0; v < w.frames.size(); ++v) snaps.push_back(ZoneSnap(w, {static_cast<int>(v), 0}, &pk).t);
+        SnapWindows(w, 0.08, 0.22, f.source_len, &pk);
+        for (size_t v = 0; v < w.frames.size(); ++v) {
+            const EditZone& z = w.frames[v].zones.front();
+            CHECK(std::fabs(ZoneSnap(w, {static_cast<int>(v), 0}, &pk).t - snaps[v]) < 1e-9);
+            CHECK(std::fabs(z.a - (snaps[v] - 0.08)) < 1e-9 && std::fabs(z.b - (snaps[v] + 0.22)) < 1e-9);
+            CHECK(std::fabs(w.frames[v].length - 0.30) < 1e-9);
+        }
+        // Near the file's edges the window is cut there, its snap kept.
+        SoundData e = s;
+        RefreshParts(e, &pk);
+        const double s0 = ZoneSnap(e, {0, 0}, &pk).t;
+        SnapWindows(e, 5.0, 0.1, f.source_len, &pk);
+        CHECK(e.frames[0].zones.front().a == 0.0 && std::fabs(ZoneSnap(e, {0, 0}, &pk).t - s0) < 1e-9);
+        const double s5 = ZoneSnap(e, {5, 0}, &pk).t;
+        SnapWindows(e, 0.0, 5.0, f.source_len, &pk);
+        CHECK(e.frames[5].zones.front().b == f.source_len && std::fabs(ZoneSnap(e, {5, 0}, &pk).t - s5) < 1e-9);
     }
 
     if (g_fail) {

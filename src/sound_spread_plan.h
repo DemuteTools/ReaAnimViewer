@@ -54,6 +54,11 @@ SoundData PileSoundData(const std::string& folder_guid, int takes, double len, c
 // (the top member's regions), PileSoundData makes a folder pile's Sound the same way (each member plays its own k-th
 // region at placement). The caller lays out its zones (RefreshParts) with the peaks.
 SoundData SilenceVariations(SoundData d, const EntryFacts& facts, const PeakData* peaks);
+// Antho 2026-10-20 (the copies were as long as their whole region): every variation of `d` (laid out, one zone each)
+// cut as the original item is around its snap: [its snap - pre, its snap + post] (source seconds: the item's snap and
+// what follows it), clamped to [0, file_len] (0 = no upper clamp); its snap = its zone's (the S of the Edit window),
+// pinned. So every copy is as long as the original and its snap lands on the marker. Takes Sounds unchanged.
+void SnapWindows(SoundData& d, double pre, double post, double file_len, const PeakData* peaks);
 
 // The nodes of one layer: nodes[0] = a Random named `name` (parent ""), one child per pile in time
 // order: a pile holding a folder item = that item's Sound alone (its first folder item, top first; the

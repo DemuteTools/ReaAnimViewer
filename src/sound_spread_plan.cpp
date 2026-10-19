@@ -13,6 +13,7 @@
 #include "sound_place_plan.h"  // SourceSecondsOf
 #include "event_list.h"    // kPreviewSuffix
 #include "sound_record.h"  // FindNode
+#include "sound_zones.h"   // ZoneSnap (Antho 2026-10-20: windows around each variation's snap)
 
 namespace rav {
 
@@ -72,6 +73,27 @@ SoundData SilenceVariations(SoundData d, const EntryFacts& facts, const PeakData
     d.silence = sp;
     d.frames = frames;
     return d;
+}
+
+void SnapWindows(SoundData& d, double pre, double post, double file_len, const PeakData* peaks)
+{
+    if (d.mode == DetectMode::Takes || !(pre >= 0.0) || !(post >= 0.0) || !(pre + post > 0.0)) return;
+    for (size_t v = 0; v < d.frames.size(); ++v) {
+        SoundFrame& f = d.frames[v];
+        if (f.zones.size() != 1 || f.zones.front().IsGap()) continue;  // a Sound divided by hand: as it is
+        const double s = ZoneSnap(d, {static_cast<int>(v), 0}, peaks).t;
+        EditZone&    z = f.zones.front();
+        z.a = std::max(0.0, s - pre);
+        z.b = file_len > 0.0 ? std::min(file_len, s + post) : s + post;
+        if (!(z.b - z.a >= kMinZone)) continue;
+        z.slot_a = z.a;
+        z.slot_b = z.b;
+        z.a_hand = z.b_hand = true;
+        z.a_auto_cut = false;
+        z.snap = s;  // pinned: the window never moves its snap
+        f.start = z.a;
+        f.length = z.b - z.a;
+    }
 }
 
 SoundData PileSoundData(const std::string& folder_guid, int takes, double len, const std::vector<Slice>& slices,

@@ -300,7 +300,12 @@ ReadSounds ReadSources(const std::vector<SelectedSound>& sel, const std::vector<
             const bool media = src.sound.mode != DetectMode::Takes && ReadItemMedia(s.item, &m);
             if (media && WaitPeaks(m.path, &pk)) {
                 src.sound = SilenceVariations(src.sound, m.facts, &pk);
-                if (src.sound.mode == DetectMode::Silence) RefreshParts(src.sound, &pk);
+                if (src.sound.mode == DetectMode::Silence) {
+                    RefreshParts(src.sound, &pk);
+                    // Antho 2026-10-20: each variation as long as the original, cut around its own snap.
+                    const double rate = m.facts.playrate > 0.0 ? m.facts.playrate : 1.0;
+                    SnapWindows(src.sound, s.facts.snap * rate, (s.facts.len - s.facts.snap) * rate, m.facts.source_len, &pk);
+                }
             }
             if (media && src.sound.mode == DetectMode::TakeMarkers) {  // no region read: one variation, never the slices
                 const std::vector<SoundFrame> whole = DetectFrames(m.facts, DetectMode::Whole, SilenceParams{}, nullptr);

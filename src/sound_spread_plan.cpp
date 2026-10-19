@@ -520,10 +520,11 @@ SoundNode SideSwitchNode(const SwitchGroup& g, const std::string& uid, const std
 }  // namespace
 
 bool SetSideContent(SoundStore& store, const std::string& lib_uid, char side, std::vector<SoundNode> nodes,
-                    const std::function<std::string()>& new_uid)
+                    const std::function<std::string()>& new_uid, bool other_none)
 {
     if ((side != 'L' && side != 'R') || nodes.empty()) return false;
     if (!FindLibrary(store, lib_uid)) return false;
+    if (other_none) EmptySide(store, lib_uid, side == 'L' ? 'R' : 'L', new_uid);  // 13-68e v4: none left on the other side
     SwitchGroup*      g = SideGroup(store, new_uid);  // may move store.groups: the library is looked up after
     const std::string mine = SideValueOf(*g, side);
     const std::string other = SideValueOf(*g, side == 'L' ? 'R' : 'L');
@@ -599,6 +600,135 @@ std::string SideLayerTop(SoundStore& store, const std::string& lib_uid, char sid
     s->cases.push_back(c);
     lib->nodes.push_back(b);
     return b.uid;
+}
+
+bool EmptySide(SoundStore& store, const std::string& lib_uid, char empty_side, const std::function<std::string()>& new_uid)
+{
+    if (empty_side != 'L' && empty_side != 'R') return false;
+    SoundLibrary* lib = FindLibrary(store, lib_uid);
+    if (!lib || lib->root.empty() || !FindNode(*lib, lib->root)) return false;
+    SwitchGroup*      g = SideGroup(store, new_uid);
+    const std::string gone = SideValueOf(*g, empty_side);
+    const std::string keep = SideValueOf(*g, empty_side == 'L' ? 'R' : 'L');
+    const SwitchGroup gcopy = *g;
+    lib = FindLibrary(store, lib_uid);
+    // Every Side Switch's case of that side goes (a root one, and one in the root Blend: SideLayerTop's layers).
+    bool changed = false;
+    for (bool again = true; again;) {
+        again = false;
+        for (const SoundNode& n : lib->nodes) {
+            if (n.type != SoundNodeType::Switch || n.group_uid != gcopy.uid) continue;
+            const std::string was = CaseOf(n, gone);
+            if (was.empty()) continue;
+            RemoveSubtree(*lib, was);  // `n` may move: look again
+            changed = again = true;
+            break;
+        }
+    }
+    if (RootSideSwitch(store, *lib) || lib->root.empty()) return changed;
+    const std::string old_root = lib->root;
+    SoundNode         n = SideSwitchNode(gcopy, new_uid(), std::string());
+    FindNode(*lib, old_root)->parent = n.uid;
+    SwitchCase c;
+    c.value_uid = keep;
+    c.child_uid = old_root;
+    n.cases.push_back(c);
+    lib->root = n.uid;
+    lib->nodes.insert(lib->nodes.begin(), n);
+    return true;
+}
+
+char NodeSide(const SoundStore& store, const SoundLibrary& lib, const std::string& node)
+{
+    std::string child = node;
+    size_t      guard = 0;
+    for (const SoundNode* n = FindNode(lib, node); n && guard <= lib.nodes.size(); ++guard) {
+        const SoundNode* up = n->parent.empty() ? nullptr : FindNode(lib, n->parent);
+        if (!up) break;
+        if (up->type == SoundNodeType::Switch)
+            if (const SwitchGroup* g = FindGroup(store, up->group_uid); g && IsSideGroup(*g))
+                for (const SwitchCase& c : up->cases)
+                    if (c.child_uid == n->uid) {
+                        if (c.value_uid == SideValueOf(*g, 'L')) return 'L';
+                        if (c.value_uid == SideValueOf(*g, 'R')) return 'R';
+                    }
+        n = up;
+    }
+    return 0;
+}
+
+bool SplitForSide(SoundStore& store, const std::string& lib_uid, const std::string& node, char side,
+                  const std::function<std::string()>& new_uid, std::map<std::string, std::string>* other_uids)
+{
+    if (other_uids) other_uids->clear();
+    if (side != 'L' && side != 'R') return false;
+    SoundLibrary* lib0 = FindLibrary(store, lib_uid);
+    if (!lib0 || !FindNode(*lib0, node)) return false;
+    const char on = NodeSide(store, *lib0, node);
+    if (on == side) return true;   // already that side's alone
+    if (on != 0) return false;     // the other side's only
+    SwitchGroup*      g = SideGroup(store, new_uid);
+    const std::string mine = SideValueOf(*g, side), theirs = SideValueOf(*g, side == 'L' ? 'R' : 'L');
+    const SwitchGroup gcopy = *g;
+    SoundLibrary&     lib = *FindLibrary(store, lib_uid);
+    // What is split: the node's parent Random (its siblings stay drawable on both sides), else the node itself.
+    std::string w = node;
+    if (const SoundNode* p = FindNode(lib, FindNode(lib, node)->parent); p && p->type == SoundNodeType::Random) w = p->uid;
+    // Its subtree and the copy's uids.
+    std::set<std::string> in = {w};
+    for (bool grew = true; grew;) {
+        grew = false;
+        for (const SoundNode& n : lib.nodes)
+            if (!in.count(n.uid) && in.count(n.parent)) {
+                in.insert(n.uid);
+                grew = true;
+            }
+    }
+    std::map<std::string, std::string> map;
+    for (const SoundNode& n : lib.nodes)
+        if (in.count(n.uid)) map[n.uid] = new_uid();
+    const SoundNode   wn = *FindNode(lib, w);
+    SoundNode         sw = SideSwitchNode(gcopy, new_uid(), wn.parent);
+    sw.offset_ms = wn.offset_ms;
+    sw.layer_keep_offset = wn.layer_keep_offset;
+    sw.layer_roles = wn.layer_roles;
+    std::vector<SoundNode> copies;
+    for (const SoundNode& n : lib.nodes) {
+        if (!in.count(n.uid)) continue;
+        SoundNode c = n;
+        c.uid = map[n.uid];
+        c.parent = n.uid == w ? sw.uid : map[n.parent];
+        if (n.uid == w) {  // as the original: the Switch carries its offset
+            c.offset_ms = 0.0;
+            c.layer_keep_offset = true;
+        }
+        for (SwitchCase& k : c.cases)
+            if (map.count(k.child_uid)) k.child_uid = map[k.child_uid];
+        for (std::string& u : c.unassigned)
+            if (map.count(u)) u = map[u];
+        copies.push_back(c);
+    }
+    SwitchCase a;
+    a.value_uid = mine;
+    a.child_uid = w;
+    SwitchCase b;
+    b.value_uid = theirs;
+    b.child_uid = map[w];
+    sw.cases = {a, b};
+    if (SoundNode* p = FindNode(lib, wn.parent))
+        for (SwitchCase& k : p->cases)
+            if (k.child_uid == w) k.child_uid = sw.uid;
+    if (lib.root == w) lib.root = sw.uid;
+    SoundNode* wp = FindNode(lib, w);
+    wp->parent = sw.uid;
+    wp->offset_ms = 0.0;
+    wp->layer_keep_offset = true;
+    size_t at = 0;
+    while (at < lib.nodes.size() && lib.nodes[at].uid != w) ++at;
+    lib.nodes.insert(lib.nodes.begin() + static_cast<long>(at), sw);  // in w's place among its siblings
+    for (SoundNode& c : copies) lib.nodes.push_back(std::move(c));
+    if (other_uids) *other_uids = map;
+    return true;
 }
 
 bool SeveralStackEvents(const std::vector<PlacedTag>& tags)
@@ -722,6 +852,7 @@ std::string SpreadRunReport(const SpreadRunCounts& c)
     if (c.selected_markers > 1)
         out += "Used " + (c.marker.empty() ? c.type : c.marker) + " (" + std::to_string(c.selected_markers) + " markers selected)\n";
     out += c.type + (c.side ? " " + std::string(1, c.side) + " only" : std::string()) +  // 13-68e
+           (c.side && c.other_none ? ", " + std::string(1, c.side == 'L' ? 'R' : 'L') + " plays nothing" : std::string()) +  // v4
            (c.all_instances ? " (all animations with this marker): " : " (this animation): ");
     std::vector<std::string> parts;
     std::string              lib = c.add_layer ? "layer added to library " + c.type + (c.all_instances ? "" : " for this animation")

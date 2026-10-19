@@ -54,12 +54,15 @@ std::string AddSelectionToStack(SpreadScope scope);
 // ---- 13-68e: the Attach manager's gestures (attach_manager_ui.h) ------------------------------------------------
 
 // Attach with the window's marker (null = the clicked label, as the actions) and side: "<side> only" puts the selection
-// in the side's value of the library's RAV - Side Switch (the other side keeps what it had), assigns it to that
-// side's rules only and Populates them; every rule holding the library gets its side's value. One undo point.
-std::string SpreadSelectionToMarker(SpreadScope scope, SpreadSide side, const SpreadMarker* marker);
+// in the side's value of the library's RAV - Side Switch, assigns it to that side's rules only and Populates them;
+// the other side keeps what it had by default (Keeps its sound), or plays nothing with `other_none`; every rule
+// holding the library gets its side's value. One undo point.
+// 13-68e v4: `other_none` (with MarkerSide) = the other side plays nothing: its value of the RAV - Side Switch emptied,
+// its placed sounds of the library removed as a re-run removes them (originals to the source zone).
+std::string SpreadSelectionToMarker(SpreadScope scope, SpreadSide side, const SpreadMarker* marker, bool other_none = false);
 // Add to stack on one side: the layer under the RAV - Side Switch (sound_spread_plan.h SideLayerTop), Populate on the
 // stack's side only.
-std::string AddSelectionToStackSide(SpreadScope scope, SpreadSide side);
+std::string AddSelectionToStackSide(SpreadScope scope, SpreadSide side, bool other_none = false);
 
 // The window's snapshot of the project (attach_manager_plan.h) and the animation items it names (same order as
 // snap.anims). Never writes.
@@ -89,7 +92,10 @@ std::string DetachFromMarkers(const std::vector<DetachTarget>& targets, bool kee
 // (Keep: in place, untagged, those markers get nothing else; Delete: deleted, then Populate draws those markers again
 // from the variations left; an emptied library leaves them empty). One undo point "RAV: Remove <name> from the <lib>
 // library"; the report as a toast.
-std::string RemoveFromAttachedLibrary(const std::string& lib_uid, const std::string& node, bool keep);
+// 13-68e v4: `side` ('L' / 'R') = from that side only (a variation both sides share is split through RAV - Side, the
+// other side gets its own copy); Delete redraws those markers from what is left on their side, else they stay empty;
+// the undo point then reads "RAV: Remove <name> from the <lib> library (L only)".
+std::string RemoveFromAttachedLibrary(const std::string& lib_uid, const std::string& node, bool keep, char side = 0);
 // Selects these items in REAPER (every other item unselected); the arrange scrolls nowhere. Returns how many.
 int SelectItemsByGuid(const std::vector<std::string>& guids);
 

@@ -185,13 +185,15 @@ GestureChoice ChooseGesture(const Snapshot& s, const std::vector<int>& choices, 
     return c;
 }
 
-std::string RunLabel(Gesture g, bool all, bool side_only, const std::string& kind, char side)
+std::string RunLabel(Gesture g, bool all, bool side_only, const std::string& kind, char side, bool other_none)
 {
     std::string out = g == Gesture::Stack ? "Add to stack" : "Attach";
     out += kDot;
     out += all ? "all with " + kind : std::string("this animation");
     out += kDot;
     out += side_only && side ? std::string(1, side) + " only" : std::string("both sides");
+    if (side_only && side)  // 13-68e v4: what the other side becomes
+        out += kDot + std::string(1, side == 'L' ? 'R' : 'L') + (other_none ? " plays nothing" : " keeps its sound");
     return out;
 }
 
@@ -254,12 +256,13 @@ bool FilterKeeps(const Snapshot& s, const ListFilter& f, const AttachedEvent& e)
     return true;
 }
 
-std::vector<AnimGroup> MarkerRows(const Snapshot& s, const ListFilter& f, const std::string& lib_uid)
+std::vector<AnimGroup> MarkerRows(const Snapshot& s, const ListFilter& f, const std::string& lib_uid, char side)
 {
     std::vector<int> evs;
     for (size_t i = 0; i < s.events.size(); ++i) {
         const AttachedEvent& e = s.events[i];
         if (!lib_uid.empty() && e.lib_uid != lib_uid) continue;
+        if (side && e.side != side) continue;  // 13-68e v4
         if (e.placed.empty() || !FilterKeeps(s, f, e)) continue;
         evs.push_back(static_cast<int>(i));
     }
@@ -335,6 +338,7 @@ struct RowWalk {
     const SoundLibrary&        lib;
     std::vector<VariationRow>* out;
     int                        guard = 0;
+    char                       side = 0;  // the Side Switch case walked under (0 = none)
 
     void Row(const SoundNode& n, const std::string& where, bool layer, const std::string& random, int index)
     {
@@ -346,6 +350,7 @@ struct RowWalk {
         r.where = where;
         r.random = random;
         r.index = index;
+        r.side = side;
         if (layer) r.kind = VariationKind::Layer;
         else if (n.type == SoundNodeType::Sound && n.sound.mode == DetectMode::Takes && n.sound.frames.size() >= 2) {
             r.kind = VariationKind::Takes;
@@ -383,6 +388,7 @@ struct RowWalk {
             break;
         case SoundNodeType::Switch: {
             const SwitchGroup* g = FindGroup(store, n.group_uid);
+            const bool         side_sw = g && IsSideGroup(*g);
             for (const SwitchCase& c : n.cases) {
                 const SoundNode* child = FindNode(lib, c.child_uid);
                 if (!child) continue;
@@ -390,11 +396,15 @@ struct RowWalk {
                 if (g)
                     for (const SwitchValue& v : g->values)
                         if (v.uid == c.value_uid) vname = v.name;
-                const std::string w = Join(where, vname);
+                const char        was = side;
+                if (side_sw)  // 13-68e v4: said apart, as where it plays
+                    side = c.value_uid == SideValueOf(*g, 'L') ? 'L' : c.value_uid == SideValueOf(*g, 'R') ? 'R' : 0;
+                const std::string w = side_sw ? where : Join(where, vname);
                 if (!layers) Walk(*child, w, false);  // a Switch at the content's top: each value's content
                 else if (child->type == SoundNodeType::Blend) Walk(*child, w, true);
                 else if (child->type == SoundNodeType::Switch) Walk(*child, w, true);
                 else Row(*child, w, true, std::string(), -1);
+                side = was;
             }
             break;
         }
@@ -404,25 +414,32 @@ struct RowWalk {
 
 }  // namespace
 
-std::vector<VariationRow> VariationRows(const SoundStore& store, const SoundLibrary& lib, const Snapshot& s)
+std::vector<VariationRow> VariationRows(const SoundStore& store, const SoundLibrary& lib, const Snapshot& s, char side)
 {
     std::vector<VariationRow> out;
     const SoundNode*          root = lib.root.empty() ? nullptr : FindNode(lib, lib.root);
     if (!root) return out;
     RowWalk w{store, lib, &out};
     w.Walk(*root, std::string(), false);
-    for (VariationRow& r : out)
+    const bool sided = LibrarySided(store, lib, s);
+    std::vector<VariationRow> kept;
+    for (VariationRow& r : out) {
+        r.sided = sided;
+        if (side && r.side && r.side != side) continue;  // 13-68e v4: not played on that side
         for (const AttachedEvent& e : s.events)
-            r.markers += EventUsesVariation(lib, r, e) ? 1 : 0;
-    return out;
+            if (!side || e.side == side) r.markers += EventUsesVariation(lib, r, e) ? 1 : 0;
+        kept.push_back(r);
+    }
+    return kept;
 }
 
-std::vector<std::string> VariationItems(const SoundLibrary& lib, const VariationRow& v, const Snapshot& s)
+std::vector<std::string> VariationItems(const SoundLibrary& lib, const VariationRow& v, const Snapshot& s, char side)
 {
     std::vector<std::string>    out;
     std::set<std::string>       seen;
     const std::set<std::string> sounds = SoundsUnder(lib, v.node);
     for (const AttachedEvent& e : s.events) {
+        if (side && e.side != side) continue;  // 13-68e v4
         if (!EventUsesVariation(lib, v, e)) continue;
         for (const Placed& p : e.placed) {
             const bool mine = (!p.node.empty() && sounds.count(p.node)) ||
@@ -436,6 +453,7 @@ std::vector<std::string> VariationItems(const SoundLibrary& lib, const Variation
 std::string VariationText(const VariationRow& v)
 {
     std::string out = v.kind == VariationKind::Layer ? "layer" : v.kind == VariationKind::Takes ? std::to_string(v.takes) + " takes" : "variation";
+    if (v.sided) out += kDot + (v.side ? std::string(1, v.side) + " only" : std::string("L \xC2\xB7 R"));  // 13-68e v4
     if (!v.where.empty()) out += kDot + v.where;
     out += kDot + std::string("on ") + Plural(v.markers, "marker", "markers");
     return out;
@@ -571,6 +589,48 @@ std::vector<std::string> RemoveVariationInRecord(ItemSounds& rec, const std::set
     }
     if (events) *events = n_events;
     return out;
+}
+
+bool LibrarySided(const SoundStore& store, const SoundLibrary& lib, const Snapshot& s)
+{
+    if (LibraryUsesSide(store, lib)) return true;
+    for (const AttachedEvent& e : s.events)
+        if (e.lib_uid == lib.uid && e.side != 0) return true;
+    return false;
+}
+
+void SplitRidsBySide(const std::set<std::string>& rids, const std::map<std::string, char>& side_of, char side,
+                     std::set<std::string>* mine, std::set<std::string>* other)
+{
+    for (const std::string& rid : rids) {
+        if (!side) {
+            mine->insert(rid);
+            continue;
+        }
+        const auto  hit = side_of.find(rid);
+        const char  sd = hit == side_of.end() ? 0 : hit->second;
+        if (sd == side) mine->insert(rid);
+        else if (sd == 'L' || sd == 'R') other->insert(rid);  // a sideless or unread rule: neither
+    }
+}
+
+bool RemapEventNodes(EventSounds& ev, const std::map<std::string, std::string>& uids)
+{
+    bool changed = false;
+    for (SoundDraw& d : ev.draws) {
+        const std::string node = DrawNode(d.node);
+        const auto        hit = uids.find(node);
+        if (hit == uids.end()) continue;
+        d.node = hit->second + d.node.substr(node.size());  // a loop pass's key keeps its pass
+        changed = true;
+    }
+    for (SoundPlacement& p : ev.placed) {
+        const auto hit = uids.find(p.node);
+        if (p.node.empty() || hit == uids.end()) continue;
+        p.node = hit->second;
+        changed = true;
+    }
+    return changed;
 }
 
 }  // namespace am

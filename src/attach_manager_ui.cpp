@@ -35,6 +35,8 @@ namespace {
 const char kDot[] = " \xC2\xB7 ";
 constexpr const char kPrefScope[] = "attachmgr.scope_all";
 constexpr const char kPrefSide[] = "attachmgr.side_only";
+constexpr const char kPrefOther[] = "attachmgr.other_none";    // 13-68e v4: the other side plays nothing
+constexpr const char kPrefDetachSide[] = "attachmgr.detach_side";  // 13-68e v4: 0 Both, 1 L, 2 R
 
 // A little wider than the mockup's 370 px window; its size is kept, it opens at the mouse.
 constexpr int kDefaultW = 380, kDefaultH = 540;
@@ -92,6 +94,7 @@ struct Ask {
     int                       type = 0;  // 1 a marker, 2 the markers shown, 3 a variation
     std::vector<DetachTarget> targets;
     std::string               lib, node;
+    char                      side = 0;  // 13-68e v4: Remove from library on that side only
     std::string               title, sub;
     ImVec2                    at;
 };
@@ -109,6 +112,8 @@ struct State {
     std::string        pick_key;  // the user's Marker pick
     am::GestureWant    want = am::GestureWant::Auto;
     bool               scope_all = false, side_only = false;
+    bool               other_none = false;  // 13-68e v4: with "<side> only", the other side plays nothing
+    int                dside = 0;           // 13-68e v4: the Detach tab's Side: 0 Both, 1 L, 2 R
     bool               prefs_read = false;
     // Detach
     std::string        lib_pick;  // "" = All libraries
@@ -135,6 +140,8 @@ void ReadPrefs()
     g.prefs_read = true;
     g.scope_all = LoadPrefFloat(kPrefScope, 0.0f) > 0.5f;
     g.side_only = LoadPrefFloat(kPrefSide, 0.0f) > 0.5f;
+    g.other_none = LoadPrefFloat(kPrefOther, 0.0f) > 0.5f;
+    g.dside = std::max(0, std::min(2, static_cast<int>(std::lround(LoadPrefFloat(kPrefDetachSide, 0.0f)))));
 }
 
 // The snapshot again when the project, the time selection, the item selection or a clicked label moved.
@@ -275,6 +282,22 @@ int ListRow(const char* id, const std::string& badge, const std::string& l1, con
 }
 
 // The items of these events (what a marker row selects).
+// 13-68e v4: the picked library (on All libraries: any Attached library) has sided markers.
+bool DetachSided()
+{
+    const SoundStore& st = GetSoundStore(nullptr);
+    for (const SoundLibrary& l : st.libraries)
+        if (l.attached && (g.lib_pick.empty() || l.uid == g.lib_pick) && am::LibrarySided(st, l, g.st.snap)) return true;
+    return false;
+}
+
+// 13-68e v4: the Detach tab's side ('L' / 'R'; 0 = both, also when the library's markers have no side).
+char DetachSide()
+{
+    if (g.dside == 0 || !DetachSided()) return 0;
+    return g.dside == 1 ? 'L' : 'R';
+}
+
 std::vector<std::string> EventItems(const std::vector<int>& events)
 {
     std::vector<std::string> out;
@@ -414,15 +437,16 @@ void RunAttach(const AttachView& v)
 {
     const SpreadScope scope = g.scope_all ? SpreadScope::AllInstances : SpreadScope::ThisAnimation;
     const SpreadSide  side = g.side_only && v.side ? SpreadSide::MarkerSide : SpreadSide::Both;
+    const bool        none = side == SpreadSide::MarkerSide && g.other_none;  // 13-68e v4
     if (v.gc.gesture == am::Gesture::Stack) {
-        Queue([scope, side] { AddSelectionToStackSide(scope, side); });
+        Queue([scope, side, none] { AddSelectionToStackSide(scope, side, none); });
     } else {
         const am::Marker& m = g.st.snap.markers[static_cast<size_t>(v.marker)];
         SpreadMarker      sm;
         sm.item = m.anim >= 0 && static_cast<size_t>(m.anim) < g.st.anims.size() ? g.st.anims[static_cast<size_t>(m.anim)] : nullptr;
         sm.name = m.name;
         sm.pos = m.pos;
-        Queue([scope, side, sm] { SpreadSelectionToMarker(scope, side, &sm); });
+        Queue([scope, side, sm, none] { SpreadSelectionToMarker(scope, side, &sm, none); });
     }
     g.want = am::GestureWant::Auto;
 }
@@ -516,11 +540,30 @@ void DrawAttach(const AttachView& v)
                 SavePrefFloat(kPrefSide, g.side_only ? 1.0f : 0.0f);
             }
             if (ui::SegmentedHovered() >= 0)
-                ui::ShowTip(v.side ? (v.kind + " " + std::string(1, v.side) + " markers only (RAV - Side Switch); the other side keeps what it had").c_str()
+                ui::ShowTip(v.side ? (v.kind + " " + std::string(1, v.side) + " markers only (RAV - Side Switch)").c_str()
                                    : "This marker kind has no side");
         }
+        {  // 13-68e v4: what the other side becomes; always shown (greyed on Both sides) so the button never moves
+            const char        od = v.side == 'R' ? 'L' : 'R';
+            const std::string lbl = v.side ? std::string(1, od) : std::string("Other side");
+            const bool        on = g.side_only && v.side;
+            const float       fw = FieldLabel(lbl.c_str(), std::max(tcol, ImGui::CalcTextSize(lbl.c_str()).x));
+            static const char* const kOther[2] = {"Keeps its sound", "Plays nothing"};
+            int                      oi = g.other_none ? 1 : 0;
+            if (!on) ImGui::BeginDisabled();
+            if (ui::Segmented("##amother", kOther, 2, &oi, fw * 0.5f) && on) {
+                g.other_none = oi == 1;
+                SavePrefFloat(kPrefOther, g.other_none ? 1.0f : 0.0f);
+            }
+            if (!on) ImGui::EndDisabled();
+            if (!on && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ui::ShowTip(!v.side ? "This marker kind has no side" : "With Both sides, nothing moves: pick the marker's side only first");
+            else if (on && ui::SegmentedHovered() >= 0)
+                ui::ShowTip(ui::SegmentedHovered() == 1 ? (lbl + " markers lose this library's sounds").c_str()
+                                                        : (lbl + " markers keep what they play now").c_str());
+        }
         if (!v.gc.reason.empty()) ui::ToneText(v.gc.reason, ui::kWarn, true, ImGui::GetContentRegionAvail().x);
-        const std::string label = am::RunLabel(v.gc.gesture, g.scope_all, g.side_only, v.kind, v.side) + "##amrun";
+        const std::string label = am::RunLabel(v.gc.gesture, g.scope_all, g.side_only, v.kind, v.side, g.other_none) + "##amrun";
         const bool        can = v.gc.reason.empty() && !g.pending;
         if (!can) ImGui::BeginDisabled();
         if (ui::PrimaryButton(label.c_str(), ImVec2(ImGui::GetContentRegionAvail().x, ui::LargeH())) && can) RunAttach(v);
@@ -571,7 +614,7 @@ void DrawAsk()
         if (choice != 3) {
             const bool keep = choice == 1;
             const Ask  a = g.ask;
-            if (a.type == 3) Queue([a, keep] { RemoveFromAttachedLibrary(a.lib, a.node, keep); });
+            if (a.type == 3) Queue([a, keep] { RemoveFromAttachedLibrary(a.lib, a.node, keep, a.side); });
             else Queue([a, keep] { DetachFromMarkers(a.targets, keep); });
             g.sel_row.clear();
         }
@@ -584,11 +627,12 @@ void DrawAsk()
 void DrawMarkerList(const am::ListFilter& f)
 {
     const am::Snapshot&          s = g.st.snap;
-    const std::vector<am::AnimGroup> groups = am::MarkerRows(s, f, g.lib_pick);
+    const char                   ds = DetachSide();
+    const std::vector<am::AnimGroup> groups = am::MarkerRows(s, f, g.lib_pick, ds);
     int                          shown = 0;
     for (const am::AnimGroup& ag : groups) shown += static_cast<int>(ag.rows.size());
     bool any = false;
-    for (const am::AttachedEvent& e : s.events) any |= g.lib_pick.empty() || e.lib_uid == g.lib_pick;
+    for (const am::AttachedEvent& e : s.events) any |= (g.lib_pick.empty() || e.lib_uid == g.lib_pick) && (!ds || e.side == ds);
     const std::string title = g.lib_pick.empty() ? std::string("Attached") : "Attached on " + LibName(g.lib_pick);
     const std::string suffix = shown ? kDot + std::to_string(shown) + (shown == 1 ? " marker" : " markers") : std::string();
     ui::Section       sec;
@@ -596,7 +640,8 @@ void DrawMarkerList(const am::ListFilter& f)
     so.suffix = suffix.empty() ? nullptr : suffix.c_str();
     if (ui::BeginSection(sec, (title + "##amlist").c_str(), so)) {
         ImGui::PushFont(ui::FontSmall());
-        ui::ToneText("Showing: " + f.label, ui::kFaint, true, ImGui::GetContentRegionAvail().x);
+        ui::ToneText("Showing: " + f.label + (ds ? ", " + std::string(1, ds) + " markers" : std::string()), ui::kFaint, true,
+                     ImGui::GetContentRegionAvail().x);
         ImGui::PopFont();
         if (!shown) {
             FaintLine(any ? "Nothing attached here." : "Nothing attached yet.");
@@ -671,9 +716,10 @@ void DrawLibraryList(const std::vector<const SoundLibrary*>& libs)
     std::vector<const SoundLibrary*> shown;
     for (const SoundLibrary* l : libs)
         if (g.lib_pick.empty() || l->uid == g.lib_pick) shown.push_back(l);
+    const char ds = DetachSide();  // 13-68e v4
     std::vector<std::pair<const SoundLibrary*, am::VariationRow>> rows;
     for (const SoundLibrary* l : shown)
-        for (const am::VariationRow& r : am::VariationRows(store, *l, g.st.snap)) rows.push_back({l, r});
+        for (const am::VariationRow& r : am::VariationRows(store, *l, g.st.snap, ds)) rows.push_back({l, r});
     const std::string title = g.lib_pick.empty() ? std::string("Attached libraries") : LibName(g.lib_pick) + " library";
     const std::string suffix = rows.empty() ? std::string() : kDot + std::to_string(rows.size()) + (rows.size() == 1 ? " variation" : " variations");
     ui::Section       sec;
@@ -694,7 +740,7 @@ void DrawLibraryList(const std::vector<const SoundLibrary*>& libs)
                     ImGui::PopFont();
                 }
                 last = lib.uid;
-                const std::vector<std::string> its = am::VariationItems(lib, r, g.st.snap);
+                const std::vector<std::string> its = am::VariationItems(lib, r, g.st.snap, ds);  // 13-68e v4: that side's
                 all.insert(all.end(), its.begin(), its.end());
                 const std::string badge = r.kind == am::VariationKind::Layer ? "+" : r.kind == am::VariationKind::Takes ? std::to_string(r.takes) : "1";
                 const std::string rk = "var" + std::to_string(i);
@@ -710,7 +756,9 @@ void DrawLibraryList(const std::vector<const SoundLibrary*>& libs)
                     a.lib = lib.uid;
                     a.node = r.node;
                     const int n = static_cast<int>(its.size());
-                    a.title = "Remove " + r.name + " from the " + lib.name + " library";
+                    a.side = ds;
+                    a.title = "Remove " + r.name + " from the " + lib.name + " library" +
+                              (a.side ? " (" + std::string(1, a.side) + " only)" : std::string());
                     a.sub = std::to_string(n) + (n == 1 ? " placed sound." : " placed sounds.");
                     a.at = at;
                     OpenAsk(a);
@@ -736,7 +784,7 @@ void DrawDetach()
     for (const SoundLibrary& l : store.libraries)
         if (l.attached) libs.push_back(&l);
     if (!g.lib_pick.empty() && !FindLibrary(store, g.lib_pick)) g.lib_pick.clear();
-    const float col = std::max(ImGui::CalcTextSize("Library").x, ImGui::CalcTextSize("Detach").x);
+    const float col = std::max({ImGui::CalcTextSize("Library").x, ImGui::CalcTextSize("Detach").x, ImGui::CalcTextSize("Side").x});
     {
         const float       fw = FieldLabel("Library", col);
         const std::string preview = g.lib_pick.empty() ? std::string("All libraries") : LibName(g.lib_pick);
@@ -771,6 +819,29 @@ void DrawDetach()
         if (ui::SegmentedHovered() >= 0)
             ui::ShowTip(ui::SegmentedHovered() == 1 ? "The variation leaves the library: every sound placed from it"
                                                     : "Only the sounds on that marker; the marker then stays empty");
+    }
+    {  // 13-68e v4: Both / L / R, remembered
+        const float              fw = FieldLabel("Side", col);
+        static const char* const kSide[3] = {"Both", "L", "R"};
+        const bool               sided = DetachSided();
+        int                      d = sided ? g.dside : 0;  // the choice stays remembered; shown as Both meanwhile
+        if (!sided) ImGui::BeginDisabled();
+        const bool picked = ui::Segmented("##amdside", kSide, 3, &d, std::min(fw / 3.0f, ui::Dp(70.0f))) && sided;
+        if (!sided) ImGui::EndDisabled();
+        if (!sided && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ui::ShowTip(g.lib_pick.empty() ? "No Attached library has markers with a side" : "This library's markers have no side");
+        if (picked) {
+            g.dside = d;
+            SavePrefFloat(kPrefDetachSide, static_cast<float>(d));
+            g.sel_row.clear();
+            g.frozen = false;
+            CloseAsk();
+        }
+        if (sided && ui::SegmentedHovered() >= 0)
+            ui::ShowTip(ui::SegmentedHovered() == 0 ? "Both sides' markers"
+                                                    : (std::string(ui::SegmentedHovered() == 1 ? "L" : "R") +
+                                                       " markers only; Whole library removes a variation from that side only")
+                                                          .c_str());
     }
     ImGui::Dummy(ImVec2(0.0f, ui::Dp(4.0f)));
     if (g.mode == 1) {

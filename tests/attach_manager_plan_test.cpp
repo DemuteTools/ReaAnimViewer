@@ -160,7 +160,9 @@ int main()
         s.fresh = 0;
         CHECK(ChooseGesture(s, MarkerChoices(s), 0, GestureWant::Auto).reason == "Select the sounds to attach.");
         CHECK(RunLabel(Gesture::Attach, false, false, "FS", 'L') == "Attach \xC2\xB7 this animation \xC2\xB7 both sides");
-        CHECK(RunLabel(Gesture::Stack, true, true, "FS", 'R') == "Add to stack \xC2\xB7 all with FS \xC2\xB7 R only");
+        CHECK(RunLabel(Gesture::Stack, true, true, "FS", 'R') == "Add to stack \xC2\xB7 all with FS \xC2\xB7 R only \xC2\xB7 L keeps its sound");
+        CHECK(RunLabel(Gesture::Attach, true, true, "FS", 'L', true) == "Attach \xC2\xB7 all with FS \xC2\xB7 L only \xC2\xB7 R plays nothing");
+        CHECK(RunLabel(Gesture::Attach, false, false, "FS", 'L', true) == "Attach \xC2\xB7 this animation \xC2\xB7 both sides");
     }
 
     // ---- What the Detach list shows: the selected animation / items / time selection / everything.
@@ -366,8 +368,11 @@ int main()
             CHECK(rows[0].node == "p1" && rows[0].kind == VariationKind::Takes && rows[0].takes == 4 && rows[0].markers == 2);
             CHECK(rows[1].node == "p2" && rows[1].kind == VariationKind::Variation && rows[1].markers == 1 && rows[1].index == 1);
             CHECK(rows[2].node == "ly" && rows[2].kind == VariationKind::Layer && rows[2].markers == 1 && rows[2].random.empty());
-            CHECK(VariationText(rows[0]) == "4 takes \xC2\xB7 on 2 markers");
-            CHECK(VariationText(rows[2]) == "layer \xC2\xB7 on 1 marker");
+            CHECK(VariationText(rows[0]) == "4 takes \xC2\xB7 L \xC2\xB7 R \xC2\xB7 on 2 markers");
+            CHECK(VariationText(rows[2]) == "layer \xC2\xB7 L \xC2\xB7 R \xC2\xB7 on 1 marker");
+            // Side R: only the R markers count (e2 is FS R).
+            const std::vector<VariationRow> rr = VariationRows(st, st.libraries[0], s, 'R');
+            CHECK(rr.size() == 3 && rr[0].markers == 0 && rr[1].markers == 1 && rr[2].markers == 1);
             // What each select button selects: p1's copy and the original (offset 0, Sound unknown), p2's two layers, ly's.
             const std::vector<std::string> i0 = VariationItems(st.libraries[0], rows[0], s);
             CHECK(i0.size() == 2 && i0[0] == "{O}" && i0[1] == "{C4}");
@@ -400,7 +405,8 @@ int main()
                                          Node("r2", "r", SoundNodeType::Sound, "R2")},
                        &Uid);
         const std::vector<VariationRow> r2 = VariationRows(st2, st2.libraries[0], Snapshot());
-        CHECK(r2.size() == 2 && r2[0].where == "R" && VariationText(r2[0]) == "variation \xC2\xB7 R \xC2\xB7 on 0 markers");
+        CHECK(r2.size() == 2 && r2[0].side == 'R' && r2[0].where.empty() && VariationText(r2[0]) == "variation \xC2\xB7 R only \xC2\xB7 on 0 markers");
+        CHECK(VariationRows(st2, st2.libraries[0], Snapshot(), 'L').empty());  // nothing plays on L
     }
 
     // ---- Detach from this marker (Keep / Delete write the same record): its sounds marked deleted, every Sound of the
@@ -520,6 +526,202 @@ int main()
         const std::vector<std::string> gone = RemoveSubtree(lib, "a");
         CHECK(gone.size() == 2 && FindNode(lib, "sw")->cases.size() == 1 && FindNode(lib, "sw")->cases[0].child_uid == "b");
         CHECK(RemoveSubtree(lib, "sw").size() == 2 && lib.root.empty() && lib.nodes.empty());
+    }
+
+    // ---- 13-68e v4 matrix: Attach L only, R plays nothing: L = the new sound, R's value empty (its old content gone).
+    {
+        SoundStore   st;
+        SoundLibrary lib;
+        lib.uid = "LIB";
+        lib.name = "FS";
+        SetLibraryContent(lib, {Node("x", "", SoundNodeType::Random, "FS"), Node("x1", "x", SoundNodeType::Sound, "Old")});
+        st.libraries.push_back(lib);
+        CHECK(SetSideContent(st, "LIB", 'L', {Node("n", "", SoundNodeType::Random, "FS"), Node("n1", "n", SoundNodeType::Sound, "New")}, &Uid, true));
+        const SoundLibrary& l = st.libraries[0];
+        const SoundNode*    root = FindNode(l, l.root);
+        CHECK(root && root->type == SoundNodeType::Switch && root->cases.size() == 1);
+        CHECK(root && root->cases[0].value_uid == SideValueOf(st.groups[0], 'L') && root->cases[0].child_uid == "n");
+        CHECK(!FindNode(l, "x") && !FindNode(l, "x1"));
+        CHECK(NodeSide(st, l, "n1") == 'L');
+        // Keeps its sound instead (the default): R keeps the old content.
+        SoundStore st2;
+        st2.libraries.push_back(lib);
+        CHECK(SetSideContent(st2, "LIB", 'L', {Node("n", "", SoundNodeType::Random, "FS"), Node("n1", "n", SoundNodeType::Sound, "New")}, &Uid));
+        CHECK(FindNode(st2.libraries[0], "x1") && NodeSide(st2, st2.libraries[0], "x1") == 'R');
+        // A root Side Switch already: R plays nothing removes R's case only.
+        CHECK(EmptySide(st2, "LIB", 'R', &Uid) && !FindNode(st2.libraries[0], "x1") && FindNode(st2.libraries[0], "n1"));
+        CHECK(!EmptySide(st2, "LIB", 'R', &Uid));  // nothing left to empty
+        SpreadRunCounts c;
+        c.type = "FS";
+        c.side = 'L';
+        c.other_none = true;
+        c.variations = 1;
+        c.layers = 1;
+        c.animations = 1;
+        c.events = 2;
+        CHECK(SpreadRunReport(c).rfind("FS L only, R plays nothing (this animation): ", 0) == 0);
+    }
+
+    // ---- 13-68e v4 matrix: Remove from library, R only, Delete: a variation shared by L and R leaves R (R markers
+    // redrawn from what R has left), L still plays it (its records moved to the copy, same pick).
+    {
+        SoundStore   st;
+        SoundLibrary lib;
+        lib.uid = "LIB";
+        lib.name = "FS";
+        SetLibraryContent(lib, {Node("base", "", SoundNodeType::Random), Node("p1", "base", SoundNodeType::Sound, "A"),
+                                Node("p2", "base", SoundNodeType::Sound, "B"), Node("p3", "base", SoundNodeType::Sound, "C")});
+        st.libraries.push_back(lib);
+        std::map<std::string, std::string> other;
+        CHECK(SplitForSide(st, "LIB", "p2", 'R', &Uid, &other));
+        CHECK(other.size() == 4 && other.count("base") && other.count("p2"));
+        SoundLibrary& l = st.libraries[0];
+        const SoundNode* root = FindNode(l, l.root);
+        CHECK(root && root->type == SoundNodeType::Switch && root->cases.size() == 2);
+        CHECK(NodeSide(st, l, "p2") == 'R' && NodeSide(st, l, other["p2"]) == 'L');
+        CHECK(LibraryUsesSide(st, l));
+        // Split again on R: nothing to split; on L of an R-only node: refused.
+        std::map<std::string, std::string> again;
+        CHECK(SplitForSide(st, "LIB", "p2", 'R', &Uid, &again) && again.empty());
+        CHECK(!SplitForSide(st, "LIB", "p2", 'L', &Uid, &again));
+        RemovedVariation rv;
+        CHECK(RemoveVariationFromLibrary(l, "p2", &rv) && rv.random == "base" && rv.index == 1);
+        CHECK(ChildrenOf(l, "base").size() == 2 && ChildrenOf(l, other["base"]).size() == 3);
+        // Records: rule rR (side R) loses it, rule rL (side L) keeps it through the copy.
+        ItemSounds rec;
+        for (const char* rid : {"rR", "rL"}) {
+            RuleSounds rs;
+            rs.rid = rid;
+            rs.library = "LIB";
+            rec.rules.push_back(rs);
+            for (int k = 0; k < 3; ++k) {
+                EventSounds e;
+                e.rid = rid;
+                e.t = k;
+                SoundPlacement p;
+                p.item_guid = std::string("{") + rid + std::to_string(k) + "}";
+                p.node = "p" + std::to_string(k + 1);
+                e.placed.push_back(p);
+                e.draws = {{"base", k}};
+                rec.events.push_back(e);
+            }
+        }
+        int        evs = 0;
+        const auto out = RemoveVariationInRecord(rec, {"rR"}, rv, false, {}, &evs);
+        CHECK(evs == 1 && out.size() == 1 && out[0] == "{rR1}");
+        CHECK(rec.events[1].placed.empty() && rec.events[1].draws.empty());  // redrawn from p1 / p3
+        CHECK(rec.events[2].draws[0].pick == 1);                             // R's p3 keeps its sound
+        for (size_t k = 3; k < 6; ++k) CHECK(RemapEventNodes(rec.events[k], other));
+        CHECK(rec.events[4].draws[0].node == other["base"] && rec.events[4].draws[0].pick == 1 && rec.events[4].placed[0].node == other["p2"]);
+        EventSounds pass;
+        pass.draws = {{"base#p2", 0}};
+        CHECK(RemapEventNodes(pass, other) && pass.draws[0].node == other["base"] + "#p2");
+        // The rows on R: two variations, R only; on L: three, L only.
+        Snapshot sn;
+        CHECK(VariationRows(st, l, sn, 'R').size() == 2 && VariationRows(st, l, sn, 'L').size() == 3);
+        CHECK(VariationText(VariationRows(st, l, sn, 'L')[1]) == "variation \xC2\xB7 L only \xC2\xB7 on 0 markers");
+    }
+
+    // ---- 13-68e v4 review: EmptySide on its own, then on SideLayerTop's layout (an inner Side Switch in the root Blend).
+    {
+        SoundStore   st;
+        SoundLibrary lib;
+        lib.uid = "LIB";
+        lib.name = "FS";
+        SetLibraryContent(lib, {Node("x", "", SoundNodeType::Random, "FS"), Node("x1", "x", SoundNodeType::Sound, "X")});
+        st.libraries.push_back(lib);
+        CHECK(EmptySide(st, "LIB", 'R', &Uid));  // a plain root: it becomes L's alone
+        const SoundNode* root = FindNode(st.libraries[0], st.libraries[0].root);
+        CHECK(root && root->type == SoundNodeType::Switch && root->cases.size() == 1 && root->cases[0].child_uid == "x");
+        CHECK(NodeSide(st, st.libraries[0], "x1") == 'L');
+        // The inner layout: Blend[x, Side{R: Blend[layer]}], then R plays nothing and L gets a layer.
+        SoundStore st2;
+        st2.libraries.push_back(lib);
+        const std::string rtop = SideLayerTop(st2, "LIB", 'R', &Uid);
+        AddStackLayer(st2.libraries[0], {Node("ry", "", SoundNodeType::Random, "Layer"), Node("ry1", "ry", SoundNodeType::Sound, "Ry")}, 0.0, Uid(), rtop);
+        CHECK(EmptySide(st2, "LIB", 'R', &Uid));
+        const SoundLibrary& l2 = st2.libraries[0];
+        CHECK(!FindNode(l2, "ry") && !FindNode(l2, "ry1") && FindNode(l2, "x1"));  // no dead R content left
+        for (const SoundNode& n : l2.nodes)
+            if (n.type == SoundNodeType::Switch)
+                for (const SwitchCase& c : n.cases) CHECK(c.value_uid != SideValueOf(st2.groups[0], 'R'));
+        const std::string ltop = SideLayerTop(st2, "LIB", 'L', &Uid);
+        CHECK(!ltop.empty() && NodeSide(st2, l2, ltop) == 'L' && NodeSide(st2, l2, "x1") == 'L');
+        Snapshot sn;
+        for (const VariationRow& r : VariationRows(st2, l2, sn)) CHECK(r.side != 'R');
+    }
+
+    // ---- 13-68e v4 review: SplitForSide on a Blend layer with an offset and a layer role: the Switch takes them, the
+    // original and its copy sit at 0 and keep their offset.
+    {
+        SoundStore   st;
+        SoundLibrary lib;
+        lib.uid = "LIB";
+        SoundNode ly = Node("ly", "root", SoundNodeType::Sound, "Cloth");
+        ly.offset_ms = 20.0;
+        ly.layer_roles = {"heel"};
+        SetLibraryContent(lib, {Node("root", "", SoundNodeType::Blend), Node("base", "root", SoundNodeType::Sound, "Step"), ly});
+        st.libraries.push_back(lib);
+        std::map<std::string, std::string> other;
+        CHECK(SplitForSide(st, "LIB", "ly", 'L', &Uid, &other) && other.size() == 1);
+        const SoundLibrary& l = st.libraries[0];
+        const SoundNode*    orig = FindNode(l, "ly");
+        const SoundNode*    copy = FindNode(l, other["ly"]);
+        const SoundNode*    sw = orig ? FindNode(l, orig->parent) : nullptr;
+        CHECK(sw && sw->type == SoundNodeType::Switch && sw->parent == "root" && sw->offset_ms == 20.0 && sw->layer_roles.size() == 1);
+        CHECK(orig && orig->offset_ms == 0.0 && orig->layer_keep_offset);
+        CHECK(copy && copy->parent == sw->uid && copy->offset_ms == 0.0 && copy->layer_keep_offset);
+        CHECK(NodeSide(st, l, "ly") == 'L' && NodeSide(st, l, other["ly"]) == 'R' && NodeSide(st, l, "base") == 0);
+    }
+
+    // ---- 13-68e v4 review: a plain library with side-less markers: no side words; VariationItems on one side.
+    {
+        SoundStore   st;
+        SoundLibrary lib;
+        lib.uid = "LIB";
+        SetLibraryContent(lib, {Node("base", "", SoundNodeType::Random), Node("p1", "base", SoundNodeType::Sound, "A")});
+        st.libraries.push_back(lib);
+        Snapshot      sn = Project();
+        AttachedEvent e = Ev(0, "rb", 0.5, 0.8, "LIB", "Body", 0);
+        e.placed = {Pl("{B}", "A", "p1", Ownership::Populated)};
+        e.draws = {{"base", 0}};
+        sn.events = {e};
+        const std::vector<VariationRow> rows = VariationRows(st, st.libraries[0], sn);
+        CHECK(rows.size() == 1 && !rows[0].sided && VariationText(rows[0]) == "variation \xC2\xB7 on 1 marker");
+        CHECK(!LibrarySided(st, st.libraries[0], sn));
+        AttachedEvent eL = Ev(0, "rl", 1.0, 1.3, "LIB", "FS L", 'L');
+        eL.placed = {Pl("{L}", "A", "p1", Ownership::Populated)};
+        sn.events.push_back(eL);
+        CHECK(LibrarySided(st, st.libraries[0], sn));
+        CHECK(VariationItems(st.libraries[0], rows[0], sn).size() == 2);
+        const std::vector<std::string> onl = VariationItems(st.libraries[0], rows[0], sn, 'L');
+        CHECK(onl.size() == 1 && onl[0] == "{L}");
+        CHECK(VariationItems(st.libraries[0], rows[0], sn, 'R').empty());
+    }
+
+    // ---- 13-68e v4 review: a rule id goes to this side, the other side, or neither (sideless / unread).
+    {
+        std::set<std::string> mine, other;
+        SplitRidsBySide({"a", "b", "c", "d"}, {{"a", 'L'}, {"b", 'R'}, {"c", 0}}, 'L', &mine, &other);
+        CHECK(mine == std::set<std::string>({"a"}) && other == std::set<std::string>({"b"}));
+        mine.clear();
+        other.clear();
+        SplitRidsBySide({"a", "c"}, {}, 0, &mine, &other);
+        CHECK(mine.size() == 2 && other.empty());
+    }
+
+    // ---- 13-68e v4: the This marker list on one side.
+    {
+        Snapshot s = Project();
+        AttachedEvent a = Ev(0, "r1", 1.4, 1.7, "LIB", "FS L", 'L');
+        a.placed = {Pl("{I1}", "A", "", Ownership::Attached)};
+        AttachedEvent b = Ev(0, "r2", 1.9, 2.2, "LIB", "FS R", 'R');
+        b.placed = {Pl("{C1}", "B", "n2", Ownership::Populated)};
+        s.events = {a, b};
+        const ListFilter f = MakeFilter(s);
+        const std::vector<AnimGroup> r = MarkerRows(s, f, "", 'R');
+        CHECK(r.size() == 1 && r[0].rows.size() == 1 && r[0].rows[0].event == 1);
+        CHECK(MarkerRows(s, f, "", 0)[0].rows.size() == 2);
     }
 
     // ---- The report of an "<side> only" run.

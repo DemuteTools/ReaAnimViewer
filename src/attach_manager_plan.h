@@ -123,8 +123,9 @@ struct GestureChoice {
 // asked without a stack; no time selection and no label; nothing to attach.
 GestureChoice ChooseGesture(const Snapshot& s, const std::vector<int>& choices, int marker, GestureWant want);
 
-// The run button's label: "Attach · this animation · both sides", "Add to stack · all with FS · L only".
-std::string RunLabel(Gesture g, bool all, bool side_only, const std::string& kind, char side);
+// The run button's label: "Attach · this animation · both sides", "Add to stack · all with FS · L only · R keeps its
+// sound" (13-68e v4: `other_none` = "· R plays nothing").
+std::string RunLabel(Gesture g, bool all, bool side_only, const std::string& kind, char side, bool other_none = false);
 
 // ---- Detach tab: what the list shows -----------------------------------------------------------------------
 
@@ -154,8 +155,8 @@ struct AnimGroup {
     std::vector<MarkerRow> rows;
 };
 // The events of `lib_uid` ("" = every Attached library) the filter keeps, grouped by animation (in the order of their
-// first event in time), each group's rows in time order.
-std::vector<AnimGroup> MarkerRows(const Snapshot& s, const ListFilter& f, const std::string& lib_uid);
+// first event in time), each group's rows in time order. 13-68e v4: `side` ('L' / 'R') = that side's markers only.
+std::vector<AnimGroup> MarkerRows(const Snapshot& s, const ListFilter& f, const std::string& lib_uid, char side = 0);
 
 // ---- Detach tab: Whole library -----------------------------------------------------------------------------
 
@@ -167,14 +168,17 @@ struct VariationRow {
     std::string   name;
     VariationKind kind = VariationKind::Variation;
     int           takes = 0;   // a Takes Sound's takes
-    std::string   where;       // the Switch value it plays under ("L", "Walk_01"; "" = everywhere)
+    std::string   where;       // the per-animation value it plays under ("Walk_01"; "" = every animation)
+    char          side = 0;    // 13-68e v4: the side it plays on (under a RAV - Side case); 0 = both
+    bool          sided = false;  // the library's markers have sides (the row says where it plays)
     std::string   random;      // its parent Random ("" = none)
     int           index = -1;  // its index among that Random's children
     int           markers = 0; // events it is placed on
 };
 // The variations of an Attached library: each child of a Random (a pile, a Takes Sound) and each layer (a child of a
 // Blend after its base, a per-animation or per-side layer), with the markers it is placed on (EventUsesVariation).
-std::vector<VariationRow> VariationRows(const SoundStore& store, const SoundLibrary& lib, const Snapshot& s);
+// 13-68e v4: `side` ('L' / 'R') = the variations played on that side only, counted on that side's markers.
+std::vector<VariationRow> VariationRows(const SoundStore& store, const SoundLibrary& lib, const Snapshot& s, char side = 0);
 // The Sound nodes under `uid` (itself included).
 std::set<std::string> SoundsUnder(const SoundLibrary& lib, const std::string& uid);
 // The event plays the variation: one of its sounds is placed from a Sound under it, or (under a Random) its draw of
@@ -182,8 +186,10 @@ std::set<std::string> SoundsUnder(const SoundLibrary& lib, const std::string& ui
 bool EventUsesVariation(const SoundLibrary& lib, const VariationRow& v, const AttachedEvent& e);
 // The items placed from the variation (what its select button selects): on each event that plays it, the sounds
 // from a Sound under it, and under a Random the event's own sound (offset 0) whose Sound is not known.
-std::vector<std::string> VariationItems(const SoundLibrary& lib, const VariationRow& v, const Snapshot& s);
-// "2 takes · L · on 3 markers".
+// 13-68e v4: `side` ('L' / 'R') = on that side's markers only.
+std::vector<std::string> VariationItems(const SoundLibrary& lib, const VariationRow& v, const Snapshot& s, char side = 0);
+// "2 takes · L · R · on 3 markers" (13-68e v4: where it plays: "L · R", "L only", "R only"; no side words for a
+// library whose markers have no side).
 std::string VariationText(const VariationRow& v);
 
 // ---- The record edits ----------------------------------------------------------------------------------------
@@ -216,6 +222,18 @@ bool EventUsedRemoved(const EventSounds& ev, const RemovedVariation& r, const st
 std::vector<std::string> RemoveVariationInRecord(ItemSounds& rec, const std::set<std::string>& rids, const RemovedVariation& r,
                                                  bool keep, const std::map<std::string, std::string>& node_of,
                                                  int* events = nullptr);
+
+// 13-68e v4: the library's markers have sides (it uses RAV - Side, or one of its events has a side): the Detach tab's
+// Side L / R means something for it.
+bool LibrarySided(const SoundStore& store, const SoundLibrary& lib, const Snapshot& s);
+// 13-68e v4, Remove from library on one side: each rule id holding the library goes to `mine` (its rule's side is
+// `side`; every rule when `side` is 0), to `other` (the other side's), or to neither (a rule with no side, or not read:
+// `side_of` lacks it), left alone.
+void SplitRidsBySide(const std::set<std::string>& rids, const std::map<std::string, char>& side_of, char side,
+                     std::set<std::string>* mine, std::set<std::string>* other);
+// 13-68e v4: an event of the side that keeps a split variation (SplitForSide): its draws and sounds name the copy.
+// True when something changed.
+bool RemapEventNodes(EventSounds& ev, const std::map<std::string, std::string>& uids);
 
 }  // namespace am
 }  // namespace rav

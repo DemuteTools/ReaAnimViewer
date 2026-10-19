@@ -216,7 +216,21 @@ std::string UniqueName(const std::string& base, const std::vector<std::string>& 
 bool NewLibrary(SoundStore& store, std::string* uid);
 bool RenameLibrary(SoundStore& store, const std::string& lib_uid, const std::string& name);
 bool DeleteLibrary(SoundStore& store, const std::string& lib_uid);
-// How many Sounds of the library are missing.
-int CountMissing(const SoundLibrary& lib, const std::function<bool(const SoundNode&)>& is_missing);
+// Why a Sound is missing: its REAPER item is not in the project (a folder cannot bring it back),
+// or its file is not found (Locate can).
+enum class MissingWhy { ItemGone, FileNotFound };
+struct MissingSound {
+    std::string uid;
+    std::string name;
+    MissingWhy  why = MissingWhy::FileNotFound;
+};
+// The library's missing Sounds, in its order: an item Sound whose item `item_gone` says is gone, else
+// a Sound `file_missing` says is missing. The one list the row's count, its tooltip and Locate read.
+std::vector<MissingSound> ListMissing(const SoundLibrary& lib, const std::function<bool(const SoundNode&)>& item_gone,
+                                      const std::function<bool(const SoundNode&)>& file_missing);
+// Each missing Sound with its reason (at most `max_lines`, then "and N more").
+std::string MissingTip(const std::vector<MissingSound>& missing, size_t max_lines = 12);
+// "Locate missing files in a folder..."'s tooltip from the missing files and gone items of every library.
+std::string LocateFolderTip(int files_missing, int items_gone);
 
 }  // namespace rav

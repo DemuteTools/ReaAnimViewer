@@ -373,17 +373,6 @@ void ApplyHooks()
     SetLibraryTreeHooks(n);
 }
 
-int MissingIn(const SoundLibrary& lib, std::string* first)
-{
-    int n = 0;
-    for (const SoundNode& s : lib.nodes)
-        if (s.type == SoundNodeType::Sound && FileSoundMissing(s)) {
-            if (n == 0 && first) *first = s.uid;
-            ++n;
-        }
-    return n;
-}
-
 // ---- Autosave (decision 9) ----------------------------------------------------------------------
 
 fs::path FileOf(const std::string& name)
@@ -1225,12 +1214,6 @@ void DrawLibraryLocateStatus()
     ImGui::EndDisabled();
     ui::ItemTipText("Stop looking for the missing sounds: nothing is changed");
     DrawBusyBar(-1.0f);  // 13-59: the busy card's bar (how many folders are left is not known)
-}
-
-int UserLibraryMissing(const std::string& lib_uid, std::string* first)
-{
-    const SoundLibrary* lib = FindLibrary(GetSoundStore(nullptr), lib_uid);
-    return lib ? MissingIn(*lib, first) : 0;
 }
 
 void RequestUserLibraryLocate(const std::string& lib_uid, const std::string& node_uid, bool allow_rename)

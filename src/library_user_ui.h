@@ -68,9 +68,6 @@ void DrawLibraryLocateStatus();
 // 13-50 (13-7b review): a missing File Sound's [Locate file...] [Locate in a folder...] (the status
 // and Cancel while a scan runs). The one place they are drawn: the Sound panel's red Source line.
 void DrawLocateButtons(const std::string& lib_uid, const std::string& node_uid);
-// A library's missing File Sounds (any library, Project Libraries included); `first` = the first
-// one's node uid.
-int UserLibraryMissing(const std::string& lib_uid, std::string* first);
 // Lists the folder again and forgets the found / missing files.
 void RefreshUserLibraries();
 std::string UserLibraryFolderText();

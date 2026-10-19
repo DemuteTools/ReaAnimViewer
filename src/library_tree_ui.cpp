@@ -156,14 +156,22 @@ void RefreshItemGuids()
     }
 }
 
+// An item Sound whose item is no longer in the project.
+bool ItemGone(const SoundNode& n)
+{
+    return n.sound.source.kind == SoundSourceKind::Item &&
+           (n.sound.source.item_guid.empty() || !g.item_guids.count(Upper(n.sound.source.item_guid)));
+}
+
 bool SoundMissing(const SoundNode& n)
 {
     if (n.type != SoundNodeType::Sound) return false;
-    if (n.sound.source.kind == SoundSourceKind::Item) {
-        if (n.sound.source.item_guid.empty() || !g.item_guids.count(Upper(n.sound.source.item_guid))) return true;
-    }
+    if (ItemGone(n)) return true;
     return g.hooks.is_missing ? g.hooks.is_missing(n) : false;
 }
+
+// The library's missing Sounds with their reason: the row's count and tooltip, and Locate's menu.
+std::vector<MissingSound> MissingOf(const SoundLibrary& lib) { return ListMissing(lib, ItemGone, g.hooks.is_missing); }
 
 const char* TypeWord(SoundNodeType t)
 {
@@ -1822,10 +1830,17 @@ void LibraryMenuItems(const SoundLibrary& lib, std::string* to_delete, bool rena
     if (rename_item && ImGui::MenuItem("Rename")) StartLibraryRename(lib);
     // 13-38: offered in every library's menu (Project Libraries included); it looks for the missing
     // File Sounds of every library, so it is enabled when any library has one.
+    // Counted from the list the row's missing count reads, so the menu never contradicts it.
     std::string first;
-    const int   miss = UserLibraryMissing(lib.uid, &first);
-    int         miss_all = 0;
-    for (const SoundLibrary& l : GetSoundStore(nullptr).libraries) miss_all += UserLibraryMissing(l.uid, nullptr);
+    int         miss = 0, gone = 0, miss_all = 0, gone_all = 0;
+    for (const SoundLibrary& l : GetSoundStore(nullptr).libraries)
+        for (const MissingSound& m : MissingOf(l)) {
+            const bool item = m.why == MissingWhy::ItemGone;
+            (item ? gone_all : miss_all) += 1;
+            if (l.uid != lib.uid) continue;
+            if (item) ++gone;
+            else if (miss++ == 0) first = m.uid;
+        }
     const bool  locating = UserLibraryLocating();  // 13-50: one scan at a time, Cancel in its place
     if (locating) {
         if (ImGui::MenuItem("Cancel locating")) CancelUserLibraryLocate();
@@ -1833,9 +1848,7 @@ void LibraryMenuItems(const SoundLibrary& lib, std::string* to_delete, bool rena
     } else {
         if (ImGui::MenuItem("Locate missing files in a folder...", nullptr, false, miss_all > 0))
             RequestLibraryLocateFolder();
-        ui::ItemTipText(miss_all > 0 ? "Pick the folder that holds the sounds (for example the soundbank's parent): RAV "
-                                       "searches it and its subfolders for the missing sounds of every library"
-                                     : "No missing sound in any library");
+        ui::ItemTipText(LocateFolderTip(miss_all, gone_all).c_str());
     }
     if (lib.user) {
         if (ImGui::MenuItem("Export .ravlib...")) RequestUserLibraryExport(lib.uid);
@@ -1845,8 +1858,9 @@ void LibraryMenuItems(const SoundLibrary& lib, std::string* to_delete, bool rena
         ui::ItemTipText("Open the User Library folder in File Explorer, this library's .ravlib selected");
         if (!locating) {
             if (ImGui::MenuItem("Locate a missing file...", nullptr, false, miss > 0)) RequestUserLibraryLocate(lib.uid, first);
-            ui::ItemTipText(miss > 0 ? "Pick the file of its first missing sound: the others are looked for near it"
-                                     : "No missing sound");
+            ui::ItemTipText(miss > 0    ? "Pick the file of its first missing sound: the others are looked for near it"
+                            : gone > 0 ? "No missing file: its missing sounds play an item that is not in the project"
+                                       : "No missing sound");
         }
         if (ImGui::MenuItem("Refresh the User Library folder")) RefreshUserLibraries();
     } else {
@@ -1903,7 +1917,8 @@ void LibraryListRow(const SoundStore& store, const SoundLibrary& lib, std::strin
         return;
     }
     const LibraryCheck chk = CheckLibrary(store, lib);
-    const int          miss = CountMissing(lib, SoundMissing);
+    const std::vector<MissingSound> missing = MissingOf(lib);
+    const int          miss = static_cast<int>(missing.size());
     const std::string  miss_t = miss > 0 ? std::to_string(miss) : std::string();
     ImFont*            blk_f = ui::FontSemibold();
     ImFont*            miss_f = ui::FontCaptionBold();
@@ -1928,11 +1943,18 @@ void LibraryListRow(const SoundStore& store, const SoundLibrary& lib, std::strin
     }
     const float lead_min = std::min(name_w, 4.0f * ImGui::GetFontSize());
     const int   lines = nt > 0 ? flow::PlaceTrail(tw, nt, nx, p.x + w - ui::Dp(6.0f), lead_min, ui::Dp(7.0f), tp) : 1;
+    // The missing count is clicked to show its sounds: a double-click there is not a rename.
+    bool over_miss = false;
+    for (int i = 0; i < nt; ++i)
+        if (tk[i] == 1) {
+            const float y = p.y + static_cast<float>(tp[i].line) * rh;
+            over_miss = ImGui::IsMouseHoveringRect(ImVec2(tp[i].x, y), ImVec2(tp[i].x + tp[i].w, y + rh));
+        }
     ImGui::SetNextItemAllowOverlap();
     if (ui::SelectRow("##lib", g.lib == lib.uid, 0, rh * static_cast<float>(lines),
                       ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_AllowOverlap, ui::kRadiusMd))
         PickLibrary(lib.uid);
-    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) StartLibraryRename(lib);
+    if (ImGui::IsItemHovered() && !over_miss && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) StartLibraryRename(lib);
     if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) ImGui::OpenPopup("##libmenu");
     dl->AddCircleFilled(ImVec2(p.x + ui::Dp(10.0f), p.y + rh * 0.5f), ui::Dp(4.0f), LibDot(lib.color));
     for (int i = 0; i < nt; ++i) {
@@ -1943,8 +1965,24 @@ void LibraryListRow(const SoundStore& store, const SoundLibrary& lib, std::strin
         ImGui::Dummy(ImVec2(tp[i].w, rh));
         ui::AddTextIn(dl, f, ImVec2(tp[i].x + (tk[i] == 0 ? ui::Dp(1.0f) : 0.0f), std::floor(y + (rh - f->FontSize) * 0.5f)),
                       tk[i] == 0 && !chk.blocked ? ui::kWarn : ui::kBad, t);
-        if (tk[i] == 0) ui::ItemTipText(chk_tip.c_str());
-        else ui::ItemTip("%d missing sound(s)", miss);
+        if (tk[i] == 0) {
+            ui::ItemTipText(chk_tip.c_str());
+        } else {
+            // Which sounds and why; each click shows the next one in the tree (its containers opened).
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                ui::ItemTipText((MissingTip(missing) + "\nClick to show them one by one").c_str());
+            }
+            if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+                size_t next = 0;
+                if (g.lib == lib.uid) {
+                    const std::string cur = LibraryRowNode();
+                    for (size_t k = 0; k < missing.size(); ++k)
+                        if (missing[k].uid == cur) next = (k + 1) % missing.size();
+                }
+                SelectLibraryRow(lib.uid, RowOfNode(lib, missing[next].uid));
+            }
+        }
     }
     {
         ui::FontScope f(ui::FontTitle());

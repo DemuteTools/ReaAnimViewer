@@ -1663,13 +1663,48 @@ bool DeleteLibrary(SoundStore& store, const std::string& lib_uid)
     return true;
 }
 
-int CountMissing(const SoundLibrary& lib, const std::function<bool(const SoundNode&)>& is_missing)
+std::vector<MissingSound> ListMissing(const SoundLibrary& lib, const std::function<bool(const SoundNode&)>& item_gone,
+                                      const std::function<bool(const SoundNode&)>& file_missing)
 {
-    if (!is_missing) return 0;
-    int n = 0;
-    for (const SoundNode& s : lib.nodes)
-        if (s.type == SoundNodeType::Sound && is_missing(s)) ++n;
-    return n;
+    std::vector<MissingSound> out;
+    for (const SoundNode& s : lib.nodes) {
+        if (s.type != SoundNodeType::Sound) continue;
+        MissingWhy why;
+        if (s.sound.source.kind == SoundSourceKind::Item && item_gone && item_gone(s)) why = MissingWhy::ItemGone;
+        else if (file_missing && file_missing(s)) why = MissingWhy::FileNotFound;
+        else continue;
+        out.push_back({s.uid, s.name.empty() ? std::string("Sound") : s.name, why});
+    }
+    return out;
+}
+
+std::string MissingTip(const std::vector<MissingSound>& missing, size_t max_lines)
+{
+    if (missing.empty()) return {};
+    std::string t = std::to_string(missing.size()) + (missing.size() == 1 ? " missing sound:" : " missing sounds:");
+    for (size_t i = 0; i < missing.size() && i < max_lines; ++i)
+        t += "\n- " + missing[i].name +
+             (missing[i].why == MissingWhy::ItemGone ? " (its item is not in the project)" : " (file not found)");
+    if (missing.size() > max_lines) t += "\nand " + std::to_string(missing.size() - max_lines) + " more";
+    return t;
+}
+
+std::string LocateFolderTip(int files_missing, int items_gone)
+{
+    std::string t;
+    if (files_missing > 0)
+        t = "Pick the folder that holds the sounds (for example the soundbank's parent): RAV searches it and its "
+            "subfolders for the missing files of every library";
+    else if (items_gone > 0)
+        t = "No missing file to look for";
+    else
+        return "No missing sound in any library";
+    if (items_gone > 0)
+        t += "\n" + std::to_string(items_gone) +
+             (items_gone == 1 ? " sound plays an item" : " sounds play an item") +
+             " that is not in the project, which no folder can bring back: undo its delete, or replace the sound's "
+             "audio (drop a file on its waveform, or right-click it > Replace with selected items)";
+    return t;
 }
 
 }  // namespace rav

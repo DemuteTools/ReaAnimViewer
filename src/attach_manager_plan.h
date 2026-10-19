@@ -160,6 +160,11 @@ struct GestureChoice {
 // without an instance; no time selection and no label; nothing to attach.
 GestureChoice ChooseGesture(const Snapshot& s, const std::vector<int>& choices, int marker, GestureWant want);
 
+// Reshuffle (Antho 2026-10-20): the events whose selected placed instances are drawn again: each event holding a
+// selected copy RAV placed (Populated; an attached original is the user's, never redrawn), once. `sounds` gets how many
+// selected copies they hold. Indices into s.events.
+std::vector<int> ReshuffleTargets(const Snapshot& s, int* sounds);
+
 // The run button: "Attach · Anim", "Add to pile · Item".
 std::string RunLabel(Gesture g, Scope s);
 // The line under the gesture switch: `bold` = "2 items" / "1 new item", `rest` = " · onto FS L · 1.70 s, then every

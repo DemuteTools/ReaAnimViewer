@@ -89,6 +89,9 @@ struct PlaceRequest {
     // 13-68 v2: a TakeMarkers Sound's variation index: a folder pile's members each play their own slice of
     // that index (their take markers / NVK slices, modulo their count), as a Takes pile plays take k. -1 = none.
     int  pile_slice = -1;
+    // Antho 2026-10-20: that Sound was cut on silence: each member plays its own `pile_slice`-th region of sound (its
+    // peaks read at placement), never its take-marker slices.
+    bool pile_silence = false;
 };
 struct PlaceResult {
     bool                     ok = false;

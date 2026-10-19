@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "sound_attach_plan.h"
+#include "sound_entries.h"  // EntryFacts, DetectFrames (Antho 2026-10-20: variations cut on silence)
 #include "sound_model.h"
 
 namespace rav {
@@ -45,7 +46,14 @@ void SyncFromSnap(SoundData& d, double snap_s);
 // top member has take markers (`slices` >= 2: every layer plays its own k-th slice), else Takes mode with
 // one variation per take when its children hold `takes` >= 2 (every layer plays take k), else Whole.
 // `len` = the folder item's length (s).
-SoundData PileSoundData(const std::string& folder_guid, int takes, double len, const std::vector<Slice>& slices = {});
+SoundData PileSoundData(const std::string& folder_guid, int takes, double len, const std::vector<Slice>& slices = {},
+                        const std::vector<SoundFrame>& silence = {});
+// Antho 2026-10-20 ("detect by silence, not take markers"): a selected source's variations are its regions of sound:
+// `d` (the item's Sound, ItemSoundData) cut on silence of its peaks (DetectFrames Silence, a new Sound's SilenceParams),
+// take markers ignored. A Takes Sound (several takes), no peaks, or no region found: `d` unchanged. With `silence`
+// (the top member's regions), PileSoundData makes a folder pile's Sound the same way (each member plays its own k-th
+// region at placement). The caller lays out its zones (RefreshParts) with the peaks.
+SoundData SilenceVariations(SoundData d, const EntryFacts& facts, const PeakData* peaks);
 
 // The nodes of one layer: nodes[0] = a Random named `name` (parent ""), one child per pile in time
 // order: a pile holding a folder item = that item's Sound alone (its first folder item, top first; the

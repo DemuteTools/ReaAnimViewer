@@ -333,6 +333,25 @@ void DrawSelection(const View& v)
         if (!can) ImGui::BeginDisabled();
         if (ui::PrimaryButton(label.c_str(), ImVec2(ImGui::GetContentRegionAvail().x, 0.0f)) && can) RunGesture(v);
         if (!can) ImGui::EndDisabled();
+        // Reshuffle (Antho 2026-10-20): the selected copies RAV placed drawn again, their own row (nothing moves).
+        int                    sounds = 0;
+        const std::vector<int> evs = am::ReshuffleTargets(s, &sounds);
+        const bool             rs = !evs.empty() && !g.pending;
+        if (!rs) ImGui::BeginDisabled();
+        if (ui::SolidButton("Reshuffle##amreshuffle", ImVec2(ImGui::GetContentRegionAvail().x, 0.0f)) && rs) {
+            std::vector<ReshuffleTarget> targets;
+            for (int i : evs) {
+                const am::AttachedEvent& e = s.events[static_cast<size_t>(i)];
+                if (e.anim >= 0 && static_cast<size_t>(e.anim) < s.anims.size()) targets.push_back({s.anims[static_cast<size_t>(e.anim)].guid, e.rid, e.t});
+            }
+            Queue([targets, sounds] { ReshuffleSelected(targets, sounds); });
+        }
+        if (!rs) ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ui::ShowTip(evs.empty() ? "Select copies RAV placed (not the original) to draw their variations again"
+                                    : ("Draw the variation of the " + std::to_string(sounds) + (sounds == 1 ? " selected copy" : " selected copies") +
+                                       " again, the other sounds left as they are")
+                                          .c_str());
     }
     ui::EndSection(sec);
 }

@@ -54,19 +54,39 @@ SoundNode SoundOf(const SpreadSource& s, const std::string& uid, const std::stri
     // 13-68 v3: its copies play at its take's rate (keep_rate, plain and folder piles); the sync in source seconds, which
     // the copy reads back over 1 / rate (ApplyPiece), so its snap lands on the marker.
     n.sound.keep_rate = true;
-    SyncFromSnap(n.sound, SourceSecondsOf(s.facts.snap, s.playrate));
+    // Antho 2026-10-20: a Sound cut on silence syncs as Silence Sounds do (each region on its own attack), never on the
+    // item's snap: each copy plays its own region, never silence.
+    if (n.sound.mode != DetectMode::Silence) SyncFromSnap(n.sound, SourceSecondsOf(s.facts.snap, s.playrate));
     return n;
 }
 
 }  // namespace
 
-SoundData PileSoundData(const std::string& folder_guid, int takes, double len, const std::vector<Slice>& slices)
+SoundData SilenceVariations(SoundData d, const EntryFacts& facts, const PeakData* peaks)
+{
+    if (d.mode == DetectMode::Takes || !peaks) return d;
+    const SilenceParams           sp;  // what a new Sound gets (-60 dB, 200 ms gap, its pre-roll and tail)
+    const std::vector<SoundFrame> frames = DetectFrames(facts, DetectMode::Silence, sp, peaks);
+    if (frames.empty()) return d;
+    d.mode = DetectMode::Silence;
+    d.silence = sp;
+    d.frames = frames;
+    return d;
+}
+
+SoundData PileSoundData(const std::string& folder_guid, int takes, double len, const std::vector<Slice>& slices,
+                        const std::vector<SoundFrame>& silence)
 {
     SoundData d;
     d.source.kind = SoundSourceKind::Item;
     d.source.item_guid = folder_guid;
     d.linked_copies = true;
-    if (slices.size() >= 2) {  // take markers (NVK): one variation per slice of the top member
+    if (takes < 2 && !silence.empty()) {  // Antho 2026-10-20: the top member's regions of sound, take markers ignored
+        d.mode = DetectMode::Silence;
+        d.frames = silence;
+        return d;
+    }
+    if (slices.size() >= 2) {  // (the Attach passes none since 2026-10-20: its regions of sound instead)  // take markers (NVK): one variation per slice of the top member
         d.mode = DetectMode::TakeMarkers;
         for (const Slice& s : slices) {
             SoundFrame f;

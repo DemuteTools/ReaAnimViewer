@@ -459,7 +459,8 @@ PlaceRequest RequestFor(MediaItem* owner, const std::string& rid, double event_t
     }
     if (req.source.kind == SoundSourceKind::Item && v >= 0 && v < static_cast<int>(n.sound.frames.size())) {
         if (sd.mode == DetectMode::Takes) req.variation = v;  // 13-62i: its take, made active before its pieces
-        if (sd.mode == DetectMode::TakeMarkers) req.pile_slice = v;  // 13-68 v2: a folder pile's members, slice v
+        if (sd.mode == DetectMode::TakeMarkers || sd.mode == DetectMode::Silence) req.pile_slice = v;  // 13-68 v2: a folder pile's members, slice v
+        req.pile_silence = sd.mode == DetectMode::Silence;  // Antho 2026-10-20: each member's own k-th region of sound
         if (sd.mode == DetectMode::TakeMarkers || sd.mode == DetectMode::Silence)
             req.slice = SliceApplyFor(sd.frames[static_cast<size_t>(v)]);
         req.fades = FadeApplyFor(sd, v);  // Antho 2026-10-12: fades on every placed variation
@@ -1885,6 +1886,52 @@ SoundReport ReshuffleItems(const std::vector<MediaItem*>& items)
                     return true;
                 });
                 PopulateOne(it, store, o, rep, nullptr);
+            }
+        }
+        UpdateArrange();
+    } catch (...) {
+        AddLine(rep, ReportKind::Blocked, "Internal error: the gesture stopped part way (Ctrl+Z undoes it)", "", "", 0.0);
+    }
+    return rep;
+}
+
+SoundReport ReshuffleEvents(const std::vector<ReshuffleEvent>& events, const std::string& undo_desc, PopulateCounts* counts)
+{
+    SoundReport rep;
+    try {
+        std::vector<MediaItem*> items;
+        for (const ReshuffleEvent& e : events)
+            if (e.item && std::find(items.begin(), items.end(), e.item) == items.end()) items.push_back(e.item);
+        items = ByPosition(items);
+        if (items.empty()) return rep;
+        const SoundStore store = GetSoundStore(nullptr);
+        {
+            SoundUndoScope undo(nullptr, undo_desc.c_str());
+            ItemIndexScope index;
+            std::map<std::string, std::vector<int>> carried;  // 13-68: avoid-repeat across the items
+            for (MediaItem* it : items) {
+                const uint64_t seed = RandomSeed();
+                ModifyItemSounds(it, nullptr, [&](ItemSounds& s) {
+                    s.seed = seed;
+                    for (const ReshuffleEvent& e : events)
+                        if (e.item == it)
+                            if (EventSounds* ev = FindEventSounds(s, e.rid, e.t))
+                                ev->draws.erase(std::remove_if(ev->draws.begin(), ev->draws.end(), [](const SoundDraw& d) { return !d.hand; }),
+                                                ev->draws.end());
+                    return true;
+                });
+                for (const ReshuffleEvent& e : events) {
+                    if (e.item != it) continue;
+                    PopOpts o;
+                    o.only_populated = true;
+                    o.report_replaced = false;
+                    o.carry = &carried;
+                    o.counts = counts;
+                    o.rid = e.rid;
+                    o.has_t = true;
+                    o.t = e.t;
+                    PopulateOne(it, store, o, rep, nullptr);
+                }
             }
         }
         UpdateArrange();

@@ -8,6 +8,8 @@
 
 #ifdef _WIN32
 
+#include <thread>
+#include <chrono>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -673,7 +675,25 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
             // 13-68 v2: a TakeMarkers pile: each member plays its own variation of that index, read as a Library
             // drop reads it (DetectFrames: its own window around each marker, or the marker-to-marker slices).
             SoundMedia sm;
-            if (req.pile_slice >= 0 && ReadItemMedia(m.src, &sm) && sm.facts.slices.size() >= 2) {
+            if (req.pile_slice >= 0 && req.pile_silence && ReadItemMedia(m.src, &sm)) {
+                PeakData   pk;
+                const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+                PeakState  st = RequestPeaks(sm.path, &pk);
+                while (st == PeakState::Building && std::chrono::steady_clock::now() < until) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));  // read on the reader thread
+                    st = RequestPeaks(sm.path, &pk);
+                }
+                const std::vector<SoundFrame> fr =
+                    st == PeakState::Ready ? DetectFrames(sm.facts, DetectMode::Silence, SilenceParams{}, &pk) : std::vector<SoundFrame>();
+                MediaItem_Take* take = GetActiveTake(item);
+                if (take && !fr.empty()) {
+                    const SoundFrame& sl = fr[static_cast<size_t>(req.pile_slice) % fr.size()];
+                    double            rate = GetMediaItemTakeInfo_Value(take, "D_PLAYRATE");
+                    if (!(rate > 0.0)) rate = 1.0;
+                    f_set_take(take, "D_STARTOFFS", sl.start);
+                    f_set_item(item, "D_LENGTH", sl.length / rate);
+                }
+            } else if (req.pile_slice >= 0 && ReadItemMedia(m.src, &sm) && sm.facts.slices.size() >= 2) {
                 const std::vector<SoundFrame> fr = DetectFrames(sm.facts, DetectMode::TakeMarkers, SilenceParams{}, nullptr);
                 MediaItem_Take*               take = GetActiveTake(item);
                 if (take && fr.size() >= 2) {

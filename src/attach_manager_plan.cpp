@@ -223,6 +223,23 @@ GestureChoice ChooseGesture(const Snapshot& s, const std::vector<int>& choices, 
     return c;
 }
 
+std::vector<int> ReshuffleTargets(const Snapshot& s, int* sounds)
+{
+    std::vector<int> out;
+    int              n = 0;
+    for (size_t i = 0; i < s.events.size(); ++i) {
+        bool hit = false;
+        for (const Placed& p : s.events[i].placed)
+            if (p.own == Ownership::Populated && s.selected_items.count(GuidKey(p.item_guid))) {
+                ++n;
+                hit = true;
+            }
+        if (hit) out.push_back(static_cast<int>(i));
+    }
+    if (sounds) *sounds = n;
+    return out;
+}
+
 std::string RunLabel(Gesture g, Scope s)
 {
     return std::string(g == Gesture::Pile ? "Add to pile" : "Attach") + kDot + ScopeLabel(s);

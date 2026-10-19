@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <thread>
 #include <map>
 #include <cctype>
 #include <cmath>
@@ -34,7 +35,8 @@
 #include "sound_attach_plan.h"
 #include "sound_follow.h"       // 13-68e v5: LocalizedUndoNames, FollowCutNames
 #include "sound_auto_assign.h"  // SetRulesLibrary, SetRulesValue
-#include "sound_peaks.h"        // ReadItemMedia
+#include "sound_entries.h"      // DetectFrames, RefreshParts
+#include "sound_peaks.h"        // ReadItemMedia, RequestPeaks
 #include "sound_place.h"        // FolderPileMembers
 #include "sound_populate.h"
 #include "sound_populate_plan.h"  // SetValueIn
@@ -238,6 +240,20 @@ void ApplySideValues(ReaProject* proj, const std::string& lib_uid)
 }
 
 
+// A file's whole peaks, read now (RequestPeaks reads on its reader thread: asked until ready, at most ~3 s; as
+// sound_populate's WholeFilePeaks). False when they could not be read.
+bool WaitPeaks(const std::string& path, PeakData* out)
+{
+    if (path.empty()) return false;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    for (;;) {
+        const PeakState st = RequestPeaks(path, out);
+        if (st == PeakState::Ready) return true;
+        if (st == PeakState::Failed || std::chrono::steady_clock::now() > until) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+}
+
 // The selection read as the library reads it (an NVK folder item: its pile, its layers' takes shared), and the
 // items each pile moves: `first` = the pile that is not copied (it is attached to an event).
 struct ReadSounds {
@@ -269,11 +285,31 @@ ReadSounds ReadSources(const std::vector<SelectedSound>& sel, const std::vector<
                 if (in_first && r.first_items.insert(k).second) r.attach_items.push_back(k);
             }
             if (in_first && !kids.empty()) r.first_folders.push_back({s.facts.guid, kids});
-            SoundMedia top_media;  // take markers (NVK): the top member's slices are the pile's variations
-            if (!kids.empty()) ReadItemMedia(kids.front(), &top_media);
-            src.sound = PileSoundData(s.facts.guid, takes, s.facts.len, top_media.facts.slices);
+            // Antho 2026-10-20: the pile's variations = the top member's regions of sound (take markers ignored).
+            SoundMedia              top_media;
+            std::vector<SoundFrame> regions;
+            PeakData                pk;
+            if (!kids.empty() && ReadItemMedia(kids.front(), &top_media) && WaitPeaks(top_media.path, &pk))
+                regions = SilenceVariations(SoundData(), top_media.facts, &pk).frames;
+            src.sound = PileSoundData(s.facts.guid, takes, s.facts.len, {}, regions);
         } else {
             src.sound = ItemSoundData(s.item);
+            // Antho 2026-10-20 ("detect by silence, not take markers"): its variations = its regions of sound.
+            SoundMedia m;
+            PeakData   pk;
+            const bool media = src.sound.mode != DetectMode::Takes && ReadItemMedia(s.item, &m);
+            if (media && WaitPeaks(m.path, &pk)) {
+                src.sound = SilenceVariations(src.sound, m.facts, &pk);
+                if (src.sound.mode == DetectMode::Silence) RefreshParts(src.sound, &pk);
+            }
+            if (media && src.sound.mode == DetectMode::TakeMarkers) {  // no region read: one variation, never the slices
+                const std::vector<SoundFrame> whole = DetectFrames(m.facts, DetectMode::Whole, SilenceParams{}, nullptr);
+                if (!whole.empty()) {
+                    src.sound.mode = DetectMode::Whole;
+                    src.sound.frames = whole;
+                    RefreshParts(src.sound, nullptr);
+                }
+            }
             if (MediaItem_Take* take = GetActiveTake(s.item)) src.playrate = GetMediaItemTakeInfo_Value(take, "D_PLAYRATE");
         }
         if (moving.insert(s.item).second) r.to_move.push_back(s.item);
@@ -1711,6 +1747,25 @@ std::string MergeLR(am::Scope scope, const SpreadMarker& marker)
     }
 }
 
+std::string ReshuffleSelected(const std::vector<ReshuffleTarget>& events, int sounds)
+{
+    try {
+        ReaProject*                 proj = EnumProjects(-1, nullptr, 0);
+        std::vector<ReshuffleEvent> evs;
+        for (const ReshuffleTarget& e : events)
+            if (MediaItem* o = ScanItemByGuid(proj, e.owner)) evs.push_back({o, e.rid, e.t});
+        if (evs.empty() || sounds <= 0) return Finish("Select copies RAV placed to reshuffle them");
+        const std::string undo = "RAV: Reshuffle " + std::to_string(sounds) + (sounds == 1 ? " sound" : " sounds");
+        PopulateCounts    pc;
+        ReshuffleEvents(evs, undo, &pc);
+        const int n = pc.placed + pc.replaced;
+        return Finish(undo + ": " + std::to_string(n) + (n == 1 ? " sound drawn again" : " sounds drawn again") + " on " +
+                      std::to_string(evs.size()) + (evs.size() == 1 ? " marker" : " markers") + ".");
+    } catch (...) {
+        return Finish("Reshuffle failed");
+    }
+}
+
 bool SetApplyTo(am::Scope scope)
 {
     try {
@@ -1783,6 +1838,7 @@ std::string AddToPile(am::Scope) { return {}; }
 std::string SeparateLR(am::Scope, const SpreadMarker&) { return {}; }
 std::string MergeLR(am::Scope, const SpreadMarker&) { return {}; }
 bool        SetApplyTo(am::Scope) { return false; }
+std::string ReshuffleSelected(const std::vector<ReshuffleTarget>&, int) { return {}; }
 void        ReadAttachManager(AttachManagerState* out)
 {
     if (out) *out = AttachManagerState();

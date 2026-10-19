@@ -59,6 +59,15 @@ std::string AddToPile(am::Scope scope);
 std::string SeparateLR(am::Scope scope, const SpreadMarker& marker);
 // Merge L and R: both sides play the marker's side's sound; the other side's sounds are replaced.
 std::string MergeLR(am::Scope scope, const SpreadMarker& marker);
+// Reshuffle (Antho 2026-10-20): the selected copies RAV placed drawn again, only their events (`events`: animation item
+// GUID, rule id, clip time; am::ReshuffleTargets), as RAV's Reshuffle draws (no other sound touched). One undo point
+// "RAV: Reshuffle N sounds" (`sounds` = N); the report as a toast.
+struct ReshuffleTarget {
+    std::string owner;
+    std::string rid;
+    double      t = 0.0;
+};
+std::string ReshuffleSelected(const std::vector<ReshuffleTarget>& events, int sounds);
 // The project's Apply to setting (one undo point "RAV: Attach manager - Apply to Anim"). False when unchanged.
 bool SetApplyTo(am::Scope scope);
 

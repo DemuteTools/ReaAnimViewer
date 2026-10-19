@@ -78,6 +78,15 @@ std::vector<MediaItem*> SelectedRavItems();
 // A new seed for the targets, then the populated events re-placed: one undo point
 // "RAV: Reshuffle sounds" (no Replaced lines).
 SoundReport ReshuffleItems(const std::vector<MediaItem*>& items);
+// 13-68e v5 (the Attach manager's Reshuffle): only these events (an animation item, a rule id, a clip time) drawn again,
+// as Reshuffle draws them (a new seed for their items, their draws not picked by hand erased, avoid-repeat carried
+// across the items in time order), the other events left as they are: one undo point `undo_desc`. `counts` (optional).
+struct ReshuffleEvent {
+    MediaItem*  item = nullptr;
+    std::string rid;
+    double      t = 0.0;
+};
+SoundReport ReshuffleEvents(const std::vector<ReshuffleEvent>& events, const std::string& undo_desc, PopulateCounts* counts = nullptr);
 // Sets the library of rule `block` of the item (and its pool; "" = inherit, kLibNoneWord = None, else a
 // library uid), then re-places that rule's populated events: one undo point "RAV: Set rule library".
 SoundReport SetRuleLibrary(MediaItem* item, int block, std::string library_uid);

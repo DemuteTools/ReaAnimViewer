@@ -659,6 +659,25 @@ int main()
         CHECK(PlayedSoundOf(sp, sp.libraries[0], sl, {a.anim_value}, 'L', "{STEP}") == "as");
     }
 
+    // ---- Reshuffle: only the events of the selected copies RAV placed (an attached original, an unselected copy: left).
+    {
+        Snapshot s = Project();
+        AttachedEvent a = Ev(0, "r1", 1.4, 1.7, "LIB", "FS L", 'L');
+        a.placed = {{"{ORIG}", "Step", "", Ownership::Attached, 0.0}};
+        AttachedEvent b = Ev(0, "r2", 1.9, 2.2, "LIB", "FS R", 'R');
+        b.placed = {{"{C1}", "Step", "n1", Ownership::Populated, 0.0}, {"{C1B}", "Cloth", "n2", Ownership::Populated, 0.02}};
+        AttachedEvent d = Ev(2, "r1", 0.3, 9.3, "LIB", "FS L", 'L');
+        d.placed = {{"{C2}", "Step", "n1", Ownership::Populated, 0.0}};
+        s.events = {a, b, d};
+        int n = -1;
+        CHECK(ReshuffleTargets(s, &n).empty() && n == 0);
+        s.selected_items = {GuidKey("{orig}")};  // the original only: nothing to redraw
+        CHECK(ReshuffleTargets(s, &n).empty() && n == 0);
+        s.selected_items = {GuidKey("{c1}"), GuidKey("{C1B}"), GuidKey("{ORIG}")};
+        const std::vector<int> t = ReshuffleTargets(s, &n);
+        CHECK(t.size() == 1 && t[0] == 1 && n == 2);  // one event, its two selected copies; {C2} not selected
+    }
+
     // ---- The watcher's decisions.
     {
         WatchSnap last;

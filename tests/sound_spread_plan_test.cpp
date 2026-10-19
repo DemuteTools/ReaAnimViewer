@@ -450,6 +450,62 @@ int main()
         CHECK(PlayedDraws(lib, {{"kid1", 1}}).empty());  // a child's GUID is no Sound of the library
     }
 
+    // Antho 2026-10-20 ("detect by silence, not take markers"): a source's variations are its regions of sound. His
+    // FOLYClth_Chino Pants Movement Jump Intense_B00M_ONE.wav (12.56 s, read at REAPER's ~380 peaks/s): six variations
+    // at irregular times, each two bursts above -40 dBFS with a quieter tail between them (above -60 dB): regions
+    // 0.21-1.22, 2.39-3.57, 4.81-5.85, 7.12-8.09, 9.34-10.34, 11.57-12.44 s; a regular take-marker spacing put zones
+    // in the silence between them.
+    {
+        const double bursts[6][4] = {{0.27, 0.60, 0.90, 1.04}, {2.53, 3.01, 3.27, 3.43}, {4.92, 5.27, 5.47, 5.73},
+                                     {7.21, 7.59, 7.78, 7.96}, {9.42, 9.71, 10.01, 10.23}, {11.66, 12.03, 12.12, 12.32}};
+        const double regions[6][2] = {{0.21, 1.22}, {2.39, 3.57}, {4.81, 5.85}, {7.12, 8.09}, {9.34, 10.34}, {11.57, 12.44}};
+        PeakData pk;
+        pk.rate = 380.0;
+        pk.max_abs.assign(static_cast<size_t>(12.562 * pk.rate), 0.0f);
+        for (size_t i = 0; i < pk.max_abs.size(); ++i) {
+            const double t = static_cast<double>(i) / pk.rate;
+            for (int v = 0; v < 6; ++v) {
+                if (t >= regions[v][0] && t < regions[v][1]) pk.max_abs[i] = 0.002f;  // the tail, above -60 dB
+                if ((t >= bursts[v][0] && t < bursts[v][1]) || (t >= bursts[v][2] && t < bursts[v][3])) pk.max_abs[i] = 0.5f;
+            }
+        }
+        EntryFacts f;
+        f.source_len = 12.562;
+        f.item_len = 12.562;
+        f.slices = {{0.0, 2.0, "1"}, {2.0, 2.0, "2"}, {4.0, 2.0, "3"}, {6.0, 2.0, "4"}, {8.0, 2.0, "5"}};  // ignored
+        SoundData d;
+        d.mode = DetectMode::TakeMarkers;
+        d.frames = {{0.0, 2.0}};
+        const SoundData s = SilenceVariations(d, f, &pk);
+        CHECK(s.mode == DetectMode::Silence && s.frames.size() == 6);
+        for (size_t v = 0; v < s.frames.size() && v < 6; ++v) {  // every variation holds both its bursts
+            CHECK(s.frames[v].start <= bursts[v][0] && s.frames[v].start + s.frames[v].length >= bursts[v][3]);
+            CHECK(s.frames[v].start >= regions[v][0] - 0.01);  // never in the silence before it (pre-roll 5 ms)
+        }
+        // Inner gaps of true silence: the 200 ms gap splits the wider ones; 500 ms keeps one region per variation.
+        PeakData hard = pk;
+        for (float& x : hard.max_abs)
+            if (x < 0.1f) x = 0.0f;
+        CHECK(SilenceVariations(d, f, &hard).frames.size() > 6);
+        SilenceParams wide;
+        wide.min_gap_ms = 500.0;
+        CHECK(SplitOnSilence(hard, wide, f.source_len).size() == 6);
+        // A Takes Sound, or no peaks: unchanged.
+        SoundData tk;
+        tk.mode = DetectMode::Takes;
+        CHECK(SilenceVariations(tk, f, &pk).mode == DetectMode::Takes);
+        CHECK(SilenceVariations(d, f, nullptr).mode == DetectMode::TakeMarkers);
+        // A folder pile: the top member's regions, take markers ignored; several takes stay Takes.
+        const SoundData pile = PileSoundData("{F}", 1, 12.0, f.slices, s.frames);
+        CHECK(pile.mode == DetectMode::Silence && pile.frames.size() == 6);
+        CHECK(PileSoundData("{F}", 3, 12.0, {}, s.frames).mode == DetectMode::Takes);
+        // Its copies sync as Silence Sounds do (their own attack), not on the item's snap.
+        SpreadSource src = Src("{S}", "S", 1, 0.0, 12.0, 0.4);
+        src.sound = s;
+        const std::vector<SoundNode> nodes = SpreadLayerNodes({src}, "FS", &Uid);
+        CHECK(nodes.size() == 2 && nodes[1].sound.sync_mode != SyncMode::SliceStart);
+    }
+
     if (g_fail) {
         std::printf("sound_spread_plan_test: %d failure(s)\n", g_fail);
         return 1;

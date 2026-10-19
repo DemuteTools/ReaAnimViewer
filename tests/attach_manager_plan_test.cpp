@@ -617,6 +617,38 @@ int main()
         CHECK(!LegacyLayout(v5, v5.libraries[0], nullptr));
     }
 
+    // ---- A duplicate of an instance (REAPER copies its tag, new GUID): not in its owner's record, so a plain new item;
+    // with it and an R instance selected, Add to pile is accepted (Antho's REAPER test of c1cec74).
+    {
+        ItemSounds     rec;
+        EventSounds    ev;
+        SoundPlacement p;
+        p.item_guid = "{ORIG}";
+        p.own = Ownership::Attached;
+        ev.placed = {p};
+        SoundPlacement r = p;
+        r.item_guid = "{RINST}";
+        r.own = Ownership::Populated;
+        ev.placed.push_back(r);
+        SoundPlacement gone = p;
+        gone.item_guid = "{GONE}";
+        gone.own = Ownership::Deleted;
+        ev.placed.push_back(gone);
+        rec.events = {ev};
+        CHECK(TagListed(rec, "{orig}") && TagListed(rec, "{RINST}"));
+        CHECK(!TagListed(rec, "{DUP}") && !TagListed(rec, "{GONE}") && !TagListed(rec, ""));
+        // The window's snapshot then holds the R instance as the only reference and the duplicate as a new item.
+        Snapshot s = Project();
+        s.events = {Ev(0, "rR", 1.9, 2.2, "LIB", "FS R", 'R')};
+        s.stack_refs = {{"{W1}", "rR", 1.9, 0, "LIB|lay", 2.2}};
+        s.sounds = 2;
+        s.fresh = 1;
+        s.fresh_anchor = 2.21;
+        s.has_fresh_anchor = true;
+        const GestureChoice g = ChooseGesture(s, {}, -1, GestureWant::Auto);
+        CHECK(g.gesture == Gesture::Pile && g.pile_ok && g.reason.empty() && g.stack_event == 0);
+    }
+
     // ---- The watcher's decisions.
     {
         WatchSnap last;

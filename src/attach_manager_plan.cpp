@@ -54,6 +54,16 @@ std::string GuidKey(const std::string& g)
     return out;
 }
 
+bool TagListed(const ItemSounds& owner_rec, const std::string& guid)
+{
+    const std::string key = GuidKey(guid);
+    if (key.empty()) return false;
+    for (const EventSounds& ev : owner_rec.events)
+        for (const SoundPlacement& p : ev.placed)
+            if (p.own != Ownership::Deleted && GuidKey(p.item_guid) == key) return true;
+    return false;
+}
+
 // ---- Apply to ----------------------------------------------------------------------------------------------------
 
 Scope ScopeOf(const SoundStore& store)

@@ -520,13 +520,16 @@ std::string PopulateLibrary(const std::vector<MediaItem*>& targets, const std::s
     return Finish(text);
 }
 
-// 13-68 v3: the library of the tag's rule on its owner ("" when none).
-std::string TagLibrary(ReaProject* proj, const PlacedTag& t)
+// 13-68 v3: the library of the tag's rule on its owner ("" when none). 13-68e v5: only for an item its owner's record
+// lists (`guid`): a duplicate or a pasted copy carries the original's tag but is a plain new item (am::TagListed).
+std::string TagLibrary(ReaProject* proj, const PlacedTag& t, const std::string& guid)
 {
     if (t.own == Ownership::Deleted) return std::string();
     MediaItem* o = ScanItemByGuid(proj, t.owner);
     if (!o) return std::string();
-    for (const RuleSounds& r : ReadItemSounds(o).rules)
+    const ItemSounds rec = ReadItemSounds(o);
+    if (!am::TagListed(rec, guid)) return std::string();
+    for (const RuleSounds& r : rec.rules)
         if (r.rid == t.rid && !r.none) return r.library;
     return std::string();
 }
@@ -924,7 +927,7 @@ std::string RunPile(am::Scope scope)
         MediaItem* it = GetSelectedMediaItem(proj, i);
         PlacedTag  t;
         if (!it || !ReadPlacedTag(it, &t)) continue;
-        const SoundLibrary* l = FindLibrary(store, TagLibrary(proj, t));
+        const SoundLibrary* l = FindLibrary(store, TagLibrary(proj, t, ItemGuidOf(it)));
         if (!l || !l->attached || l->attached_type.empty()) continue;
         am::StackRef r;
         r.owner = t.owner;
@@ -949,12 +952,12 @@ std::string RunPile(am::Scope scope)
     std::string                skip;
     ReadSelectedSounds(&all_sel, &skipped, &skip, true, true);
     for (const SelectedSound& s : all_sel) {
-        const bool placed_for = s.tagged && TagLibrary(proj, s.tag) == lib_uid;
+        const bool placed_for = s.tagged && TagLibrary(proj, s.tag, s.facts.guid) == lib_uid;
         bool       kid_in = false;
         if (s.folder)
             for (MediaItem* k : FolderPileMembers(s.item)) {
                 PlacedTag kt;
-                if (ReadPlacedTag(k, &kt) && TagLibrary(proj, kt) == lib_uid) kid_in = true;
+                if (ReadPlacedTag(k, &kt) && TagLibrary(proj, kt, ItemGuidOf(k)) == lib_uid) kid_in = true;
             }
         if (!lib || !IsStackItem(*lib, s.facts.guid, placed_for, kid_in)) sel.push_back(s);
     }
@@ -1278,7 +1281,7 @@ void ReadManager(AttachManagerState* out)
         MediaItem* it = GetSelectedMediaItem(proj, i);
         PlacedTag  t;
         if (!it || !ReadPlacedTag(it, &t)) continue;
-        const SoundLibrary* l = FindLibrary(store, TagLibrary(proj, t));
+        const SoundLibrary* l = FindLibrary(store, TagLibrary(proj, t, ItemGuidOf(it)));
         if (!l || !l->attached || l->attached_type.empty()) continue;
         if (stack_lib.empty()) stack_lib = l->uid;
         am::StackRef r;
@@ -1299,12 +1302,12 @@ void ReadManager(AttachManagerState* out)
     std::vector<AttachItem> fresh_facts;
     if (const SoundLibrary* l = stack_lib.empty() ? nullptr : FindLibrary(store, stack_lib))
         for (const SelectedSound& x : sel) {
-            const bool placed_for = x.tagged && TagLibrary(proj, x.tag) == stack_lib;
+            const bool placed_for = x.tagged && TagLibrary(proj, x.tag, x.facts.guid) == stack_lib;
             bool       kid_in = false;
             if (x.folder)
                 for (MediaItem* k : FolderPileMembers(x.item)) {
                     PlacedTag kt;
-                    if (ReadPlacedTag(k, &kt) && TagLibrary(proj, kt) == stack_lib) kid_in = true;
+                    if (ReadPlacedTag(k, &kt) && TagLibrary(proj, kt, ItemGuidOf(k)) == stack_lib) kid_in = true;
                 }
             if (!IsStackItem(*l, x.facts.guid, placed_for, kid_in)) {
                 ++s.fresh;
@@ -1409,6 +1412,7 @@ void ReadWatch(ReaProject* proj, WatchRead* w)
         if (o == owners.end()) continue;
         auto rec = recs.find(ok);
         if (rec == recs.end()) rec = recs.emplace(ok, ReadItemSounds(o->second.first)).first;
+        if (!am::TagListed(rec->second, kv.first)) continue;  // a duplicate / pasted copy: never an instance
         const RuleSounds*   rs = FindRuleSounds(rec->second, t.rid);
         const SoundLibrary* lib = rs && !rs->none ? FindLibrary(st, rs->library) : nullptr;
         if (!lib || !lib->attached) continue;

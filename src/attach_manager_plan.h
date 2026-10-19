@@ -109,6 +109,9 @@ struct Snapshot {
 
 // GUIDs compared without case.
 std::string GuidKey(const std::string& g);
+// A placed item's tag counts only when its owner's record lists the item (a live placement of that GUID): a duplicate
+// or a pasted copy carries the original's tag under a new GUID and is a plain new item (never an instance).
+bool TagListed(const ItemSounds& owner_rec, const std::string& guid);
 
 // ---- Apply to (Item / Anim / Project) -----------------------------------------------------------------------
 

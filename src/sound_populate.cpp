@@ -42,6 +42,7 @@
 #include "sound_populate_plan.h"
 #include "sound_project.h"
 #include "sound_record.h"
+#include "sound_spread_plan.h"  // 13-68e: FillMissingSideValues
 #include "sound_switch.h"
 #include "sound_sync_plan.h"  // 13-35: Sync placed sounds
 #include "sound_tracks.h"
@@ -549,6 +550,13 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
     const std::string guid = ItemGuidOf(item);
     const std::vector<Block>& blocks = det.rules.blocks;
     ItemSounds rec = ReadItemSounds(item);
+    {  // 13-68e: a rule holding a library with a RAV - Side Switch plays its side's value (given when it has none)
+        std::vector<RuleSide> sides;
+        for (const Block& b : blocks)
+            if (!b.rid.empty()) sides.push_back({b.rid, EventSide(b)});
+        if (FillMissingSideValues(store, rec, sides))
+            ModifyItemSounds(item, nullptr, [&](ItemSounds& r) { return FillMissingSideValues(store, r, sides); });
+    }
     // 13-15a: each rule's library and values come from the layers (rule, Character, Project).
     const ItemRigInfo     rig = ItemRig(item);
     const SoundCharacter* ch = CharacterFor(store, rig.skeleton, rig.model);

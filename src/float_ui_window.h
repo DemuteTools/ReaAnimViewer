@@ -49,6 +49,11 @@ public:
     HWND Hwnd() const { return hwnd_; }
     bool IsShown() const;
 
+    // 13-68e: the next Frame puts the window at the mouse (its top-left just below-right of the pointer), wholly on
+    // that monitor's work area, its size kept. A window placed this way keeps only its size in ExtState (it opens at
+    // the mouse each time).
+    void PlaceAtMouse();
+
     // Hides it now (the viewer is parked: no frame will run).
     void Hide();
     // Frees everything (the viewer's GL context must be current, its ImGui context too).
@@ -83,6 +88,8 @@ private:
     bool           rect_dirty_ = false;
     bool           failed_ = false;  // creation failed once: not retried every tick
     bool           close_requested_ = false;
+    bool           place_mouse_ = false;  // 13-68e: PlaceAtMouse pending
+    bool           at_mouse_ = false;     // 13-68e: placed at the mouse: its position is not saved
 };
 
 }  // namespace rav

@@ -652,6 +652,25 @@ Cut the new layer's variations and put the first one where you want it against a
 
 The new items you select with the stack never include the stack's own sounds (its folder item, the library's sources). The new variation you put against the stack stays there, attached to that marker; the others go after the end of the project with the other sources. Ctrl+Z undoes it in one step.
 
+#### The Attach manager window
+
+Two REAPER actions open a small window at the mouse pointer, outside RAV's panel: **RAV: Attach manager - Attach (at mouse)** opens it on its **Attach** tab, **RAV: Attach manager - Detach (at mouse)** on its **Detach** tab. Give them a key or a toolbar button in REAPER's Actions window. The window opens wholly on screen, stays open and follows REAPER's time selection, item selection and Ctrl+Z; drag its title row to move it, Esc or ✕ closes it. The four actions above keep working as before.
+
+**Attach tab.**
+
+- **Marker**: make a time selection over the markers you want. The list holds one entry per marker kind and side in it (`FS L`, `FS R`, `Scuff L`...), each at its first marker in time, plus the marker label you clicked, if any. It picks your choice, else the clicked label, else the first in time. The original lands on that marker.
+- **Attach / Add to stack**: chosen from the item selection. When it holds a sound attached on a marker plus new items, it is Add to stack on that sound's marker; switch back to Attach with the two buttons.
+- **Scope**: **This animation** (its item and linked copies) or **All with FS** (every animation with that marker). **Side**: **Both sides**, or **L only** / **R only**. Both are remembered.
+- **L only** puts the selection in the L value of a Switch RAV manages in the `FS` library, **RAV - Side** (values L and R, each rule playing its side's value): the R markers keep what they had (nothing at first). Add to stack with **L only** adds the layer to the L markers alone.
+- The blue button runs it: one undo point, the report at the bottom right of REAPER. When it cannot run, it is greyed and the reason shows above it.
+
+**Detach tab.** Pick a **Library** (**All libraries** by default) and what **Detach** does:
+
+- **This marker**: one row per marker holding attached or placed sounds, grouped by animation. The list shows the selected animation item's markers, else the markers of the selected items, else the markers in the time selection, else everything; the **Showing** line says which. Selecting from the list (a row, its ◎ button, **Select all**) selects the sounds in REAPER without narrowing the list; a click in the arrange does. ⛓̸ detaches that marker's sounds (**Detach all**: every marker shown); the marker then stays empty, as for a sound you deleted by hand: Populate leaves it, though a sound added to the library later (a new layer, a new Attach) can be placed there.
+- **Whole library**: one row per variation of the library (a variation, a sound with its takes, a layer), with the number of markers it is placed on. ⛓̸ removes it from the library with every sound placed from it.
+- Each detach asks: **Keep in place** (the items stay where they are, no longer RAV's and no longer following; their markers get nothing else), **Delete** (the items are deleted; for a whole-library removal, Populate draws those markers again from the variations left, and a library left empty leaves them empty), or **Cancel**. An item a library plays from (an original) is never deleted: it goes after the end of the project with the other sources. One undo point each.
+- The list folds by its title, and each animation by its row.
+
 ### Syncing placed sounds with the Library
 
 Changing a setting in the Library (a node's volume, a Blend offset, a Sound's fades, sync point, zones or level, a variation switched off) never moves anything in the arrange: the sounds already placed keep what they had. The Library shows what is behind:

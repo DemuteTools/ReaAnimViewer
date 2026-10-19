@@ -247,6 +247,10 @@ add_test(NAME sound_attach_plan COMMAND sound_attach_plan_test)
 add_executable(sound_spread_plan_test sound_spread_plan_test.cpp ../src/sound_spread_plan.cpp ../src/sound_attach_plan.cpp ../src/sound_draw.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp)
 target_include_directories(sound_spread_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_spread_plan COMMAND sound_spread_plan_test)
+# 13-68e -- the Attach manager's lists, choices and record edits (src/attach_manager_plan.h), RAV - Side (sound_spread_plan.h)
+add_executable(attach_manager_plan_test attach_manager_plan_test.cpp ../src/attach_manager_plan.cpp ../src/sound_spread_plan.cpp ../src/sound_attach_plan.cpp ../src/sound_draw.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp)
+target_include_directories(attach_manager_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME attach_manager_plan COMMAND attach_manager_plan_test)
 # Story 13-8 -- src/sound_populate_plan.h
 add_executable(sound_populate_plan_test sound_populate_plan_test.cpp ../src/sound_populate_plan.cpp ../src/sound_switch.cpp
                ../src/sound_draw.cpp ../src/sound_place_plan.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp

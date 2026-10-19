@@ -13,10 +13,24 @@
 #pragma once
 
 #include <string>
+#include <vector>
+
+#include "attach_manager_plan.h"
+
+class MediaItem;  // REAPER SDK
 
 namespace rav {
 
 enum class SpreadScope { ThisAnimation, AllInstances };
+// 13-68e: both sides of the marker kind (the default), or the chosen marker's side only (the RAV - Side Switch).
+enum class SpreadSide { Both, MarkerSide };
+// 13-68e: the marker the Attach manager chose (instead of the clicked label): its animation item, its name as its rule
+// writes it, its project position.
+struct SpreadMarker {
+    MediaItem*  item = nullptr;
+    std::string name;
+    double      pos = 0.0;
+};
 
 #ifdef _WIN32
 // Resolves this module's extra REAPER functions (plugin load).
@@ -36,5 +50,47 @@ std::string SpreadSelectionToMarkerType(SpreadScope scope);
 // linked copies given their value. The pile nearest the event stays there, attached; the other piles go to the
 // source zone; then Populate (that library's rules only). One undo point "RAV: Add selection to stack <kind> (...)".
 std::string AddSelectionToStack(SpreadScope scope);
+
+// ---- 13-68e: the Attach manager's gestures (attach_manager_ui.h) ------------------------------------------------
+
+// Attach with the window's marker (null = the clicked label, as the actions) and side: "<side> only" puts the selection
+// in the side's value of the library's RAV - Side Switch (the other side keeps what it had), assigns it to that
+// side's rules only and Populates them; every rule holding the library gets its side's value. One undo point.
+std::string SpreadSelectionToMarker(SpreadScope scope, SpreadSide side, const SpreadMarker* marker);
+// Add to stack on one side: the layer under the RAV - Side Switch (sound_spread_plan.h SideLayerTop), Populate on the
+// stack's side only.
+std::string AddSelectionToStackSide(SpreadScope scope, SpreadSide side);
+
+// The window's snapshot of the project (attach_manager_plan.h) and the animation items it names (same order as
+// snap.anims). Never writes.
+struct AttachManagerState {
+    am::Snapshot            snap;
+    std::vector<MediaItem*> anims;
+};
+void ReadAttachManager(AttachManagerState* out);
+// The cheap part, every frame: the project's state count, the time selection, the selected items. Equal = nothing to
+// read again (the clicked label is polled apart: ClickedMarkersKey).
+std::string AttachManagerSignature();
+// The RAV project markers whose label is selected in REAPER, as a key ("" = none): their change reads the project again.
+std::string ClickedMarkersKey();
+
+// An event of the Detach list: its animation item's GUID, rule id and clip time.
+struct DetachTarget {
+    std::string owner;
+    std::string rid;
+    double      t = 0.0;
+    std::string label;  // "FS L 1.70 s" (the report's)
+};
+// Detach from these markers: their sounds leave them (Keep: the items stay in place, untagged, no longer following;
+// Delete: deleted, but a library's source item goes to the source zone), the markers then stay empty (Populate leaves
+// them). One undo point "RAV: Detach from <marker>" / "... from N markers"; the report as a toast.
+std::string DetachFromMarkers(const std::vector<DetachTarget>& targets, bool keep);
+// Remove from library: the variation `node` leaves the Attached library `lib_uid` with every sound placed from it
+// (Keep: in place, untagged, those markers get nothing else; Delete: deleted, then Populate draws those markers again
+// from the variations left; an emptied library leaves them empty). One undo point "RAV: Remove <name> from the <lib>
+// library"; the report as a toast.
+std::string RemoveFromAttachedLibrary(const std::string& lib_uid, const std::string& node, bool keep);
+// Selects these items in REAPER (every other item unselected); the arrange scrolls nowhere. Returns how many.
+int SelectItemsByGuid(const std::vector<std::string>& guids);
 
 }  // namespace rav

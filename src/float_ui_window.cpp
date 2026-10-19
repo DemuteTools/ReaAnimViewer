@@ -180,6 +180,32 @@ void FloatUiWindow::Frame(bool show, bool activate, const std::function<void()>&
         }
     }
 
+    if (place_mouse_) {  // 13-68e: at the mouse, wholly on its monitor's work area
+        place_mouse_ = false;
+        at_mouse_ = true;
+        POINT pt = {};
+        RECT  wr = {};
+        if (GetCursorPos(&pt) && GetWindowRect(hwnd_, &wr)) {
+            const int   off = static_cast<int>(12.0f * std::max(1.0f, ui::UiScale()));
+            int         w = wr.right - wr.left, h = wr.bottom - wr.top;
+            int         x = pt.x + off, y = pt.y + off;
+            MONITORINFO mi = {};
+            mi.cbSize = sizeof(mi);
+            if (GetMonitorInfoW(MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST), &mi)) {
+                const RECT& wa = mi.rcWork;
+                const int   ww = static_cast<int>(wa.right - wa.left), wh = static_cast<int>(wa.bottom - wa.top);
+                const bool  resize = w > ww || h > wh;
+                w = std::min(w, ww);
+                h = std::min(h, wh);
+                x = std::max(static_cast<int>(wa.left), std::min(x, static_cast<int>(wa.right) - w));
+                y = std::max(static_cast<int>(wa.top), std::min(y, static_cast<int>(wa.bottom) - h));
+                SetWindowPos(hwnd_, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE | (resize ? 0 : SWP_NOSIZE));
+            } else {
+                SetWindowPos(hwnd_, nullptr, x, y, 0, 0, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSIZE);
+            }
+        }
+    }
+
     ContextScope scope(ctx_);
     if (!wglMakeCurrent(dc_, rc_)) {
         wglMakeCurrent(viewer_dc_, rc_);
@@ -215,6 +241,11 @@ void FloatUiWindow::Frame(bool show, bool activate, const std::function<void()>&
     SwapBuffers(dc_);
     wglMakeCurrent(viewer_dc_, rc_);
     if (rect_dirty_ && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) == 0) SaveRect();
+}
+
+void FloatUiWindow::PlaceAtMouse()
+{
+    place_mouse_ = true;
 }
 
 void FloatUiWindow::SetDragArea(float x0, float y0, float x1, float y1, bool over_widget)
@@ -305,8 +336,10 @@ void FloatUiWindow::SaveRect()
     rect_dirty_ = false;
     RECT r = {};
     if (!hwnd_ || !GetWindowRect(hwnd_, &r)) return;
-    SavePrefFloat(Key(pref_, "x").c_str(), static_cast<float>(r.left));
-    SavePrefFloat(Key(pref_, "y").c_str(), static_cast<float>(r.top));
+    if (!at_mouse_) {  // 13-68e: a window placed at the mouse keeps only its size
+        SavePrefFloat(Key(pref_, "x").c_str(), static_cast<float>(r.left));
+        SavePrefFloat(Key(pref_, "y").c_str(), static_cast<float>(r.top));
+    }
     SavePrefFloat(Key(pref_, "w").c_str(), static_cast<float>(r.right - r.left));
     SavePrefFloat(Key(pref_, "h").c_str(), static_cast<float>(r.bottom - r.top));
 }

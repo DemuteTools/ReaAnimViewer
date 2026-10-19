@@ -14,6 +14,7 @@
 #include "self_update.h"
 #include "sound_attach.h"
 #include "sound_spread_selection.h"  // 13-68
+#include "attach_manager_ui.h"       // 13-68e
 #include "reaper_toast.h"            // 13-68 (P9)
 #include "library_media_ui.h"
 #include "library_user_ui.h"
@@ -110,6 +111,15 @@ constexpr const char kStackAllName[]  = "RAV_ADD_SELECTION_TO_STACK_ALL_INSTANCE
 constexpr const char kStackAllDesc[]  = "RAV: Tagging - Add selected items to stack (all animations with this marker)";
 int                  g_stack_all_id     = 0;
 gaccel_register_t    g_stack_all_accel  = {};
+// 13-68e -- the Attach manager, opened at the mouse on its Attach or its Detach tab.
+constexpr const char kAttachMgrName[]  = "RAV_ATTACH_MANAGER_ATTACH";
+constexpr const char kAttachMgrDesc[]  = "RAV: Attach manager - Attach (at mouse)";
+constexpr const char kDetachMgrName[]  = "RAV_ATTACH_MANAGER_DETACH";
+constexpr const char kDetachMgrDesc[]  = "RAV: Attach manager - Detach (at mouse)";
+int                  g_attach_mgr_id     = 0;
+gaccel_register_t    g_attach_mgr_accel  = {};
+int                  g_detach_mgr_id     = 0;
+gaccel_register_t    g_detach_mgr_accel  = {};
 
 int                     g_key_ids[kShortcutCount]    = {};
 gaccel_register_t       g_key_accels[kShortcutCount] = {};
@@ -139,7 +149,7 @@ bool OurCommand(int c)
         if (g_key_ids[i] != 0 && c == g_key_ids[i]) return true;
     for (int id : {g_video_bg_id, g_command_id, g_full_screen_id, g_add_fx_id, g_pattern_id, g_add_shot_id, g_show_shots_id,
                    g_output_angle_id, g_measure_detection_id, g_make_unique_id, g_spread_this_id, g_spread_all_id, g_stack_this_id, g_stack_all_id,
-                   g_sound_check_id})
+                   g_sound_check_id, g_attach_mgr_id, g_detach_mgr_id})
         if (id != 0 && c == id) return true;
     return false;
 }
@@ -238,6 +248,13 @@ bool OnHookCommandBody(int command)
         RunSoundStoreCheck();
         return true;
     }
+    if (command == g_attach_mgr_id || command == g_detach_mgr_id) {  // 13-68e
+        // The window draws through the viewer's GL context: the viewer is made when it does not exist yet.
+        if (!ViewerWindowExists()) OpenViewerWindow(g_hinstance, g_reaper_main);
+        OpenAttachManager(command == g_detach_mgr_id ? AttachManagerTab::Detach : AttachManagerTab::Attach);
+        RefreshToolbar(g_command_id);
+        return true;
+    }
     return false;
 }
 
@@ -314,6 +331,8 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
             if (g_spread_all_id) g_register("-gaccel", &g_spread_all_accel);
             if (g_stack_this_id) g_register("-gaccel", &g_stack_this_accel);
             if (g_stack_all_id) g_register("-gaccel", &g_stack_all_accel);
+            if (g_attach_mgr_id) g_register("-gaccel", &g_attach_mgr_accel);  // 13-68e
+            if (g_detach_mgr_id) g_register("-gaccel", &g_detach_mgr_accel);
             if (g_make_unique_id) g_register("-gaccel", &g_make_unique_accel);
             if (g_measure_detection_id) g_register("-gaccel", &g_measure_detection_accel);
             if (g_video_bg_id) g_register("-gaccel", &g_video_bg_accel);
@@ -398,6 +417,8 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
     g_spread_all_id = RegisterAction(rec, kSpreadAllName, kSpreadAllDesc, &g_spread_all_accel);
     g_stack_this_id = RegisterAction(rec, kStackThisName, kStackThisDesc, &g_stack_this_accel);
     g_stack_all_id = RegisterAction(rec, kStackAllName, kStackAllDesc, &g_stack_all_accel);
+    g_attach_mgr_id = RegisterAction(rec, kAttachMgrName, kAttachMgrDesc, &g_attach_mgr_accel);  // 13-68e
+    g_detach_mgr_id = RegisterAction(rec, kDetachMgrName, kDetachMgrDesc, &g_detach_mgr_accel);
 
     rec->Register("hookcommand", (void*)&OnHookCommand);
     rec->Register("toggleaction", (void*)&OnToggleAction);

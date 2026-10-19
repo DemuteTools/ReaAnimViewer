@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <set>
 #include <utility>
 
 #include "sound_place_plan.h"  // SourceSecondsOf
@@ -229,17 +230,46 @@ std::string RootBlend(SoundLibrary& lib, const std::string& blend_uid)
     return b.uid;
 }
 
+// 13-68e: the node `top` as a Blend: itself when it is one, else wrapped in a new Blend `blend_uid` named after it (in
+// its place: its parent's child, a Switch case naming it, the root). "" when absent.
+std::string SlotBlend(SoundLibrary& lib, const std::string& top, const std::string& blend_uid)
+{
+    if (top.empty() || top == lib.root) return RootBlend(lib, blend_uid);
+    SoundNode* t = FindNode(lib, top);
+    if (!t) return std::string();
+    if (t->type == SoundNodeType::Blend) return top;
+    SoundNode b;
+    b.uid = blend_uid;
+    b.type = SoundNodeType::Blend;
+    b.name = t->name;
+    b.parent = t->parent;
+    b.offset_ms = t->offset_ms;
+    b.layer_keep_offset = t->layer_keep_offset;
+    if (SoundNode* p = FindNode(lib, t->parent))
+        for (SwitchCase& c : p->cases)
+            if (c.child_uid == top) c.child_uid = b.uid;
+    t->parent = b.uid;
+    t->offset_ms = 0.0;
+    t->layer_keep_offset = true;
+    size_t at = 0;
+    while (at < lib.nodes.size() && lib.nodes[at].uid != top) ++at;
+    lib.nodes.insert(lib.nodes.begin() + static_cast<long>(at), b);  // `t` may move: not used after this
+    return blend_uid;
+}
+
 }  // namespace
 
-void AddStackLayer(SoundLibrary& lib, std::vector<SoundNode> layer, double offset_ms, const std::string& blend_uid)
+void AddStackLayer(SoundLibrary& lib, std::vector<SoundNode> layer, double offset_ms, const std::string& blend_uid,
+                   const std::string& top)
 {
     if (layer.empty()) return;
-    if (lib.root.empty() || !FindNode(lib, lib.root)) {
+    if (top.empty() && (lib.root.empty() || !FindNode(lib, lib.root))) {
         layer[0].offset_ms = 0.0;
         SetLibraryContent(lib, std::move(layer));
         return;
     }
-    const std::string blend = RootBlend(lib, blend_uid);
+    const std::string blend = SlotBlend(lib, top, blend_uid);
+    if (blend.empty()) return;
     layer[0].parent = blend;
     layer[0].offset_ms = offset_ms;
     layer[0].layer_keep_offset = true;
@@ -249,20 +279,21 @@ void AddStackLayer(SoundLibrary& lib, std::vector<SoundNode> layer, double offse
 ValueSet AddAnimationLayer(SoundStore& store, const std::string& lib_uid, std::vector<SoundNode> layer, double offset_ms,
                            const std::string& anim_name, const std::vector<ValueSet>& item_values,
                            const std::string& kind_name, const std::function<std::string()>& new_uid,
-                           const std::set<std::string>& held_elsewhere)
+                           const std::set<std::string>& held_elsewhere, const std::string& top)
 {
     ValueSet out;
     SoundLibrary* lib = nullptr;
     for (SoundLibrary& l : store.libraries)
         if (l.uid == lib_uid) lib = &l;
     if (!lib || layer.empty()) return out;
-    const std::string blend = RootBlend(*lib, new_uid());
+    const std::string blend = SlotBlend(*lib, top, new_uid());  // 13-68e: `top`, else the root
+    if (blend.empty()) return out;
     // The library's RAV-owned Switch in the root Blend (one per library), else a new one and its group.
     SoundNode*   sw = nullptr;
     SwitchGroup* g = nullptr;
     for (SoundNode& n : lib->nodes)
         if (n.parent == blend && n.type == SoundNodeType::Switch)
-            if (SwitchGroup* ng = FindGroup(store, n.group_uid); ng && ng->rav_owned) {
+            if (SwitchGroup* ng = FindGroup(store, n.group_uid); ng && ng->rav_owned && !IsSideGroup(*ng)) {  // 13-68e
                 sw = &n;
                 g = ng;
                 break;
@@ -270,7 +301,7 @@ ValueSet AddAnimationLayer(SoundStore& store, const std::string& lib_uid, std::v
     if (!sw) {
         const std::string gname = (kind_name.empty() ? lib->name : kind_name) + " layers";
         for (SwitchGroup& og : store.groups)  // 13-68 v3 review: a RAV group of that name (left by an earlier Switch) reused
-            if (!g && og.rav_owned && og.name == gname) g = &og;
+            if (!g && og.rav_owned && og.name == gname && !IsSideGroup(og)) g = &og;
         if (!g) {  // 13-68 v3: else a new one
             SwitchGroup ng;
             ng.uid = new_uid();
@@ -344,6 +375,230 @@ ValueSet AddAnimationLayer(SoundStore& store, const std::string& lib_uid, std::v
     out.group_uid = g->uid;
     out.value_uid = value;
     return out;
+}
+
+// ---- 13-68e: "<side> only" -----------------------------------------------------------------------------------------
+
+bool IsSideGroup(const SwitchGroup& g)
+{
+    return g.rav_owned && g.name == kSideGroupName;
+}
+
+SwitchGroup* SideGroup(SoundStore& store, const std::function<std::string()>& new_uid)
+{
+    for (SwitchGroup& g : store.groups)
+        if (IsSideGroup(g)) {
+            for (const char* side : {"L", "R"})  // a damaged one gets its value back
+                if (SideValueOf(g, side[0]).empty()) {
+                    SwitchValue v;
+                    v.uid = new_uid();
+                    v.name = side;
+                    g.values.push_back(v);
+                }
+            return &g;
+        }
+    SwitchGroup g;
+    g.uid = new_uid();
+    g.name = kSideGroupName;
+    g.rav_owned = true;
+    for (const char* side : {"L", "R"}) {
+        SwitchValue v;
+        v.uid = new_uid();
+        v.name = side;
+        g.values.push_back(v);
+    }
+    g.default_value = g.values.front().uid;
+    store.groups.push_back(g);
+    return &store.groups.back();
+}
+
+std::string SideValueOf(const SwitchGroup& g, char side)
+{
+    const std::string want(1, side);
+    for (const SwitchValue& v : g.values)
+        if (v.name == want) return v.uid;
+    return std::string();
+}
+
+bool LibraryUsesSide(const SoundStore& store, const SoundLibrary& lib)
+{
+    for (const SoundNode& n : lib.nodes)
+        if (n.type == SoundNodeType::Switch)
+            if (const SwitchGroup* g = FindGroup(store, n.group_uid); g && IsSideGroup(*g)) return true;
+    return false;
+}
+
+const SwitchGroup* FindSideGroup(const SoundStore& store)
+{
+    for (const SwitchGroup& g : store.groups)
+        if (IsSideGroup(g)) return &g;
+    return nullptr;
+}
+
+bool FillMissingSideValues(const SoundStore& store, ItemSounds& rec, const std::vector<RuleSide>& rules)
+{
+    const SwitchGroup* g = FindSideGroup(store);
+    if (!g) return false;
+    bool changed = false;
+    for (const RuleSide& r : rules) {
+        if (r.side != 'L' && r.side != 'R') continue;
+        RuleSounds* rs = r.rid.empty() ? nullptr : FindRuleSounds(rec, r.rid);
+        if (!rs || rs->none || rs->library.empty()) continue;
+        const SoundLibrary* lib = FindLibrary(store, rs->library);
+        if (!lib || !LibraryUsesSide(store, *lib)) continue;
+        const bool has = std::any_of(rs->values.begin(), rs->values.end(), [&](const ValueSet& v) { return v.group_uid == g->uid; });
+        const std::string value = SideValueOf(*g, r.side);
+        if (has || value.empty()) continue;
+        ValueSet v;
+        v.group_uid = g->uid;
+        v.value_uid = value;
+        rs->values.push_back(v);
+        changed = true;
+    }
+    return changed;
+}
+
+std::vector<std::string> RemoveSubtree(SoundLibrary& lib, const std::string& uid)
+{
+    std::vector<std::string> gone;
+    if (uid.empty() || !FindNode(lib, uid)) return gone;
+    std::set<std::string> in = {uid};
+    gone.push_back(uid);
+    for (bool grew = true; grew;) {  // the descendants (any order of the lines)
+        grew = false;
+        for (const SoundNode& n : lib.nodes)
+            if (!in.count(n.uid) && in.count(n.parent)) {
+                in.insert(n.uid);
+                gone.push_back(n.uid);
+                grew = true;
+            }
+    }
+    lib.nodes.erase(std::remove_if(lib.nodes.begin(), lib.nodes.end(), [&](const SoundNode& n) { return in.count(n.uid) > 0; }),
+                    lib.nodes.end());
+    for (SoundNode& n : lib.nodes) {
+        n.cases.erase(std::remove_if(n.cases.begin(), n.cases.end(), [&](const SwitchCase& c) { return in.count(c.child_uid) > 0; }),
+                      n.cases.end());
+        n.unassigned.erase(std::remove_if(n.unassigned.begin(), n.unassigned.end(), [&](const std::string& c) { return in.count(c) > 0; }),
+                           n.unassigned.end());
+    }
+    if (in.count(lib.root)) lib.root.clear();
+    return gone;
+}
+
+namespace {
+
+// The library's root Side Switch (a Switch on the Side group at the root); null when its root is not one.
+SoundNode* RootSideSwitch(SoundStore& store, SoundLibrary& lib)
+{
+    SoundNode* r = lib.root.empty() ? nullptr : FindNode(lib, lib.root);
+    if (!r || r->type != SoundNodeType::Switch) return nullptr;
+    const SwitchGroup* g = FindGroup(store, r->group_uid);
+    return g && IsSideGroup(*g) ? r : nullptr;
+}
+
+// The child uid of `sw`'s case `value` ("" when none).
+std::string CaseOf(const SoundNode& sw, const std::string& value)
+{
+    for (const SwitchCase& c : sw.cases)
+        if (c.value_uid == value) return c.child_uid;
+    return std::string();
+}
+
+// A Switch node on the Side group, parent `parent`.
+SoundNode SideSwitchNode(const SwitchGroup& g, const std::string& uid, const std::string& parent)
+{
+    SoundNode n;
+    n.uid = uid;
+    n.parent = parent;
+    n.type = SoundNodeType::Switch;
+    n.name = g.name;
+    n.group_uid = g.uid;
+    n.layer_keep_offset = true;
+    return n;
+}
+
+}  // namespace
+
+bool SetSideContent(SoundStore& store, const std::string& lib_uid, char side, std::vector<SoundNode> nodes,
+                    const std::function<std::string()>& new_uid)
+{
+    if ((side != 'L' && side != 'R') || nodes.empty()) return false;
+    if (!FindLibrary(store, lib_uid)) return false;
+    SwitchGroup*      g = SideGroup(store, new_uid);  // may move store.groups: the library is looked up after
+    const std::string mine = SideValueOf(*g, side);
+    const std::string other = SideValueOf(*g, side == 'L' ? 'R' : 'L');
+    const SwitchGroup gcopy = *g;
+    SoundLibrary*     lib = FindLibrary(store, lib_uid);
+    SoundNode*        sw = RootSideSwitch(store, *lib);
+    std::string       sw_uid;
+    if (!sw) {  // the old root (if any) is the other side's from now on
+        const std::string old_root = lib->root;
+        sw_uid = new_uid();
+        SoundNode n = SideSwitchNode(gcopy, sw_uid, std::string());
+        if (SoundNode* o = old_root.empty() ? nullptr : FindNode(*lib, old_root)) {
+            o->parent = sw_uid;
+            SwitchCase c;
+            c.value_uid = other;
+            c.child_uid = old_root;
+            n.cases.push_back(c);
+        }
+        lib->nodes.insert(lib->nodes.begin(), n);
+        lib->root = sw_uid;
+    } else {
+        sw_uid = sw->uid;
+        const std::string was = CaseOf(*sw, mine);
+        if (!was.empty()) RemoveSubtree(*lib, was);
+    }
+    nodes[0].parent = sw_uid;
+    nodes[0].offset_ms = 0.0;
+    SoundNode* s = FindNode(*lib, sw_uid);
+    s->cases.erase(std::remove_if(s->cases.begin(), s->cases.end(), [&](const SwitchCase& c) { return c.value_uid == mine; }),
+                   s->cases.end());
+    SwitchCase c;
+    c.value_uid = mine;
+    c.child_uid = nodes[0].uid;
+    s->cases.push_back(c);
+    for (SoundNode& n : nodes) lib->nodes.push_back(std::move(n));
+    return true;
+}
+
+std::string SideLayerTop(SoundStore& store, const std::string& lib_uid, char side, const std::function<std::string()>& new_uid)
+{
+    if (side != 'L' && side != 'R') return std::string();
+    if (!FindLibrary(store, lib_uid)) return std::string();
+    SwitchGroup*      g = SideGroup(store, new_uid);
+    const std::string mine = SideValueOf(*g, side);
+    const SwitchGroup gcopy = *g;
+    SoundLibrary*     lib = FindLibrary(store, lib_uid);
+    std::string       sw_uid;
+    if (SoundNode* root_sw = RootSideSwitch(store, *lib)) {
+        sw_uid = root_sw->uid;
+    } else {  // a Side Switch in the root Blend: the base stays shared
+        const std::string blend = RootBlend(*lib, new_uid());
+        for (const SoundNode& n : lib->nodes)
+            if (sw_uid.empty() && n.parent == blend && n.type == SoundNodeType::Switch && n.group_uid == gcopy.uid) sw_uid = n.uid;
+        if (sw_uid.empty()) {
+            sw_uid = new_uid();
+            lib->nodes.push_back(SideSwitchNode(gcopy, sw_uid, blend));
+        }
+    }
+    const std::string content = CaseOf(*FindNode(*lib, sw_uid), mine);
+    if (!content.empty() && FindNode(*lib, content)) return SlotBlend(*lib, content, new_uid());
+    SoundNode b;  // the side had nothing: an empty Blend case
+    b.uid = new_uid();
+    b.parent = sw_uid;
+    b.type = SoundNodeType::Blend;
+    b.name = std::string(1, side);
+    b.layer_keep_offset = true;
+    SoundNode* s = FindNode(*lib, sw_uid);
+    s->cases.erase(std::remove_if(s->cases.begin(), s->cases.end(), [&](const SwitchCase& c) { return c.value_uid == mine; }),
+                   s->cases.end());
+    SwitchCase c;
+    c.value_uid = mine;
+    c.child_uid = b.uid;
+    s->cases.push_back(c);
+    lib->nodes.push_back(b);
+    return b.uid;
 }
 
 bool SeveralStackEvents(const std::vector<PlacedTag>& tags)
@@ -466,7 +721,8 @@ std::string SpreadRunReport(const SpreadRunCounts& c)
     std::string out;
     if (c.selected_markers > 1)
         out += "Used " + (c.marker.empty() ? c.type : c.marker) + " (" + std::to_string(c.selected_markers) + " markers selected)\n";
-    out += c.type + (c.all_instances ? " (all animations with this marker): " : " (this animation): ");
+    out += c.type + (c.side ? " " + std::string(1, c.side) + " only" : std::string()) +  // 13-68e
+           (c.all_instances ? " (all animations with this marker): " : " (this animation): ");
     std::vector<std::string> parts;
     std::string              lib = c.add_layer ? "layer added to library " + c.type + (c.all_instances ? "" : " for this animation")
                                                : std::string(c.reused ? "library " : "new library ") + c.type;

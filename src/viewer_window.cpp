@@ -53,6 +53,7 @@
 #include "clip_list_ui.h"      // story 6-5-10: the animation clip list (left of every view)
 #include "clip_list_plan.h"    // 6-5-10c: the menu button above it (cliplist::MenuButtonAt)
 #include "tagging_assign_ui.h"  // 13-15b: the Sound assignment window takes the keys while it has the focus
+#include "attach_manager_ui.h"  // 13-68e: the Attach manager, a window of its own
 #include "tagging_session.h"   // Story 10-3: the Tagging view's model (item, rules, detection)
 #include "tag_markers.h"       // Story 10-4: the markers option (Take / Project / Both)
 #include "tagging_view_ui.h"   // Story 10-3: its curve strip and panel
@@ -322,6 +323,9 @@ bool            g_tagging_dialog_pending = false;
 // tick and its ImGui frame), drawing its progress frames; the flag stops a second post meanwhile.
 constexpr UINT kMsgRunPopulate = WM_APP + 0x34;
 bool           g_populate_post_pending = false;
+// 13-68e: a gesture clicked in the Attach manager runs from the window procedure too (never inside a frame).
+constexpr UINT kMsgRunAttachManager = WM_APP + 0x35;
+bool           g_attach_mgr_post_pending = false;
 // Story 6-5-9 -- full screen. The button's click changes the window's mode from the window
 // procedure (never inside the render tick, which is inside the ImGui frame); the flag stops a
 // second post meanwhile. REAPER's main window: the parent of the docked child, the owner of the
@@ -913,6 +917,10 @@ void RenderTick()
     // 13-15: the Sound assignment window, a window of its own anywhere on the screen (its own ImGui
     // context on the shared GL context); it puts our context back on return.
     if (g_imgui_ready) DrawAssignFloat(g_hwnd, g_hdc, g_hglrc);
+    // 13-68e: the Attach manager, the same way.
+    if (g_imgui_ready) DrawAttachManagerFloat(g_hwnd, g_hdc, g_hglrc);
+    if (AttachManagerHasPending() && !g_attach_mgr_post_pending && g_hwnd)
+        g_attach_mgr_post_pending = PostMessageW(g_hwnd, kMsgRunAttachManager, 0, 0) != FALSE;
 
     // Story 11-4 — the Video view's REAPER writes run from the window procedure, never
     // inside this tick (a message box or a plug-in load may run a modal loop).
@@ -956,6 +964,15 @@ void CALLBACK FrameTimerProc(HWND, UINT, UINT_PTR, DWORD)
             DropKeyClaims();
             HideAssignFloat();  // 13-15: no tick runs while hidden: the assignment window hides with the panel
             LogInfo("panel hidden — render paused");
+        }
+        // 13-68e: the Attach manager lives outside the panel: it still draws (its own window, our GL context).
+        if (g_imgui_ready && g_main_imgui_ctx && g_hdc && g_hglrc && !g_populate_running &&
+            (AttachManagerIsOpen() || AttachManagerFloatHwnd())) {  // open, or shown and to hide
+            wd::MainBeat();
+            ImGui::SetCurrentContext(g_main_imgui_ctx);
+            if (wglMakeCurrent(g_hdc, g_hglrc)) DrawAttachManagerFloat(g_hwnd, g_hdc, g_hglrc);
+            if (AttachManagerHasPending() && !g_attach_mgr_post_pending && g_hwnd)
+                g_attach_mgr_post_pending = PostMessageW(g_hwnd, kMsgRunAttachManager, 0, 0) != FALSE;
         }
         return;
     }
@@ -2130,6 +2147,7 @@ void StopRendering()
         if (g_icon_keyboard) { glDeleteTextures(1, &g_icon_keyboard); g_icon_keyboard = 0; }
         if (g_imgui_ready) {
             SetBusyPainter(nullptr, nullptr);  // 13-59: no card without the viewer
+            DestroyAttachManagerFloat();  // 13-68e: the same (before the window class goes with the assignment window)
             DestroyAssignFloat();  // 13-15: its context shares our font atlas and GL context: freed first
             ImGui_ImplOpenGL3_Shutdown();
             ImGui_ImplWin32_Shutdown();
@@ -2151,6 +2169,8 @@ void StopRendering()
     g_video_post_pending = false;
     g_tagging_dialog_pending = false;  // story 10-3b: a post lost with the window
     g_populate_post_pending = false;   // 13-19: so is a queued Populate (nothing written)
+    g_attach_mgr_post_pending = false;  // 13-68e: and an Attach manager gesture
+    AttachManagerDropPending();
     DropPendingPopulate();
     g_current_load_ok = false;
 
@@ -2293,7 +2313,7 @@ void DropBusyInputs()
                                     WM_MBUTTONDOWN, WM_MBUTTONDBLCLK, WM_XBUTTONDOWN, WM_XBUTTONDBLCLK,
                                     WM_MOUSEWHEEL,  WM_MOUSEHWHEEL,   WM_KEYDOWN,     WM_SYSKEYDOWN,
                                     WM_CHAR,        WM_SYSCHAR};
-    const HWND targets[] = {g_hwnd, AssignFloatHwnd()};
+    const HWND targets[] = {g_hwnd, AssignFloatHwnd(), AttachManagerFloatHwnd()};
     MSG        m;
     for (HWND h : targets) {
         if (!h || !IsWindow(h)) continue;
@@ -2740,6 +2760,25 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         return 0;
 
+    case kMsgRunAttachManager: {
+        // 13-68e: the Attach manager's queued gesture (one undo point; its report is a toast).
+        g_attach_mgr_post_pending = false;
+        if (g_populate_running) return 0;
+        try {
+            struct RunningGuard {
+                RunningGuard() { g_populate_running = true; }
+                ~RunningGuard() { g_populate_running = false; }
+            } running;
+            RAV_SCOPE("Attach manager run", nullptr);  // freeze audit
+            AttachManagerRunPending();
+        } catch (const std::exception& e) {
+            LogError("Attach manager: a gesture failed: %s", e.what());
+        } catch (...) {
+            LogError("Attach manager: a gesture failed");
+        }
+        return 0;
+    }
+
     case kMsgRunPopulate: {
         // 13-19: the queued Populate / Restore (one undo point), its progress drawn about every 100 ms.
         g_populate_post_pending = false;
@@ -2900,12 +2939,12 @@ int ViewerTranslateAccel(MSG* msg, accelerator_register_t* /*ctx*/)
     if (!msg || !g_hwnd || !IsWindow(g_hwnd)) return 0;
     // 13-15: the Sound assignment window (a window of its own): typing in a field, and its own keys (Esc, the
     // arrows, Enter, Tab, Delete / Backspace) go to it; every other key (Space, Ctrl+Z...) stays REAPER's.
-    if (AssignFloatOwns(msg->hwnd)) {
+    if (AssignFloatOwns(msg->hwnd) || AttachManagerFloatOwns(msg->hwnd)) {  // 13-68e: the Attach manager too
         const bool key_msg = msg->message == WM_KEYDOWN || msg->message == WM_KEYUP || msg->message == WM_CHAR ||
                              msg->message == WM_SYSKEYDOWN || msg->message == WM_SYSKEYUP || msg->message == WM_SYSCHAR;
         if (!key_msg) return 0;
         if (msg->message == WM_SYSKEYDOWN && msg->wParam == VK_F4) return kRouteViewerSys;  // Alt+F4 closes it
-        if (AssignFloatWantsText()) return msg->message == WM_SYSKEYDOWN || msg->message == WM_SYSKEYUP || msg->message == WM_SYSCHAR
+        if (AssignFloatWantsText() || AttachManagerFloatWantsText()) return msg->message == WM_SYSKEYDOWN || msg->message == WM_SYSKEYUP || msg->message == WM_SYSCHAR
                                                ? 0
                                                : -1;
         const bool     ctrl = GetKeyState(VK_CONTROL) < 0, alt = GetKeyState(VK_MENU) < 0;
@@ -3042,6 +3081,11 @@ void OpenViewerWindow(REAPER_PLUGIN_HINSTANCE hInst, HWND reaper_main)
     // with DockWindowRemove on the close/unload paths we own).
     DockWindowAddEx(g_hwnd, kDockName, kDockIdent, true);
     DockWindowActivate(g_hwnd);
+}
+
+bool ViewerWindowExists()
+{
+    return g_hwnd && IsWindow(g_hwnd);
 }
 
 bool ViewerWindowIsVisible()

@@ -21,6 +21,9 @@ void ToggleViewerWindow(REAPER_PLUGIN_HINSTANCE hInst, HWND reaper_main);
 // for the toggle action's toolbar/menu checkmark.
 bool ViewerWindowIsVisible();
 
+// 13-68e: the viewer window exists (created, maybe hidden in its docker): its tool windows can draw.
+bool ViewerWindowExists();
+
 // Story 6-5-9 -- the `RAV: Viewer - Full screen (toggle)` action: full screen leaves it (back to
 // the docker); otherwise the viewer opens if needed and goes full screen (src/viewer_fullscreen.h).
 void ToggleViewerFullScreen(REAPER_PLUGIN_HINSTANCE hInst, HWND reaper_main);

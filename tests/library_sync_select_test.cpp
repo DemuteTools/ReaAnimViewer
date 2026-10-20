@@ -731,6 +731,128 @@ static void TestV5BigDiffIsFast()
     std::printf("v5 big diff (1000 changes): %.0f ms\n", ms);
 }
 
+// ---- review 3649103 M1: an addition is never deleted by the other side --------------------------------------------------
+
+// A Switch value re-pointed to a NEW Random: the case (a modification) and the new Random need each other.
+static SyncDiff RePointed(bool reversed)
+{
+    SyncDiff d;
+    d.root = "R";
+    d.parent = {{"sw", "R"}, {"y", "R"}};
+    std::vector<SyncChange> v;
+    auto mk = [&](const char* key, SyncSide side, const char* h, const char* f, std::vector<std::string> needs, bool adds) {
+        SyncDiff t;
+        Chg(&t, key, side, "sw", key, h, f, needs, adds, key);
+        v.push_back(t.changes[0]);
+    };
+    mk("C|sw|v", SyncSide::Here, "plays Y", "plays Z", {"X|y"}, false);
+    mk("X|y", SyncSide::Here, "present", "absent", {"C|sw|v"}, true);
+    mk("X|ys", SyncSide::Here, "present", "absent", {"X|y"}, false);
+    if (reversed) std::reverse(v.begin(), v.end());
+    d.changes = v;
+    d.BuildIndex();
+    return d;
+}
+
+static void TestM1RevertCaseKeepsNewRandom()
+{
+    for (int rev = 0; rev < 2; ++rev) {
+        const SyncDiff d = RePointed(rev != 0);
+        SyncSelection  s;
+        s.PreTick(d);
+        CHECK(s.IsOn("C|sw|v") && s.IsOn("X|y") && s.IsOn("X|ys"));
+        s.ToggleSide(d, "C|sw|v", SyncDir::Down);  // click the case's global box
+        const auto p = s.Picks(d);
+        CHECK(p.size() == 1 && p.at("C|sw|v") == SyncDir::Down);  // the new Random stays here: unticked, not deleted
+        CHECK(!s.IsOn("X|y") && !s.IsOn("X|ys"));
+        CHECK(CloseSelection(d, p) == p);                          // the engine does not delete it either
+        const SyncFooter f = s.Footer(d);
+        CHECK(f.project.drops.empty() && f.global.drops.empty());
+        // Keep all global gives the same result in any diff order
+        SyncSelection k;
+        k.PreTick(d);
+        std::vector<std::string> all;
+        for (const SyncChange& c : d.changes) all.push_back(c.key);
+        k.KeepAll(d, all, SyncDir::Down);
+        const auto kp = k.Picks(d);
+        CHECK(kp.size() == 1 && kp.at("C|sw|v") == SyncDir::Down);
+        CHECK(CloseSelection(d, kp) == kp);
+        CHECK(k.KeepTri(d, all, SyncDir::Down) == SyncTri::All);
+        // the pair rule still holds in the adopt direction: sending the new Random sends its case, and the reverse
+        SyncSelection a;
+        a.ToggleSide(d, "X|y", SyncDir::Up);
+        CHECK(a.IsOn("X|y") && a.IsOn("C|sw|v") && a.Tick("C|sw|v")->dir == SyncDir::Up);
+        SyncSelection b;
+        b.ToggleSide(d, "C|sw|v", SyncDir::Up);
+        CHECK(b.IsOn("X|y") && b.Tick("X|y")->dir == SyncDir::Up);
+        CHECK(CloseSelection(d, b.Picks(d)) == b.Picks(d));
+    }
+}
+
+// the same, mirrored: the GLOBAL added the Random and the case, ticking the project's box reverts the case
+static void TestM1MirroredFileSide()
+{
+    SyncDiff d;
+    d.root = "R";
+    d.parent = {{"sw", "R"}, {"y", "R"}};
+    Chg(&d, "C|sw|v", SyncSide::File, "sw", "C", "plays Z", "plays Y", {"X|y"}, false, "C");
+    Chg(&d, "X|y", SyncSide::File, "sw", "Y", "absent", "present", {"C|sw|v"}, true, "Y");
+    d.BuildIndex();
+    SyncSelection s;
+    s.PreTick(d);
+    s.ToggleSide(d, "C|sw|v", SyncDir::Up);
+    const auto p = s.Picks(d);
+    CHECK(p.size() == 1 && p.at("C|sw|v") == SyncDir::Up && !s.IsOn("X|y"));
+    CHECK(CloseSelection(d, p) == p);
+}
+
+// Review 3649103, mutants: a Keep all / Keep clear on a subset prunes what hung on an unticked addition.
+static void TestKeepOnSubsetPrunes()
+{
+    const SyncDiff d = V5();
+    SyncSelection  s;
+    s.PreTick(d);
+    CHECK(s.IsOn("X|rg") && s.IsOn("X|rgs"));
+    s.KeepAll(d, {"X|rg"}, SyncDir::Down);  // an addition here, kept global: it stays only here; its Sound goes with it
+    CHECK(!s.IsOn("X|rg") && !s.IsOn("X|rgs"));
+    SyncSelection c;
+    c.PreTick(d);
+    c.KeepClear(d, {"X|rg"}, SyncDir::Up);
+    CHECK(!c.IsOn("X|rg") && !c.IsOn("X|rgs"));
+}
+
+static void TestRekeyFinalPrune()
+{
+    SyncDiff d = V5();
+    SyncSelection s;
+    s.ToggleSide(d, "X|rgs", SyncDir::Up);
+    CHECK(s.IsOn("X|rg") && s.IsOn("X|rgs"));
+    for (SyncChange& c : d.changes)
+        if (c.key == "X|rg") c.file_text = "something else";  // its value moved: its tick drops, the Sound hung on it
+    d.BuildIndex();
+    s.Rekey(d);
+    CHECK(!s.IsOn("X|rg") && !s.IsOn("X|rgs"));
+}
+
+static void TestTrimNeverToNothing()
+{
+    const SyncNameTrim a = SyncCommonTrim({"Walk_Hit", "Walk_Hit_Hit"});
+    CHECK(a.pfx == "Walk_" && a.sfx.empty());
+    const SyncNameTrim b = SyncCommonTrim({"Walk_", "Walk_B"});
+    CHECK(b.pfx.empty() && b.sfx.empty());
+    CHECK(SyncTrimName(b, "Walk_") == "Walk_");
+}
+
+static void TestFooterDedupe()
+{
+    SyncFooter f;
+    f.changes = 4;
+    f.global.gets = {"a", "a", "b", "c"};
+    std::string full;
+    CHECK(SyncFooterSummary(f, &full) == "Apply: 4 changes \xC2\xB7 the global gets a, b, c");
+    CHECK(full == "Apply: 4 changes \xC2\xB7 the global gets a, b, c");
+}
+
 int main()
 {
     TestTick();
@@ -760,6 +882,12 @@ int main()
     TestV5Dependencies();
     TestV5FooterAndNames();
     TestV5BigDiffIsFast();
+    TestM1RevertCaseKeepsNewRandom();
+    TestM1MirroredFileSide();
+    TestKeepOnSubsetPrunes();
+    TestRekeyFinalPrune();
+    TestTrimNeverToNothing();
+    TestFooterDedupe();
     if (g_fail == 0) std::printf("library_sync_select_test: all passed\n");
     return g_fail == 0 ? 0 : 1;
 }

@@ -92,6 +92,14 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& mine_text,
 // The keys `key` needs, transitively (not itself); the keys that need `key`, transitively.
 std::vector<std::string> NeedsClosure(const SyncDiff& d, const std::string& key);
 std::vector<std::string> DependentsClosure(const SyncDiff& d, const std::string& key);
+// An ADDED element (a Sound / container / value / variation / case one side has and the other lacks) is an addition by
+// the side that added it (Here: the project, File: the global); false when the change is not one.
+bool SyncIsAddition(const SyncChange& c, SyncSide* adder);
+// Is there a box on that side (Up = project, Down = global)? False only for the missing side of an addition.
+bool SyncSideAvailable(const SyncChange& c, SyncDir dir);
+// DependentsClosure for a drop in direction `dir`: never takes an addition of the side being dropped, nor what is
+// reached only through it (the rule: an addition is never deleted by the other side).
+std::vector<std::string> DropDependents(const SyncDiff& d, const std::string& key, SyncDir dir);
 
 // Closes a selection: adopting a change (Here + Up, File + Down) also takes everything it needs, dropping one (Here +
 // Down, File + Up) also takes everything that needs it, in the same direction. Both changes pull nothing. A pull wins

@@ -205,8 +205,27 @@ static void TestDropPullsDependents()
     m += "node uid=SM2 type=sound parent=M name=FS_M_02\nsound kind=file\nnode uid=SM3 type=sound parent=M name=FS_M_03\nsound kind=file\n";
     const SyncDiff d = DiffLibrary(Base(), m, Base());
     const auto     closed = CloseSelection(d, {{"X|M", SyncDir::Down}});
-    CHECK(closed.count("X|SM") && closed.count("X|SM2") && closed.count("X|SM3") && closed.count("C|R|V3"));
-    CHECK(!closed.count("VX|G1|V3"));  // the value does not need the Random
+    // dropping an addition of the side being dropped never takes the other additions that need it (they stay)
+    CHECK(closed.size() == 1 && closed.count("X|M"));
+    // dropping the other side's change (the file's) still takes its dependents, but never an addition of the dropped side
+    SyncDiff dm;
+    dm.root = "R";
+    auto mk = [&](const char* key, SyncSide side, const char* h, const char* f, std::vector<std::string> needs) {
+        SyncChange c;
+        c.key = key; c.side = side; c.node = "R"; c.here_text = h; c.file_text = f; c.needs = needs; c.text = key;
+        dm.changes.push_back(c);
+    };
+    mk("C|sw|v", SyncSide::Here, "plays Y", "plays Z", {"X|y"});  // a case re-pointed to a NEW Random
+    mk("X|y", SyncSide::Here, "present", "absent", {"C|sw|v"});
+    mk("X|ys", SyncSide::Here, "present", "absent", {"X|y"});
+    mk("F|z", SyncSide::Here, "-3", "0", {"C|sw|v"});            // a plain change that needs the case
+    dm.BuildIndex();
+    CHECK(SyncIsAddition(*dm.Find("X|y"), nullptr) && !SyncIsAddition(*dm.Find("C|sw|v"), nullptr));
+    const auto rv = CloseSelection(dm, {{"C|sw|v", SyncDir::Down}});  // revert the case: the new Random stays
+    CHECK(rv.size() == 2 && rv.count("F|z") && !rv.count("X|y") && !rv.count("X|ys"));
+    const auto sd = CloseSelection(dm, {{"X|y", SyncDir::Up}});       // send the new Random: its case goes with it
+    CHECK(sd.count("C|sw|v") && sd.at("C|sw|v") == SyncDir::Up && sd.size() == 2);
+    CHECK(DropDependents(dm, "C|sw|v", SyncDir::Down).size() == 1);
     // a Both change pulls nothing
     const std::string b1 = Sub(Base(), "vol=-4", "vol=-5"), b2 = Sub(Base(), "vol=-4", "vol=-6");
     const SyncDiff    db = DiffLibrary(Base(), b1, b2);

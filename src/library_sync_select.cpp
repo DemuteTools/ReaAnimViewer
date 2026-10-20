@@ -22,7 +22,7 @@ bool Adopts(const SyncChange& c, SyncDir dir)
 
 std::vector<std::string> ClosureFor(const SyncDiff& d, const SyncChange& c, SyncDir dir)
 {
-    return Adopts(c, dir) ? NeedsClosure(d, c.key) : DependentsClosure(d, c.key);
+    return Adopts(c, dir) ? NeedsClosure(d, c.key) : DropDependents(d, c.key, dir);
 }
 
 bool Under(const SyncDiff& d, const std::string& node, const std::string& id)
@@ -257,7 +257,9 @@ std::vector<std::string> SyncSelection::Prune(const SyncDiff& d)
             if (!bad && c.side != SyncSide::Both)
                 for (const std::string& k : ClosureFor(d, c, s.dir)) {
                     const SyncChange* x = d.Find(k);
-                    if (x && x->side == c.side && !IsOn(k)) {
+                    // a needed change that is off, or that was turned the other way (a reverted case leaves the new node
+                    // that needed it unticked: an addition is never deleted by the other side)
+                    if (x && x->side == c.side && (!IsOn(k) || Tick(k)->dir != s.dir)) {
                         bad = true;
                         break;
                     }
@@ -464,26 +466,6 @@ void SyncSelection::Rekey(const SyncDiff& now)
 }
 
 // ---- v5: one tick per side ---------------------------------------------------------------------------------------
-
-bool SyncIsAddition(const SyncChange& c, SyncSide* adder)
-{
-    if (c.side == SyncSide::Here && c.file_text == "absent" && c.here_text != "absent") {
-        if (adder) *adder = SyncSide::Here;
-        return true;
-    }
-    if (c.side == SyncSide::File && c.here_text == "absent" && c.file_text != "absent") {
-        if (adder) *adder = SyncSide::File;
-        return true;
-    }
-    return false;
-}
-
-bool SyncSideAvailable(const SyncChange& c, SyncDir dir)
-{
-    SyncSide adder;
-    if (!SyncIsAddition(c, &adder)) return true;
-    return dir == (adder == SyncSide::Here ? SyncDir::Up : SyncDir::Down);
-}
 
 void SyncSelection::Off(const SyncDiff& d, const SyncChange& c)
 {

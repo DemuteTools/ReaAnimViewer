@@ -1315,6 +1315,55 @@ std::vector<std::string> DependentsClosure(const SyncDiff& d, const std::string&
     return std::vector<std::string>(seen.begin(), seen.end());
 }
 
+bool SyncIsAddition(const SyncChange& c, SyncSide* adder)
+{
+    if (c.side == SyncSide::Here && c.file_text == "absent" && c.here_text != "absent") {
+        if (adder) *adder = SyncSide::Here;
+        return true;
+    }
+    if (c.side == SyncSide::File && c.here_text == "absent" && c.file_text != "absent") {
+        if (adder) *adder = SyncSide::File;
+        return true;
+    }
+    return false;
+}
+
+bool SyncSideAvailable(const SyncChange& c, SyncDir dir)
+{
+    SyncSide adder;
+    if (!SyncIsAddition(c, &adder)) return true;
+    return dir == (adder == SyncSide::Here ? SyncDir::Up : SyncDir::Down);
+}
+
+std::vector<std::string> DropDependents(const SyncDiff& d, const std::string& key, SyncDir dir)
+{
+    // A drop never takes an addition of the side being dropped (an addition is never deleted by the other side), nor
+    // what is reached only through that addition.
+    std::set<std::string>    seen;
+    std::vector<std::string> todo = {key};
+    while (!todo.empty()) {
+        const std::string k = todo.back();
+        todo.pop_back();
+        std::vector<std::string> direct;
+        if (d.IndexValid()) {
+            const auto it = d.needed_by.find(k);
+            if (it != d.needed_by.end())
+                for (size_t i : it->second)
+                    if (i < d.changes.size()) direct.push_back(d.changes[i].key);
+        } else {
+            for (const SyncChange& c : d.changes)
+                if (std::find(c.needs.begin(), c.needs.end(), k) != c.needs.end()) direct.push_back(c.key);
+        }
+        for (const std::string& n : direct) {
+            if (n == key) continue;
+            const SyncChange* x = d.Find(n);
+            if (!x || !SyncSideAvailable(*x, dir)) continue;
+            if (seen.insert(n).second) todo.push_back(n);
+        }
+    }
+    return std::vector<std::string>(seen.begin(), seen.end());
+}
+
 std::map<std::string, SyncDir> CloseSelection(const SyncDiff& d, const std::map<std::string, SyncDir>& picks)
 {
     std::map<std::string, SyncDir> out;
@@ -1324,7 +1373,7 @@ std::map<std::string, SyncDir> CloseSelection(const SyncDiff& d, const std::map<
         out[pk.first] = pk.second;
         if (c->side == SyncSide::Both) continue;
         const bool adopt = (c->side == SyncSide::Here) == (pk.second == SyncDir::Up);
-        for (const std::string& k : adopt ? NeedsClosure(d, pk.first) : DependentsClosure(d, pk.first)) out[k] = pk.second;
+        for (const std::string& k : adopt ? NeedsClosure(d, pk.first) : DropDependents(d, pk.first, pk.second)) out[k] = pk.second;
     }
     return out;
 }

@@ -77,10 +77,6 @@ void SyncDirCounts(const SyncDiff& d, const std::vector<std::string>& keys, int*
 // An ADDED element (a Sound / container / value / variation / case one side has and the other lacks) has ONE box, on
 // the side that added it ("add it to the other side too"); unticked it stays only where it is. Removals and
 // modifications have two boxes; ticking the unchanged side reverts the other side's change.
-// The side that added the change (Here: the project, File: the global), false when it is not an addition.
-bool SyncIsAddition(const SyncChange& c, SyncSide* adder);
-// Is there a box on that side (Up = project / R, Down = global / L)? False only for the missing side of an addition.
-bool SyncSideAvailable(const SyncChange& c, SyncDir dir);
 // What a ticked change gives each side, for the footer: the side that ends up with `noun` or drops it.
 struct SyncFooterSide {
     std::vector<std::string> gets, drops;

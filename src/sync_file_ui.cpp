@@ -475,7 +475,7 @@ bool SideBox(const char* id, float x, float y, float rowh, int state, bool warm,
     return clicked;
 }
 
-// The state glyph between the two sides: points to the kept side. mode 0 skipped, 1 global kept, 2 project kept, 3 both, 4 pick.
+// The state glyph between the two sides: points to the kept side. mode 0 skipped, 1 global kept, 2 project kept, 4 pick (3 was "both kept": v5 has no such row).
 void DrawConn(ImDrawList* dl, const Cols& c, float y, float rowh, int mode, bool dim)
 {
     const float cx = std::floor(c.conn_x + c.conn_w * 0.5f), cy = std::floor(y + rowh * 0.5f), s = ui::Dp(4.5f);
@@ -490,10 +490,6 @@ void DrawConn(ImDrawList* dl, const Cols& c, float y, float rowh, int mode, bool
     } else if (mode == 2) {
         tri(cx, false, ui::kAccent);
         tip = "This project's is kept: the global takes it";
-    } else if (mode == 3) {
-        tri(cx - s * 0.9f, true, ui::kOk);
-        tri(cx + s * 0.9f, false, ui::kOk);
-        tip = "Both kept: each side gets the other's";
     } else if (mode == 4) {
         ImFont*      f = ui::FontSmall();
         const char*  t = "PICK";
@@ -962,8 +958,12 @@ void DrawHeader(const SoundLibrary* lib, const Model& m, const SyncDiff& d, cons
     if (SideBox("##kp", c.pbox_x, y2, l2, TriInt(tp), false, false, "Keep all mine")) KeepGesture(m.all, SyncDir::Up);
     ImGui::PopID();
     const float ty = std::floor(y2 + (l2 - ui::FontBody()->FontSize) * 0.5f);
-    ui::AddTextIn(dl, ui::FontBody(), ImVec2(c.g_x + ui::Dp(6.0f), ty), ui::kMuted, "Keep all global");
-    ui::AddTextIn(dl, ui::FontBody(), ImVec2(c.p_x + ui::Dp(6.0f), ty), ui::kMuted, "Keep all mine");
+    auto keep_label = [&](float x, float w, const char* t) {  // ellipsized to its column (a larger font, a narrow window)
+        const std::string shown = ui::EllipsizeToWidth(ui::FontBody(), t, std::max(1.0f, w - ui::Dp(6.0f)));
+        ui::AddTextIn(dl, ui::FontBody(), ImVec2(x + ui::Dp(6.0f), ty), ui::kMuted, shown.c_str());
+    };
+    keep_label(c.g_x, c.g_w, "Keep all global");
+    keep_label(c.p_x, c.p_w, "Keep all mine");
     dl->AddLine(ImVec2(p.x, p.y + l1 + l2), ImVec2(p.x + c.w, p.y + l1 + l2), ui::kStroke);
     ImGui::SetCursorScreenPos(p);
     ImGui::Dummy(ImVec2(c.w, l1 + l2 + ui::Dp(2.0f)));
@@ -1004,26 +1004,34 @@ void DrawFooter(const SyncDiff* d, float h)
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ui::ShowTip("One undo point for everything ticked");
     ImGui::SetCursorScreenPos(ImVec2(p.x + w - aw - ui::Dp(6.0f) - cw, by));
     if (ui::SolidButton("Close", ImVec2(cw, ui::LargeH()))) g.open = false;
-    // the summary, wrapped in the room left of the buttons: what each side gets
+    // the summary: two wrapped lines in the room left of the buttons (the tooltip has all of it), "N to pick" on its own
+    // line under them, so it never leaves the window
     const float room = std::max(ui::Dp(60.0f), w - aw - cw - ui::Dp(18.0f));
-    ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + ui::Dp(6.0f)));
+    const float lh = ui::FontSmall()->FontSize, y0 = p.y + ui::Dp(4.0f);
     std::string text;
     if (d) {
         if (left <= 0) text = "Nothing left: this project and the global library agree.";
         else if (cnt.ticked <= 0) text = "Nothing ticked. " + std::to_string(left) + (left == 1 ? " difference." : " differences.");
         else text = g.foot_text;
     }
+    {
+        ImFont*      sf = ui::FontSmall();
+        const ImVec2 ts = sf->CalcTextSizeA(sf->FontSize, FLT_MAX, room, text.c_str());
+        if (ts.y > lh * 2.5f) text = ui::EllipsizeToWidth(sf, text, room * 2.0f - ui::Dp(24.0f));  // more than two lines: cut
+    }
+    ImGui::PushClipRect(ImVec2(p.x, y0), ImVec2(p.x + room, y0 + lh * 2.0f + 1.0f), true);
+    ImGui::SetCursorScreenPos(ImVec2(p.x, y0));
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + room);
-    ui::FontScope f(ui::FontSmall());
-    ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(d && left == 0 ? ui::kOk : cnt.ticked > 0 ? ui::kText : ui::kMuted));
-    ImGui::TextUnformatted(text.c_str());
-    ImGui::PopStyleColor();
-    if (d && g.foot_pick > 0 && left > 0) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kBoth));
-        ImGui::TextUnformatted((std::to_string(g.foot_pick) + " to pick").c_str());
+    {
+        ui::FontScope f(ui::FontSmall());
+        ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(d && left == 0 ? ui::kOk : cnt.ticked > 0 ? ui::kText : ui::kMuted));
+        ImGui::TextUnformatted(text.c_str());
         ImGui::PopStyleColor();
     }
     ImGui::PopTextWrapPos();
+    ImGui::PopClipRect();
+    if (d && g.foot_pick > 0 && left > 0)
+        ui::AddTextIn(dl, ui::FontSmall(), ImVec2(p.x, y0 + lh * 2.0f + ui::Dp(2.0f)), ui::kBoth, (std::to_string(g.foot_pick) + " to pick").c_str());
     if (cnt.ticked > 0 && !g.foot_full.empty()) TipRect(p, ImVec2(p.x + room, p.y + h), g.foot_full);
     ImGui::SetCursorScreenPos(p);
     ImGui::Dummy(ImVec2(w, h));
@@ -1100,7 +1108,7 @@ void DrawContent()
             if (c.side == SyncSide::Both && !g.sel.IsOn(c.key)) ++g.foot_pick;
     }
     DrawTitle(lib);
-    const float footer_h = ui::LargeH() + ui::Dp(16.0f) + ui::FontSmall()->FontSize;
+    const float footer_h = std::max(ui::LargeH() + ui::Dp(16.0f), ui::FontSmall()->FontSize * 3.0f + ui::Dp(10.0f));  // buttons, or 2 lines + "N to pick"
     DrawSub(info);
     ImGui::Dummy(ImVec2(0.0f, ui::Dp(2.0f)));
     Ctx c;
@@ -1128,6 +1136,7 @@ void DrawContent()
                 for (int ri : g.model.groups[gi].rows) DrawChangeRow(c, g.model, ri, cols);
             }
             ImGui::PopStyleVar();
+            g.scroll_to.clear();  // used (or its group is not in this diff): it must not fire on a later rebuild
         } else {
             ui::ToneText("Nothing changed on either side.", ui::kMuted, true);
         }

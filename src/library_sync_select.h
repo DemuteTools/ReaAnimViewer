@@ -1,0 +1,114 @@
+// SPDX-License-Identifier: MIT
+//
+// 13-77c: what the "Sync with file" window ticks (pure: no REAPER, no _WIN32). The mockup v3's own algorithm
+// (put / pull / prune / toggleChange / chooseDir / groupToggle / groupDir) over the changes of a SyncDiff
+// (library_sync.h). Per change a tick {on, dir, auto, by, why}. Adopting a change (Here + Up, File + Down) ticks what it
+// needs, dropping one (Here + Down, File + Up) ticks what depends on it, in the same direction, with `by` = the change
+// that asked and `why` = needs / goes; ticking never refuses. A `both` change pulls nothing and is ticked only once a
+// side is chosen. Unticking a change prunes what depended on it (a fixpoint). The window only draws this and calls
+// RequestSyncApply with Picks(), whose directions are already resolved (the engine's "last pick wins" never decides).
+// The selection holds no pointer to the diff: every call takes the current one, and Rekey keeps the ticks across a
+// rebuilt diff by change key.
+
+#pragma once
+
+#include <map>
+#include <string>
+#include <vector>
+
+#include "library_sync.h"
+
+namespace rav {
+
+struct SyncTick {
+    bool        on = false;
+    bool        has_dir = false;     // a direction was chosen (a `both` change needs one to be ticked)
+    SyncDir     dir = SyncDir::Up;
+    SyncSide    side = SyncSide::Both;  // the change's side when ticked (Rekey drops a tick whose side moved)
+    bool        auto_ = false;       // ticked for you because another change needs it / goes with it
+    std::string by;                  // the change key that asked (auto_)
+    bool        needs_why = true;    // auto_: true = "needed by", false = "goes with"
+};
+
+// What one gesture did besides the change(s) it was about (for the toasts and the folds).
+struct SyncEffect {
+    std::vector<std::string> ticked;    // keys ticked for the user
+    std::vector<std::string> unticked;  // keys unticked with the one(s) clicked (they went together)
+    bool need_side = false;             // ticking a `both` change with no side chosen: refused, stays unticked
+    int  skipped_both = 0;              // a parent's tick passed over this many unsided `both` changes
+};
+
+enum class SyncTri { Disabled, None, Some, All };
+
+struct SyncCountsTicked {
+    int ticked = 0, up = 0, down = 0, auto_ = 0;
+};
+
+// ---- the tree of changed branches (ids: container uid, "grp" = Switch Groups, "grp:<group uid>") ----------------
+// A node's parent id ("" = none).
+std::string SyncParentOf(const SyncDiff& d, const std::string& id);
+// Every id holding a change (c.node) and all their ancestors.
+std::vector<std::string> SyncChangedNodes(const SyncDiff& d);
+// The ids with no parent among `nodes`, the library root first, then "grp".
+std::vector<std::string> SyncTopNodes(const SyncDiff& d, const std::vector<std::string>& nodes);
+// Keys of the changes at or under `id` ("*" = all, in diff order).
+std::vector<std::string> SyncKeysUnder(const SyncDiff& d, const std::string& id);
+// Keys of the changes sitting on exactly `id`.
+std::vector<std::string> SyncKeysAt(const SyncDiff& d, const std::string& id);
+// A node the project does not have (new in the file): its name and type word ("Random") from its own addition / removal
+// change; "" when none. Switch Groups: "Switch Groups"; "grp:x": the group's name from its change text.
+std::string SyncGhostName(const SyncDiff& d, const std::string& id);
+std::string SyncGhostType(const SyncDiff& d, const std::string& id);
+// "N changes" / "1 change".
+std::string SyncChangesWord(int n);
+// The default direction of a change (Here: Up, File: Down); Both: none.
+bool SyncDefaultDir(const SyncChange& c, SyncDir* out);
+// A parent's / container's "↑ Send mine" ("↓ Get file's"): the keys among `keys` that direction applies to: Up = changes
+// made here + both-sides ones, Down = changes made in the file + both-sides ones. A change made on the other side is
+// never selected (it stays listed): sending mine must not revert what another project wrote, nor the reverse.
+std::vector<std::string> SyncKeysForDir(const SyncDiff& d, const std::vector<std::string>& keys, SyncDir dir);
+// "↑ mine N" / "↓ file's N" counts of a set of keys: Up = changes made here + both, Down = file + both.
+void SyncDirCounts(const SyncDiff& d, const std::vector<std::string>& keys, int* up, int* down);
+
+class SyncSelection {
+public:
+    bool IsOn(const std::string& key) const;
+    const SyncTick* Tick(const std::string& key) const;
+
+    // The checkbox of one change. Ticked: off + prune; off: its chosen / default direction + closure.
+    SyncEffect Toggle(const SyncDiff& d, const std::string& key);
+    // ↑ Send mine / ↓ Get file's on one change: ticks it in that direction + closure.
+    SyncEffect Choose(const SyncDiff& d, const std::string& key, SyncDir dir);
+    // A parent's checkbox: all ticked -> all off (+ prune); else tick every unticked one except unsided `both`.
+    SyncEffect ToggleGroup(const SyncDiff& d, const std::vector<std::string>& keys);
+    // A parent's ↑ mine / ↓ file's: the changes that direction applies to (+ the `both` ones) ticked that way.
+    SyncEffect GroupDir(const SyncDiff& d, const std::vector<std::string>& keys, SyncDir dir);
+
+    SyncTri TriState(const SyncDiff& d, const std::vector<std::string>& keys) const;
+    SyncCountsTicked Counts(const SyncDiff& d) const;
+    // The keys of the other ticked changes (same direction) that need `key` (adopt) / go with it (drop), transitively.
+    std::vector<std::string> NeededBy(const SyncDiff& d, const std::string& key) const;
+    // For RequestSyncApply: the ticked changes and their directions (consistent: the engine's closure changes nothing).
+    std::map<std::string, SyncDir> Picks(const SyncDiff& d) const;
+    // The diff was rebuilt: a tick stays when its change is still there with the same side, the others drop; then prune.
+    void Rekey(const SyncDiff& now);
+    void Clear() { ticks_.clear(); }
+
+private:
+    void Put(const SyncDiff& d, const SyncChange& c, SyncDir dir, bool auto_, const std::string& by, bool needs_why);
+    void Pull(const SyncDiff& d, const SyncChange& c, SyncDir dir, SyncEffect* fx);
+    std::vector<std::string> Prune(const SyncDiff& d);
+    bool SetDir(const SyncDiff& d, const SyncChange& c, SyncDir dir, SyncEffect* fx);
+    bool TickKey(const SyncDiff& d, const SyncChange& c, SyncEffect* fx);
+
+    std::map<std::string, SyncTick> ticks_;
+};
+
+// ---- the toasts (mockup wording) and the footer -------------------------------------------------------------------
+// "" when there is nothing to say. `clicked` = the keys the gesture was about (left out of the lists).
+std::string SyncEffectToast(const SyncDiff& d, const SyncEffect& fx);
+// "N ticked: ↑ x to the file, ↓ y taken here · z ticked for you because another needs it" / "Nothing ticked. N changes
+// waiting." / "Nothing left: this project and the file agree." (`left` = open changes).
+std::string SyncFooterText(const SyncCountsTicked& c, int left);
+
+}  // namespace rav

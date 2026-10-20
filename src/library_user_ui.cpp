@@ -52,6 +52,8 @@
 #include "library_tree_edit.h"
 #include "library_media_ui.h"  // freeze audit #2: MediaReachAsk / MediaReachLast (the probe worker)
 #include "library_sync.h"
+#include "library_sync_select.h"
+#include "sync_file_ui.h"
 #include "library_tree_ui.h"
 #include "library_view_ui.h"
 #include "media_db.h"
@@ -2745,7 +2747,11 @@ void RequestNodeSync(const std::string& lib_uid, const std::string& node_uid, Sy
     const SoundNode*    n = lib ? FindNode(*lib, node_uid) : nullptr;
     if (!n) return;
     std::map<std::string, SyncDir> picks;
-    for (const SyncChange* c : RowChanges(*d, *n)) picks[c->key] = dir;
+    // Only what that direction applies to (13-77c): ↑ takes the changes made here and the both-sides ones, ↓ the file's and
+    // the both-sides ones; a change made on the other side stays listed (never reverted by a container's button).
+    std::vector<std::string> keys;
+    for (const SyncChange* c : RowChanges(*d, *n)) keys.push_back(c->key);
+    for (const std::string& k : SyncKeysForDir(*d, keys, dir)) picks[k] = dir;
     RequestSyncApply(lib_uid, CloseSelection(*d, picks));
 }
 
@@ -2841,7 +2847,13 @@ void DrawOwnSyncBar(const std::string& lib_uid, const std::string& node_uid, con
     ui::SameLineIfFits(ui::ButtonWidth("\xE2\x86\x93 Get file's"));
     if (down_primary ? ui::PrimaryButton("\xE2\x86\x93 Get file's") : ui::SolidButton("\xE2\x86\x93 Get file's"))
         RequestNodeSync(lib_uid, node_uid, SyncDir::Down);
-    ui::ItemTipText("Take the file's version of this container here. What it needs goes with it.");
+    ui::ItemTipText("Take the file's changes here. What they need goes with them.");
+    ui::SameLineIfFits(ui::ButtonWidth("Change by change..."));
+    if (ui::SolidButton("Change by change...")) {
+        const std::string focus = own.empty() ? node_uid : own[0]->node;
+        OpenSyncWithFile(lib_uid, focus);
+    }
+    ui::ItemTipText("Open Sync with file on this container: tick each change and pick its direction");
     EndSyncBar(bar, tone);
 }
 
@@ -2887,6 +2899,8 @@ void DrawLibraryFileSection()
                     // right under it ...) with both buttons, until 13-77c's window
                     const std::vector<const SyncChange*> own = RowChanges(*sd, *n);
                     if (!own.empty()) DrawOwnSyncBar(lib_uid, n->uid, own, info.by);
+                    if (ui::PrimaryButton("Sync with file...")) OpenSyncWithFile(lib_uid);
+                    ui::ItemTipText("Choose, change by change, what goes into the file and what is taken from it");
                 } else if (sd) {
                     FileStatusLine(1, "Same as the file. Changes made here stay here until you send them.");
                 }

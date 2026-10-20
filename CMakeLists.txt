@@ -259,6 +259,8 @@ if(WIN32)
             src/attach_manager_plan.cpp     # 13-68e
             src/attach_manager_ui.cpp       # 13-68e
             src/missing_sounds_ui.cpp       # spec missing-sounds-window
+            src/sync_file_ui.cpp            # 13-77c
+            src/library_sync_select.cpp     # 13-77c
             src/sound_sync_plan.cpp         # 13-35: Sync placed sounds
             src/sound_sync.cpp
             src/sound_sync_ui.cpp

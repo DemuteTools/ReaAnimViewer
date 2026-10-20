@@ -35,6 +35,7 @@
 #include "sound_record.h"
 #include "sound_entries.h"  // ToggleGroupRole (13-23 role maps)
 #include "sound_switch.h"
+#include "sync_file_ui.h"  // 13-77c
 #include "tagging_assign_ui.h"  // 13-43: Assign... opens its Overview
 #include "ui_flow.h"
 #include "ui_flow_math.h"
@@ -1834,7 +1835,11 @@ void LibraryMenuItems(const SoundLibrary& lib, std::string* to_delete, bool rena
                                  : "No missing sound in any library");
     ImGui::Separator();
     if (LibraryLinked(lib)) {
-        // 13-77c adds "Sync with file..." here.
+        if (ImGui::MenuItem("Sync with file...")) {
+            const std::string uid = lib.uid;
+            Later([uid] { OpenSyncWithFile(uid); });
+        }
+        ui::ItemTipText("Choose, change by change, what goes into the file and what is taken from it");
         // 13-36: the file itself, selected in File Explorer (to copy, send or back it up).
         if (ImGui::MenuItem("Show in Explorer")) RequestUserLibraryReveal(lib.uid);
         ui::ItemTipText("Open the User Library folder in File Explorer, this library's .ravlib selected");
@@ -1978,8 +1983,8 @@ void LibraryListRow(const SoundStore& store, const SoundLibrary& lib, std::strin
             if (down_w > 0.0f) ui::AddTextIn(dl, mark_f, ImVec2(mx, std::floor(y + (rh - mark_f->FontSize) * 0.5f)), ui::kWarn, down_t.c_str());
             if (hov) ui::ItemTipText(SyncRowTip(sync_c).c_str());
             if (clicked) {
-                const std::string uid = lib.uid, root = lib.root;
-                Later([uid, root] { SelectLibraryRow(uid, LibraryRow{"", root}); });
+                const std::string uid = lib.uid;
+                Later([uid] { OpenSyncWithFile(uid); });
             }
             continue;
         }

@@ -56,6 +56,7 @@
 #include "tagging_assign_ui.h"  // 13-15b: the Sound assignment window takes the keys while it has the focus
 #include "attach_manager_ui.h"  // 13-68e: the Attach manager, a window of its own
 #include "missing_sounds_ui.h"  // spec missing-sounds-window: the Missing sounds window, a window of its own
+#include "sync_file_ui.h"  // 13-77c: the Sync with file window
 #include "tagging_session.h"   // Story 10-3: the Tagging view's model (item, rules, detection)
 #include "tag_markers.h"       // Story 10-4: the markers option (Take / Project / Both)
 #include "tagging_view_ui.h"   // Story 10-3: its curve strip and panel
@@ -926,6 +927,7 @@ void RenderTick()
         g_attach_mgr_post_pending = PostMessageW(g_hwnd, kMsgRunAttachManager, 0, 0) != FALSE;
     // Spec missing-sounds-window: the Missing sounds window, the same way (its gestures run after its frame).
     if (g_imgui_ready) DrawMissingSoundsFloat(g_hwnd, g_hdc, g_hglrc);
+    if (g_imgui_ready) DrawSyncWithFileFloat(g_hwnd, g_hdc, g_hglrc);  // 13-77c: Sync with file, the same way
 
     // Story 11-4 — the Video view's REAPER writes run from the window procedure, never
     // inside this tick (a message box or a plug-in load may run a modal loop).
@@ -969,6 +971,7 @@ void CALLBACK FrameTimerProc(HWND, UINT, UINT_PTR, DWORD)
             DropKeyClaims();
             HideAssignFloat();  // 13-15: no tick runs while hidden: the assignment window hides with the panel
             HideMissingSoundsFloat();  // spec missing-sounds-window: the same
+            HideSyncWithFileFloat();  // 13-77c: the same
             LogInfo("panel hidden — render paused");
         }
         // 13-68e: the Attach manager lives outside the panel: it still draws (its own window, our GL context).
@@ -2155,6 +2158,7 @@ void StopRendering()
             SetBusyPainter(nullptr, nullptr);  // 13-59: no card without the viewer
             DestroyAttachManagerFloat();  // 13-68e: the same (before the window class goes with the assignment window)
             DestroyMissingSoundsFloat();  // spec missing-sounds-window: the same
+            DestroySyncWithFileFloat();  // 13-77c: the same
             DestroyAssignFloat();  // 13-15: its context shares our font atlas and GL context: freed first
             ImGui_ImplOpenGL3_Shutdown();
             ImGui_ImplWin32_Shutdown();
@@ -2320,7 +2324,7 @@ void DropBusyInputs()
                                     WM_MBUTTONDOWN, WM_MBUTTONDBLCLK, WM_XBUTTONDOWN, WM_XBUTTONDBLCLK,
                                     WM_MOUSEWHEEL,  WM_MOUSEHWHEEL,   WM_KEYDOWN,     WM_SYSKEYDOWN,
                                     WM_CHAR,        WM_SYSCHAR};
-    const HWND targets[] = {g_hwnd, AssignFloatHwnd(), AttachManagerFloatHwnd(), MissingSoundsFloatHwnd()};
+    const HWND targets[] = {g_hwnd, AssignFloatHwnd(), AttachManagerFloatHwnd(), MissingSoundsFloatHwnd(), SyncWithFileFloatHwnd()};
     MSG        m;
     for (HWND h : targets) {
         if (!h || !IsWindow(h)) continue;
@@ -2947,12 +2951,12 @@ int ViewerTranslateAccel(MSG* msg, accelerator_register_t* /*ctx*/)
     // 13-15: the Sound assignment window (a window of its own): typing in a field, and its own keys (Esc, the
     // arrows, Enter, Tab, Delete / Backspace) go to it; every other key (Space, Ctrl+Z...) stays REAPER's.
     if (AssignFloatOwns(msg->hwnd) || AttachManagerFloatOwns(msg->hwnd) ||
-        MissingSoundsFloatOwns(msg->hwnd)) {  // 13-68e: the Attach manager too; the Missing sounds window too
+        MissingSoundsFloatOwns(msg->hwnd) || SyncWithFileFloatOwns(msg->hwnd)) {  // 13-68e: the Attach manager too; the Missing sounds window too
         const bool key_msg = msg->message == WM_KEYDOWN || msg->message == WM_KEYUP || msg->message == WM_CHAR ||
                              msg->message == WM_SYSKEYDOWN || msg->message == WM_SYSKEYUP || msg->message == WM_SYSCHAR;
         if (!key_msg) return 0;
         if (msg->message == WM_SYSKEYDOWN && msg->wParam == VK_F4) return kRouteViewerSys;  // Alt+F4 closes it
-        if (AssignFloatWantsText() || AttachManagerFloatWantsText() || MissingSoundsFloatWantsText()) return msg->message == WM_SYSKEYDOWN || msg->message == WM_SYSKEYUP || msg->message == WM_SYSCHAR
+        if (AssignFloatWantsText() || AttachManagerFloatWantsText() || MissingSoundsFloatWantsText() || SyncWithFileFloatWantsText()) return msg->message == WM_SYSKEYDOWN || msg->message == WM_SYSKEYUP || msg->message == WM_SYSCHAR
                                                ? 0
                                                : -1;
         const bool     ctrl = GetKeyState(VK_CONTROL) < 0, alt = GetKeyState(VK_MENU) < 0;

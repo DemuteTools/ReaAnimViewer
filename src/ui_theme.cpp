@@ -859,6 +859,17 @@ float DrawSmallTag(ImDrawList* dl, ImVec2 p, const char* text)
     return w;
 }
 
+float DrawSmallTagTone(ImDrawList* dl, ImVec2 p, const char* text, ImU32 ink, ImU32 line, ImU32 fill)
+{
+    const float  w = SmallTagWidth(text), h = Dp(17.0f);
+    const ImVec2 b(p.x + w, p.y + h);
+    dl->AddRectFilled(p, b, Ink(fill), Dp(4.0f));
+    dl->AddRect(p, b, Ink(line), Dp(4.0f));
+    ImFont* f = FontTiny();
+    AddTextIn(dl, f, ImVec2(p.x + Dp(5.0f), std::floor(p.y + (h - f->FontSize) * 0.5f)), Ink(ink), text);
+    return w;
+}
+
 void SmallTag(const char* text)
 {
     ImVec2      p;

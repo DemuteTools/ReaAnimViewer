@@ -20,6 +20,9 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <chrono>
+#include <condition_variable>
+#include <deque>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -48,6 +51,7 @@
 #include "library_icons.h"  // 13-77a: DrawLinkGlyph, DrawToolGlyphAt
 #include "library_tree_edit.h"
 #include "library_media_ui.h"  // freeze audit #2: MediaReachAsk / MediaReachLast (the probe worker)
+#include "library_sync.h"
 #include "library_tree_ui.h"
 #include "library_view_ui.h"
 #include "media_db.h"
@@ -1223,6 +1227,576 @@ void RefreshItemAssets(ReaProject* proj)
     });
 }
 
+// ---- 13-77b: the file sync (a worker for every disk read, the caches, Apply, Ctrl+Z of the file) ---------------------
+// Every stat / read / write of a .ravlib of the sync runs on ONE worker thread (the folder may be a cloud drive or a
+// network share): the UI thread builds the texts of the project copy, posts a job, and takes the answer in this module's
+// timer. The file is read again on project open / tab switch, when REAPER's window comes back to the foreground, after
+// this module writes, and before each Apply; a read is a stat first and parses the file only when its size or time moved.
+
+enum class SyncKind { Diff, Apply, Journal };
+enum class SyncSt { Ok, Gone, Unreadable, OtherLibrary, FileChanged, WriteFailed, Failed };
+
+struct SyncJob {
+    SyncKind    kind = SyncKind::Diff;
+    std::string proj_key, lib_uid, file, path;
+    std::string mine, base;  // .ravlib texts, project uid space
+    std::vector<std::pair<std::string, std::string>> uid_map;
+    std::string base_by;
+    int64_t     base_at = 0;
+    uint64_t    seq = 0;
+    std::map<std::string, SyncDir> picks;
+    SyncFileStamp listed;
+    std::string   by;
+    int64_t       now = 0;
+    SyncJournal   journal;
+    uint64_t      base_now = 0;
+};
+
+struct SyncOut {
+    SyncKind      kind = SyncKind::Diff;
+    SyncSt        st = SyncSt::Ok;
+    std::string   proj_key, lib_uid, file;
+    uint64_t      seq = 0;
+    SyncDiff      diff;
+    SyncFileStamp stamp;
+    std::string   by;
+    int64_t       at = 0;
+    // Apply
+    std::map<std::string, SyncDir> picks;
+    std::string mine_job, base_job;
+    SyncResult  result;
+    std::string before_text, after_text;
+    bool        file_written = false;
+    // Journal
+    JournalStep step = JournalStep::None;
+    SyncJournal journal;
+};
+
+struct SyncCached {
+    SyncFileStamp st;
+    std::string   text;
+};
+
+struct SyncWorker {
+    std::thread             th;
+    std::mutex              mu;
+    std::condition_variable cv;
+    std::deque<SyncJob>     jobs;
+    std::deque<SyncOut>     outs;
+    bool                    quit = false;
+    bool                    started = false;
+    std::atomic<bool>       finished{false};
+};
+SyncWorker g_sw;
+
+SyncFileStamp SyncStatOf(const fs::path& p)
+{
+    SyncFileStamp s;
+    std::error_code ec;
+    if (!fs::is_regular_file(p, ec) || ec) return s;
+    const auto sz = fs::file_size(p, ec);
+    if (ec) return s;
+    s.size = static_cast<int64_t>(sz);
+    const auto t = fs::last_write_time(p, ec);
+    s.mtime = ec ? 0 : static_cast<int64_t>(t.time_since_epoch().count());
+    return s;
+}
+
+// Worker: reads the file (the cache answers when size and time did not move, unless `fresh`), checks it is this
+// library's, translates it to project uids. False with out->st set otherwise.
+bool SyncLoadFile(const SyncJob& job, bool fresh, std::map<std::string, SyncCached>& cache, SyncOut* out, std::string* file_text,
+                  std::string* proj_text)
+{
+    const fs::path p = fs::u8path(job.path);
+    SyncFileStamp  st = SyncStatOf(p);
+    if (st.size < 0) {
+        out->st = SyncSt::Gone;
+        return false;
+    }
+    const auto it = cache.find(job.path);
+    if (!fresh && it != cache.end() && it->second.st.size == st.size && it->second.st.mtime == st.mtime) {
+        st = it->second.st;
+        *file_text = it->second.text;
+    } else {
+        if (!ReadText(p, file_text)) {
+            out->st = SyncSt::Unreadable;
+            return false;
+        }
+        st.hash = SyncTextHash(*file_text);
+        cache[job.path] = SyncCached{st, *file_text};
+    }
+    out->stamp = st;
+    SoundStore parsed;
+    if (!ParseRavlib(*file_text, &parsed)) {
+        out->st = SyncSt::Unreadable;
+        return false;
+    }
+    if (parsed.libraries.front().uid != job.lib_uid) {
+        out->st = SyncSt::OtherLibrary;
+        return false;
+    }
+    RavlibWriter(parsed, &out->by, &out->at);
+    *proj_text = TranslateUidsText(*file_text, job.uid_map, true);
+    return true;
+}
+
+void SyncRunJob(const SyncJob& job, std::map<std::string, SyncCached>& cache, SyncOut* out)
+{
+    out->kind = job.kind;
+    out->proj_key = job.proj_key;
+    out->lib_uid = job.lib_uid;
+    out->file = job.file;
+    out->seq = job.seq;
+    std::string file_text, proj_text;
+    if (job.kind == SyncKind::Journal) {
+        out->journal = job.journal;
+        const fs::path p = fs::u8path(job.path);
+        const SyncFileStamp st = SyncStatOf(p);
+        std::string         text;
+        bool                exists = st.size >= 0 && ReadText(p, &text);
+        const JournalStep   step = DecideJournal(job.journal, job.base_now, exists, exists ? SyncTextHash(text) : 0);
+        out->step = step;
+        if (step == JournalStep::RestoreBefore || step == JournalStep::RestoreAfter) {
+            if (!WriteText(p, step == JournalStep::RestoreBefore ? job.journal.before : job.journal.after)) {
+                out->st = SyncSt::WriteFailed;
+                out->step = JournalStep::None;
+            }
+            cache.erase(job.path);
+        }
+        return;
+    }
+    const bool apply = job.kind == SyncKind::Apply;
+    if (!SyncLoadFile(job, apply, cache, out, &file_text, &proj_text)) return;
+    const bool untouched = !job.base.empty() && out->at != 0 && out->by == job.base_by && out->at == job.base_at;
+    out->diff = DiffLibrary(job.base, job.mine, proj_text, untouched);
+    if (!apply) return;
+    out->picks = job.picks;
+    out->mine_job = job.mine;
+    out->base_job = job.base;
+    if (DecideApplyGate(job.listed, out->stamp) != ApplyGate::Go) {  // the file moved since the list was built
+        out->st = SyncSt::FileChanged;
+        return;
+    }
+    const std::map<std::string, SyncDir> closed = CloseSelection(out->diff, job.picks);
+    if (!ApplySync(job.base, job.mine, proj_text, out->diff, closed, &out->result)) {
+        out->st = SyncSt::Failed;
+        return;
+    }
+    if (!out->result.file_changed) return;
+    const std::string back = TranslateUidsText(out->result.file, job.uid_map, false);
+    SoundStore        s2;
+    if (!ParseRavlib(back, &s2)) {
+        out->st = SyncSt::Failed;
+        return;
+    }
+    const std::string text = SerializeRavlib(s2, job.by, job.now);
+    const fs::path    p = fs::u8path(job.path);
+    std::error_code   ec;
+    fs::path          bak = p;
+    bak += ".bak";
+    fs::copy_file(p, bak, fs::copy_options::overwrite_existing, ec);  // one .bak per file, the version before
+    if (ec || !WriteText(p, text)) {
+        out->st = SyncSt::WriteFailed;
+        return;
+    }
+    out->before_text = file_text;
+    out->after_text = text;
+    out->file_written = true;
+    cache.erase(job.path);
+}
+
+void SyncWorkerMain()
+{
+    std::map<std::string, SyncCached> cache;
+    for (;;) {
+        SyncJob job;
+        {
+            std::unique_lock<std::mutex> lk(g_sw.mu);
+            g_sw.cv.wait(lk, [] { return g_sw.quit || !g_sw.jobs.empty(); });
+            if (g_sw.quit) break;
+            job = std::move(g_sw.jobs.front());
+            g_sw.jobs.pop_front();
+        }
+        SyncOut out;
+        try {
+            SyncRunJob(job, cache, &out);
+        } catch (...) {
+            out.kind = job.kind;
+            out.proj_key = job.proj_key;
+            out.lib_uid = job.lib_uid;
+            out.file = job.file;
+            out.seq = job.seq;
+            out.st = SyncSt::Failed;
+        }
+        std::lock_guard<std::mutex> lk(g_sw.mu);
+        g_sw.outs.push_back(std::move(out));
+    }
+    g_sw.finished = true;
+}
+
+void PostSyncJob(SyncJob job)
+{
+    std::lock_guard<std::mutex> lk(g_sw.mu);
+    if (!g_sw.started) {
+        g_sw.started = true;
+        g_sw.th = std::thread(SyncWorkerMain);
+    }
+    g_sw.jobs.push_back(std::move(job));
+    g_sw.cv.notify_one();
+}
+
+// ---- the UI side ----
+
+struct SyncSlot {
+    bool          ready = false;  // diff is valid
+    bool          bad = false;    // the file could not be read just now (or holds another library)
+    bool          busy = false;   // a Diff job is in flight
+    bool          force = true;   // read the file again (stat first) at the next chance
+    bool          dirty = true;
+    uint64_t      seq = 0;
+    uint64_t      gen_seen = 0;
+    uint64_t      sig = 0;
+    double        quiet_until = 0.0;
+    std::string   file_name;
+    SyncDiff      diff;
+    SyncFileStamp stamp;
+    std::string   by;
+    int64_t       at = 0;
+};
+
+struct SyncJournalRec {
+    SyncJournal j;
+    bool        busy = false, undone = false;
+    uint64_t    checked_gen = 0;
+};
+
+struct SyncReq {
+    std::string lib;
+    std::map<std::string, SyncDir> picks;
+};
+
+struct LibSyncState {
+    std::map<std::string, SyncSlot> slots;
+    std::vector<SyncJournalRec>     journals;
+    std::vector<SyncReq>            reqs;
+    std::string                     proj_name;
+    ReaProject*                     proj = nullptr;
+    bool                            fg_in = false;
+    bool                            apply_busy = false;
+    uint64_t                        seq = 0;
+};
+LibSyncState gs;
+
+double MonoS()
+{
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+std::string MineTextOf(const SoundStore& store, const std::string& uid)
+{
+    return SerializeRavlib(RavlibOf(store, uid, nullptr));
+}
+
+void FillJobFromStore(SyncJob* j, const SoundStore& store, const SoundLibrary& lib)
+{
+    j->proj_key = gs.proj_name;
+    j->lib_uid = lib.uid;
+    j->file = lib.ravlib_path;
+    j->path = FileOf(lib.ravlib_path).u8string();
+    j->mine = MineTextOf(store, lib.uid);
+    if (const LinkBase* b = FindLinkBase(store, lib.uid)) {
+        j->base = b->text;
+        j->uid_map = b->uid_map;
+        j->base_by = b->file_by;
+        j->base_at = b->file_at;
+    }
+}
+
+void SlotFromOut(SyncSlot& sl, SyncOut& o)
+{
+    sl.stamp = o.stamp;
+    sl.by = o.by;
+    sl.at = o.at;
+    if (o.st == SyncSt::Ok || o.st == SyncSt::FileChanged) {
+        sl.diff = std::move(o.diff);
+        sl.ready = true;
+        sl.bad = false;
+    } else {
+        sl.ready = false;
+        sl.bad = true;
+    }
+}
+
+void ForceSync(const std::string& lib_uid)
+{
+    auto it = gs.slots.find(lib_uid);
+    if (it != gs.slots.end()) it->second.force = true;
+}
+
+void HandleApplyOut(SyncOut& o)
+{
+    gs.apply_busy = false;
+    auto it = gs.slots.find(o.lib_uid);
+    if (o.st == SyncSt::FileChanged && it != gs.slots.end()) {
+        it->second.busy = false;
+        SlotFromOut(it->second, o);
+        ShowToastNoUndo("The file changed meanwhile: check the changes again");
+        return;
+    }
+    if (it != gs.slots.end()) it->second.force = true;
+    if (o.st == SyncSt::Gone) {
+        ShowToastNoUndo(o.file + " is not in the User Library folder any more: nothing written");
+        return;
+    }
+    if (o.st == SyncSt::Unreadable || o.st == SyncSt::OtherLibrary) {
+        ShowToastNoUndo(o.file + " cannot be read as this library's file: nothing written");
+        return;
+    }
+    if (o.st == SyncSt::WriteFailed) {
+        ShowToastNoUndo("Could not write " + o.file + " in " + UserFolderText() + ": nothing changed");
+        return;
+    }
+    if (o.st != SyncSt::Ok) {
+        ShowToastNoUndo("Sync with file failed: nothing changed");
+        return;
+    }
+    const SoundStore&   store = GetSoundStore(nullptr);
+    const SoundLibrary* lib = FindLibrary(store, o.lib_uid);
+    if (!lib || !LibraryLinked(*lib) || lib->ravlib_path != o.file) return;
+    if (MineTextOf(store, o.lib_uid) != o.mine_job) {  // the library moved while the file was read / written
+        ShowToastNoUndo(o.file_written ? "This library changed while syncing, and " + o.file + " was written: check the changes again"
+                                       : "This library changed while syncing: check the changes again");
+        return;
+    }
+    const SyncResult& r = o.result;
+    if (r.sent == 0 && r.taken == 0) {
+        ShowToastNoUndo("Nothing to apply");
+        return;
+    }
+    // Was any file change left unpicked? Then the file is not "as the base saw it": no marker (the adaptations of the
+    // merge are not hidden any more, the leftovers stay listed).
+    const std::map<std::string, SyncDir> closed = CloseSelection(o.diff, o.picks);
+    bool unresolved_file = false;
+    for (const SyncChange& c : o.diff.changes)
+        if (c.side != SyncSide::Here && !closed.count(c.key)) unresolved_file = true;
+    const int64_t now = NowS();
+    const std::string by = ProjectFileName();
+    SoundStore merged;
+    if (!ParseRavlib(r.mine, &merged)) {
+        ShowToastNoUndo("Sync with file failed: nothing changed");
+        return;
+    }
+    std::string old_base, new_base;
+    const std::string desc = "RAV: Sync with file";
+    const std::string uid = o.lib_uid;
+    const bool        ok = ModifySoundStore(nullptr, desc.c_str(), [&](SoundStore& s) {
+        const LinkBase* ob = FindLinkBase(s, uid);
+        old_base = ob ? ob->text : std::string();
+        if (!ReplaceLibraryFromMerge(s, uid, merged)) return false;
+        if (!r.base.empty()) {
+            LinkBase nb = ob ? *ob : LinkBase();
+            nb.lib_uid = uid;
+            nb.text = r.base;
+            nb.synced_at = now;
+            if (unresolved_file) {
+                nb.file_by.clear();
+                nb.file_at = 0;
+            } else if (o.file_written) {
+                nb.file_by = by;
+                nb.file_at = now;
+            } else {
+                nb.file_by = o.by;
+                nb.file_at = o.at;
+            }
+            new_base = nb.text;
+            SetLinkBase(s, nb);
+        }
+        return true;
+    });
+    if (!ok) return;
+    if (o.file_written) {
+        SyncJournalRec jr;
+        jr.j.lib_uid = uid;
+        jr.j.file = o.file;
+        jr.j.before = o.before_text;
+        jr.j.after = o.after_text;
+        jr.j.base_before = SyncTextHash(old_base);
+        jr.j.base_after = SyncTextHash(new_base);
+        if (gs.journals.size() >= 20) gs.journals.erase(gs.journals.begin());
+        gs.journals.push_back(jr);
+    }
+    ShowLibraryToast(SyncAppliedToast(r.sent, r.taken, o.file), true, desc);
+}
+
+void HandleJournalOut(SyncOut& o)
+{
+    for (size_t i = 0; i < gs.journals.size(); ++i) {
+        SyncJournalRec& jr = gs.journals[i];
+        if (!jr.busy || jr.j.lib_uid != o.lib_uid || jr.j.before != o.journal.before || jr.j.after != o.journal.after) continue;
+        jr.busy = false;
+        ForceSync(o.lib_uid);
+        const std::string f = o.file;
+        if (o.st == SyncSt::WriteFailed) {
+            ShowToastNoUndo("Undo: the project is back, but " + f + " could not be restored");
+            gs.journals.erase(gs.journals.begin() + static_cast<long>(i));
+        } else if (o.step == JournalStep::RestoreBefore) {
+            jr.undone = true;
+            ShowToastNoUndo("Undo: the project is back, and " + f + " too (nobody wrote it since). " + f + ".bak stays as a backup");
+        } else if (o.step == JournalStep::FileWrittenSince) {
+            ShowToastNoUndo("Undo: only the project is back: " + f + " was written since. " + f + ".bak keeps the version before");
+            gs.journals.erase(gs.journals.begin() + static_cast<long>(i));
+        } else if (o.step == JournalStep::RestoreAfter) {
+            jr.undone = false;
+            ShowToastNoUndo("Redo: the project is forward again, and " + f + " too");
+        }
+        return;
+    }
+}
+
+void DrainSyncOuts()
+{
+    std::deque<SyncOut> outs;
+    {
+        std::lock_guard<std::mutex> lk(g_sw.mu);
+        outs.swap(g_sw.outs);
+    }
+    for (SyncOut& o : outs) {
+        if (o.proj_key != gs.proj_name) {
+            if (o.kind == SyncKind::Apply) gs.apply_busy = false;
+            continue;
+        }
+        if (o.kind == SyncKind::Diff) {
+            auto it = gs.slots.find(o.lib_uid);
+            if (it == gs.slots.end() || it->second.seq != o.seq || it->second.file_name != o.file) continue;
+            it->second.busy = false;
+            SlotFromOut(it->second, o);
+        } else if (o.kind == SyncKind::Apply) {
+            HandleApplyOut(o);
+        } else {
+            HandleJournalOut(o);
+        }
+    }
+}
+
+bool StartSyncApply(const std::string& lib_uid, const std::map<std::string, SyncDir>& picks)
+{
+    const SoundStore&   store = GetSoundStore(nullptr);
+    const SoundLibrary* lib = FindLibrary(store, lib_uid);
+    auto                it = gs.slots.find(lib_uid);
+    if (!lib || !LibraryLinked(*lib) || picks.empty()) return false;
+    if (gs.apply_busy || it == gs.slots.end() || !it->second.ready) {
+        ShowToastNoUndo(gs.apply_busy ? "Another sync is running: try again in a moment" : "Still reading " + lib->ravlib_path + ": try again in a moment");
+        return false;
+    }
+    SyncJob j;
+    j.kind = SyncKind::Apply;
+    FillJobFromStore(&j, store, *lib);
+    j.picks = picks;
+    j.listed = it->second.stamp;
+    j.by = ProjectFileName();
+    j.now = NowS();
+    j.seq = ++gs.seq;
+    gs.apply_busy = true;
+    PostSyncJob(std::move(j));
+    return true;
+}
+
+void SyncTick(ReaProject* proj)
+{
+    DrainSyncOuts();
+    if (ResourcePath().empty() || !g.listed) return;
+    char fn[4096] = {};
+    EnumProjects(-1, fn, sizeof fn);
+    const std::string pname = fn;
+    if (proj != gs.proj || pname != gs.proj_name) {  // another project (or tab): everything is read again
+        gs.slots.clear();
+        gs.journals.clear();
+        gs.reqs.clear();
+        gs.apply_busy = false;
+        gs.proj = proj;
+        gs.proj_name = pname;
+    }
+    HWND main = f_main_hwnd ? f_main_hwnd() : nullptr;
+    HWND fg = GetForegroundWindow();
+    const bool in = main && fg && (fg == main || GetAncestor(fg, GA_ROOTOWNER) == main);
+    if (in && !gs.fg_in)
+        for (auto& kv : gs.slots) kv.second.force = true;
+    gs.fg_in = in;
+
+    const SoundStore& store = GetSoundStore(proj);
+    const uint64_t    gen = SoundStoreGeneration();
+    const double      now = MonoS();
+    std::set<std::string> live;
+    for (const SoundLibrary& lib : store.libraries) {
+        if (lib.attached || !LibraryLinked(lib)) continue;
+        live.insert(lib.uid);
+        SyncSlot& sl = gs.slots[lib.uid];
+        if (sl.file_name != lib.ravlib_path) {
+            sl = SyncSlot();
+            sl.file_name = lib.ravlib_path;
+        }
+        if (LinkedFileOf(lib) != LinkedFileState::Ok) {  // the File section shows its own bar
+            sl.ready = false;
+            sl.bad = false;
+            sl.force = true;
+            continue;
+        }
+        if (gen != sl.gen_seen) {
+            sl.gen_seen = gen;
+            sl.quiet_until = now + 0.35;  // an edit in progress (a drag) is not read on every tick
+            sl.dirty = true;
+        }
+        if (sl.busy || gs.apply_busy) continue;
+        if (!sl.force && !sl.dirty) continue;
+        if (!sl.force && now < sl.quiet_until) continue;
+        SyncJob j;
+        j.kind = SyncKind::Diff;
+        FillJobFromStore(&j, store, lib);
+        const uint64_t sig = SyncTextHash(j.mine) * 31u + SyncTextHash(j.base);
+        if (!sl.force && sig == sl.sig && (sl.ready || sl.bad)) {
+            sl.dirty = false;
+            continue;
+        }
+        sl.sig = sig;
+        sl.force = false;
+        sl.dirty = false;
+        sl.busy = true;
+        sl.seq = j.seq = ++gs.seq;
+        PostSyncJob(std::move(j));
+    }
+    for (auto it = gs.slots.begin(); it != gs.slots.end();) it = live.count(it->first) ? std::next(it) : gs.slots.erase(it);
+
+    // A gesture of the frame (Send mine / Get file's): one at a time.
+    if (!gs.reqs.empty() && !gs.apply_busy) {
+        SyncReq r = std::move(gs.reqs.front());
+        gs.reqs.erase(gs.reqs.begin());
+        StartSyncApply(r.lib, r.picks);
+    }
+
+    // Ctrl+Z / redo of an Apply: the project's common version came back to what it was before (or forward again).
+    for (SyncJournalRec& jr : gs.journals) {
+        if (jr.busy || jr.checked_gen == gen) continue;
+        jr.checked_gen = gen;
+        const LinkBase*    b = FindLinkBase(store, jr.j.lib_uid);
+        const uint64_t     bn = SyncTextHash(b ? b->text : std::string());
+        const bool         back = bn == jr.j.base_before, fwd = jr.undone && bn == jr.j.base_after;
+        if (!back && !fwd) continue;
+        const SoundLibrary* lib = FindLibrary(store, jr.j.lib_uid);
+        if (!lib || lib->ravlib_path != jr.j.file) continue;
+        SyncJob j;
+        j.kind = SyncKind::Journal;
+        j.proj_key = gs.proj_name;
+        j.lib_uid = jr.j.lib_uid;
+        j.file = jr.j.file;
+        j.path = FileOf(jr.j.file).u8string();
+        j.journal = jr.j;
+        j.base_now = bn;
+        j.seq = ++gs.seq;
+        jr.busy = true;
+        PostSyncJob(std::move(j));
+    }
+}
+
 void OnTimer()
 {
     RAV_QUIET_SCOPE("User Library timer", nullptr);  // freeze audit
@@ -1252,6 +1826,7 @@ void OnTimer()
             RefreshItemAssets(proj);  // spec missing-sounds-window: item Sounds remember their item's file
             FirstSightPass(proj);
         }
+        SyncTick(proj);  // 13-77b: the file sync (worker answers, triggers, Apply requests, Ctrl+Z of the file)
     } catch (...) {
     }
     g.in_timer = false;
@@ -1688,8 +2263,12 @@ void UnlinkLibrary(const std::string& lib_uid)
     const SoundLibrary* lib = FindLibrary(GetSoundStore(nullptr), lib_uid);
     if (!lib || !LibraryLinked(*lib)) return;
     const std::string name = lib->name;
+    int unsent = 0;  // 13-77b: the changes made here that the file never got
+    if (const SyncDiff* sd = LibrarySyncDiff(lib_uid)) unsent = sd->here + sd->both;
     Gesture("Unlink library from file", [&](SoundStore& s) { return UnlinkLibraryFromFile(s, lib_uid); },
-            name + " unlinked: it stays in this project with all its sounds. The file is not touched.");
+            name + " unlinked: it stays in this project with all its sounds" +
+                (unsent > 0 ? ", your " + std::to_string(unsent) + " unsent " + (unsent == 1 ? "change" : "changes") + " included" : std::string()) +
+                ". The file is not touched.");
 }
 
 void RequestSaveLibraryToFile(const std::string& lib_uid)
@@ -1850,8 +2429,155 @@ void FileStatusLine(int glyph, const std::string& text)
 
 }  // namespace
 
-// 13-77a: the mockup's File section (fileSection): where this library's file stands. 13-77b replaces the tick lines
-// by its change bars.
+// ---- 13-77b: the sync bars of the File section ------------------------------------------------------------------
+
+const SyncDiff* LibrarySyncDiff(const std::string& lib_uid)
+{
+    const auto it = gs.slots.find(lib_uid);
+    return it != gs.slots.end() && it->second.ready ? &it->second.diff : nullptr;
+}
+
+LibrarySyncInfo LibrarySyncInfoOf(const std::string& lib_uid)
+{
+    LibrarySyncInfo info;
+    const auto      it = gs.slots.find(lib_uid);
+    if (it != gs.slots.end()) {
+        info.ready = it->second.ready;
+        info.bad = it->second.bad;
+        info.reading = it->second.busy || (!it->second.ready && !it->second.bad);
+        info.by = it->second.by;
+        info.at = it->second.at;
+    }
+    if (const LinkBase* b = FindLinkBase(GetSoundStore(nullptr), lib_uid)) info.synced_at = b->synced_at;
+    return info;
+}
+
+void RequestSyncApply(const std::string& lib_uid, const std::map<std::string, SyncDir>& picks)
+{
+    if (!picks.empty()) gs.reqs.push_back(SyncReq{lib_uid, picks});
+}
+
+void RequestNodeSync(const std::string& lib_uid, const std::string& node_uid, SyncDir dir)
+{
+    const SyncDiff* d = LibrarySyncDiff(lib_uid);
+    if (!d) {
+        ShowToastNoUndo("Still reading the file: try again in a moment");
+        return;
+    }
+    const SoundLibrary* lib = FindLibrary(GetSoundStore(nullptr), lib_uid);
+    const SoundNode*    n = lib ? FindNode(*lib, node_uid) : nullptr;
+    if (!n) return;
+    std::vector<std::string> keys;
+    if (n->type == SoundNodeType::Sound) {
+        for (const SyncChange& c : d->changes)
+            if (c.subject == node_uid) keys.push_back(c.key);
+    } else {
+        keys = ContainerChangeKeys(*d, node_uid);
+    }
+    std::map<std::string, SyncDir> picks;
+    for (const std::string& k : keys) picks[k] = dir;
+    RequestSyncApply(lib_uid, CloseSelection(*d, picks));
+}
+
+namespace {
+
+std::string SyncWhen(int64_t t)
+{
+    if (t <= 0) return {};
+    const std::time_t tt = static_cast<std::time_t>(t);
+    std::tm           tmv{};
+    localtime_s(&tmv, &tt);
+    char buf[64];
+    std::strftime(buf, sizeof buf, "%Y-%m-%d %H:%M", &tmv);
+    return buf;
+}
+
+enum class BarTone { Here, File, Both };
+
+void BeginSyncBar(ui::Card& bar)
+{
+    ui::BeginCard(bar, ui::Dp(4.0f));
+}
+
+void EndSyncBar(ui::Card& bar, BarTone t)
+{
+    if (t == BarTone::Here) ui::EndCard(bar, ui::kAccentSoft, ui::kAccentLine);
+    else if (t == BarTone::File) ui::EndCard(bar, ui::kWarnSoft, ui::kWarnBarLine);
+    else ui::EndCard(bar, ui::kBothSoft, ui::kBothLine);
+}
+
+ImU32 BarInk(BarTone t)
+{
+    return t == BarTone::Here ? ui::kAccentText : t == BarTone::File ? ui::kWarnInk : ui::kBothInk;
+}
+
+BarTone ToneOf(const LibSyncCounts& c)
+{
+    return c.both > 0 || (c.here > 0 && c.file > 0) ? BarTone::Both : c.here > 0 ? BarTone::Here : BarTone::File;
+}
+
+std::string ChangesWord(int n)
+{
+    return std::to_string(n) + (n == 1 ? " change" : " changes");
+}
+
+// The root bar (mockup .bar): what differs between this project's copy and the file, who wrote it, when it was synced.
+void DrawRootSyncBar(const SyncDiff& d, const LibrarySyncInfo& info)
+{
+    const LibSyncCounts c = TotalCounts(d);
+    const BarTone    tone = ToneOf(c);
+    ui::Card         bar;
+    BeginSyncBar(bar);
+    const ImU32 ink = BarInk(tone);
+    if (c.here > 0) ui::ToneText(SyncCountLine(c.here, SyncSide::Here), ink, true);
+    if (c.file > 0) {
+        std::string t = ChangesWord(c.file) + " in the file";
+        if (!info.by.empty()) t += " \xC2\xB7 by " + info.by + (info.at > 0 ? ", " + SyncWhen(info.at) : std::string());
+        ui::ToneText(t, ink, true);
+    }
+    if (c.both > 0) ui::ToneText(ChangesWord(c.both) + " changed on both sides: you choose", ink, true);
+    if (info.synced_at > 0) ui::ToneText("Last synced " + SyncWhen(info.synced_at), ui::kMuted, true);
+    EndSyncBar(bar, tone);
+}
+
+// A container's (or a Sound's) bar: its own changes listed, Send mine / Get file's for all of them.
+void DrawOwnSyncBar(const std::string& lib_uid, const std::string& node_uid, const std::vector<const SyncChange*>& own,
+                    const std::string& file_by)
+{
+    LibSyncCounts c;
+    for (const SyncChange* ch : own) (ch->side == SyncSide::Here ? c.here : ch->side == SyncSide::File ? c.file : c.both)++;
+    const BarTone tone = ToneOf(c);
+    const bool    mixed = tone == BarTone::Both && (c.here > 0 || c.file > 0) && c.both != c.Total();
+    ui::Card      bar;
+    BeginSyncBar(bar);
+    const ImU32 ink = BarInk(tone);
+    std::string head = ChangesWord(c.Total());
+    if (tone == BarTone::Here) head += " made here";
+    else if (tone == BarTone::File) head += " in the file" + (file_by.empty() ? std::string() : std::string(" \xC2\xB7 ") + file_by);
+    ui::ToneText(head, ink, true);
+    const size_t kMaxLines = 12;
+    for (size_t i = 0; i < own.size() && i < kMaxLines; ++i) {
+        const SyncChange* ch = own[i];
+        std::string       t = "\xE2\x80\xA2 " + ch->text;
+        if (ch->side == SyncSide::Here && mixed) t += " (here)";
+        else if (ch->side == SyncSide::File && mixed) t += " (file)";
+        ui::ToneText(t, ui::kMuted, true);
+    }
+    if (own.size() > kMaxLines) ui::ToneText("... and " + std::to_string(own.size() - kMaxLines) + " more", ui::kFaint, true);
+    const bool up_primary = tone == BarTone::Here, down_primary = tone == BarTone::File;
+    if (up_primary ? ui::PrimaryButton("\xE2\x86\x91 Send mine") : ui::SolidButton("\xE2\x86\x91 Send mine"))
+        RequestNodeSync(lib_uid, node_uid, SyncDir::Up);
+    ui::ItemTipText("Write these changes, as they are here, into the file. What they need goes with them.");
+    ui::SameLineIfFits(ui::ButtonWidth("\xE2\x86\x93 Get file's"));
+    if (down_primary ? ui::PrimaryButton("\xE2\x86\x93 Get file's") : ui::SolidButton("\xE2\x86\x93 Get file's"))
+        RequestNodeSync(lib_uid, node_uid, SyncDir::Down);
+    ui::ItemTipText("Take the file's version of this container here. What it needs goes with it.");
+    EndSyncBar(bar, tone);
+}
+
+}  // namespace
+
+// 13-77a: the mockup's File section (fileSection): where this library's file stands; 13-77b: its change bars.
 void DrawLibraryFileSection()
 {
     const SoundStore&   store = GetSoundStore(nullptr);
@@ -1883,14 +2609,26 @@ void DrawLibraryFileSection()
                 ImGui::SameLine(0.0f, ui::Dp(6.0f));
                 ui::FitText(lib->ravlib_path, ui::kText, std::max(ui::Dp(20.0f), fw - gs - ui::Dp(6.0f)));
                 ui::ItemTipText(("In " + UserFolderText()).c_str());
-                FileStatusLine(1, "Same as the file. Changes made here stay here until you send them.");
+                const SyncDiff*       sd = LibrarySyncDiff(lib_uid);
+                const LibrarySyncInfo info = LibrarySyncInfoOf(lib_uid);
+                if (sd && TotalCounts(*sd).Total() > 0) DrawRootSyncBar(*sd, info);
+                else if (sd) FileStatusLine(1, "Same as the file. Changes made here stay here until you send them.");
+                else if (info.bad) FileStatusLine(0, "Could not read the file just now: it is read again when REAPER comes back to the front.");
+                else FileStatusLine(0, "Reading the file...");
                 if (ui::SolidButton("Export .ravlib...")) RequestUserLibraryExport(lib_uid);
                 ui::ItemTipText("Save a copy of this library's file anywhere, to share it");
                 ui::SameLineIfFits(ui::ButtonWidth("Show in Explorer"));
                 if (ui::SolidButton("Show in Explorer")) RequestUserLibraryReveal(lib_uid);
                 ui::ItemTipText("Open its folder in File Explorer, its file selected");
             } else {
-                FileStatusLine(1, "Same as in " + lib->ravlib_path);
+                const SyncDiff* sd = LibrarySyncDiff(lib_uid);
+                std::vector<const SyncChange*> own;
+                if (sd)
+                    for (const SyncChange& c : sd->changes)
+                        if (n->type == SoundNodeType::Sound ? c.subject == n->uid : c.node == n->uid) own.push_back(&c);
+                if (!sd) FileStatusLine(0, "Reading the file...");
+                else if (own.empty()) FileStatusLine(1, "Same as in " + lib->ravlib_path);
+                else DrawOwnSyncBar(lib_uid, n->uid, own, LibrarySyncInfoOf(lib_uid).by);
             }
         } else {
             // Gone, renamed, or the name now holds another library: the red bar of the mockup.
@@ -2024,6 +2762,12 @@ void QuitLibraryUser()
     SetFileSoundResolver(nullptr);
     if (g_timer_on && g_register) g_register("-timer", reinterpret_cast<void*>(&OnTimer));
     g_timer_on = false;
+    {  // 13-77b: the sync worker
+        std::lock_guard<std::mutex> lk(g_sw.mu);
+        g_sw.quit = true;
+        g_sw.cv.notify_all();
+    }
+    if (g_sw.started) JoinWithin(g_sw.th, [] { return g_sw.finished.load(); });
     g_job.cancel = true;  // 13-38: a scan of a huge folder stops at once
     // Freeze audit #8: a scan stuck in a folder of a dead share is given up on after a while, not waited for for ever.
     JoinWithin(g_job.worker, [] { return g_job.done.load(); });

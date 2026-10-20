@@ -1573,6 +1573,31 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
             rx -= gap;
         }
     }
+    // 13-77b: a linked library's container that differs from its file: "edited" (here) / "in file" / "both", " . N" when
+    // several; a click selects the row (its File section lists the changes).
+    if (n && r.kind == TreeRowKind::Node && LibraryLinked(lib)) {
+        if (const SyncDiff* sd = LibrarySyncDiff(lib.uid)) {
+            const LibSyncCounts  sc = CountsOf(*sd, n->uid);
+            const std::string st = SyncTagText(sc);
+            if (!st.empty()) {
+                const float tw = ui::SmallTagWidth(st.c_str());
+                rx -= tw;
+                const bool  mixed = sc.both > 0 || (sc.here > 0 && sc.file > 0);
+                const ImU32 ink = mixed ? ui::kBoth : sc.here > 0 ? ui::kAccentInk : ui::kWarn;
+                const ImU32 line = mixed ? ui::kBothLine : sc.here > 0 ? ui::kAccentLine : ui::kWarnLine;
+                const ImU32 fill = mixed ? ui::kBothSoft : sc.here > 0 ? ui::kAccentSoft : ui::kWarnSoft;
+                ImGui::SetCursorScreenPos(ImVec2(rx, std::floor(cy - ui::SmallTagHeight() * 0.5f)));
+                ImGui::PushID("##synctag");
+                ImGui::SetNextItemAllowOverlap();
+                const bool clicked = ImGui::InvisibleButton("##st", ImVec2(tw, ui::SmallTagHeight()));
+                ui::DrawSmallTagTone(dl, ImVec2(rx, std::floor(cy - ui::SmallTagHeight() * 0.5f)), st.c_str(), ink, line, fill);
+                ui::ItemTipText(SyncTagTip(sc).c_str());
+                ImGui::PopID();
+                if (clicked) SelectOnly(r.row);
+                rx -= gap;
+            }
+        }
+    }
     const bool missing = n && SoundMissing(*n);
     if (missing) {
         // .rt.miss: 12 px #ff9a9a.
@@ -1881,14 +1906,25 @@ void LibraryListRow(const SoundStore& store, const SoundLibrary& lib, std::strin
     const std::string  miss_t = miss > 0 ? std::to_string(miss) : std::string();
     ImFont*            blk_f = ui::FontSemibold();
     ImFont*            miss_f = ui::FontCaptionBold();
-    float              tw[3];
-    int                tk[3];
+    float              tw[4];
+    int                tk[4];
     int                nt = 0;
     // 13-77a: the link glyph after the name (red and with its own tip when the file is not found).
     const LinkedFileState lfs = LinkedFileOf(lib);
     const bool            linked = lfs != LinkedFileState::Unlinked;
     const bool            file_bad = linked && lfs != LinkedFileState::Ok;
     if (linked) { tk[nt] = 2; tw[nt++] = ui::Dp(14.0f); }
+    // 13-77b: the row's ↑N ↓N (changes made here / in the file; both-side ones count in each).
+    LibSyncCounts sync_c;
+    if (linked && !file_bad)
+        if (const SyncDiff* sd = LibrarySyncDiff(lib.uid)) sync_c = TotalCounts(*sd);
+    const std::string up_t = SyncRowUpText(sync_c), down_t = SyncRowDownText(sync_c);
+    ImFont*           mark_f = ui::FontSemibold();
+    float             up_w = 0.0f, down_w = 0.0f;
+    if (!up_t.empty()) up_w = ui::TextSizeIn(mark_f, up_t.c_str()).x;
+    if (!down_t.empty()) down_w = ui::TextSizeIn(mark_f, down_t.c_str()).x;
+    const float mark_gap = ui::Dp(4.0f);
+    if (up_w > 0.0f || down_w > 0.0f) { tk[nt] = 3; tw[nt++] = up_w + down_w + (up_w > 0.0f && down_w > 0.0f ? mark_gap : 0.0f) + ui::Dp(8.0f); }
     // 13-21: a red "!" when blocked, an amber one for gaps; the tooltip lists every reason.
     std::string chk_tip;
     if (chk.blocked) chk_tip = "Blocked: " + chk.reason;
@@ -1899,7 +1935,7 @@ void LibraryListRow(const SoundStore& store, const SoundLibrary& lib, std::strin
     }
     if (!chk_tip.empty()) { tk[nt] = 0; tw[nt++] = ui::TextSizeIn(blk_f, "!").x + ui::Dp(2.0f); }
     if (miss > 0) { tk[nt] = 1; tw[nt++] = ui::TextSizeIn(miss_f, miss_t.c_str()).x; }
-    flow::TrailPlace tp[3];
+    flow::TrailPlace tp[4];
     float            name_w = 0.0f;
     {
         ui::FontScope f(ui::FontTitle());
@@ -1919,6 +1955,23 @@ void LibraryListRow(const SoundStore& store, const SoundLibrary& lib, std::strin
         ImFont*     f = tk[i] == 0 ? blk_f : miss_f;
         const char* t = tk[i] == 0 ? "!" : miss_t.c_str();
         ImGui::SetCursorScreenPos(ImVec2(tp[i].x, y));
+        if (tk[i] == 3) {  // 13-77b: ↑N (accent) ↓N (warn): a click opens the library's root (its File section)
+            const bool clicked = ImGui::InvisibleButton("##sync", ImVec2(tp[i].w, rh));
+            const bool hov = ImGui::IsItemHovered();
+            if (hov) dl->AddRectFilled(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), ui::kHover, ui::kRadiusSm);
+            float mx = tp[i].x + ui::Dp(4.0f);
+            if (up_w > 0.0f) {
+                ui::AddTextIn(dl, mark_f, ImVec2(mx, std::floor(y + (rh - mark_f->FontSize) * 0.5f)), ui::kAccentInk, up_t.c_str());
+                mx += up_w + mark_gap;
+            }
+            if (down_w > 0.0f) ui::AddTextIn(dl, mark_f, ImVec2(mx, std::floor(y + (rh - mark_f->FontSize) * 0.5f)), ui::kWarn, down_t.c_str());
+            if (hov) ui::ItemTipText(SyncRowTip(sync_c).c_str());
+            if (clicked) {
+                const std::string uid = lib.uid, root = lib.root;
+                Later([uid, root] { SelectLibraryRow(uid, LibraryRow{"", root}); });
+            }
+            continue;
+        }
         if (tk[i] == 2) {
             const float gs = ui::Dp(14.0f);
             DrawLinkGlyph(dl, ImVec2(tp[i].x, std::floor(y + (rh - gs) * 0.5f)), gs, file_bad ? ui::kBad : ui::kMuted);

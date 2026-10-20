@@ -265,6 +265,7 @@ if(WIN32)
             src/reaper_toast.cpp
             src/library_user_ui.cpp
             src/ravlib.cpp
+            src/library_sync.cpp
             src/sound_tracks.cpp
             src/sound_tracks_plan.cpp
     )

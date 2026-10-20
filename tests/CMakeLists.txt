@@ -291,6 +291,11 @@ add_executable(ravlib_test ravlib_test.cpp ../src/ravlib.cpp ../src/sound_entrie
 target_link_libraries(ravlib_test PRIVATE Threads::Threads)
 target_include_directories(ravlib_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME ravlib COMMAND ravlib_test)
+# 13-77b -- the three-way library <-> file sync engine (src/library_sync.h).
+add_executable(library_sync_test library_sync_test.cpp ../src/library_sync.cpp ../src/ravlib.cpp ../src/sound_entries.cpp ../src/sound_place_plan.cpp ../src/library_tree_edit.cpp ../src/sound_switch.cpp ../src/media_db.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp)
+target_link_libraries(library_sync_test PRIVATE Threads::Threads)
+target_include_directories(library_sync_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME library_sync COMMAND library_sync_test)
 # Story 13-13 -- src/sound_tracks_plan.h (Switch-named tracks)
 add_executable(sound_tracks_plan_test sound_tracks_plan_test.cpp ../src/sound_tracks_plan.cpp ../src/ravlib.cpp ../src/sound_entries.cpp ../src/library_tree_edit.cpp ../src/sound_switch.cpp ../src/media_db.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp)
 target_link_libraries(sound_tracks_plan_test PRIVATE Threads::Threads)

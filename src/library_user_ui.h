@@ -15,9 +15,11 @@
 #ifdef _WIN32
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
+#include "library_sync.h"  // 13-77b
 #include "library_tree_edit.h"  // MissingSound
 #include "ravlib.h"  // LinkedFileState
 #include "reaper_api.h"
@@ -61,6 +63,26 @@ void SaveLibraryFileAgain(const std::string& lib_uid);
 // Where a linked library's file stands (the folder listing, no disk access): Ok / Missing / OtherLibrary /
 // Unreadable; Unlinked for the others.
 LinkedFileState LinkedFileOf(const SoundLibrary& lib);
+// ---- 13-77b: the library <-> file changes (library_sync.h). Every read of the file is on a worker; these answer from the
+// last read (null / not ready until it came back). The file is read when the project opens, when REAPER comes back to the
+// foreground and before each Apply; nothing is ever taken or written without a gesture.
+// The changes of a linked library (null: not read yet, unreadable, or not linked).
+const SyncDiff* LibrarySyncDiff(const std::string& lib_uid);
+struct LibrarySyncInfo {
+    bool        ready = false;    // a diff is there
+    bool        bad = false;      // the file could not be read just now
+    bool        reading = false;  // a read is awaited
+    std::string by;               // who wrote the file (its header), when
+    int64_t     at = 0;
+    int64_t     synced_at = 0;    // this project's last sync (unix s), 0 = never
+};
+LibrarySyncInfo LibrarySyncInfoOf(const std::string& lib_uid);
+// "Send mine" (Up) / "Get file's" (Down) for one container (its own changes and the ones under containers the project does
+// not have yet) or one Sound (its own), dependencies included. Queued: run by the timer, one Apply = one undo point
+// `RAV: Sync with file`; the file is read again first and nothing is written when it moved.
+void RequestNodeSync(const std::string& lib_uid, const std::string& node_uid, SyncDir dir);
+// The same for an exact selection of change keys (13-77c's window); the selection is closed (needs / dependents) by the Apply.
+void RequestSyncApply(const std::string& lib_uid, const std::map<std::string, SyncDir>& picks);
 // The pickers (run by this module's timer, never inside the frame).
 void RequestUserLibraryImport();
 void RequestUserLibraryExport(const std::string& lib_uid);

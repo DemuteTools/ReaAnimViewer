@@ -31,6 +31,7 @@
 #include "library_view_ui.h"    // the toast repeated here
 #include "sound_project.h"      // GetSoundStore
 #include "sound_record.h"       // FindLibrary, FindNode, FindGroup
+#include "sync_rows.h"           // the row grouping and the readable names
 #include "ui_flow.h"
 #include "ui_theme.h"
 
@@ -67,7 +68,10 @@ struct Row {
     bool        add = false;                         // an addition: one box, on the side that added it
     SyncSide    adder = SyncSide::Both;
     int         icon = -1;                           // a SoundNodeType, or 100 + glyph (-1 none)
-    std::vector<std::string> tree;                   // the added branch's content (the detail strip)
+    std::vector<std::string> tree;                   // the detail strip's lines: an added branch's content / what each variation did
+    std::vector<int>         tree_ind;               // their indent levels
+    std::vector<std::string> keys;                   // every change this row stands for (the lead first): one tick picks them all
+    SyncRowKind              kind = SyncRowKind::Single;
 };
 
 struct Group {
@@ -84,6 +88,7 @@ struct Model {
     std::map<std::string, int> row_of;
     std::vector<std::string>   all;  // every key, in diff order
     std::map<std::string, int> group_of;
+    float                      gw = 0.0f, pw = 0.0f;  // the widest value of each side (px): the columns hug it (set once per diff)
 };
 
 struct State {
@@ -101,8 +106,6 @@ struct State {
     bool                               applying = false;
     double                             applying_until = 0.0;  // L1: an Apply that never answers stops blocking the button
     uint64_t                           epoch = 0;             // L2: moves each time the window opens fresh / on another library
-    std::map<std::string, std::vector<std::string>> nb_cache;  // H1: "needed by" per key, per selection change
-    uint64_t                           nb_ver = ~0ull, nb_sig = 0;
     std::string                        foot_text, foot_full;  // the footer summary, per selection change
     int                                foot_pick = 0;
     uint64_t                           foot_ver = ~0ull, foot_sig = 0;
@@ -190,10 +193,8 @@ std::string NodeName(const Ctx& c, const std::string& id)
                 if (!sg->name.empty()) return sg->name;
         return Capital(SoundNodeTypeWord(n->type));
     }
-    const std::string g2 = SyncGhostName(*c.d, id);
-    if (!g2.empty()) return g2;
-    const std::string w = SyncGhostType(*c.d, id);
-    return w.empty() ? std::string("(new)") : w;
+    const std::string g2 = SyncNodeDisplayName(*c.d, id);  // a node the project lacks: its name, else the value that plays it, else its type
+    return g2.empty() ? std::string("(new)") : g2;
 }
 
 bool IsSoundId(const Ctx& c, const std::string& id)
@@ -223,13 +224,41 @@ std::string KindOf(const SyncChange& c)
     return c.key.substr(0, c.key.find('|'));
 }
 
-// What a value cell says for an engine text: "present" is the element itself, bare markers read as "changed".
-std::string Show(const std::string& t, const std::string& other, const std::string& label)
+// A node id the diff knows (the project's or a new one's): "plays <uid>" / "in <uid>" read with the node's own name.
+std::string ResolveIds(const Ctx& c, const std::string& t)
 {
-    if (t == "present") return other == "present" ? std::string("changed") : label;
-    if (t == "here" || t == "file" || t.empty()) return "changed";
-    if (t == "here order" || t == "global order") return "other order";
+    for (const char* pre : {"plays ", "in "}) {
+        const size_t n = std::char_traits<char>::length(pre);
+        if (t.compare(0, n, pre) != 0) continue;
+        const std::string id = t.substr(n);
+        if (id.empty()) return t;
+        if (FindNode(*c.lib, id) || c.d->parent.count(id)) return std::string(pre) + NodeName(c, id);
+    }
     return t;
+}
+
+// What a value cell says for an engine text: "present" is the element itself, bare markers read as "changed" (or
+// "unchanged" on the side that did not move), settings are formatted.
+std::string Show(const Ctx& cx, const std::string& t, const std::string& other, const std::string& label, bool changed,
+                 const std::string& setting, bool is_field)
+{
+    if (t == "present") return other == "present" ? std::string(changed ? "changed" : "unchanged") : label;
+    if (t == "here" || t == "file" || t.empty()) return is_field && t.empty() ? SyncSettingValue(setting, t) : std::string(changed ? "changed" : "unchanged");
+    if (t == "here order" || t == "global order") return changed ? "other order" : "its order";
+    if (is_field) return SyncSettingValue(setting, t);
+    return ResolveIds(cx, t);
+}
+
+// The group a change's row sits under: the container it belongs to; an added / removed container sits under its parent
+// (its own group would be a header over one row).
+std::string GroupIdOf(const SyncDiff& d, const SyncChange& ch)
+{
+    if (ch.node.compare(0, 4, "grp:") == 0) return "grp";
+    if (ch.key.compare(0, 2, "X|") == 0 && ch.adds_container) {
+        const std::string p = SyncParentOf(d, ch.subject);
+        return p.empty() ? d.root : p;
+    }
+    return ch.node;
 }
 
 void BuildModel(const Ctx& c, Model* m)
@@ -248,97 +277,137 @@ void BuildModel(const Ctx& c, Model* m)
     }
     const SyncNameTrim trim = SyncCommonTrim(sound_names);
 
-    std::map<std::string, int> gix;
-    for (const SyncChange& ch : d.changes) {
+    const std::vector<SyncRowGroup> rg = SyncGroupChanges(d);
+    std::map<std::string, int>      gix;
+    for (const SyncRowGroup& sg : rg) {
+        const SyncChange& ch = *d.Find(sg.keys[0]);
         const std::string kind = KindOf(ch);
         const bool        grp = ch.node.compare(0, 4, "grp:") == 0;
-        const std::string gid = grp ? std::string("grp") : ch.node;
+        const std::string gid = GroupIdOf(d, ch);
         auto              it = gix.find(gid);
         if (it == gix.end()) {
             Group gr;
             gr.id = gid;
             if (gid == "grp") gr.segs.push_back("Switch Groups");
             else {
-                for (std::string u = gid; !u.empty() && u != d.root; u = SyncParentOf(d, u)) gr.segs.push_back(NodeName(c, u));
+                for (std::string u = gid; !u.empty() && u != d.root; u = SyncParentOf(d, u)) {
+                    const std::string nm = NodeName(c, u);
+                    if (gr.segs.empty() || gr.segs.back() != nm) gr.segs.push_back(nm);  // never "Switch > Switch"
+                }
                 std::reverse(gr.segs.begin(), gr.segs.end());
                 if (gr.segs.empty()) gr.segs.push_back(c.lib->name);
                 if (const SoundNode* n = FindNode(*c.lib, gid))
                     if (n->type == SoundNodeType::Switch)
-                        if (const SwitchGroup* sg = FindGroup(*c.store, n->group_uid)) gr.hint = "by " + sg->name;
+                        if (const SwitchGroup* sgrp = FindGroup(*c.store, n->group_uid)) gr.hint = "by " + sgrp->name;
             }
             m->groups.push_back(gr);
             it = gix.emplace(gid, static_cast<int>(m->groups.size()) - 1).first;
         }
         Row r;
         r.key = ch.key;
+        r.keys = sg.keys;
+        r.kind = sg.kind;
         r.group = it->second;
-        r.side = ch.side;
+        r.side = sg.side;
         const bool sound_subject = !ch.subject.empty() && !grp && IsSoundId(c, ch.subject);
-        r.add = SyncIsAddition(ch, &r.adder);
-        // the CHANGE column
-        if (grp) {
-            const std::string gname = NodeName(c, ch.node);
-            if (kind == "GX") r.last = gname;
-            else {
-                r.par = gname;
-                r.last = ch.label.empty() ? ch.text : ch.label;
+        r.add = sg.kind == SyncRowKind::Added || (sg.kind == SyncRowKind::Single && SyncIsAddition(ch, &r.adder));
+        if (sg.kind == SyncRowKind::Added) r.adder = sg.side;
+        const std::string subj_name = kind == "X" || !ch.subject.empty() ? NodeName(c, ch.subject) : std::string();
+        // the readable name of an X row: its label unless that is only the uid
+        const std::string x_name = kind == "X" ? (ch.label.empty() || ch.label == ch.subject ? subj_name : ch.label) : std::string();
+        const bool        changed_g = ch.side == SyncSide::Both || ch.side == SyncSide::File;
+        const bool        changed_p = ch.side == SyncSide::Both || ch.side == SyncSide::Here;
+        if (sg.kind == SyncRowKind::Added || sg.kind == SyncRowKind::Removed) {
+            // one row for the branch: "+ Gravel · plays Run_Gravel (3 sounds)"; its content in the strip
+            const std::string txt = SyncBranchCell(sg, x_name);
+            r.last = txt;
+            r.full_name = txt;
+            if (sg.kind == SyncRowKind::Added) {
+                (r.adder == SyncSide::Here ? r.ptxt : r.gtxt) = "added";
+                (r.adder == SyncSide::Here ? r.pfull : r.gfull) = txt;
+                r.gnone = r.adder == SyncSide::Here;
+                r.pnone = r.adder == SyncSide::File;
+            } else {  // removed on one side: the other side still has it
+                const bool here_removed = sg.side == SyncSide::Here;
+                (here_removed ? r.gtxt : r.ptxt) = "present";
+                (here_removed ? r.gfull : r.pfull) = txt.size() > 4 ? txt.substr(4) : txt;  // without the "- " sign
+                r.pnone = here_removed;
+                r.gnone = !here_removed;
             }
-        } else if (kind == "X") {
-            r.last = sound_subject ? SyncTrimName(trim, ch.label) : ch.label;
+            for (const auto& ln : SyncBranchLines(d, sg)) {
+                r.tree_ind.push_back(ln.first);
+                r.tree.push_back(ln.second);
+            }
+        } else if (sg.kind == SyncRowKind::Edited) {
+            r.par = sound_subject ? SyncTrimName(trim, subj_name) : subj_name;
+            r.last = SyncEditSummary(sg);
+            r.full_name = subj_name + kArrow + r.last;
+            r.gtxt = sg.side == SyncSide::Here ? "unchanged" : "edited";
+            r.ptxt = sg.side == SyncSide::File ? "unchanged" : "edited";
+            r.gfull = r.pfull = SyncEditSummary(sg);
+            for (const std::string& k : sg.keys)
+                if (const SyncChange* mc = d.Find(k)) {
+                    r.tree_ind.push_back(0);
+                    r.tree.push_back(SyncEditLine(*mc));
+                }
         } else {
-            if (!ch.subject.empty() && ch.subject != ch.node) {
-                const std::string sn = NodeName(c, ch.subject);
-                r.par = sound_subject ? SyncTrimName(trim, sn) : sn;
-            }
-            r.last = ch.label.empty() ? ch.text : ch.label;
-        }
-        r.full_name = r.par.empty() ? r.last : r.par + kArrow + r.last;
-        // the two cells
-        const bool trim_vals = sound_subject && (kind == "X" || ch.label == "Name");
-        auto       tr = [&](const std::string& s) { return trim_vals ? SyncTrimName(trim, s) : s; };
-        r.gnone = NoneText(ch.file_text);
-        r.pnone = NoneText(ch.here_text);
-        const std::string elem = kind == "X" ? ch.label : (ch.label.empty() ? ch.text : ch.label);
-        if (r.add) {
-            // an addition: the adding side shows "+ name · content", the other side nothing
-            const std::vector<std::string> dep = DependentsClosure(d, ch.key);
-            int                            sounds = 0, values = 0;
-            for (const std::string& k : dep) {
-                const SyncChange* x = d.Find(k);
-                if (!x) continue;
-                if (x->key.compare(0, 3, "VX|") == 0) ++values;
-                else if (x->key.compare(0, 2, "X|") == 0 && !x->adds_container) ++sounds;
-                r.tree.push_back(x->text);
-            }
-            std::string info;
-            if (sounds > 0) info = std::to_string(sounds) + (sounds == 1 ? " Sound" : " Sounds");
-            else if (values > 0) info = std::to_string(values) + (values == 1 ? " value" : " values");
-            const std::string cell = "+ " + tr(elem) + (info.empty() ? std::string() : kDot + info);
-            const std::string full = "+ " + elem + (info.empty() ? std::string() : kDot + info);
-            if (r.adder == SyncSide::Here) {
-                r.ptxt = cell;
-                r.pfull = full;
+            // the CHANGE column: a muted start, then the name
+            if (grp) {
+                const std::string gname = NodeName(c, ch.node);
+                if (kind == "GX") r.last = gname;
+                else {
+                    r.par = gname;
+                    r.last = ch.label.empty() ? ch.text : ch.label;
+                }
+            } else if (kind == "X") {
+                r.last = sound_subject ? SyncTrimName(trim, x_name) : x_name;
+            } else if (kind == "C") {
+                r.last = SyncCaseValueName(ch.label);  // the value that plays, not "Switch value X"
             } else {
-                r.gtxt = cell;
-                r.gfull = full;
+                if (!ch.subject.empty() && ch.subject != ch.node) r.par = sound_subject ? SyncTrimName(trim, subj_name) : subj_name;
+                r.last = ch.label.empty() ? ch.text : SyncSettingName(ch.label);
             }
-            r.gnone = r.adder == SyncSide::Here;
-            r.pnone = r.adder == SyncSide::File;
-        } else {
-            r.gfull = r.gnone ? std::string() : Show(ch.file_text, ch.here_text, elem);
-            r.pfull = r.pnone ? std::string() : Show(ch.here_text, ch.file_text, elem);
-            r.gtxt = tr(r.gfull);
-            r.ptxt = tr(r.pfull);
-            if (!r.gnone && !r.pnone && r.gtxt != r.ptxt) SyncDiffRange(r.gtxt, r.ptxt, &r.glo, &r.ghi, &r.plo, &r.phi);
+            r.full_name = r.par.empty() ? r.last : r.par + kArrow + r.last;
+            // the two cells
+            const bool trim_vals = sound_subject && (kind == "X" || ch.label == "Name");
+            auto       tr = [&](const std::string& s2) { return trim_vals ? SyncTrimName(trim, s2) : s2; };
+            r.gnone = NoneText(ch.file_text);
+            r.pnone = NoneText(ch.here_text);
+            const std::string elem = kind == "X" ? x_name : (ch.label.empty() ? ch.text : ch.label);
+            const bool        field = kind == "F" || kind == "GF" || kind == "VF" || kind == "LF";
+            if (r.add) {
+                // a lone addition: the adding side shows "+ name", the other side nothing
+                const std::string cell = "+ " + tr(elem);
+                const std::string full = "+ " + elem;
+                if (r.adder == SyncSide::Here) {
+                    r.ptxt = cell;
+                    r.pfull = full;
+                } else {
+                    r.gtxt = cell;
+                    r.gfull = full;
+                }
+                r.gnone = r.adder == SyncSide::Here;
+                r.pnone = r.adder == SyncSide::File;
+            } else {
+                r.gfull = r.gnone ? std::string() : Show(c, ch.file_text, ch.here_text, elem, changed_g, ch.label, field);
+                r.pfull = r.pnone ? std::string() : Show(c, ch.here_text, ch.file_text, elem, changed_p, ch.label, field);
+                r.gtxt = tr(r.gfull);
+                r.ptxt = tr(r.pfull);
+                if (!r.gnone && !r.pnone && r.gtxt != r.ptxt) SyncDiffRange(r.gtxt, r.ptxt, &r.glo, &r.ghi, &r.plo, &r.phi);
+            }
         }
         if (kind == "X") r.icon = static_cast<int>(TypeOfId(c, ch.subject));
         else if (kind == "GX") r.icon = 100 + kGlyphGroup;
         else if (kind == "VX") r.icon = 100 + kGlyphValue;
         else if (kind == "C") r.icon = static_cast<int>(SoundNodeType::Switch);
-        m->row_of[r.key] = static_cast<int>(m->rows.size());
-        m->groups[static_cast<size_t>(r.group)].rows.push_back(static_cast<int>(m->rows.size()));
-        m->groups[static_cast<size_t>(r.group)].keys.push_back(r.key);
-        m->all.push_back(r.key);
+        const int idx = static_cast<int>(m->rows.size());
+        for (const std::string& k : r.keys) {
+            m->row_of[k] = idx;
+            m->all.push_back(k);
+        }
+        Group& gg = m->groups[static_cast<size_t>(r.group)];
+        gg.rows.push_back(idx);
+        gg.keys.insert(gg.keys.end(), r.keys.begin(), r.keys.end());
         m->rows.push_back(std::move(r));
     }
     // the groups in path order (the library's top first, Switch Groups last); rows keep the diff's order
@@ -368,6 +437,14 @@ void BuildModel(const Ctx& c, Model* m)
     m->groups.swap(sorted);
     for (Row& r : m->rows) r.group = remap[static_cast<size_t>(r.group)];
     for (size_t i = 0; i < m->groups.size(); ++i) m->group_of[m->groups[i].id] = static_cast<int>(i);
+    // the widest value of each side: the two value columns hug it (measured once per diff, never per frame)
+    for (const Row& r : m->rows) {
+        const float icon = r.icon >= 0 ? ui::Dp(18.0f) : 0.0f;
+        if (!r.gnone) m->gw = std::max(m->gw, icon + ui::TextSizeIn(ui::FontBody(), r.gtxt.c_str()).x);
+        if (!r.pnone) m->pw = std::max(m->pw, icon + ui::TextSizeIn(ui::FontBody(), r.ptxt.c_str()).x);
+    }
+    m->gw += ui::Dp(14.0f);
+    m->pw += ui::Dp(14.0f);
 }
 
 bool IsOpen(const std::string& id)
@@ -413,7 +490,9 @@ struct Cols {
     float pbox_x = 0, p_x = 0, p_w = 0;
 };
 
-Cols MakeCols(float x0, float w)
+// The CHANGE column takes the free width; each value column hugs its widest value (between a minimum and 30% of the
+// window). Only the window's width and the diff decide, so nothing moves while scrolling.
+Cols MakeCols(float x0, float w, const Model& m)
 {
     Cols c;
     c.x0 = x0;
@@ -421,9 +500,16 @@ Cols MakeCols(float x0, float w)
     const float gap = ui::Dp(4.0f), box = ui::Dp(20.0f);
     c.conn_w = ui::Dp(30.0f);
     const float avail = std::max(ui::Dp(120.0f), w - 2.0f * box - c.conn_w - 5.0f * gap - ui::Dp(8.0f));
-    float       name = std::max(ui::Dp(150.0f), avail * 0.8f / 2.8f);
-    name = std::min(name, std::max(ui::Dp(70.0f), avail - 2.0f * ui::Dp(60.0f)));
-    const float val = std::max(ui::Dp(30.0f), (avail - name) * 0.5f);
+    const float vmin = ui::Dp(84.0f), vmax = std::max(vmin, w * 0.30f);
+    float       gv = std::min(std::max(m.gw, vmin), vmax), pv = std::min(std::max(m.pw, vmin), vmax);
+    const float name_min = ui::Dp(150.0f);
+    if (avail - gv - pv < name_min) {  // a narrow window: the values give way, the names keep their room
+        const float room = std::max(avail - name_min, ui::Dp(60.0f));
+        const float k = room / (gv + pv);
+        gv = std::max(ui::Dp(30.0f), gv * k);
+        pv = std::max(ui::Dp(30.0f), pv * k);
+    }
+    const float name = std::max(ui::Dp(40.0f), avail - gv - pv);
     float       x = x0 + ui::Dp(4.0f);
     c.name_x = x;
     c.name_w = name;
@@ -431,14 +517,14 @@ Cols MakeCols(float x0, float w)
     c.gbox_x = x;
     x += box + gap;
     c.g_x = x;
-    c.g_w = val;
-    x += val + gap;
+    c.g_w = gv;
+    x += gv + gap;
     c.conn_x = x;
     x += c.conn_w + gap;
     c.pbox_x = x;
     x += box + gap;
     c.p_x = x;
-    c.p_w = val;
+    c.p_w = pv;
     return c;
 }
 
@@ -566,7 +652,7 @@ void DrawIcon(ImDrawList* dl, ImVec2 p, float s, int icon, ImU32 col)
 void OpenTicked(const SyncDiff& d, const SyncEffect& fx)
 {
     for (const std::string& t : fx.ticked)
-        if (const SyncChange* x = d.Find(t)) g.fold[x->node.compare(0, 4, "grp:") == 0 ? std::string("grp") : x->node] = true;
+        if (const SyncChange* x = d.Find(t)) g.fold[GroupIdOf(d, *x)] = true;
 }
 
 void BoxGesture(const std::string& key, SyncDir dir)
@@ -602,7 +688,7 @@ float StripHeight(const Row& r)
 {
     const float lh = ui::FontSmall()->FontSize + ui::Dp(3.0f);
     size_t      n = 1;
-    if (r.add) n = 1 + std::min<size_t>(r.tree.size() + (r.tree.size() > 8 ? 1 : 0), 9);
+    if (!r.tree.empty()) n = 1 + std::min<size_t>(r.tree.size(), 8) + (r.tree.size() > 8 ? 1 : 0);
     return static_cast<float>(n) * lh + ui::Dp(10.0f);
 }
 
@@ -616,31 +702,36 @@ void DrawStrip(const Model& m, const Row& r, const Cols& c)
     const float      lh = f->FontSize + ui::Dp(3.0f);
     dl->AddRectFilled(p, ImVec2(p.x + c.w, p.y + h), ui::kRaised, ui::kRadiusSm, ImDrawFlags_RoundCornersBottom);
     const char* where = r.side == SyncSide::Both ? "Changed on both sides"
-                        : r.add ? (r.adder == SyncSide::Here ? "Added in this project" : "Added in the global")
+                        : r.kind == SyncRowKind::Added || r.add ? (r.adder == SyncSide::Here ? "Added in this project" : "Added in the global")
+                        : r.kind == SyncRowKind::Removed ? (r.side == SyncSide::Here ? "Removed in this project" : "Removed in the global")
                                 : (r.side == SyncSide::Here ? "Changed in this project" : "Changed in the global");
     ui::EllipsisTextTip(dl, ImVec2(c.name_x + ui::Dp(22.0f), p.y + ui::Dp(4.0f)), c.name_x + c.name_w, ui::kMuted, where);
-    auto column = [&](float x, float w, bool none, const std::string& full, bool adder_side, const char* nothing) {
-        float y = p.y + ui::Dp(4.0f);
+    {  // the content of a branch / what each variation did: in the wide CHANGE column
+        float       y = p.y + ui::Dp(4.0f);
+        const float mx = c.name_x + c.name_w;
+        const size_t shown = std::min<size_t>(r.tree.size(), 8);
+        for (size_t i = 0; i < shown; ++i) {
+            y += lh;
+            const float x = c.name_x + ui::Dp(22.0f) + ui::Dp(6.0f) + static_cast<float>(r.tree_ind[i]) * ui::Dp(14.0f);
+            dl->AddLine(ImVec2(x - ui::Dp(4.0f), y - 1.0f), ImVec2(x - ui::Dp(4.0f), y + lh - 1.0f), ui::kStrokeStrong);
+            ui::EllipsisTextTip(dl, ImVec2(x, y), mx, ui::kMuted, r.tree[i]);
+        }
+        if (r.tree.size() > shown) {
+            y += lh;
+            ui::EllipsisTextTip(dl, ImVec2(c.name_x + ui::Dp(28.0f), y), mx, ui::kFaint, "+" + std::to_string(r.tree.size() - shown) + " more");
+        }
+    }
+    auto column = [&](float x, float w, bool none, const std::string& full, const char* nothing) {
+        const float y = p.y + ui::Dp(4.0f);
         const float mx = x + w - ui::Dp(6.0f);
         if (none) {
             ui::EllipsisTextTip(dl, ImVec2(x + ui::Dp(6.0f), y), mx, ui::kFaint, nothing);
             return;
         }
         ui::EllipsisTextTip(dl, ImVec2(x + ui::Dp(6.0f), y), mx, ui::kText, full.empty() ? std::string("changed") : full);
-        if (!adder_side) return;
-        const size_t shown = std::min<size_t>(r.tree.size(), 8);
-        for (size_t i = 0; i < shown; ++i) {
-            y += lh;
-            dl->AddLine(ImVec2(x + ui::Dp(8.0f), y - 1.0f), ImVec2(x + ui::Dp(8.0f), y + lh - 1.0f), ui::kStrokeStrong);
-            ui::EllipsisTextTip(dl, ImVec2(x + ui::Dp(14.0f), y), mx, ui::kMuted, r.tree[i]);
-        }
-        if (r.tree.size() > shown) {
-            y += lh;
-            ui::EllipsisTextTip(dl, ImVec2(x + ui::Dp(14.0f), y), mx, ui::kFaint, "+" + std::to_string(r.tree.size() - shown) + " more");
-        }
     };
-    column(c.g_x, c.g_w, r.gnone, r.gfull, r.add && r.adder == SyncSide::File, "Not in the global");
-    column(c.p_x, c.p_w, r.pnone, r.pfull, r.add && r.adder == SyncSide::Here, "Not in this project");
+    column(c.g_x, c.g_w, r.gnone, r.gfull, "Not in the global");
+    column(c.p_x, c.p_w, r.pnone, r.pfull, "Not in this project");
     ImGui::SetCursorScreenPos(p);
     ImGui::Dummy(ImVec2(c.w, h));
 }
@@ -680,6 +771,21 @@ void DrawCell(ImDrawList* dl, const Row& r, bool glob, const Cols& c, float y, f
     DrawValue(dl, f, tx, ty, std::max(1.0f, right - tx), ink, txt, glob ? r.glo : r.plo, glob ? r.ghi : r.phi, hl, strike);
 }
 
+// What a row keeps: tri-state per side (1 all, 2 some, 0 none) over every change it stands for; a side an addition does
+// not have has none.
+void RowKept(const Row& r, const SyncDiff& d, int* gs, int* ps)
+{
+    const bool has_g = !(r.add && r.adder == SyncSide::Here), has_p = !(r.add && r.adder == SyncSide::File);
+    *gs = has_g ? TriInt(g.sel.KeepTri(d, r.keys, SyncDir::Down)) : 0;
+    *ps = has_p ? TriInt(g.sel.KeepTri(d, r.keys, SyncDir::Up)) : 0;
+}
+
+void RowGesture(const Row& r, SyncDir dir)
+{
+    if (r.keys.size() > 1) KeepGesture(r.keys, dir);
+    else BoxGesture(r.key, dir);
+}
+
 void DrawChangeRow(const Ctx& cx, const Model& m, int ri, const Cols& c)
 {
     const Row&        r = m.rows[static_cast<size_t>(ri)];
@@ -697,8 +803,12 @@ void DrawChangeRow(const Ctx& cx, const Model& m, int ri, const Cols& c)
     ImDrawList*     dl = ImGui::GetWindowDrawList();
     const SyncTick* tk = g.sel.Tick(r.key);
     const bool      on = g.sel.IsOn(r.key);
-    const bool      kept_g = on && tk && tk->dir == SyncDir::Down, kept_p = on && tk && tk->dir == SyncDir::Up;
-    const bool      decided = on;
+    int             gs = 0, ps = 0;
+    RowKept(r, d, &gs, &ps);
+    const bool kept_g = gs == 1, kept_p = ps == 1;
+    bool       decided = on;
+    for (size_t i = 1; i < r.keys.size() && !decided; ++i) decided = g.sel.IsOn(r.keys[i]);
+    if ((ri & 1) != 0 && !open) dl->AddRectFilled(p, ImVec2(p.x + c.w, p.y + rowh), ui::kRowAlt);  // zebra, under hover / open
     if (open) dl->AddRectFilled(p, ImVec2(p.x + c.w, p.y + rowh), ui::kRaised, ui::kRadiusSm, ImDrawFlags_RoundCornersTop);
     else if (HoverRect(p, ImVec2(p.x + c.w, p.y + rowh))) dl->AddRectFilled(p, ImVec2(p.x + c.w, p.y + rowh), ui::kSurface, ui::kRadiusSm);
     ImGui::PushID(r.key.c_str());
@@ -708,15 +818,18 @@ void DrawChangeRow(const Ctx& cx, const Model& m, int ri, const Cols& c)
                                 : r.add ? "" : "Keep the global's";
     const char* tipp = add_here ? "Add it to the global too (unticked: it stays only in this project)"
                                 : r.add ? "" : "Keep this project's";
-    if (!add_here && SideBox("##g", c.gbox_x, p.y, rowh, kept_g ? 1 : 0, true, false, tipg)) BoxGesture(r.key, SyncDir::Down);
-    if (!add_glob && SideBox("##p", c.pbox_x, p.y, rowh, kept_p ? 1 : 0, false, false, tipp)) BoxGesture(r.key, SyncDir::Up);
+    if (!add_here && SideBox("##g", c.gbox_x, p.y, rowh, gs, true, false, tipg)) RowGesture(r, SyncDir::Down);
+    if (!add_glob && SideBox("##p", c.pbox_x, p.y, rowh, ps, false, false, tipp)) RowGesture(r, SyncDir::Up);
     // the cells (a click opens the detail strip) and the state glyph
     const float ch2 = ui::Dp(20.0f), cy = std::floor(p.y + (rowh - ch2) * 0.5f);
-    const bool  gchanged = ch->side == SyncSide::Both || ch->side == SyncSide::File;
-    const bool  pchanged = ch->side == SyncSide::Both || ch->side == SyncSide::Here;
+    const bool  gchanged = r.side != SyncSide::Here;
+    const bool  pchanged = r.side != SyncSide::File;
     DrawCell(dl, r, true, c, p.y, rowh, kept_g, decided, gchanged);
     DrawCell(dl, r, false, c, p.y, rowh, kept_p, decided, pchanged);
-    const int mode = kept_g ? 1 : kept_p ? 2 : (ch->side == SyncSide::Both ? 4 : 0);
+    bool any_both = r.side == SyncSide::Both;
+    for (size_t i = 0; i < r.keys.size() && !any_both; ++i)
+        if (const SyncChange* mc = d.Find(r.keys[i])) any_both = mc->side == SyncSide::Both;
+    const int mode = kept_g ? 1 : kept_p ? 2 : (any_both && !decided ? 4 : 0);
     DrawConn(dl, c, p.y, rowh, mode, false);
     bool toggled = false;
     ImGui::SetCursorScreenPos(ImVec2(c.g_x, cy));
@@ -734,21 +847,15 @@ void DrawChangeRow(const Ctx& cx, const Model& m, int ri, const Cols& c)
     {
         float x = nx;
         std::string chip, chip_tip;
+        // "needed" only on a row that was ticked for you; who asked is in the tooltip. Never on a row you tick freely.
         const SyncTick* bt = on && tk && tk->auto_ ? g.sel.Tick(tk->by) : nullptr;
-        if (bt && bt->on && bt->dir == tk->dir) {
-            const auto it = m.row_of.find(tk->by);
-            chip = std::string(tk->needs_why ? "needed by " : "goes with ") + (it == m.row_of.end() ? tk->by : m.rows[static_cast<size_t>(it->second)].full_name);
-            chip_tip = tk->needs_why ? "Ticked for you: the change it belongs to needs this one" : "Ticked for you: it goes away with the change it belongs to";
-        } else if (on) {
-            const auto nbit = g.nb_cache.find(r.key);  // H1: computed once per selection change, not per row per frame
-            if (nbit != g.nb_cache.end() && !nbit->second.empty()) {
-                const auto first = m.row_of.find(nbit->second[0]);
-                chip = "needed by " + (first == m.row_of.end() ? nbit->second[0] : m.rows[static_cast<size_t>(first->second)].full_name) +
-                       (nbit->second.size() > 1 ? " +" + std::to_string(nbit->second.size() - 1) : std::string());
-                chip_tip = "Another ticked change needs this one";
-            }
+        if (bt && bt->on && bt->dir == tk->dir && m.row_of.count(tk->by) && m.row_of.at(tk->by) != ri) {
+            const auto        it = m.row_of.find(tk->by);
+            const std::string who = it == m.row_of.end() ? tk->by : m.rows[static_cast<size_t>(it->second)].full_name;
+            chip = tk->needs_why ? "needed" : "goes with";
+            chip_tip = std::string(tk->needs_why ? "Ticked for you: " + who + " needs this one" : "Ticked for you: it goes away with " + who);
         }
-        const float chip_room = chip.empty() ? 0.0f : std::min(ui::Dp(170.0f), (nmax - nx) * 0.45f);
+        const float chip_room = chip.empty() ? 0.0f : std::min(ui::Dp(90.0f), (nmax - nx) * 0.45f);
         const float room = nmax - x - (chip_room > ui::Dp(50.0f) ? chip_room + ui::Dp(6.0f) : 0.0f);
         const std::string sep = r.par.empty() ? std::string() : std::string(kArrow);
         const float lastw = ui::TextSizeIn(nf, r.last.c_str()).x;
@@ -882,9 +989,11 @@ void DrawGroupRow(const Ctx& cx, const Model& m, int gi, const Cols& c)
     if (!open) {
         int gl = 0, pr = 0, both = 0, none = 0;
         for (int ri : gr.rows) {
-            const SyncTick* t = g.sel.Tick(m.rows[static_cast<size_t>(ri)].key);
-            if (!t || !t->on) ++none;
-            else (t->dir == SyncDir::Down ? gl : pr)++;
+            int a = 0, b = 0;
+            RowKept(m.rows[static_cast<size_t>(ri)], d, &a, &b);
+            if (a == 1) ++gl;
+            else if (b == 1) ++pr;
+            else ++none;
         }
         (void)both;
         sum += std::string(sum.empty() ? "" : kDot) + std::to_string(gl) + " global" + kDot + std::to_string(pr) + " mine";
@@ -1094,11 +1203,6 @@ void DrawContent()
         }
     }
     if (g.applying && ClockSeconds() > g.applying_until) g.applying = false;  // L1: no answer came: the button comes back
-    if (d && (g.nb_ver != g.sel.Version() || g.nb_sig != g.sig)) {
-        g.nb_ver = g.sel.Version();
-        g.nb_sig = g.sig;
-        g.nb_cache = g.sel.NeededByAll(*d);
-    }
     if (d && (g.foot_ver != g.sel.Version() || g.foot_sig != g.sig)) {  // the footer and the "to pick" count, per selection change
         g.foot_ver = g.sel.Version();
         g.foot_sig = g.sig;
@@ -1118,7 +1222,7 @@ void DrawContent()
     if (d && !d->changes.empty()) {
         const float x0 = ImGui::GetCursorScreenPos().x;
         const float w = std::max(1.0f, ImGui::GetContentRegionAvail().x - g.body_sb);
-        DrawHeader(lib, g.model, *d, MakeCols(x0, w));
+        DrawHeader(lib, g.model, *d, MakeCols(x0, w, g.model));
     }
     const float body_h = std::max(ui::Dp(60.0f), ImGui::GetContentRegionAvail().y - footer_h - ui::Dp(4.0f));
     if (ImGui::BeginChild("##sfbody", ImVec2(0.0f, body_h), ImGuiChildFlags_None)) {
@@ -1127,7 +1231,7 @@ void DrawContent()
                                   : "Reading the global library...",
                          ui::kMuted, true);
         } else if (!d->changes.empty()) {
-            const Cols cols = MakeCols(ImGui::GetCursorScreenPos().x, std::max(1.0f, ImGui::GetContentRegionAvail().x));
+            const Cols cols = MakeCols(ImGui::GetCursorScreenPos().x, std::max(1.0f, ImGui::GetContentRegionAvail().x), g.model);
             g.body_sb = ImGui::GetScrollMaxY() > 0.0f ? ImGui::GetStyle().ScrollbarSize : 0.0f;
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 0.0f));  // rows are exactly 24 px apart
             for (size_t gi = 0; gi < g.model.groups.size(); ++gi) {
@@ -1158,7 +1262,6 @@ void OpenSyncWithFile(const std::string& lib_uid, const std::string& focus_node)
     const bool fresh = !g.open || g.lib != lib_uid;
     if (fresh) {
         ++g.epoch;
-        g.nb_cache.clear();
         g.sel.Clear();
         g.fold.clear();
         g.open_row.clear();

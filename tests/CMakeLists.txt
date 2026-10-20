@@ -301,6 +301,11 @@ add_executable(library_sync_select_test library_sync_select_test.cpp ../src/libr
 target_link_libraries(library_sync_select_test PRIVATE Threads::Threads)
 target_include_directories(library_sync_select_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME library_sync_select COMMAND library_sync_select_test)
+# 13-77c readability pass -- the window's row grouping and display names (src/sync_rows.h).
+add_executable(sync_rows_test sync_rows_test.cpp ../src/sync_rows.cpp ../src/library_sync_select.cpp ../src/library_sync.cpp ../src/ravlib.cpp ../src/sound_entries.cpp ../src/sound_place_plan.cpp ../src/library_tree_edit.cpp ../src/sound_switch.cpp ../src/media_db.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp)
+target_link_libraries(sync_rows_test PRIVATE Threads::Threads)
+target_include_directories(sync_rows_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME sync_rows COMMAND sync_rows_test)
 # Story 13-13 -- src/sound_tracks_plan.h (Switch-named tracks)
 add_executable(sound_tracks_plan_test sound_tracks_plan_test.cpp ../src/sound_tracks_plan.cpp ../src/ravlib.cpp ../src/sound_entries.cpp ../src/library_tree_edit.cpp ../src/sound_switch.cpp ../src/media_db.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp)
 target_link_libraries(sound_tracks_plan_test PRIVATE Threads::Threads)

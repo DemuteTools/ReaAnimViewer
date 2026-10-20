@@ -1943,18 +1943,11 @@ void LibraryListRow(const SoundStore& store, const SoundLibrary& lib, std::strin
     }
     const float lead_min = std::min(name_w, 4.0f * ImGui::GetFontSize());
     const int   lines = nt > 0 ? flow::PlaceTrail(tw, nt, nx, p.x + w - ui::Dp(6.0f), lead_min, ui::Dp(7.0f), tp) : 1;
-    // The missing count is clicked to show its sounds: a double-click there is not a rename.
-    bool over_miss = false;
-    for (int i = 0; i < nt; ++i)
-        if (tk[i] == 1) {
-            const float y = p.y + static_cast<float>(tp[i].line) * rh;
-            over_miss = ImGui::IsMouseHoveringRect(ImVec2(tp[i].x, y), ImVec2(tp[i].x + tp[i].w, y + rh));
-        }
     ImGui::SetNextItemAllowOverlap();
     if (ui::SelectRow("##lib", g.lib == lib.uid, 0, rh * static_cast<float>(lines),
                       ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_AllowOverlap, ui::kRadiusMd))
         PickLibrary(lib.uid);
-    if (ImGui::IsItemHovered() && !over_miss && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) StartLibraryRename(lib);
+    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) StartLibraryRename(lib);
     if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) ImGui::OpenPopup("##libmenu");
     dl->AddCircleFilled(ImVec2(p.x + ui::Dp(10.0f), p.y + rh * 0.5f), ui::Dp(4.0f), LibDot(lib.color));
     for (int i = 0; i < nt; ++i) {
@@ -1962,7 +1955,11 @@ void LibraryListRow(const SoundStore& store, const SoundLibrary& lib, std::strin
         ImFont*     f = tk[i] == 0 ? blk_f : miss_f;
         const char* t = tk[i] == 0 ? "!" : miss_t.c_str();
         ImGui::SetCursorScreenPos(ImVec2(tp[i].x, y));
-        ImGui::Dummy(ImVec2(tp[i].w, rh));
+        // The missing count is a button over the row (the row allows the overlap), so its click is its
+        // own: a Dummy never saw it, the row took the press first (Antho 2026-10-20). No rename there.
+        bool shown = false;
+        if (tk[i] == 1) shown = ImGui::InvisibleButton("##miss", ImVec2(tp[i].w, rh));
+        else ImGui::Dummy(ImVec2(tp[i].w, rh));
         ui::AddTextIn(dl, f, ImVec2(tp[i].x + (tk[i] == 0 ? ui::Dp(1.0f) : 0.0f), std::floor(y + (rh - f->FontSize) * 0.5f)),
                       tk[i] == 0 && !chk.blocked ? ui::kWarn : ui::kBad, t);
         if (tk[i] == 0) {
@@ -1973,7 +1970,7 @@ void LibraryListRow(const SoundStore& store, const SoundLibrary& lib, std::strin
                 ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
                 ui::ItemTipText((MissingTip(missing) + "\nClick to show them one by one").c_str());
             }
-            if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+            if (shown) {
                 size_t next = 0;
                 if (g.lib == lib.uid) {
                     const std::string cur = LibraryRowNode();

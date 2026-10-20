@@ -51,6 +51,7 @@
 #include "reaper_api.h"
 #include "shortcuts.h"
 #include "sound_audition.h"
+#include "sound_audition_plan.h"  // ReachCache
 #include "sound_entries.h"
 #include "sound_peaks.h"
 #include "sound_project.h"
@@ -66,9 +67,11 @@ namespace {
 
 using PlayPreviewFn = int (*)(preview_register_t* preview);
 using StopPreviewFn = int (*)(preview_register_t* preview);
+using PlayPreviewExFn = int (*)(preview_register_t* preview, int bufflags, double measure_align);
 using CreateFromFileFn = PCM_source* (*)(const char* filename);
 
 PlayPreviewFn    f_play = nullptr;
+PlayPreviewExFn  f_play_ex = nullptr;  // freeze fix: buffered, so REAPER's audio thread never reads the file
 StopPreviewFn    f_stop = nullptr;
 CreateFromFileFn f_create = nullptr;
 
@@ -142,7 +145,7 @@ private:
 // Exists: the rows' missing checks (a batch of paths). Reach: the file is there and answers a short
 // read (then the UI thread opens it, or asks its peaks of sound_peaks).
 enum class TaskKind { Exists, Reach };
-enum class PeakOwner { Open, Preview, Batch };  // Open: the preview's playback (Reach only)
+enum class PeakOwner { Open, Preview, Batch, Audition };  // Open: the preview's playback; Audition: sound_audition's files (Reach only)
 
 struct Task {
     TaskKind    kind = TaskKind::Exists;
@@ -175,6 +178,7 @@ bool TaskStale(const Task& t)
     switch (t.owner) {
     case PeakOwner::Open: return t.id != g_open_gen;
     case PeakOwner::Preview: return t.id != g_preview_gen;
+    case PeakOwner::Audition: return false;  // a cheap answer, cached; its asker polls it
     default: return t.id != g_batch_gen;
     }
 }
@@ -273,6 +277,13 @@ private:
 DiskWorker g_rows;    // Exists: the rows' checks, never ahead of a preview or a use
 DiskWorker g_probe;   // Reach (quick, but may stall on an offline share)
 
+// Freeze fix (audit #1): the files the probe reached lately, for sound_audition (which asks before it opens).
+ReachCache g_reach;
+double     ReachNow()
+{
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 // ---- Preview (REAPER's preview API, one sound at a time) -----------------------------------------
 
 struct Preview {
@@ -284,6 +295,7 @@ struct Preview {
     double             offset = 0.0;  // file time of the source's 0 (a clip's start)
     double             length = 0.0;  // the played source's length
     int                frame = -1;    // the variation playing, -1 = the file
+    double             last_cur = 0.0;  // the last position read (kept when the preview's lock is busy)
     // A start waiting for its source (opened on the probe worker).
     bool               opening = false;
     std::string        open_path;
@@ -291,6 +303,15 @@ struct Preview {
     int                open_frame = -1;
 };
 Preview g_pv;
+
+// Freeze fix (audit #1): a buffered preview (REAPER reads the source on its own buffering thread, so a file that
+// stalls -- a cloud drive that is not cached, a share that dropped -- never holds REAPER's audio thread or the
+// preview's lock); the plain PlayPreview only when this REAPER has no PlayPreviewEx.
+int StartReaperPreview(preview_register_t* reg)
+{
+    if (f_play_ex && f_play_ex(reg, 1 /*buffer the source*/, -1.0 /*now*/) != 0) return 1;
+    return f_play ? f_play(reg) : 0;  // a source REAPER cannot buffer (no Duplicate): played as before
+}
 
 void EnsureCs()
 {
@@ -361,7 +382,8 @@ void FinishPreview(PCM_source* file)
     g_pv.offset = to > from ? from : 0.0;
     g_pv.length = src->GetLength();
     g_pv.frame = frame;
-    g_pv.playing = f_play(&g_pv.reg) != 0;
+    g_pv.last_cur = cur;
+    g_pv.playing = StartReaperPreview(&g_pv.reg) != 0;
     if (!g_pv.playing) {
         delete src;
         g_pv.src = nullptr;
@@ -373,9 +395,12 @@ void FinishPreview(PCM_source* file)
 double PreviewFileTime()
 {
     if (!g_pv.playing) return -1.0;
-    EnterCriticalSection(&g_pv.reg.cs);
-    double cur = g_pv.reg.curpos;
-    LeaveCriticalSection(&g_pv.reg.cs);
+    // Never wait on the preview's lock (freeze audit #1): a busy one keeps the last position.
+    if (TryEnterCriticalSection(&g_pv.reg.cs)) {
+        g_pv.last_cur = g_pv.reg.curpos;
+        LeaveCriticalSection(&g_pv.reg.cs);
+    }
+    const double cur = g_pv.last_cur;
     if (cur >= g_pv.length - 1e-4) {
         StopPreviewNow();
         return -1.0;
@@ -664,6 +689,8 @@ void PollWorkers()
     }
     for (TaskResult& r : g_probe.Take()) {
         g.exists.Set(r.path, r.ok);
+        g_reach.Set(r.path, r.ok, ReachNow());
+        if (r.owner == PeakOwner::Audition) continue;  // only the cache: sound_audition reads it
         if (r.owner == PeakOwner::Open) {
             if (!g_pv.opening || r.id != g_open_gen) continue;
             PCM_source* src = r.ok && f_create ? f_create(r.path.c_str()) : nullptr;
@@ -1590,12 +1617,27 @@ void InitLibraryMedia(void* (*get_func)(const char* name))
     if (!get_func) return;
     g_quitting = false;
     f_play = reinterpret_cast<PlayPreviewFn>(get_func("PlayPreview"));
+    f_play_ex = reinterpret_cast<PlayPreviewExFn>(get_func("PlayPreviewEx"));
     f_stop = reinterpret_cast<StopPreviewFn>(get_func("StopPreview"));
     f_create = reinterpret_cast<CreateFromFileFn>(get_func("PCM_Source_CreateFromFile"));
     ApplyHooks();  // the drop targets know the payload before the panel first draws
 }
 
 void StopMediaPreview() { StopPreviewNow(); }
+
+void MediaReachAsk(const std::string& path)
+{
+    if (path.empty() || g_quitting) return;
+    Task t;
+    t.kind = TaskKind::Reach;
+    t.path = path;
+    t.owner = PeakOwner::Audition;
+    g_probe.Push(std::move(t), true);
+}
+
+int MediaReachGet(const std::string& path) { return static_cast<int>(g_reach.Get(path, ReachNow())); }
+
+void MediaReachPoll() { PollWorkers(); }
 
 bool MediaPanelTakesArrows() { return g.takes_arrows; }
 

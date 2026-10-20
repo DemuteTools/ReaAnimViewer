@@ -13,6 +13,8 @@
 
 #ifdef _WIN32
 
+#include <string>
+
 
 namespace rav {
 
@@ -24,6 +26,11 @@ void InitLibraryMedia(void* (*get_func)(const char* name));
 void QuitLibraryMedia();
 // Stops the Media Explorer's preview (if any).
 void StopMediaPreview();
+// Freeze fix (audit #1): is a file reachable (the probe worker answers; the UI never waits on a stalled share).
+// Ask, poll each frame, then read: 0 = no answer yet, 1 = reached, 2 = not reachable (rav::Reach).
+void MediaReachAsk(const std::string& path);
+void MediaReachPoll();
+int  MediaReachGet(const std::string& path);
 // True when the panel had the focus (not typing) with results last frame: Up/Down move its row.
 bool MediaPanelTakesArrows();
 

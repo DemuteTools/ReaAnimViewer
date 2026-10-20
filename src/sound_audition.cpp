@@ -14,7 +14,10 @@
 #include <chrono>
 #include <cmath>
 #include <memory>
+#include <set>
+#include <string>
 
+#include "console_log.h"
 #include "library_media_ui.h"
 #include "reaper_api.h"
 #include "sound_audition_plan.h"
@@ -24,9 +27,11 @@ namespace {
 
 using CreateFromFileFn = PCM_source* (*)(const char*);
 using PreviewFn = int (*)(preview_register_t*);
+using PreviewExFn = int (*)(preview_register_t*, int, double);
 
 CreateFromFileFn f_create = nullptr;
 PreviewFn        f_play = nullptr;
+PreviewExFn      f_play_ex = nullptr;
 PreviewFn        f_stop = nullptr;
 
 struct Voice {
@@ -59,7 +64,14 @@ public:
         }
         scratch_.resize(16384 * 2);  // a usual block: no allocation on the audio thread
     }
-    PCM_source* Duplicate() override { return nullptr; }
+    // Freeze fix (audit #1): REAPER buffers a preview on its own thread and asks for a copy of the source: each voice's
+    // file source is duplicated (nullptr when one cannot be: the preview then plays unbuffered, as before).
+    PCM_source* Duplicate() override
+    {
+        std::vector<Voice> a, b;
+        if (!CloneVoices(voices_, &a) || !CloneVoices(loop_, &b)) return nullptr;
+        return new AuditionMix(std::move(a), std::move(b), head_s_, loop_s_);
+    }
     bool        IsAvailable() override { return true; }
     const char* GetType() override { return "RAV_AUDITION"; }
     bool        SetFileName(const char*) override { return false; }
@@ -105,6 +117,24 @@ public:
     }
 
 private:
+    static bool CloneVoices(const std::vector<Voice>& from, std::vector<Voice>* to)
+    {
+        for (const Voice& v : from) {
+            PCM_source* d = v.src ? v.src->Duplicate() : nullptr;
+            if (!d) return false;
+            Voice c;
+            c.src.reset(d);
+            c.start = v.start; c.length = v.length; c.delay = v.delay; c.gain = v.gain;
+            c.fade_in = v.fade_in; c.fade_out = v.fade_out;
+            c.in_shape = v.in_shape; c.out_shape = v.out_shape;
+            c.in_dir = v.in_dir; c.out_dir = v.out_dir;
+            c.fade_from = v.fade_from; c.fade_span = v.fade_span;
+            c.mono = v.mono;
+            to->push_back(std::move(c));
+        }
+        return true;
+    }
+
     // `n` samples of the voices from mix time t0, added into `outp` (nch interleaved).
     void Mix(std::vector<Voice>& set, double t0, int n, double sr, int nch, ReaSample* outp)
     {
@@ -158,8 +188,23 @@ struct Playing {
     std::string                  tag;
     double                       last_pos = -1.0;  // AuditionPlaying's end watch
     double                       moved_s = 0.0;
+    double                       last_raw = 0.0;  // RawPosition's last read (kept while the preview's lock is busy)
 };
 Playing     g_play;
+
+// Freeze fix (audit #1): a play whose files are not known reachable yet. The probe worker asks (a stalled share or an
+// offline cloud drive never blocks the UI); the play starts from AuditionPlaying once they all answered (the callers
+// poll it every frame), or is dropped after kPendGiveUpS.
+struct Pending {
+    bool                  active = false;
+    bool                  looped = false;
+    std::vector<PlayVoice> head, loop;
+    double                head_s = 0.0, loop_s = 0.0;
+    std::string           tag;
+    double                t0 = 0.0;
+};
+Pending           g_pend;
+constexpr double  kPendGiveUpS = 6.0;
 std::string g_empty;
 
 double NowS()
@@ -186,11 +231,13 @@ void InitSoundAudition(void* (*get_func)(const char* name))
     if (!get_func) return;
     f_create = reinterpret_cast<CreateFromFileFn>(get_func("PCM_Source_CreateFromFile"));
     f_play = reinterpret_cast<PreviewFn>(get_func("PlayPreview"));
+    f_play_ex = reinterpret_cast<PreviewExFn>(get_func("PlayPreviewEx"));
     f_stop = reinterpret_cast<PreviewFn>(get_func("StopPreview"));
 }
 
 void StopAudition()
 {
+    g_pend.active = false;  // a play still waiting for its files is cancelled too
     if (!g_play.active) return;
     RAV_CRUMB("StopAudition", nullptr);  // freeze audit
     if (f_stop) f_stop(&g_play.reg);
@@ -211,6 +258,8 @@ std::vector<Voice> OpenVoices(const std::vector<PlayVoice>& voices, std::vector<
     for (size_t pi = 0; pi < voices.size(); ++pi) {
         const PlayVoice& p = voices[pi];
         if (p.path.empty()) continue;
+        if (MediaReachGet(p.path) == 2) continue;  // asked and not reachable: never opened on this thread
+        RAV_CRUMB("OpenVoice", wd::PathTail(p.path));  // freeze audit: a stalled open names its file
         PCM_source* s = f_create(p.path.c_str());
         if (!s) continue;
         if (s->GetSampleRate() < 1.0 || s->GetNumChannels() < 1) {
@@ -248,8 +297,11 @@ bool StartMix(std::unique_ptr<AuditionMix> mix, const std::string& tag, std::str
     g_play.active = true;
     g_play.tag = tag;
     g_play.last_pos = -1.0;
+    g_play.last_raw = 0.0;
     g_play.moved_s = NowS();
-    if (f_play(&g_play.reg) == 0) {
+    // Buffered (REAPER reads the files on its own thread, never the audio thread); unbuffered if it cannot.
+    const bool started = (f_play_ex && f_play_ex(&g_play.reg, 1, -1.0) != 0) || f_play(&g_play.reg) != 0;
+    if (!started) {
         // Not started: nothing reads the source, free it at once.
         DeleteCriticalSection(&g_play.reg.cs);
         g_play.reg = preview_register_t{};
@@ -265,10 +317,70 @@ bool StartMix(std::unique_ptr<AuditionMix> mix, const std::string& tag, std::str
 double RawPosition()
 {
     if (!g_play.active) return 0.0;
-    EnterCriticalSection(&g_play.reg.cs);
-    const double p = g_play.reg.curpos;
-    LeaveCriticalSection(&g_play.reg.cs);
-    return p;
+    // Never wait on the preview's lock (freeze audit #1): a busy one keeps the last position read.
+    if (TryEnterCriticalSection(&g_play.reg.cs)) {
+        g_play.last_raw = g_play.reg.curpos;
+        LeaveCriticalSection(&g_play.reg.cs);
+    }
+    return g_play.last_raw;
+}
+
+}  // namespace
+
+namespace {
+
+bool PlayVoicesNow(const std::vector<PlayVoice>& voices, const std::string& tag, std::string* why, std::vector<int>* kept)
+{
+    std::vector<int>   used;
+    std::vector<Voice> vs = OpenVoices(voices, &used);
+    if (vs.empty()) {
+        if (why) *why = "no sound file could be read";
+        return false;
+    }
+    if (!StartMix(std::make_unique<AuditionMix>(std::move(vs)), tag, why)) return false;
+    if (kept) *kept = std::move(used);
+    return true;
+}
+
+bool PlayLoopedNow(const std::vector<PlayVoice>& head, double head_s, const std::vector<PlayVoice>& loop, double loop_s,
+                   const std::string& tag)
+{
+    std::vector<Voice> hv = OpenVoices(head, nullptr);
+    std::vector<Voice> lv = OpenVoices(loop, nullptr);
+    if (lv.empty() || !(loop_s > 0.0)) return false;
+    return StartMix(std::make_unique<AuditionMix>(std::move(hv), std::move(lv), head_s, loop_s), tag, nullptr);
+}
+
+// True when every file of the sets has been answered (the unanswered ones are asked, once per call).
+bool AllReachKnown(const std::vector<PlayVoice>& a, const std::vector<PlayVoice>& b, bool ask)
+{
+    bool known = true;
+    std::set<std::string> seen;
+    for (const std::vector<PlayVoice>* set : {&a, &b})
+        for (const PlayVoice& v : *set) {
+            if (v.path.empty() || !seen.insert(v.path).second) continue;
+            if (MediaReachGet(v.path) != 0) continue;
+            known = false;
+            if (ask) MediaReachAsk(v.path);
+        }
+    return known;
+}
+
+void PumpPending()
+{
+    if (!g_pend.active) return;
+    MediaReachPoll();
+    if (!AllReachKnown(g_pend.head, g_pend.loop, false)) {
+        if (NowS() - g_pend.t0 > kPendGiveUpS) {
+            LogWarn("audition: the sound files did not answer in %.0f s; not played", kPendGiveUpS);
+            g_pend.active = false;
+        }
+        return;
+    }
+    Pending p = std::move(g_pend);  // moved out first: starting the play cancels a pending one
+    g_pend = Pending{};
+    if (p.looped) PlayLoopedNow(p.head, p.head_s, p.loop, p.loop_s, p.tag);
+    else PlayVoicesNow(p.head, p.tag, nullptr, nullptr);
 }
 
 }  // namespace
@@ -283,15 +395,18 @@ bool PlayVoices(const std::vector<PlayVoice>& voices, const std::string& tag, st
         if (why) *why = "REAPER's preview is not available";
         return false;
     }
-    std::vector<int>   used;
-    std::vector<Voice> vs = OpenVoices(voices, &used);
-    if (vs.empty()) {
-        if (why) *why = "no sound file could be read";
-        return false;
+    if (!AllReachKnown(voices, {}, true)) {  // the files are being asked: the play starts when they answer
+        g_pend = Pending{};
+        g_pend.active = true;
+        g_pend.head = voices;
+        g_pend.tag = tag;
+        g_pend.t0 = NowS();
+        if (kept)
+            for (size_t i = 0; i < voices.size(); ++i)
+                if (!voices[i].path.empty()) kept->push_back(static_cast<int>(i));
+        return true;
     }
-    if (!StartMix(std::make_unique<AuditionMix>(std::move(vs)), tag, why)) return false;
-    if (kept) *kept = std::move(used);
-    return true;
+    return PlayVoicesNow(voices, tag, why, kept);
 }
 
 bool PlayVoicesLooped(const std::vector<PlayVoice>& head, double head_s, const std::vector<PlayVoice>& loop, double loop_s,
@@ -301,10 +416,20 @@ bool PlayVoicesLooped(const std::vector<PlayVoice>& head, double head_s, const s
     StopAudition();
     StopMediaPreview();
     if (!f_play || !f_stop || !f_create) return false;
-    std::vector<Voice> hv = OpenVoices(head, nullptr);
-    std::vector<Voice> lv = OpenVoices(loop, nullptr);
-    if (lv.empty() || !(loop_s > 0.0)) return false;
-    return StartMix(std::make_unique<AuditionMix>(std::move(hv), std::move(lv), head_s, loop_s), tag, nullptr);
+    if (loop.empty() || !(loop_s > 0.0)) return false;
+    if (!AllReachKnown(head, loop, true)) {
+        g_pend = Pending{};
+        g_pend.active = true;
+        g_pend.looped = true;
+        g_pend.head = head;
+        g_pend.loop = loop;
+        g_pend.head_s = head_s;
+        g_pend.loop_s = loop_s;
+        g_pend.tag = tag;
+        g_pend.t0 = NowS();
+        return true;
+    }
+    return PlayLoopedNow(head, head_s, loop, loop_s, tag);
 }
 
 int AuditionLoopPass()
@@ -337,6 +462,8 @@ double AuditionPosition()
 
 bool AuditionPlaying()
 {
+    PumpPending();
+    if (g_pend.active) return true;  // waiting for its files: it is "playing" (not ended) for its callers
     if (!g_play.active) return false;
     const double    pos = RawPosition();  // the mix's own time (a self-looping one keeps moving)
     const double    now = NowS();
@@ -351,7 +478,7 @@ bool AuditionPlaying()
     return true;
 }
 
-const std::string& AuditionTag() { return g_play.active ? g_play.tag : g_empty; }
+const std::string& AuditionTag() { return g_play.active ? g_play.tag : g_pend.active ? g_pend.tag : g_empty; }
 
 }  // namespace rav
 

@@ -263,4 +263,22 @@ bool EditLoopEndedAtEnd(const EditTransport& tp, double last_pos, double since_s
 std::string HandFramesText(const std::vector<SoundFrame>& frames);
 std::string VariationCountText(int detected, const std::vector<SoundFrame>& frames);
 
+// Freeze fix (audit #1): what the previews know about a file before they open it (the UI thread never waits on a
+// file that may sit on a stalled share or an offline cloud drive). A probe worker answers "reached" or not; a
+// positive answer stays good for `kYes` s, a negative one for `kNo` s (then the file is asked again).
+enum class Reach { Unknown, Yes, No };
+class ReachCache {
+public:
+    static constexpr double kYes = 30.0, kNo = 3.0;
+    void  Set(const std::string& path, bool ok, double now_s);
+    Reach Get(const std::string& path, double now_s) const;
+
+private:
+    struct Entry {
+        bool   ok = false;
+        double at = 0.0;
+    };
+    std::map<std::string, Entry> m_;
+};
+
 }  // namespace rav

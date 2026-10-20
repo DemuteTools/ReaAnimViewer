@@ -1068,6 +1068,19 @@ static void TestLinkedBlendAudition()
     CHECK(off_ok);
 }
 
+void TestReachCache()
+{
+    ReachCache c;
+    CHECK(c.Get("a", 0.0) == Reach::Unknown);
+    c.Set("a", true, 10.0);
+    c.Set("b", false, 10.0);
+    CHECK(c.Get("a", 20.0) == Reach::Yes);
+    CHECK(c.Get("b", 11.0) == Reach::No);
+    CHECK(c.Get("b", 14.0) == Reach::Unknown);  // a negative answer is asked again after kNo
+    CHECK(c.Get("a", 41.0) == Reach::Unknown);  // a positive one after kYes
+    CHECK(c.Get("a", 5.0) == Reach::Unknown);   // a clock that went back
+}
+
 int main()
 {
     TestReaperFadeCurves();  // 13-75
@@ -1096,6 +1109,7 @@ int main()
     TestPartGains();
     TestAuditionEnded();
     TestPartsAudition();
+    TestReachCache();
     if (g_fail) {
         std::printf("%d failure(s)\n", g_fail);
         return 1;

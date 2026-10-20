@@ -1305,13 +1305,14 @@ void NavCubeWidget(const OrbitCamera& cam, bool video, float right_x, float bott
     ui::EndOverlay();
 }
 
-// The viewer's top row: the FPS readout's window sits kTopRowTop down (the theme's padding inside);
-// the keyboard and full screen icons are centred on its text line, and (6-5-10c) so is the menu
-// button. TopRowMid is that line's middle (inside the ImGui frame: the style and font are set).
-constexpr ui::DpPx kTopRowTop{14.0f};
+// The viewer's top row: the view switch sits 8 px down (DrawVideoViewToggle); the menu button, the
+// keyboard and full screen icons and the FPS readout's text line are centred on its middle (Antho
+// 2026-10-20: they sat lower, against the panels under them). TopRowMid is that middle (inside the
+// ImGui frame: the style and font are set); the switch's height is last frame's (ControlH before).
 float TopRowMid()
 {
-    return static_cast<float>(kTopRowTop) + ImGui::GetStyle().WindowPadding.y + ImGui::GetTextLineHeight() * 0.5f;
+    const float toggle_h = VideoViewToggleSize().y;
+    return ui::Dp(8.0f) + (toggle_h > 0.0f ? toggle_h : ui::ControlH()) * 0.5f;
 }
 
 // Builds + renders the Dear ImGui tool UI for this frame, on top of the 3D scene (called
@@ -1359,6 +1360,28 @@ void DrawToolUi()
     // (tight, the .colbtn over the 3D view); open, the menu's panel holds it at the same place.
     const cliplist::MenuButtonBox burger = cliplist::MenuButtonAt(TopRowMid(), ui::UiScale());
     const float kMenuMargin = ui::Dp(10.0f);  // the open menu's gap to the window's bottom edge
+    // Antho 2026-10-20: open, the menu is a floating window; a click outside it (the 3D view, a panel,
+    // any other viewer window) or Escape closes it. Not while a popup is open (the colour picker, a
+    // menu): that click or key closes the popup only. Not while a field takes the keys.
+    if (g_menu_open && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
+        const ImGuiContext& g = *ImGui::GetCurrentContext();
+        const ImGuiWindow*  menu_prev = ImGui::FindWindowByName("##tools");
+        const bool          over_menu = g.HoveredWindow && menu_prev && g.HoveredWindow->RootWindow == menu_prev;
+        const bool          click = ImGui::IsMouseClicked(ImGuiMouseButton_Left) ||
+                                    ImGui::IsMouseClicked(ImGuiMouseButton_Right) ||
+                                    ImGui::IsMouseClicked(ImGuiMouseButton_Middle);
+        const bool          esc = ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !ImGui::GetIO().WantTextInput;
+        if ((click && !over_menu) || esc) {
+            g_menu_open = false;
+            // That click or key only closes the menu: the widgets under it (a panel's button, Escape's
+            // other uses such as stopping a played sound) do not see it. The 3D view's camera reads its
+            // clicks from the window's messages, not from ImGui: a click there may still start an orbit.
+            const ImGuiID owner = ImGui::GetID("##menuclosed");
+            if (esc) ImGui::SetKeyOwner(ImGuiKey_Escape, owner, ImGuiInputFlags_LockThisFrame);
+            for (ImGuiKey k : {ImGuiKey_MouseLeft, ImGuiKey_MouseRight, ImGuiKey_MouseMiddle})
+                if (ImGui::IsKeyPressed(k, false)) ImGui::SetKeyOwner(k, owner, ImGuiInputFlags_LockUntilRelease);
+        }
+    }
     const bool  menu_began_open = g_menu_open;  // a click on the burger below toggles g_menu_open
     ImGui::SetNextWindowPos(menu_began_open ? ImVec2(burger.panel_x, burger.panel_y) : ImVec2(burger.x, burger.y),
                             ImGuiCond_Always);
@@ -1373,12 +1396,15 @@ void DrawToolUi()
         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground;
     ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(FLT_MAX, menu_max_h));
 
-    // Story 11-4: the theme (ui_theme.h) styles the menu. Open, it is a panel like the
-    // Tagging and Video panels (ui::PushPanelStyle), its settings in ui::Section cards.
+    // Story 11-4: the theme (ui_theme.h) styles the menu, its settings in ui::Section cards.
+    // Antho 2026-10-20: open, a floating window that stands off what is behind it (the raised
+    // card's fill, a strong edge, r10, the soft shadow), as tall as the viewer leaves it.
     // Closed, the bare button over the 3D view (its own .colbtn frame).
     if (menu_began_open) {
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(burger.x - burger.panel_x, burger.y - burger.panel_y));
-        ui::PushPanelStyle();
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, ui::Dp(ui::kRadiusLg));
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ui::kRaised);
+        ImGui::PushStyleColor(ImGuiCol_Border, ui::kStrokeStrong);
     } else {
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
         ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
@@ -1386,6 +1412,7 @@ void DrawToolUi()
     }
     ImGui::Begin("##tools", nullptr, menu_began_open ? kFlags : (kFlags | kClosedFlags));
     ImGuiWindow* const menu_window = ImGui::GetCurrentWindow();
+    if (menu_began_open) ui::WindowShadow(0.7f);
 
     // Hamburger button; toggles the option list. 13-7 (audit C0.3): its icon bright (kText).
     // 6-5-10c: 24 x 24 with an 18 px icon (the keyboard icon's size); closed, framed over the 3D view.
@@ -1399,6 +1426,7 @@ void DrawToolUi()
         if (ui::IconOnlyButton("##menu", IconTex(g_icon_menu), g_menu_open ? "Close the options" : "Options", o))
             g_menu_open = !g_menu_open;
     }
+    const ImVec2 burger_min = ImGui::GetItemRectMin();  // the close button sits on the burger's line
 
     // 6-5-10c: the options only in a window that began open (the frame of the click shows the button
     // alone: a closed window has no panel behind its content).
@@ -1415,16 +1443,19 @@ void DrawToolUi()
         const float divider_x = ImGui::GetItemRectMax().x + ui::Dp(7.0f);  // between the tabs and the content
         ImGui::SameLine(0.0f, ui::Dp(14.0f));
 
-        // The content scrolls within what the window's height leaves after the header and the
-        // footer (separator, one button row, the version line, the bottom padding).
-        const float kContentW = ui::Dp(256.0f);
+        // The content fills (and scrolls within) what the window's height leaves after the header
+        // and the footer (separator, one button row, the version line, the bottom padding): the
+        // window is the viewer's height less the margins whatever the tab. Antho 2026-10-20: wider
+        // than the 256 px column it was, as much as the viewer leaves up to 420 px.
+        const float content_w = std::clamp(static_cast<float>(g_client_w) - ImGui::GetCursorScreenPos().x -
+                                               st.WindowPadding.x - kMenuMargin,
+                                           ui::Dp(256.0f), ui::Dp(420.0f));
         const float footer_h = 2.0f * st.ItemSpacing.y + 1.0f + ImGui::GetFrameHeightWithSpacing() +
                                ui::Dp(4.0f) + st.ItemSpacing.y + ImGui::GetTextLineHeight() + st.WindowPadding.y;
-        const float content_max_h =
+        const float content_h =
             std::max(tabs_bottom - tabs_top, burger.panel_y + menu_max_h - tabs_top - footer_h);
-        ImGui::SetNextWindowSizeConstraints(ImVec2(kContentW, 0.0f), ImVec2(kContentW, content_max_h));
         // No fill of its own: the menu's panel shows through.
-        ImGui::BeginChild("##menutab", ImVec2(kContentW, 0.0f), ImGuiChildFlags_AutoResizeY,
+        ImGui::BeginChild("##menutab", ImVec2(content_w, content_h), ImGuiChildFlags_None,
                           ImGuiWindowFlags_NoBackground);
 
         // Every group of settings is a ui::Section (the theme's card with its header), so each
@@ -1630,10 +1661,21 @@ void DrawToolUi()
         }
 
         ImGui::EndChild();
+        const ImVec2 content_max = ImGui::GetItemRectMax();
         // The line between the tab column and the content.
         ImGui::GetWindowDrawList()->AddLine(ImVec2(divider_x, tabs_top),
-                                            ImVec2(divider_x, std::max(tabs_bottom, ImGui::GetItemRectMax().y)),
+                                            ImVec2(divider_x, std::max(tabs_bottom, content_max.y)),
                                             ui::kStroke, 1.0f);
+
+        // A close button at the top right, on the burger's line (inside the content's width: the
+        // window does not grow for it).
+        {
+            const ImVec2 back = ImGui::GetCursorScreenPos();
+            ImGui::SetCursorScreenPos(ImVec2(content_max.x - burger.size, burger_min.y));
+            if (ui::IconOnlyButton("##menuclose", "\xE2\x9C\x95", "Close the options (Esc)", burger.size))
+                g_menu_open = false;
+            ImGui::SetCursorScreenPos(back);
+        }
 
         // The footer, under the tabs and the content.
         ImGui::Separator();
@@ -1651,7 +1693,7 @@ void DrawToolUi()
 
     ImGui::End();
     ImGui::PopStyleColor(2);
-    ImGui::PopStyleVar(menu_began_open ? 1 : 2);  // the padding (and closed, the border)
+    ImGui::PopStyleVar(2);  // the padding and, open, the rounding (closed, the border)
 
     // Story 6.5.5 — extra frameless read-out overlays, drawn in the SAME NewFrame/Render pair
     // (never a second NewFrame). NoInputs so they can NEVER steal the mouse from the camera
@@ -1693,7 +1735,8 @@ void DrawToolUi()
                                                     fps_w + keys_w + ui::Dp(24.0f), corner_x, ui::Dp(8.0f),
                                                     &corner_below);
     // On the top row, its text line's middle is TopRowMid() (the menu button is centred on it too).
-    const float readout_top = corner_below ? ui::Dp(8.0f) + toggle_size.y + ui::Dp(4.0f) : static_cast<float>(kTopRowTop);
+    const float readout_top = corner_below ? ui::Dp(8.0f) + toggle_size.y + ui::Dp(4.0f)
+                                           : TopRowMid() - st.WindowPadding.y - ImGui::GetTextLineHeight() * 0.5f;
     const float text_mid = readout_top + st.WindowPadding.y + ImGui::GetTextLineHeight() * 0.5f;
 
     // Epic 13 (D20, 13-2) -- Library view: one full-area window under the view toggle, drawn

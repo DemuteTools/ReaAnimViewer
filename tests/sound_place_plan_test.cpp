@@ -851,20 +851,25 @@ int main()
 
     TestPieces();
 
-    {  // freeze audit #5: the waits of one gesture share a budget
+    {  // freeze audit #5 / review M4: the waits of one gesture share a budget, a new gesture starts a fresh one
         WaitBudget b;
-        CHECK(Near(b.Grant(100.0, 3.0), 3.0));
-        b.Spent(103.0, 3.0);
-        CHECK(Near(b.Grant(103.1, 3.0), 3.0));
-        b.Spent(106.1, 3.0);
-        b.Spent(109.2, 3.0);
-        CHECK(Near(b.Grant(109.3, 3.0), 1.0));  // 9 s used of 10
-        b.Spent(110.3, 1.0);
-        CHECK(Near(b.Grant(110.4, 3.0), 0.0));  // spent: no more waiting in this gesture
-        CHECK(Near(b.Grant(113.0, 3.0), 3.0));  // idle for over 2 s: a new gesture, a fresh budget
-        CHECK(Near(b.Grant(113.0, -1.0), 0.0));
-        b.Spent(113.0, -5.0);                   // a bad value never gives time back
-        CHECK(Near(b.Grant(113.1, 3.0), 3.0));
+        CHECK(Near(b.Grant(1, 3.0), 3.0));
+        b.Spent(3.0);
+        CHECK(Near(b.Grant(1, 3.0), 3.0));
+        b.Spent(3.0);
+        b.Spent(3.0);
+        CHECK(Near(b.Grant(1, 3.0), 1.0));  // 9 s used of 10
+        b.Spent(1.0);
+        CHECK(Near(b.Grant(1, 3.0), 0.0));  // spent: no more waiting in this gesture, however long it idles
+        CHECK(b.SkippedFirst(1));
+        CHECK(!b.SkippedFirst(1));          // said once per gesture
+        CHECK(b.Skipped() == 2);
+        CHECK(Near(b.Grant(2, 3.0), 3.0));  // the next gesture, even right after: a fresh budget
+        CHECK(b.Skipped() == 0);
+        CHECK(b.SkippedFirst(2));
+        CHECK(Near(b.Grant(2, -1.0), 0.0));
+        b.Spent(-5.0);                      // a bad value never gives time back
+        CHECK(Near(b.Grant(2, 3.0), 3.0));
     }
 
     if (g_fail) {

@@ -25,6 +25,7 @@
 #include "reaper_item_read.h"
 #include "sound_entries.h"  // DetectFrames (13-68: a pile member's variations)
 #include "watchdog.h"  // freeze audit: breadcrumbs and scopes
+#include "library_view_ui.h"  // review M4: the toast of waits that ran out
 #include "busy_progress_ui.h"  // BusyStep: the wait moves the card and the watchdog heartbeat
 #include "console_log.h"
 #include "sound_peaks.h"  // ReadItemMedia (13-68 v2: a pile member's slices)
@@ -135,6 +136,10 @@ WaitBudget& PileWait()
     static WaitBudget b;
     return b;
 }
+// Review M4: the gesture the budget belongs to: the top-level BusyScope, else the one placement call (high bit set so
+// the two kinds of names never meet).
+unsigned long long g_place_call = 0;
+unsigned long long WaitGesture() { return BusyActive() ? BusyGestureId() : ((1ULL << 63) | g_place_call); }
 
 // True when both files hold the same bytes (read in 64 KB blocks; false on any read error).
 bool SameBytes(const std::filesystem::path& a, const std::filesystem::path& b)
@@ -695,7 +700,7 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
                     using Clock = std::chrono::steady_clock;
                     auto  now_s = []() { return std::chrono::duration<double>(Clock::now().time_since_epoch()).count(); };
                     const double t0 = now_s();
-                    const double allow = PileWait().Grant(t0, 3.0);
+                    const double allow = PileWait().Grant(WaitGesture(), 3.0);
                     RAV_SCOPE("pile peaks wait", wd::PathTail(sm.path));
                     double last_paint = t0;
                     while (st == PeakState::Building && now_s() - t0 < allow) {
@@ -706,10 +711,13 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
                             BusyStep(static_cast<int>(i), static_cast<int>(members.size()), "member");  // also a heartbeat
                         }
                     }
-                    PileWait().Spent(now_s(), now_s() - t0);
-                    if (st == PeakState::Building)
+                    PileWait().Spent(now_s() - t0);
+                    if (st == PeakState::Building) {
+                        if (PileWait().SkippedFirst(WaitGesture()))
+                            ShowLibraryToast("Some sounds were placed without their silence slices (their peaks were not ready)", false);
                         LogWarn("place: the peaks of %s were not ready in time (%.0f s budget for this gesture); its silence slices are skipped",
                                 sm.path.c_str(), WaitBudget::kBudgetS);
+                    }
                 }
                 const std::vector<SoundFrame> fr =
                     st == PeakState::Ready ? DetectFrames(sm.facts, DetectMode::Silence, SilenceParams{}, &pk) : std::vector<SoundFrame>();
@@ -1191,6 +1199,7 @@ CrossfadeAsButted::~CrossfadeAsButted()
 
 PlaceResult PlaceSounds(ReaProject* proj, const PlaceRequest& req)
 {
+    ++g_place_call;  // review M4: outside any BusyScope this call is the gesture
     try {
         return PlaceImpl(proj, req, nullptr, {}, {});
     } catch (...) {
@@ -1217,6 +1226,7 @@ bool MovePlacement(ReaProject* proj, const std::string& item_guid, double projec
 
 PlaceResult ReplacePlacement(ReaProject* proj, const std::string& item_guid, const PlaceRequest& req)
 {
+    ++g_place_call;
     PlaceResult r;
     try {
         if (!EngineReady()) {

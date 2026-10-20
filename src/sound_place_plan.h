@@ -219,24 +219,40 @@ std::string MediaCopyName(const std::string& file_name, int n);
 // Freeze audit #5: a total time budget for waiting on the peak reader across a whole gesture (a Populate that places a
 // pile per event waited up to 3 s per member item, N x 3 s on the UI thread with no end in sight). Grant gives the
 // seconds this wait may last (never more than `want`, 0 once the budget is spent); Spent records what the wait used.
-// A gesture is a run of waits less than kIdleResetS apart: a later wait starts a fresh budget.
+// Review M4: a gesture is named by its caller (the top-level BusyScope, or one placement call outside any): a new
+// name starts a fresh budget, whatever the time between waits. Waits skipped for lack of budget are counted so the
+// gesture says so once.
 class WaitBudget {
 public:
-    static constexpr double kBudgetS = 10.0, kIdleResetS = 2.0;
-    double Grant(double now_s, double want_s)
+    static constexpr double kBudgetS = 10.0;
+    double Grant(unsigned long long gesture, double want_s)
     {
-        if (now_s - last_s_ > kIdleResetS || now_s < last_s_) spent_s_ = 0.0;
+        Begin(gesture);
         const double left = kBudgetS - spent_s_;
         return left <= 0.0 ? 0.0 : (want_s < left ? (want_s > 0.0 ? want_s : 0.0) : left);
     }
-    void Spent(double now_s, double used_s)
+    void Spent(double used_s) { spent_s_ += used_s > 0.0 ? used_s : 0.0; }
+    // A wait ended with its peaks still not ready: true the first time in this gesture (the caller says so once).
+    bool SkippedFirst(unsigned long long gesture)
     {
-        spent_s_ += used_s > 0.0 ? used_s : 0.0;
-        last_s_ = now_s;
+        Begin(gesture);
+        return skipped_++ == 0;
     }
+    int Skipped() const { return skipped_; }
 
 private:
-    double spent_s_ = 0.0, last_s_ = -1e9;
+    void Begin(unsigned long long gesture)
+    {
+        if (started_ && gesture == gesture_) return;
+        started_ = true;
+        gesture_ = gesture;
+        spent_s_ = 0.0;
+        skipped_ = 0;
+    }
+    bool               started_ = false;
+    unsigned long long gesture_ = 0;
+    double             spent_s_ = 0.0;
+    int                skipped_ = 0;
 };
 
 }  // namespace rav

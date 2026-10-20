@@ -22,6 +22,7 @@ namespace {
 BusyPaintFn g_paint = nullptr;
 BusyEndedFn g_ended = nullptr;
 
+unsigned long long g_gesture_id = 0;  // review M4: counts the outermost scopes opened
 int        g_depth = 0;       // the scopes open
 int        g_item_level = 0;  // the level of the scope that counts the items (0 = none)
 BusyFrame  g_frame;      // the outermost scope's card
@@ -65,6 +66,7 @@ BusyScope::BusyScope(const char* title, bool eager)
 {
     level_ = ++g_depth;
     if (level_ > 1) return;  // nested: the outer gesture's card
+    ++g_gesture_id;
     g_item_level = 0;
     g_frame = BusyFrame();
     g_frame.title = title ? title : "";
@@ -124,6 +126,7 @@ void BusyStep(int done, int total, const char* unit)
 }
 
 bool BusyActive() { return g_depth > 0; }
+unsigned long long BusyGestureId() { return g_gesture_id; }
 
 bool BusyTakePainted()
 {

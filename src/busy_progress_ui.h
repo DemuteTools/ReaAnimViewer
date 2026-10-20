@@ -49,6 +49,8 @@ private:
 void BusyStep(int done, int total, const char* unit = "event");
 // True while a BusyScope runs.
 bool BusyActive();
+// Review M4: names the running top-level gesture (changes each time an outermost BusyScope opens).
+unsigned long long BusyGestureId();
 // True once after a gesture that showed its card (then false until the next one): the viewer's frame
 // that gesture ran in is not presented (its back buffer holds the card, not the frame).
 bool BusyTakePainted();

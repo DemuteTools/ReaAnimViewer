@@ -414,7 +414,9 @@ std::string FileFromProjectItems(const AssetIdentity& a, bool* settled)
     return maybe;  // "" when no candidate; else the first one not answered yet
 }
 
-std::string ResolvedPath(const AssetIdentity& a)
+// `*unsettled` (review M3): the only candidate is a same-name item file whose existence is not answered yet. It is
+// neither "this file" (it may be another folder's file of that name, or an offline one) nor "missing": "" with the flag.
+std::string ResolvedPath(const AssetIdentity& a, bool* unsettled = nullptr)
 {
     const std::string key = AssetKey(a);
     std::string       path;
@@ -423,7 +425,20 @@ std::string ResolvedPath(const AssetIdentity& a)
         path = it->second;
     } else {
         const std::shared_ptr<const MediaDbIndex> idx = MediaDbGet();
-        path = ResolveAssetPath(a, &FileSize, idx.get());
+        // Review M5: the sizes come from the probe worker's answers, never from a stat on this thread. A file not
+        // answered yet makes the whole resolution unsettled: not kept, asked again next frame.
+        bool        unknown = false;
+        const auto  size_of = [&unknown](const std::string& p) -> int64_t {
+            long long  sz = -1;
+            const Disk d = DiskState(p, &sz);
+            if (d == Disk::Unknown) unknown = true;
+            return d == Disk::Yes ? static_cast<int64_t>(sz) : -1;
+        };
+        path = ResolveAssetPath(a, size_of, idx.get());
+        if (unknown) {
+            if (unsettled) *unsettled = true;
+            return {};
+        }
         g.resolved[key] = path;
     }
     if (!path.empty()) return path;
@@ -433,19 +448,42 @@ std::string ResolvedPath(const AssetIdentity& a)
     bool        settled = true;
     std::string found = FileFromProjectItems(a, &settled);
     if (settled) g.from_items[key] = found;
+    else {
+        if (unsettled) *unsettled = true;
+        return {};
+    }
     return found;
 }
 
 // Where a File Sound's audio is on disk ("" = missing): its file (last path, Media Explorer, another
 // item playing it), else the file its own project item plays. The missing check, the panel, Edit and
 // audition all ask this, so a Sound is never "not missing" in one and "Source not found" in another.
-std::string SoundFilePath(const SoundSource& s)
+std::string SoundFilePath(const SoundSource& s, bool* unsettled = nullptr)
 {
+    if (unsettled) *unsettled = false;
     RefreshCaches();
-    std::string path = ResolvedPath(s.asset);
+    std::string path = ResolvedPath(s.asset, unsettled);
     if (path.empty() && !s.item_guid.empty()) {
         const auto it = g.live_files.find(LowerAscii(s.item_guid));
-        if (it != g.live_files.end()) path = it->second;
+        if (it != g.live_files.end()) {
+            path = it->second;
+            if (!path.empty() && unsettled) *unsettled = false;
+        }
+    }
+    return path;
+}
+
+// The resolver Populate and the auditions read a moved file with (ReadSoundMedia): a file still being checked is
+// waited for a moment (the probe answers a metadata check in milliseconds); if it stays unsettled the sound is not
+// available yet, never another same-name file.
+std::string SoundFilePathForPlay(const SoundSource& s)
+{
+    bool        unsettled = false;
+    std::string path = SoundFilePath(s, &unsettled);
+    for (int i = 0; unsettled && path.empty() && i < 60; ++i) {  // at most ~300 ms, only for a never-asked candidate
+        Sleep(5);
+        MediaReachPoll();
+        path = SoundFilePath(s, &unsettled);
     }
     return path;
 }
@@ -455,7 +493,7 @@ void ApplyHooks()
     static bool resolver_set = false;
     if (!resolver_set) {
         resolver_set = true;
-        SetFileSoundResolver([](const SoundSource& s) { return SoundFilePath(s); });
+        SetFileSoundResolver([](const SoundSource& s) { return SoundFilePathForPlay(s); });
     }
     const LibraryTreeHooks& h = GetLibraryTreeHooks();
     if (h.is_missing) return;
@@ -1263,7 +1301,8 @@ ItemFileFacts ReadItemFileFacts(const std::string& guid, const std::string& proj
 bool FileSoundMissing(const SoundNode& n)
 {
     if (n.type != SoundNodeType::Sound || n.sound.source.kind != SoundSourceKind::File) return false;
-    return SoundFilePath(n.sound.source).empty();
+    bool unsettled = false;
+    return SoundFilePath(n.sound.source, &unsettled).empty() && !unsettled;  // unsettled: not missing for the count
 }
 
 bool ItemSoundGone(const SoundNode& n)
@@ -1274,25 +1313,35 @@ bool ItemSoundGone(const SoundNode& n)
     return !g.live_files.count(LowerAscii(n.sound.source.item_guid));
 }
 
-std::string SoundNodeFilePath(const SoundNode& n)
+namespace {
+std::string NodeFilePath(const SoundNode& n, bool* unsettled)
 {
+    if (unsettled) *unsettled = false;
     if (n.type != SoundNodeType::Sound) return {};
     const AssetIdentity& a = n.sound.source.asset;
     if (n.sound.source.kind == SoundSourceKind::Item && a.name.empty() && a.last_path.empty()) return {};
-    return SoundFilePath(n.sound.source);
+    return SoundFilePath(n.sound.source, unsettled);
 }
+// The missing rule's file test: a file still being checked (review M3) is not missing yet.
+bool NodeFileAbsent(const SoundNode& x)
+{
+    bool unsettled = false;
+    return NodeFilePath(x, &unsettled).empty() && !unsettled;
+}
+}  // namespace
+
+std::string SoundNodeFilePath(const SoundNode& n) { return NodeFilePath(n, nullptr); }
 
 bool SoundNodeMissing(const SoundNode& n, MissingWhy* why)
 {
     return SoundIsMissing(
-        n, [](const SoundNode& x) { return ItemSoundGone(x); }, [](const SoundNode& x) { return SoundNodeFilePath(x).empty(); },
-        why);
+        n, [](const SoundNode& x) { return ItemSoundGone(x); }, [](const SoundNode& x) { return NodeFileAbsent(x); }, why);
 }
 
 std::vector<MissingSound> ListMissingSounds(const SoundLibrary& lib)
 {
     return ListMissing(
-        lib, [](const SoundNode& x) { return ItemSoundGone(x); }, [](const SoundNode& x) { return SoundNodeFilePath(x).empty(); });
+        lib, [](const SoundNode& x) { return ItemSoundGone(x); }, [](const SoundNode& x) { return NodeFileAbsent(x); });
 }
 
 std::vector<MissingSound> ListAllMissingSounds()

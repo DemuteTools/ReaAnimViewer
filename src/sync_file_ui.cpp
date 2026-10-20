@@ -71,6 +71,7 @@ struct Row {
     int         icon = -1;                           // a SoundNodeType, or 100 + glyph (-1 none)
     std::vector<std::string> tree;                   // the detail strip's lines: an added branch's content / what each variation did
     std::vector<int>         tree_ind;               // their indent levels
+    std::vector<std::string> tree_g, tree_p;         // an edited Sound's lines: each side's value, in its own column ("" none)
     std::vector<std::string> keys;                   // every change this row stands for (the lead first): one tick picks them all
     SyncRowKind              kind = SyncRowKind::Single;
 };
@@ -329,9 +330,8 @@ void BuildModel(const Ctx& c, Model* m)
             r.par = sound_subject ? subj_name : subj_name;
             r.last = SyncEditSummary(sg);
             r.full_name = subj_name + kArrow + r.last;
-            r.gtxt = sg.side == SyncSide::Here ? "unchanged" : "edited";
-            r.ptxt = sg.side == SyncSide::File ? "unchanged" : "edited";
-            r.gfull = r.pfull = SyncEditSummary(sg);
+            r.gtxt = r.gfull = SyncSideSummary(sg, true);
+            r.ptxt = r.pfull = SyncSideSummary(sg, false);
             {  // every key an addition by the same side: one box, on the side that added (a mix keeps two boxes)
                 bool       all_add = !sg.keys.empty();
                 SyncSide   who = SyncSide::Both;
@@ -351,11 +351,12 @@ void BuildModel(const Ctx& c, Model* m)
                     (who == SyncSide::Here ? r.gtxt : r.ptxt).clear();
                 }
             }
-            for (const std::string& k : sg.keys)
-                if (const SyncChange* mc = d.Find(k)) {
-                    r.tree_ind.push_back(0);
-                    r.tree.push_back(SyncEditLine(*mc));
-                }
+            for (const SyncDetailLine& ln : SyncEditDetailLines(d, sg)) {
+                r.tree_ind.push_back(ln.indent);
+                r.tree.push_back(ln.name);
+                r.tree_g.push_back(ln.global);
+                r.tree_p.push_back(ln.project);
+            }
         } else {
             // the CHANGE column: a muted start, then the name
             if (grp) {
@@ -685,11 +686,13 @@ int TriInt(SyncTri t)
 
 // ---- the rows -----------------------------------------------------------------------------------------------------
 
+constexpr size_t kStripLines = 14;  // the lines a detail strip lists before "+N more"
+
 float StripHeight(const Row& r)
 {
     const float lh = ui::FontSmall()->FontSize + ui::Dp(3.0f);
     size_t      n = 1;
-    if (!r.tree.empty()) n = 1 + std::min<size_t>(r.tree.size(), 8) + (r.tree.size() > 8 ? 1 : 0);
+    if (!r.tree.empty()) n = 1 + std::min<size_t>(r.tree.size(), kStripLines) + (r.tree.size() > kStripLines ? 1 : 0);
     return static_cast<float>(n) * lh + ui::Dp(10.0f);
 }
 
@@ -710,12 +713,16 @@ void DrawStrip(const Model& m, const Row& r, const Cols& c)
     {  // the content of a branch / what each variation did: in the wide CHANGE column
         float       y = p.y + ui::Dp(4.0f);
         const float mx = c.name_x + c.name_w;
-        const size_t shown = std::min<size_t>(r.tree.size(), 8);
+        const size_t shown = std::min<size_t>(r.tree.size(), kStripLines);
         for (size_t i = 0; i < shown; ++i) {
             y += lh;
             const float x = c.name_x + ui::Dp(22.0f) + ui::Dp(6.0f) + static_cast<float>(r.tree_ind[i]) * ui::Dp(14.0f);
             dl->AddLine(ImVec2(x - ui::Dp(4.0f), y - 1.0f), ImVec2(x - ui::Dp(4.0f), y + lh - 1.0f), ui::kStrokeStrong);
             ui::EllipsisTextTip(dl, ImVec2(x, y), mx, ui::kMuted, r.tree[i]);
+            if (i < r.tree_g.size() && !r.tree_g[i].empty())
+                ui::EllipsisTextTip(dl, ImVec2(c.g_x + ui::Dp(6.0f), y), c.g_x + c.g_w - ui::Dp(6.0f), ui::kText, r.tree_g[i]);
+            if (i < r.tree_p.size() && !r.tree_p[i].empty())
+                ui::EllipsisTextTip(dl, ImVec2(c.p_x + ui::Dp(6.0f), y), c.p_x + c.p_w - ui::Dp(6.0f), ui::kText, r.tree_p[i]);
         }
         if (r.tree.size() > shown) {
             y += lh;

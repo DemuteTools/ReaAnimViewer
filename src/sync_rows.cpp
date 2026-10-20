@@ -144,7 +144,8 @@ std::vector<SyncRowGroup> SyncGroupChanges(const SyncDiff& d)
     for (size_t i = 0; i < n; ++i) {
         const SyncChange& c = d.changes[i];
         const std::string kind = KindOfKey(c.key);
-        if (gid[i] >= 0 || (kind != "V" && kind != "P" && kind != "PK")) continue;
+        const bool hand = kind == "F" && Ends(c.key, "|sound|edited");
+        if (gid[i] >= 0 || (kind != "V" && kind != "P" && kind != "PK" && !hand)) continue;
         auto it = by_sound.find(c.subject);
         if (it == by_sound.end()) {
             SyncRowGroup g;
@@ -156,14 +157,53 @@ std::vector<SyncRowGroup> SyncGroupChanges(const SyncDiff& d)
         SyncRowGroup& g = groups[it->second];
         g.keys.push_back(c.key);
         gid[i] = static_cast<int>(it->second);
+        bool any_other = false;
         if (kind == "V") {
             const int vk = VariationKind(c);
             (vk == 1 ? g.added : vk == 2 ? g.removed : g.edited)++;
-        } else if (kind == "P") ++g.parts;
-        else ++g.parked;
+            if (vk == 0) {
+                std::set<int> seen;
+                for (const SyncFieldDiff& f : c.details) {
+                    const int k = static_cast<int>(f.kind);
+                    if (!seen.insert(k).second) continue;
+                    switch (f.kind) {
+                        case SyncFieldKind::Moved: ++g.moved; break;
+                        case SyncFieldKind::Gain: ++g.gains; break;
+                        case SyncFieldKind::Fade: ++g.fades; break;
+                        case SyncFieldKind::Snap: ++g.snaps; break;
+                        case SyncFieldKind::Mute: ++g.mutes; break;
+                        default: ++g.others; break;
+                    }
+                }
+            }
+            any_other = true;
+        } else if (kind == "P") {
+            ++g.parts;
+            g.part_fields += static_cast<int>(c.details.size());
+            any_other = true;
+        } else if (kind == "PK") {
+            ++g.parked;
+            any_other = true;
+        }
+        for (const SyncFieldDiff& f : c.details) {
+            if (f.kind == SyncFieldKind::Hand) continue;  // counted below, only when it is the only difference
+            g.here_edits += f.here_moved ? 1 : 0;
+            g.file_edits += f.file_moved ? 1 : 0;
+        }
+        (void)any_other;
     }
     for (SyncRowGroup& g : groups)
-        if (g.kind == SyncRowKind::Edited) g.side = side_of(g.keys);
+        if (g.kind == SyncRowKind::Edited) {
+            g.side = side_of(g.keys);
+            if (g.edited + g.added + g.removed + g.parts + g.parked == 0) {  // only the Sound's hand-edited flag differs
+                g.hand_only = true;
+                for (const std::string& k : g.keys)
+                    for (const SyncFieldDiff& f : d.changes[at[k]].details) {
+                        g.here_edits += f.here_moved ? 1 : 0;
+                        g.file_edits += f.file_moved ? 1 : 0;
+                    }
+            }
+        }
 
     // pass 3: everything else is its own row
     for (size_t i = 0; i < n; ++i) {
@@ -197,19 +237,88 @@ std::string SyncNodeDisplayName(const SyncDiff& d, const std::string& id)
 
 std::string SyncEditSummary(const SyncRowGroup& g)
 {
+    if (g.hand_only) return "zones edited by hand";
     std::vector<std::string> parts;
-    const bool               vars = g.edited + g.added + g.removed > 0;
-    if (g.edited > 0) parts.push_back(Plural(g.edited, "variation", "variations") + " edited");
-    if (g.added > 0) parts.push_back(g.edited > 0 ? std::to_string(g.added) + " added" : Plural(g.added, "variation", "variations") + " added");
-    if (g.removed > 0)
-        parts.push_back(g.edited + g.added > 0 ? std::to_string(g.removed) + " removed" : Plural(g.removed, "variation", "variations") + " removed");
-    (void)vars;
-    if (g.parts > 0) parts.push_back("parts edited");
+    auto                     count = [](int n, const char* one, const char* many) { return std::to_string(n) + " " + (n == 1 ? one : many); };
+    if (g.moved > 0) parts.push_back(count(g.moved, "variation moved", "variations moved"));
+    if (g.gains > 0) parts.push_back(std::to_string(g.gains) + " gain");
+    if (g.fades > 0) parts.push_back(count(g.fades, "fade", "fades"));
+    if (g.snaps > 0) parts.push_back(count(g.snaps, "snap offset", "snap offsets"));
+    if (g.mutes > 0) parts.push_back(std::to_string(g.mutes) + " muted");
+    if (g.others > 0) parts.push_back(count(g.others, "other setting", "other settings"));
+    if (g.edited > 0 && g.moved + g.gains + g.fades + g.snaps + g.mutes + g.others == 0) parts.push_back(count(g.edited, "variation edited", "variations edited"));
+    if (g.added > 0) parts.push_back(parts.empty() ? count(g.added, "variation added", "variations added") : std::to_string(g.added) + " added");
+    if (g.removed > 0) parts.push_back(parts.empty() ? count(g.removed, "variation removed", "variations removed") : std::to_string(g.removed) + " removed");
+    if (g.parts > 0) parts.push_back(g.part_fields > 0 ? count(g.part_fields, "part setting", "part settings") : std::string("parts edited"));
     if (g.parked > 0) parts.push_back("kept variations edited");
     if (parts.empty()) return "edited";
     std::string s;
     for (size_t i = 0; i < parts.size(); ++i) s += (i ? ", " : "") + parts[i];
     return s;
+}
+
+std::string SyncSideSummary(const SyncRowGroup& g, bool global)
+{
+    const int n = global ? g.file_edits : g.here_edits;
+    return n > 0 ? std::to_string(n) + (n == 1 ? " edit" : " edits") : std::string("unchanged");
+}
+
+namespace {
+
+std::string Minus(const std::string& s);
+
+bool Numeric(const std::string& v)
+{
+    return !v.empty() && (std::isdigit(static_cast<unsigned char>(v[0])) || (v[0] == '-' && v.size() > 1 && std::isdigit(static_cast<unsigned char>(v[1]))));
+}
+
+}  // namespace
+
+std::string SyncDetailCell(const SyncFieldDiff& f, bool global)
+{
+    const std::string& v = global ? f.file : f.here;
+    const std::string& from = global ? f.file_from : f.here_from;
+    const bool         moved = global ? f.file_moved : f.here_moved;
+    if (f.kind == SyncFieldKind::Added || f.kind == SyncFieldKind::Removed) return v.empty() ? std::string("\xE2\x80\x94") : v;
+    if (f.opaque) return moved ? "changed" : "unchanged";
+    const std::string unit = f.unit.empty() ? std::string() : " " + f.unit;
+    if (moved && !from.empty()) return Minus(from) + " \xE2\x86\x92 " + Minus(v) + (Numeric(v) ? unit : std::string());
+    return Minus(v) + (Numeric(v) ? unit : std::string());
+}
+
+std::vector<SyncDetailLine> SyncEditDetailLines(const SyncDiff& d, const SyncRowGroup& g)
+{
+    std::vector<SyncDetailLine> out;
+    bool                        other_changes = false;
+    for (const std::string& k : g.keys) {
+        const SyncChange* c = d.Find(k);
+        if (c && KindOfKey(c->key) != "F") other_changes = true;
+    }
+    for (const std::string& k : g.keys) {
+        const SyncChange* c = d.Find(k);
+        if (!c) continue;
+        const std::string name = KindOfKey(c->key) == "F" ? std::string("Zones edited by hand") : c->label.empty() ? c->text : c->label;
+        if (KindOfKey(c->key) == "F" && other_changes) continue;  // it travels with its variations: no line of its own
+        auto make = [&](int indent, const std::string& n, const SyncFieldDiff* f) {
+            SyncDetailLine l;
+            l.indent = indent;
+            l.name = n;
+            if (f) {
+                l.global = SyncDetailCell(*f, true);
+                l.project = SyncDetailCell(*f, false);
+            }
+            return l;
+        };
+        if (c->details.empty()) {
+            out.push_back(make(0, SyncEditLine(*c), nullptr));
+        } else if (c->details.size() == 1) {
+            out.push_back(make(0, KindOfKey(c->key) == "F" ? name : name + " \xC2\xB7 " + c->details[0].field, &c->details[0]));
+        } else {
+            out.push_back(make(0, name, nullptr));
+            for (const SyncFieldDiff& f : c->details) out.push_back(make(1, f.field, &f));
+        }
+    }
+    return out;
 }
 
 std::string SyncEditLine(const SyncChange& c)

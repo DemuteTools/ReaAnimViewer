@@ -350,7 +350,7 @@ static void TestVariationsByStartTime()
     CHECK(DiffLibrary(Base(), Base(), f).changes.empty());
     f = Sub(Base(), "frame start=0.5 len=0.3", "frame start=0.5008 len=0.31 on=0");
     const SyncDiff d = DiffLibrary(Base(), Base(), f);
-    CHECK(d.changes.size() == 1 && Has(d, "V|S1|500") && d.changes[0].text == "Variation 1 of FS_C_01 changed");
+    CHECK(d.changes.size() == 1 && Has(d, "V|S1|500") && d.changes[0].text == "Variation 1 of FS_C_01: start, length, muted");
     SyncResult r;
     CHECK(ApplySync(Base(), Base(), f, d, All(d, SyncDir::Down), &r));
     CHECK(r.mine.find("on=0") != std::string::npos);
@@ -1320,9 +1320,149 @@ static void TestOrphanSoundCaseStillSends()
     CHECK(DiffLibrary(r.base, r.file_base, r.mine, r.file).changes.empty());
 }
 
+// ---- 13-77: what changed inside a variation / parts change --------------------------------------------------
+
+static const SyncFieldDiff* Det(const SyncChange* c, const std::string& field)
+{
+    if (!c) return nullptr;
+    for (const SyncFieldDiff& f : c->details)
+        if (f.field == field) return &f;
+    return nullptr;
+}
+
+static void TestFieldDetails()
+{
+    // formats: seconds 3 decimals, dB 1 decimal, ms whole
+    CHECK(SyncFmtSeconds(1.25) == "1.250" && SyncFmtSeconds(-0.0001) == "0.000" && SyncFmtSeconds(0.4104) == "0.410");
+    CHECK(SyncFmtDb(-3) == "-3.0" && SyncFmtDb(0) == "0.0" && SyncFmtDb(-0.04) == "0.0" && SyncFmtDb(1.26) == "1.3");
+    CHECK(SyncFmtMillis(12.4) == "12" && SyncFmtMillis(17.6) == "18" && SyncFmtMillis(0.2) == "0");
+
+    // length, start (within a millisecond: the same variation), gain, fade, mute: one change, each with its from / to
+    {
+        const std::string m = Sub(Base(), "frame start=0.5 len=0.3", "frame start=0.5008 len=0.38 db=-3 fin=0.02 on=0");
+        const SyncDiff    d = DiffLibrary(Base(), m, Base());
+        CHECK(d.changes.size() == 1);
+        const SyncChange* c = Has(d, "V|S1|500");
+        const SyncFieldDiff* len = Det(c, "Length");
+        CHECK(len && len->kind == SyncFieldKind::Moved && len->unit == "s" && len->here == "0.380" && len->here_from == "0.300" &&
+              len->file == "0.300" && len->file_from.empty() && len->here_moved && !len->file_moved);
+        const SyncFieldDiff* st = Det(c, "Start");
+        CHECK(st && st->here == "0.501" && st->here_from == "0.500");
+        const SyncFieldDiff* g = Det(c, "Gain");
+        CHECK(g && g->kind == SyncFieldKind::Gain && g->unit == "dB" && g->here == "-3.0" && g->here_from == "0.0" && g->file == "0.0");
+        const SyncFieldDiff* fi = Det(c, "Fade in");
+        CHECK(fi && fi->kind == SyncFieldKind::Fade && fi->unit == "ms" && fi->here == "20" && fi->here_from == "default");
+        CHECK(!Det(c, "Fade out"));
+        const SyncFieldDiff* mu = Det(c, "Muted");
+        CHECK(mu && mu->kind == SyncFieldKind::Mute && mu->here == "yes" && mu->here_from == "no");
+        CHECK(c && c->details.size() == 5);
+    }
+    // the file's side: the same from the file base
+    {
+        const std::string f = Sub(Base(), "frame start=0.5 len=0.3", "frame start=0.5 len=0.3 db=2");
+        const SyncDiff    d = DiffLibrary(Base(), Base(), f);
+        const SyncFieldDiff* g = Det(Has(d, "V|S1|500"), "Gain");
+        CHECK(g && g->file == "2.0" && g->file_from == "0.0" && g->file_moved && !g->here_moved && g->here_from.empty());
+    }
+    // both sides moved the same field to different values; the field both set to the same value is no line
+    {
+        const std::string m = Sub(Base(), "frame start=0.5 len=0.3", "frame start=0.5 len=0.38 db=1");
+        const std::string f = Sub(Base(), "frame start=0.5 len=0.3", "frame start=0.5 len=0.4 db=1");
+        const SyncDiff    d = DiffLibrary(Base(), m, f);
+        const SyncChange* c = Has(d, "V|S1|500");
+        const SyncFieldDiff* len = Det(c, "Length");
+        CHECK(c && c->side == SyncSide::Both && len && len->here_moved && len->file_moved && len->here == "0.380" && len->file == "0.400" &&
+              len->here_from == "0.300" && len->file_from == "0.300");
+        CHECK(!Det(c, "Gain") && c->details.size() == 1);
+    }
+    // no common version: each difference is both sides', no "from"
+    {
+        const std::string m = Sub(Base(), "frame start=0.5 len=0.3", "frame start=0.5 len=0.38");
+        const SyncDiff    d = DiffLibrary("", "", m, Base());
+        const SyncFieldDiff* len = Det(Has(d, "V|S1|500"), "Length");
+        CHECK(len && len->here_moved && len->file_moved && len->here_from.empty() && len->file_from.empty());
+    }
+    // added / removed variations
+    {
+        const std::string f = Base() + "frame start=2.5 len=0.3\n";
+        const SyncDiff    d = DiffLibrary(Base(), Base(), Sub(f, "node uid=B type=random", "node uid=B type=random"));
+        // the file text above puts the frame under the last Sound (S2): find it
+        const SyncChange* c = Has(d, "V|S2|2500");
+        CHECK(c && c->side == SyncSide::File && c->details.size() >= 1 && c->details[0].kind == SyncFieldKind::Added);
+        CHECK(c && c->details[0].file == "start 2.500 s \xC2\xB7 length 0.300 s" && c->details[0].here.empty() && c->details[0].file_moved && !c->details[0].here_moved);
+        const std::string m = Sub(Base(), "frame start=1.5 len=0.3\n", "");
+        const SyncDiff    d2 = DiffLibrary(Base(), m, Base());
+        const SyncChange* r = Has(d2, "V|S1|1500");
+        CHECK(r && r->details.size() == 1 && r->details[0].kind == SyncFieldKind::Removed && r->details[0].here.empty() &&
+              r->details[0].file == "start 1.500 s \xC2\xB7 length 0.300 s" && r->details[0].here_moved && !r->details[0].file_moved);
+        CHECK(r && r->text == "Variation 2 of FS_C_01 removed");
+    }
+    // zones: the lone zone's snap offset (ms from its start) and fades; several zones name the zone
+    {
+        const std::string b = Sub(Base(), "frame start=0.5 len=0.3\n", "frame start=0.5 len=0.3\nfzone a=0.5 b=0.8 p=* snap=0.512\n");
+        const std::string m = Sub(b, "snap=0.512", "snap=0.518 fin=0.005");
+        const SyncDiff    d = DiffLibrary(b, m, b);
+        const SyncChange* c = Has(d, "V|S1|500");
+        const SyncFieldDiff* sn = Det(c, "Snap offset");
+        CHECK(sn && sn->kind == SyncFieldKind::Snap && sn->unit == "ms" && sn->here == "18" && sn->here_from == "12");
+        const SyncFieldDiff* fi = Det(c, "Fade in");
+        CHECK(fi && fi->here == "5" && fi->here_from == "default");
+        CHECK(c && c->details.size() == 2);
+        const std::string b2 = Sub(Base(), "frame start=0.5 len=0.3\n", "frame start=0.5 len=0.3\nfzone a=0.5 b=0.65 p=V1\nfzone a=0.65 b=0.8 p=V2\n");
+        const std::string m2 = Sub(b2, "a=0.65 b=0.8", "a=0.68 b=0.8");
+        const SyncDiff    d2 = DiffLibrary(b2, m2, b2);
+        const SyncFieldDiff* z = Det(Has(d2, "V|S1|500"), "Zone 2 \xC2\xB7 Start");
+        CHECK(z && z->here == "0.680" && z->here_from == "0.650" && z->kind == SyncFieldKind::Moved);
+        // a different zone count: only the count
+        const std::string m3 = Sub(b2, "fzone a=0.5 b=0.65 p=V1\n", "");
+        const SyncDiff    d3 = DiffLibrary(b2, m3, b2);
+        const SyncFieldDiff* zc = Det(Has(d3, "V|S1|500"), "Zones");
+        CHECK(zc && zc->here == "1" && zc->here_from == "2");
+    }
+    // parts: the divide setup and a part's own settings
+    {
+        const std::string m = Sub(Sub(Base(), "sound kind=file fin=0.001 fout=0.005\n", "sound kind=file fin=0.001 fout=0.005 div=G1 divv=V1,V2\npart v=V1 pre=10 gain=-2\n"), "frame start=0.5 len=0.3", "frame start=0.5 len=0.3");
+        const SyncDiff    d = DiffLibrary(Base(), m, Base());
+        const SyncChange* c = Has(d, "P|S1");
+        CHECK(c && c->side == SyncSide::Here && c->label == "Parts");
+        const SyncFieldDiff* dv = Det(c, "Divide by");
+        CHECK(dv && dv->here == "Surface" && dv->here_from == "none" && dv->kind == SyncFieldKind::Part);
+        const SyncFieldDiff* pn = Det(c, "Parts");
+        CHECK(pn && pn->here == "Concrete / Wood");
+        const SyncFieldDiff* pr = Det(c, "Concrete \xC2\xB7 Pre-roll");
+        CHECK(pr && pr->here == "10" && pr->unit == "ms" && pr->here_from == "default");
+        const SyncFieldDiff* pg = Det(c, "Concrete \xC2\xB7 Gain");
+        CHECK(pg && pg->kind == SyncFieldKind::Gain && pg->here == "-2.0");
+        CHECK(!Det(c, "Wood \xC2\xB7 Pre-roll"));
+    }
+    // the hand-edited flag: a change of its own key (it never reads as a setting), with a Hand detail
+    {
+        const std::string m = Sub(Base(), "sound kind=file fin=0.001 fout=0.005\n", "sound kind=file fin=0.001 fout=0.005 edited=1\n");
+        const SyncDiff    d = DiffLibrary(Base(), m, Base());
+        CHECK(d.changes.size() == 1);
+        const SyncChange* c = Has(d, "F|S1|sound|edited");
+        CHECK(c && c->label == "Zones edited by hand" && c->text == "Zones of FS_C_01 edited by hand");
+        CHECK(c && c->details.size() == 1 && c->details[0].kind == SyncFieldKind::Hand && c->details[0].here == "yes" && c->details[0].file == "no" &&
+              c->details[0].here_from == "no");
+        CHECK(c && c->subject == "S1");
+    }
+    // the details change no key, side, pick or applied text: a full apply of a mixed diff still converges
+    {
+        std::string m = Sub(Base(), "frame start=0.5 len=0.3", "frame start=0.5 len=0.38 db=-3");
+        m = Sub(m, "sound kind=file fin=0.001 fout=0.005\n", "sound kind=file fin=0.001 fout=0.005 edited=1\n");
+        const SyncDiff d = DiffLibrary(Base(), m, Base());
+        CHECK(d.changes.size() == 2 && Has(d, "V|S1|500") && Has(d, "F|S1|sound|edited"));
+        SyncResult r;
+        CHECK(ApplySync(Base(), Base(), m, Base(), d, All(d, SyncDir::Up), &r));
+        CHECK(r.file.find("edited=1") != std::string::npos && r.file.find("len=0.38") != std::string::npos);
+        CHECK(DiffLibrary(r.base, r.file_base, r.mine, r.file).changes.empty());
+    }
+}
+
 int main()
 {
     TestUpToDate();
+    TestFieldDetails();
     TestChangedHere();
     TestChangedInFile();
     TestBoth();

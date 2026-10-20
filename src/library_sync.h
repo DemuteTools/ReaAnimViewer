@@ -38,6 +38,23 @@ namespace rav {
 enum class SyncSide { Here, File, Both };
 enum class SyncDir { Up, Down };  // Up = Send mine (mine's value wins), Down = Get file's
 
+// What kind of fact a field difference is (the window counts them: "3 variations moved, 1 gain").
+enum class SyncFieldKind { Other, Moved, Gain, Fade, Snap, Mute, Added, Removed, Part, Hand };
+
+// One readable difference inside a variation / parts change, computed from the three texts (display only: no key, pick
+// or merge depends on it). Values carry no unit (`unit` does: "s", "dB", "ms", "" for words); a side that did not move
+// from the common version has an empty `*_from`. Added / Removed: the side that has the variation holds a short
+// description ("start 1.250 s · length 0.410 s"), the other side "".
+struct SyncFieldDiff {
+    std::string   field;            // "Start", "Length", "Gain", "Fade in", "Snap offset", "Muted", "Zone 2 · Start" ...
+    SyncFieldKind kind = SyncFieldKind::Other;
+    std::string   unit;
+    std::string   here, file;       // the value each side holds now
+    std::string   here_from, file_from;  // the value the common version holds, when that side moved ("" = did not move)
+    bool          here_moved = false, file_moved = false;
+    bool          opaque = false;   // a value with no readable form: shown as "changed" / "unchanged"
+};
+
 struct SyncChange {
     std::string key;           // stable: kind|node|...
     SyncSide    side = SyncSide::Both;
@@ -52,6 +69,7 @@ struct SyncChange {
     bool        adds_container = false;  // an Exists that adds a container (a row the project does not have yet)
     int         depth = 0;     // depth of the node it concerns (additions go parents first, removals children first)
     std::vector<std::string> needs;  // keys of same-side changes it needs
+    std::vector<SyncFieldDiff> details;  // a variation / parts change: its field-level differences (empty otherwise)
 };
 
 // Counts of the changes sitting under one row.
@@ -80,6 +98,11 @@ struct SyncDiff {
     bool IndexValid() const { return !changes.empty() && index.size() == changes.size(); }
     const SyncChange* Find(const std::string& key) const;
 };
+
+// The number formats of the details: seconds 3 decimals ("1.250"), dB 1 decimal ("-3.0"), milliseconds whole ("12").
+std::string SyncFmtSeconds(double seconds);
+std::string SyncFmtDb(double db);
+std::string SyncFmtMillis(double ms);
 
 // base_text / file_base_text: the two common versions ("" = unknown). When either is unknown (no common version, or a
 // project saved before review 13-77b kept only the base), every difference is a Both change and nothing is ever

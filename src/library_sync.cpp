@@ -16,6 +16,33 @@
 
 namespace rav {
 
+std::string SyncFmtSeconds(double seconds)
+{
+    char buf[64];
+    std::snprintf(buf, sizeof buf, "%.3f", seconds);
+    std::string s = buf;
+    if (s == "-0.000") s.erase(0, 1);
+    return s;
+}
+
+std::string SyncFmtDb(double db)
+{
+    char buf[64];
+    std::snprintf(buf, sizeof buf, "%.1f", db);
+    std::string s = buf;
+    if (s == "-0.0") s.erase(0, 1);
+    return s;
+}
+
+std::string SyncFmtMillis(double ms)
+{
+    char buf[64];
+    std::snprintf(buf, sizeof buf, "%lld", static_cast<long long>(std::llround(ms)));
+    std::string s = buf;
+    if (s == "-0") s.erase(0, 1);
+    return s;
+}
+
 namespace {
 
 // ---- text model: a .ravlib as lines ----------------------------------------------------------------------
@@ -678,6 +705,233 @@ Shown ShowField(const Describe& ds, const std::string& sect, const std::string& 
 }
 
 
+// ---- field-level details of a variation / parts change (display only) ---------------------------------------------
+// Review-free readable layer (13-77): per changed variation / parts key, the fields that differ, computed from the four
+// texts. Nothing here feeds a key, a pick or the merge.
+
+struct Fld {
+    std::string   v, unit;
+    SyncFieldKind kind = SyncFieldKind::Other;
+    int           order = 0;
+    bool          opaque = false;
+};
+using FldMap = std::map<std::string, Fld>;
+
+std::string CleanZero(std::string s)
+{
+    if (s == "-0.000" || s == "-0.0" || s == "-0") s.erase(0, 1);
+    return s;
+}
+
+std::string FmtSec(double x)
+{
+    char buf[64];
+    std::snprintf(buf, sizeof buf, "%.3f", x);
+    return CleanZero(buf);
+}
+
+void PutFld(FldMap* m, const std::string& label, const std::string& v, const char* unit, SyncFieldKind k, int order, bool opaque = false)
+{
+    Fld f;
+    f.v = v;
+    f.unit = unit;
+    f.kind = k;
+    f.order = order;
+    f.opaque = opaque;
+    (*m)[label] = f;
+}
+
+// A fade in seconds -> whole ms; none / negative = the default.
+void PutFade(FldMap* m, const std::string& label, const Line& l, const char* key, int order)
+{
+    std::string s;
+    if (GetTok(l, key, &s) && ToD(s) >= 0.0) PutFld(m, label, SyncFmtMillis(ToD(s) * 1000.0), "ms", SyncFieldKind::Fade, order);
+    else PutFld(m, label, "default", "ms", SyncFieldKind::Fade, order);
+}
+
+void PutDb(FldMap* m, const std::string& label, const Line& l, const char* key, int order, SyncFieldKind k = SyncFieldKind::Gain)
+{
+    PutFld(m, label, SyncFmtDb(ToD(TokOr(l, key, "0"))), "dB", k, order);
+}
+
+void PutRawNum(FldMap* m, const std::string& label, const Line& l, const char* key, int order, const char* def)
+{
+    PutFld(m, label, TokOr(l, key, def), "", SyncFieldKind::Fade, order);
+}
+
+// One zone's fields. `prefix`: "" for the lone zone of a variation, else "Zone 2 · ". `edges`: show its start / end.
+void ZoneFlds(const Line& z, const std::string& prefix, bool edges, const Describe& desc, int base, FldMap* m)
+{
+    const std::string part = TokOr(z, "p");
+    PutFld(m, prefix + "Part", part.empty() ? "gap" : part == "*" ? "whole" : desc.ValueName(part), "", SyncFieldKind::Part, base);
+    if (edges) {
+        PutFld(m, prefix + "Start", FmtSec(ToD(TokOr(z, "a", "0"))), "s", SyncFieldKind::Moved, base + 1);
+        PutFld(m, prefix + "End", FmtSec(ToD(TokOr(z, "b", "0"))), "s", SyncFieldKind::Moved, base + 2);
+    }
+    std::string snap;
+    if (GetTok(z, "snap", &snap)) PutFld(m, prefix + "Snap offset", SyncFmtMillis((ToD(snap) - ToD(TokOr(z, "a", "0"))) * 1000.0), "ms", SyncFieldKind::Snap, base + 3);
+    else PutFld(m, prefix + "Snap offset", "auto", "ms", SyncFieldKind::Snap, base + 3);
+    PutFade(m, prefix + "Fade in", z, "fin", base + 4);
+    PutFade(m, prefix + "Fade out", z, "fout", base + 5);
+    PutDb(m, prefix + "Gain", z, "db", base + 6);
+    PutFade(m, prefix + "Crossfade left", z, "xl", base + 7);
+    PutFade(m, prefix + "Crossfade right", z, "xr", base + 8);
+    PutRawNum(m, prefix + "Fade in shape", z, "fis", base + 9, "0");
+    PutRawNum(m, prefix + "Fade out shape", z, "fos", base + 10, "0");
+    PutRawNum(m, prefix + "Fade in curve", z, "fid", base + 11, "preset");
+    PutRawNum(m, prefix + "Fade out curve", z, "fod", base + 12, "preset");
+}
+
+// zmode: 0 = no zone fields, 1 = one zone on every side, 2 = the same several, 3 = the zone counts differ.
+void VarFlds(const Var& v, const Describe& desc, int zmode, FldMap* m)
+{
+    const Line& f = v.frame;
+    PutFld(m, "Start", FmtSec(ToD(TokOr(f, "start", "0"))), "s", SyncFieldKind::Moved, 0);
+    PutFld(m, "Length", FmtSec(ToD(TokOr(f, "len", "0"))), "s", SyncFieldKind::Moved, 1);
+    PutFld(m, "Muted", TokOr(f, "on", "1") == "0" ? "yes" : "no", "", SyncFieldKind::Mute, 2);
+    PutDb(m, "Gain", f, "db", 3);
+    PutFade(m, "Fade in", f, "fin", 4);
+    PutFade(m, "Fade out", f, "fout", 5);
+    PutRawNum(m, "Fade in shape", f, "fish", 6, "0");
+    PutRawNum(m, "Fade out shape", f, "fosh", 7, "0");
+    const std::string side = TokOr(f, "side");
+    PutFld(m, "Side", side == "L" ? "left" : side == "R" ? "right" : "both", "", SyncFieldKind::Other, 8);
+    std::vector<std::string> rest;
+    for (const std::string& t : f.toks) {
+        const size_t e = EqPos(t);
+        const std::string k = e == std::string::npos ? t : t.substr(0, e);
+        if (k == "start" || k == "len" || k == "on" || k == "db" || k == "fin" || k == "fout" || k == "fish" || k == "fosh" || k == "side" || k == "hand")
+            continue;
+        rest.push_back(t);
+    }
+    std::sort(rest.begin(), rest.end());
+    if (!rest.empty()) PutFld(m, "Other settings", Join(rest, " "), "", SyncFieldKind::Other, 9, true);
+    if (zmode == 3) PutFld(m, "Zones", std::to_string(v.fz.size()), "", SyncFieldKind::Other, 100);
+    else if (zmode == 1 && !v.fz.empty()) ZoneFlds(v.fz[0], "", false, desc, 100, m);
+    else if (zmode == 2)
+        for (size_t i = 0; i < v.fz.size(); ++i) ZoneFlds(v.fz[i], "Zone " + std::to_string(i + 1) + " \xC2\xB7 ", true, desc, 100 + static_cast<int>(i) * 20, m);
+}
+
+std::string BriefOf(const FldMap& m)
+{
+    auto at = [&](const char* k) {
+        const auto it = m.find(k);
+        return it == m.end() ? std::string() : it->second.v;
+    };
+    return "start " + at("Start") + " s \xC2\xB7 length " + at("Length") + " s";
+}
+
+// The differences between the sides' maps (null = that side has no such thing). A field is listed when a side moved
+// from its common version (or, with no common version, when mine and the file differ) and the two sides differ now.
+void DiffFlds(const FldMap* mp[4], bool known, std::vector<SyncFieldDiff>* out)
+{
+    std::map<std::pair<int, std::string>, bool> labels;
+    for (int r = 0; r < 4; ++r)
+        if (mp[r])
+            for (const auto& kv : *mp[r]) labels[{kv.second.order, kv.first}] = true;
+    auto val = [&](int r, const std::string& l) {
+        if (!mp[r]) return std::string();
+        const auto it = mp[r]->find(l);
+        return it == mp[r]->end() ? std::string() : it->second.v;
+    };
+    for (const auto& lk : labels) {
+        const std::string& l = lk.first.second;
+        const Fld*         any = nullptr;
+        for (int r : {kM, kF, kB, kFB})
+            if (mp[r] && mp[r]->count(l)) {
+                any = &mp[r]->at(l);
+                break;
+            }
+        if (!any) continue;
+        const std::string b = val(kB, l), m = val(kM, l), f = val(kF, l), fb = val(kFB, l);
+        bool hm, fm;
+        if (known) {
+            hm = mp[kM] && mp[kB] && m != b;
+            fm = mp[kF] && mp[kFB] && f != fb;
+        } else {
+            hm = fm = mp[kM] && mp[kF] && m != f;
+        }
+        if (!hm && !fm) continue;
+        if (mp[kM] && mp[kF] && m == f) continue;
+        SyncFieldDiff d;
+        d.field = l;
+        d.kind = any->kind;
+        d.unit = any->unit;
+        d.opaque = any->opaque;
+        d.here = m;
+        d.file = f;
+        d.here_moved = hm;
+        d.file_moved = fm;
+        if (known && hm) d.here_from = b;
+        if (known && fm) d.file_from = fb;
+        out->push_back(std::move(d));
+    }
+}
+
+std::string VarLabelDiffs(const std::vector<SyncFieldDiff>& ds)
+{
+    std::string s;
+    for (const SyncFieldDiff& d : ds) {
+        if (d.kind == SyncFieldKind::Added || d.kind == SyncFieldKind::Removed) continue;
+        std::string n = d.field;
+        if (!n.empty() && n[0] >= 'A' && n[0] <= 'Z' && !(n.size() > 1 && n[1] >= 'A' && n[1] <= 'Z')) n[0] = static_cast<char>(n[0] - 'A' + 'a');
+        s += (s.empty() ? "" : ", ") + n;
+    }
+    return s;
+}
+
+// The four docs' parts fields of a Sound (its divide setup and every part's own settings).
+void PartFlds(const NodeDoc& n, const std::vector<std::string>& part_uids, const Describe& desc, FldMap* m)
+{
+    std::string v;
+    PutFld(m, "Divide by", GetTok(n.sound, "div", &v) && !v.empty() ? desc.GroupName(v) : std::string("none"), "", SyncFieldKind::Part, 0);
+    std::string names;
+    if (GetTok(n.sound, "divv", &v))
+        for (const std::string& u : Split(v, ','))
+            if (!u.empty()) names += (names.empty() ? "" : " / ") + desc.ValueName(u);
+    PutFld(m, "Parts", names.empty() ? std::string("none") : names, "", SyncFieldKind::Part, 1);
+    PutFld(m, "Lanes", TokOr(n.sound, "lanes") == "split" ? "split" : "together", "", SyncFieldKind::Part, 2);
+    if (GetTok(n.sound, "rmap", &v)) PutFld(m, "Part roles", v, "", SyncFieldKind::Part, 3, true);
+    int order = 10;
+    for (const std::string& u : part_uids) {
+        const Line* pl = nullptr;
+        for (const Line& l : n.parts)
+            if (TokOr(l, "v") == u) pl = &l;
+        const std::string pre = desc.ValueName(u) + " \xC2\xB7 ";
+        Line              none;
+        const Line&       l = pl ? *pl : none;
+        auto              ms = [&](const char* key, const char* label, SyncFieldKind k) {
+            std::string s;
+            if (GetTok(l, key, &s)) PutFld(m, pre + label, SyncFmtMillis(ToD(s)), "ms", k, order++);
+            else PutFld(m, pre + label, "default", "ms", k, order++);
+        };
+        ms("pre", "Pre-roll", SyncFieldKind::Part);
+        ms("tail", "Tail", SyncFieldKind::Part);
+        PutFld(m, pre + "Sync", TokOr(l, "sync", "default"), "", SyncFieldKind::Part, order++);
+        ms("soff", "Snap offset", SyncFieldKind::Snap);
+        std::string g;
+        if (GetTok(l, "gain", &g)) PutFld(m, pre + "Gain", SyncFmtDb(ToD(g)), "dB", SyncFieldKind::Gain, order++);
+        else PutFld(m, pre + "Gain", "default", "dB", SyncFieldKind::Gain, order++);
+        std::string fi;
+        for (const char* k : {"fin", "fout"}) {
+            if (GetTok(l, k, &fi)) PutFld(m, pre + (std::string(k) == "fin" ? "Fade in" : "Fade out"), SyncFmtMillis(ToD(fi) * 1000.0), "ms", SyncFieldKind::Fade, order++);
+            else PutFld(m, pre + (std::string(k) == "fin" ? "Fade in" : "Fade out"), "default", "ms", SyncFieldKind::Fade, order++);
+        }
+        if (GetTok(l, "fdr", &g)) PutFld(m, pre + "Fader", SyncFmtDb(ToD(g)), "dB", SyncFieldKind::Gain, order++);
+        else PutFld(m, pre + "Fader", "default", "dB", SyncFieldKind::Gain, order++);
+        std::vector<std::string> rest;
+        for (const std::string& t : l.toks) {
+            const size_t      e = EqPos(t);
+            const std::string k = e == std::string::npos ? t : t.substr(0, e);
+            if (k == "v" || k == "pre" || k == "tail" || k == "sync" || k == "soff" || k == "gain" || k == "fin" || k == "fout" || k == "fdr") continue;
+            rest.push_back(t);
+        }
+        std::sort(rest.begin(), rest.end());
+        if (!rest.empty()) PutFld(m, pre + "Other settings", Join(rest, " "), "", SyncFieldKind::Part, order++, true);
+    }
+    if (!n.zones.empty()) PutFld(m, "Zones", Blob(n.zones), "", SyncFieldKind::Part, 5, true);
+}
+
 // ---- classification --------------------------------------------------------------------------------------------
 
 enum class Cls { None, Here, File, Both };
@@ -1039,6 +1293,24 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& file_base_
             }
             const Opt& np = cl == Cls::File ? t.f : t.m;
             if (np.has && !np.v.empty()) c.node = np.v;
+        } else if (kind == "F" && p[2] == "sound" && p[3] == "edited") {
+            // 13-77: the zones-edited-by-hand flag is never a setting: it travels with its Sound's variation changes
+            c.label = "Zones edited by hand";
+            c.text = "Zones of " + subject + " edited by hand";
+            c.here_text = t.m.has && t.m.v == "1" ? "yes" : "no";
+            c.file_text = t.f.has && t.f.v == "1" ? "yes" : "no";
+            SyncFieldDiff fd;
+            fd.field = "Zones edited by hand";
+            fd.kind = SyncFieldKind::Hand;
+            fd.here = c.here_text;
+            fd.file = c.file_text;
+            fd.here_moved = cl != Cls::File;
+            fd.file_moved = cl != Cls::Here;
+            if (known) {
+                if (fd.here_moved) fd.here_from = t.b.has && t.b.v == "1" ? "yes" : "no";
+                if (fd.file_moved) fd.file_from = t.fb.has && t.fb.v == "1" ? "yes" : "no";
+            }
+            c.details.push_back(fd);
         } else if (kind == "F") {
             const Shown sh = ShowField(desc, p[2], p[3], t.b, t.m);  // labels / units
             const Shown mh = ShowField(desc, p[2], p[3], t.b, t.m);
@@ -1062,9 +1334,49 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& file_base_
             c.text = "Parts of " + subject + " changed";
             c.here_text = "here";
             c.file_text = "file";
+            {
+                std::vector<std::string> uids;
+                for (int di = 0; di < 4; ++di) {
+                    const NodeDoc* nd = ds.at(di) ? ds.at(di)->N(p[1]) : nullptr;
+                    if (!nd) continue;
+                    for (const Line& pl : nd->parts) {
+                        const std::string u = TokOr(pl, "v");
+                        if (!u.empty() && std::find(uids.begin(), uids.end(), u) == uids.end()) uids.push_back(u);
+                    }
+                }
+                FldMap         maps[4];
+                const FldMap*  mp[4] = {nullptr, nullptr, nullptr, nullptr};
+                for (int di = 0; di < 4; ++di) {
+                    const NodeDoc* nd = ds.at(di) ? ds.at(di)->N(p[1]) : nullptr;
+                    if (!nd || !nd->has_sound) continue;
+                    PartFlds(*nd, uids, desc, &maps[di]);
+                    mp[di] = &maps[di];
+                }
+                DiffFlds(mp, owner_known(p), &c.details);
+                if (c.details.empty()) {
+                    SyncFieldDiff fd;
+                    fd.field = "Parts";
+                    fd.kind = SyncFieldKind::Part;
+                    fd.opaque = true;
+                    fd.here_moved = cl != Cls::File;
+                    fd.file_moved = cl != Cls::Here;
+                    c.details.push_back(fd);
+                }
+                const std::string what = VarLabelDiffs(c.details);
+                if (!what.empty() && c.details.size() <= 3) c.text = "Parts of " + subject + ": " + what;
+            }
         } else if (kind == "PK") {
             c.label = "Parked variations";
             c.text = "Kept variations of " + subject + " changed";
+            {
+                SyncFieldDiff fd;
+                fd.field = "Kept variations";
+                fd.kind = SyncFieldKind::Other;
+                fd.opaque = true;
+                fd.here_moved = cl != Cls::File;
+                fd.file_moved = cl != Cls::Here;
+                c.details.push_back(fd);
+            }
         } else if (kind == "XL") {
             c.label = "Other settings";
             c.text = "Other settings of " + subject + " changed";
@@ -1089,10 +1401,67 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& file_base_
             c.file_text = t.f.has ? "present" : "absent";
             const Opt& side = cl == Cls::File ? t.f : t.m;
             const Opt& from = cl == Cls::File ? t.fb : t.b;
+            // the readable differences (display only)
+            {
+                const Cluster* cu = nullptr;
+                for (const Cluster& cc : cl2)
+                    if (cc.id == p[2]) cu = &cc;
+                const Var* vv[4] = {nullptr, nullptr, nullptr, nullptr};
+                size_t     zc[4] = {0, 0, 0, 0};
+                int        nv = 0;
+                bool       zsame = true;
+                size_t     z0 = 0;
+                for (int di = 0; di < 4 && cu; ++di) {
+                    const Doc* dd = ds.at(di);
+                    if (!dd || cu->member[di] < 0 || !dd->N(p[1])) continue;
+                    vv[di] = &dd->N(p[1])->frames[static_cast<size_t>(cu->member[di])];
+                    zc[di] = vv[di]->fz.size();
+                    if (nv++ == 0) z0 = zc[di];
+                    else if (zc[di] != z0) zsame = false;
+                }
+                const int zmode = !zsame ? 3 : z0 == 0 ? 0 : z0 == 1 ? 1 : 2;
+                FldMap        maps[4];
+                const FldMap* mp[4] = {nullptr, nullptr, nullptr, nullptr};
+                for (int di = 0; di < 4; ++di)
+                    if (vv[di]) {
+                        VarFlds(*vv[di], desc, zmode, &maps[di]);
+                        mp[di] = &maps[di];
+                    }
+                const bool kn = owner_known(p);
+                if (t.m.has != t.f.has) {  // one side has no such variation: removed there, or added on the other
+                    SyncFieldDiff pd;
+                    const bool    lack_here = !t.m.has;
+                    const Opt&    lb = lack_here ? t.b : t.fb;       // the lacking side's common version
+                    const Opt&    pb = lack_here ? t.fb : t.b;       // the present side's common version
+                    const bool    removed = kn && lb.has;
+                    pd.kind = removed ? SyncFieldKind::Removed : SyncFieldKind::Added;
+                    pd.field = removed ? "Removed" : "Added";
+                    const FldMap* pm = lack_here ? mp[kF] : mp[kM];
+                    const std::string brief = pm ? BriefOf(*pm) : std::string();
+                    (lack_here ? pd.file : pd.here) = brief;
+                    if (removed) (lack_here ? pd.here_moved : pd.file_moved) = true;
+                    else (lack_here ? pd.file_moved : pd.here_moved) = true;
+                    if (!kn) pd.here_moved = pd.file_moved = true;
+                    (void)pb;
+                    c.details.push_back(pd);
+                    if (lack_here) mp[kM] = nullptr; else mp[kF] = nullptr;
+                }
+                DiffFlds(mp, kn, &c.details);
+                if (c.details.empty()) {
+                    SyncFieldDiff fd;
+                    fd.field = "Other settings";
+                    fd.opaque = true;
+                    fd.here_moved = cl != Cls::File;
+                    fd.file_moved = cl != Cls::Here;
+                    c.details.push_back(fd);
+                }
+            }
+            const std::string vl = "Variation " + std::to_string(ix) + " of " + subject;
+            const std::string what = VarLabelDiffs(c.details);
             if (cl == Cls::Both) c.text = vn + ": here " + (t.m.has ? "changed" : "removed") + " · global " + (t.f.has ? "changed" : "removed");
-            else if (!side.has) c.text = vn + " removed";
-            else if (!from.has) c.text = vn + " added";
-            else c.text = vn + " changed";
+            else if (!side.has) c.text = vl + " removed";
+            else if (!from.has) c.text = vl + " added";
+            else c.text = vl + (what.empty() ? " changed" : ": " + what);
         } else if (kind == "C") {
             const std::string vname = desc.ValueName(p[2]);
             auto childname = [&](const Opt& o) {

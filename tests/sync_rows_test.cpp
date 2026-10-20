@@ -80,6 +80,114 @@ static SyncDiff Fixture()
     return d;
 }
 
+// ---- 13-77: what changed in a Sound's variations, in words -------------------------------------------------------
+
+static const char* kBaseTxt =
+    "RAVLIB 2 by=A at=10\n"
+    "group uid=G1 name=Surface\n"
+    "value uid=V1 name=Concrete\n"
+    "library uid=L1 name=Foot root=R\n"
+    "node uid=R type=random name=Footstep\n"
+    "node uid=S1 type=sound parent=R name=FS_C_01\n"
+    "sound kind=file\n"
+    "frame start=0.5 len=0.3\n"
+    "frame start=1.5 len=0.3\n"
+    "frame start=2.5 len=0.3\n"
+    "frame start=3.5 len=0.3\n";
+
+static std::string Rep(std::string t, const std::string& from, const std::string& to)
+{
+    const size_t p = t.find(from);
+    if (p == std::string::npos) {
+        std::printf("FAIL fixture: '%s' not in text\n", from.c_str());
+        ++g_fail;
+        return t;
+    }
+    t.replace(p, from.size(), to);
+    return t;
+}
+
+static void TestEditedSoundWords()
+{
+    const std::string base = kBaseTxt;
+    // here: three variations moved (length), one with a gain; the hand-edited flag comes with them
+    std::string mine = Rep(base, "frame start=0.5 len=0.3", "frame start=0.5 len=0.38");
+    mine = Rep(mine, "frame start=1.5 len=0.3", "frame start=1.5 len=0.25 db=-3");
+    mine = Rep(mine, "frame start=2.5 len=0.3", "frame start=2.5 len=0.31");
+    mine = Rep(mine, "sound kind=file\n", "sound kind=file edited=1\n");
+    const SyncDiff d = DiffLibrary(base, mine, base);
+    const auto     gs = SyncGroupChanges(d);
+    CHECK(gs.size() == 1 && gs[0].kind == SyncRowKind::Edited);
+    const SyncRowGroup& g = gs[0];
+    CHECK(g.keys.size() == 4);  // 3 variations + the flag: no row of its own
+    CHECK(g.moved == 3 && g.gains == 1 && !g.hand_only);
+    CHECK(SyncEditSummary(g) == "3 variations moved, 1 gain");
+    CHECK(g.here_edits == 4 && g.file_edits == 0);
+    CHECK(SyncSideSummary(g, false) == "4 edits" && SyncSideSummary(g, true) == "unchanged");
+    // the strip: per variation its field lines, each side's value in its column
+    const auto lines = SyncEditDetailLines(d, g);
+    bool       len_line = false, gain_line = false, hand_line = false;
+    for (const SyncDetailLine& l : lines) {
+        if (l.name == "Length" || l.name == "Variation 1 \xC2\xB7 Length") len_line = len_line || (l.project == "0.300 \xE2\x86\x92 0.380 s" && l.global == "0.300 s");
+        if (l.name == "Gain") gain_line = l.project == "0.0 \xE2\x86\x92 \xE2\x88\x92" "3.0 dB" && l.global == "0.0 dB";
+        if (l.name.find("by hand") != std::string::npos) hand_line = true;
+    }
+    CHECK(len_line && gain_line && !hand_line);
+    // one tick takes the flag with the variations (the group's keys)
+    SyncSelection sel;
+    sel.KeepAll(d, g.keys, SyncDir::Up);
+    CHECK(sel.Picks(d).count("F|S1|sound|edited") == 1 && sel.Picks(d).size() == 4);
+    // the footer names the flag only when nothing of its Sound goes with it
+    std::string full;
+    const std::string foot = SyncFooterSummary(sel.Footer(d), &full);
+    CHECK(full.find("by hand") == std::string::npos && full.find("edited changed") == std::string::npos);
+
+    // the flag alone: the row reads "zones edited by hand", never a setting
+    const SyncDiff dh = DiffLibrary(base, Rep(base, "sound kind=file\n", "sound kind=file edited=1\n"), base);
+    const auto     gh = SyncGroupChanges(dh);
+    CHECK(gh.size() == 1 && gh[0].kind == SyncRowKind::Edited && gh[0].hand_only);
+    CHECK(SyncEditSummary(gh[0]) == "zones edited by hand");
+    CHECK(SyncSideSummary(gh[0], false) == "1 edit" && SyncSideSummary(gh[0], true) == "unchanged");
+    const auto hl = SyncEditDetailLines(dh, gh[0]);
+    CHECK(hl.size() == 1 && hl[0].name == "Zones edited by hand" && hl[0].project == "no \xE2\x86\x92 yes" && hl[0].global == "no");
+    std::string full2;
+    SyncFooterSummary(SyncSelection().Footer(dh), &full2);
+
+    // the global's side: its own values in the GLOBAL column
+    const SyncDiff df = DiffLibrary(base, base, Rep(base, "frame start=0.5 len=0.3", "frame start=0.5 len=0.3 fin=0.02 fout=0.05"));
+    const auto     gf = SyncGroupChanges(df);
+    CHECK(gf.size() == 1 && gf[0].fades == 1 && SyncEditSummary(gf[0]) == "1 fade");
+    CHECK(SyncSideSummary(gf[0], true) == "2 edits" && SyncSideSummary(gf[0], false) == "unchanged");
+    const auto fl = SyncEditDetailLines(df, gf[0]);
+    CHECK(fl.size() == 3 && fl[1].name == "Fade in" && fl[1].global == "default \xE2\x86\x92 20 ms" && fl[1].project == "default");
+
+    // added / removed variations and a muted one
+    std::string m2 = Rep(base, "frame start=3.5 len=0.3\n", "");
+    m2 = Rep(m2, "frame start=0.5 len=0.3", "frame start=0.5 len=0.3 on=0");
+    const SyncDiff d2 = DiffLibrary(base, m2, Rep(base, "frame start=1.5 len=0.3", "frame start=1.5 len=0.3 db=1"));
+    const auto     g2 = SyncGroupChanges(d2);
+    CHECK(g2.size() == 1 && g2[0].removed == 1 && g2[0].mutes == 1 && g2[0].gains == 1);
+    CHECK(SyncEditSummary(g2[0]) == "1 gain, 1 muted, 1 removed");
+    bool removed_line = false;
+    for (const SyncDetailLine& l : SyncEditDetailLines(d2, g2[0]))
+        if (l.name == "Variation 4 \xC2\xB7 Removed" && l.project == "\xE2\x80\x94" && l.global == "start 3.500 s \xC2\xB7 length 0.300 s") removed_line = true;
+    CHECK(removed_line);
+
+    // parts and an opaque value
+    const SyncDiff dp = DiffLibrary(base, Rep(base, "sound kind=file\n", "sound kind=file div=G1 divv=V1\n"), base);
+    const auto     gp = SyncGroupChanges(dp);
+    CHECK(gp.size() == 1 && gp[0].parts == 1 && gp[0].part_fields == 2 && SyncEditSummary(gp[0]) == "2 part settings");
+    CHECK(SyncDetailCell(SyncFieldDiff(), true) == "");
+    SyncFieldDiff op;
+    op.opaque = true;
+    op.here_moved = true;
+    CHECK(SyncDetailCell(op, false) == "changed" && SyncDetailCell(op, true) == "unchanged");
+
+    // no raw engine words reach the footer: the texts of the changes are sentences
+    for (const SyncDiff* x : {&d, &df, &d2, &dp})
+        for (const SyncChange& c : x->changes) CHECK(c.text.find("changed (") == std::string::npos && c.text.find("edited changed") == std::string::npos);
+}
+
 int main()
 {
     const SyncDiff d = Fixture();
@@ -146,6 +254,8 @@ int main()
         const auto g1 = SyncGroupChanges(e);
         CHECK(g1.size() == 1 && g1[0].kind == SyncRowKind::Single);
     }
+
+    TestEditedSoundWords();
 
     // names and values
     CHECK(SyncSettingName("Offset") == "Snap offset");

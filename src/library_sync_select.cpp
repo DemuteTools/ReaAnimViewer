@@ -570,6 +570,16 @@ SyncFooter SyncSelection::Footer(const SyncDiff& d) const
         const SyncTick* t = Tick(c.key);
         if (!t || !t->on || !t->has_dir) continue;
         ++f.changes;
+        if (c.key.compare(0, 2, "F|") == 0 && c.key.size() > 13 && c.key.compare(c.key.size() - 13, 13, "|sound|edited") == 0) {
+            // the hand-edited flag goes with its Sound's variation / parts changes: no mention of its own when one is ticked
+            bool with_siblings = false;
+            for (const SyncChange& o : d.changes)
+                if (o.subject == c.subject && (o.key.compare(0, 2, "V|") == 0 || o.key.compare(0, 2, "P|") == 0 || o.key.compare(0, 3, "PK|") == 0)) {
+                    const SyncTick* ot = Tick(o.key);
+                    if (ot && ot->on && ot->has_dir) with_siblings = true;
+                }
+            if (with_siblings) continue;
+        }
         const bool          up = t->dir == SyncDir::Up;
         SyncFooterSide&     target = up ? f.global : f.project;  // the side that is not kept takes the kept version
         const std::string&  kept = up ? c.here_text : c.file_text;

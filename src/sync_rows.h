@@ -27,6 +27,17 @@ struct SyncRowGroup {
     int                      sounds = 0;       // Added / Removed: the Sounds in the branch
     std::string              value;            // Added / Removed: the Switch value that plays the branch ("" none)
     int                      edited = 0, added = 0, removed = 0, parts = 0, parked = 0;  // Edited: what changed
+    // Edited, from the field-level details (13-77): variations by what moved in them, the part settings changed, the
+    // edits each side made (the cells' "13 edits"), and whether the Sound's hand-edited flag is the ONLY difference.
+    int                      moved = 0, gains = 0, fades = 0, snaps = 0, mutes = 0, others = 0, part_fields = 0;
+    int                      here_edits = 0, file_edits = 0;
+    bool                     hand_only = false;
+};
+
+// One line of an Edited row's detail strip: the CHANGE column text, and each side's value in its own column ("" = none).
+struct SyncDetailLine {
+    int         indent = 0;
+    std::string name, global, project;
 };
 
 // Every change in exactly one group; groups in the order of their lead in the diff.
@@ -39,6 +50,13 @@ std::string SyncCaseValueName(const std::string& label);
 std::string SyncNodeDisplayName(const SyncDiff& d, const std::string& id);
 // "3 variations edited" / "1 variation edited, 2 added" / "parts edited" (an Edited group).
 std::string SyncEditSummary(const SyncRowGroup& g);
+// The cell of one side for an Edited row: "13 edits" / "1 edit" / "unchanged" (`global`: the GLOBAL cell, else THIS PROJECT's).
+std::string SyncSideSummary(const SyncRowGroup& g, bool global);
+// An Edited group's detail strip: per variation / parts change its field differences, a side's value in its column.
+std::vector<SyncDetailLine> SyncEditDetailLines(const SyncDiff& d, const SyncRowGroup& g);
+// One field difference as one side shows it: "0.0 -> -3.0 dB" (arrow and true minus sign) on the side that moved, "0.0 dB" on
+// the other, "changed" / "unchanged" for an opaque value, a dash for a variation that side lacks.
+std::string SyncDetailCell(const SyncFieldDiff& f, bool global);
 // One line of an Edited group's detail: "Variation 3: edited here" / "Parts: edited in the global" / "Variation 2: added here".
 std::string SyncEditLine(const SyncChange& c);
 // The value cell of an Added (the adder's) / Removed (the remover's) group: "+ Gravel · plays Run_Gravel (3 sounds)",

@@ -520,6 +520,26 @@ int main()
         Ownership o;
         CHECK(OwnershipFromWord("attached", &o) && o == Ownership::Attached && !OwnershipFromWord("x", &o));
     }
+    // ---- Antho 2026-10-20: the user's New sounds detection defaults never reach a saved Sound -------------
+    {
+        SilenceParams u;
+        u.threshold_db = -50.0;
+        u.min_gap_ms = 80.0;
+        u.preroll_ms = 2.5;
+        u.tail_ms = 40.0;
+        SetNewSoundSilence(u);
+        const SoundData nd;
+        CHECK(nd.silence == u);  // a new Sound starts with them
+        SoundStore old;
+        CHECK(ParseSoundStore("RAVSOUNDS 1\nlibrary uid=l name=L root=n\nnode uid=n type=sound\nsound kind=item guid=g\n", &old));
+        const SilenceParams& os = old.libraries[0].nodes[0].sound.silence;
+        CHECK(os.threshold_db == -45.0 && os.min_gap_ms == 200.0 && os.preroll_ms == 5.0 && os.tail_ms == 100.0);  // as saved
+        SoundStore s = old;
+        s.libraries[0].nodes[0].sound.silence = u;
+        SoundStore back;
+        CHECK(ParseSoundStore(SerializeSoundStore(s), &back) && back.libraries[0].nodes[0].sound.silence == u);  // written out
+        SetNewSoundSilence(SilenceParams{});
+    }
     // ---- 13-67b: the old defaults for what a sound line leaves out; the parked variations -----------
     {
         SoundStore old;

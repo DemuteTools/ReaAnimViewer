@@ -712,7 +712,7 @@ void PreviewPeaks(bool ok, PeakData&& peaks, double length)
 {
     g.an.peaks = std::move(peaks);
     if (length > 0.0) g.an.length = length;
-    g.an.frames = ok ? SplitOnSilence(g.an.peaks, SilenceParams{}, g.an.length) : std::vector<SoundFrame>{};
+    g.an.frames = ok ? SplitOnSilence(g.an.peaks, NewSoundSilence(), g.an.length) : std::vector<SoundFrame>{};
     g.an.failed = !ok;
     g.an.ready = true;
 #ifdef RAV_ENABLE_CONSOLE_LOG
@@ -772,7 +772,7 @@ void AskPeaks()
         }
         const bool              ok = st == PeakState::Ready && len > 0.0;
         std::vector<SoundFrame> frames;
-        if (ok) frames = SplitOnSilence(pk, SilenceParams{}, len);
+        if (ok) frames = SplitOnSilence(pk, NewSoundSilence(), len);
         MediaBatchSetRead(g.batch, path, ok, frames, len);
         g.pend_reached.erase(g.pend_reached.begin() + static_cast<std::ptrdiff_t>(i));
     }
@@ -1577,11 +1577,12 @@ void DrawPreview(float wave_h)
     const float  info_h = LayoutInfo(dl, left, np.y, iw);
     // The gear (.btn.sm.ico gear glyph), right-aligned on the name's line: the detection defaults.
     {
-        const SilenceParams sp{};
-        char tip[320];
+        const SilenceParams sp = NewSoundSilence();  // Antho 2026-10-20: the user's (menu > Library > Sound Edit)
+        char tip[400];
         std::snprintf(tip, sizeof tip,
                       "Detection defaults for new sounds: split on silence, threshold %.0f dB, min gap %.0f ms, "
-                      "pre-roll %.0f ms, tail %.0f ms (each sound can then be pre-edited in its panel)",
+                      "pre-roll %.0f ms, tail %.0f ms (each sound can then be pre-edited in its panel). Change them in the menu: "
+                      "Library > Sound Edit > New sounds",
                       sp.threshold_db, sp.min_gap_ms, sp.preroll_ms, sp.tail_ms);
         ImGui::SetCursorScreenPos(ImVec2(left + iw - ui::ControlH(), np.y));
         ui::IconOnlyButton("##megear", "\xE2\x9A\x99", tip);

@@ -62,6 +62,11 @@ struct SilenceParams {  // 13-17b (Antho 2026-10-12): 200 ms gap, 100 ms tail; 1
     double min_gap_ms = 200.0;
     double preroll_ms = 5.0;
     double tail_ms = 100.0;
+    bool   operator==(const SilenceParams& o) const
+    {
+        return threshold_db == o.threshold_db && min_gap_ms == o.min_gap_ms && preroll_ms == o.preroll_ms && tail_ms == o.tail_ms;
+    }
+    bool operator!=(const SilenceParams& o) const { return !(*this == o); }
 };
 
 // 13-62i: the part key of an undivided Sound's zones (its one implicit part: the whole Sound). Never "" (a Gap) and
@@ -217,6 +222,16 @@ inline SyncMode& NewSoundSyncModeRef()
 }
 inline SyncMode NewSoundSyncMode() { return NewSoundSyncModeRef(); }
 inline void     SetNewSoundSyncMode(SyncMode m) { NewSoundSyncModeRef() = m; }
+// Antho 2026-10-20: the silence detection a new Sound gets (burger menu > Library > Sound Edit > New sounds, the
+// user's pref; SilenceParams{}'s built-in values until the pref is read). Saved Sounds keep their own (sound_record.cpp
+// reads a missing thr / gap / pre / tail as the pinned old defaults, never this).
+inline SilenceParams& NewSoundSilenceRef()
+{
+    static SilenceParams p;
+    return p;
+}
+inline SilenceParams NewSoundSilence() { return NewSoundSilenceRef(); }
+inline void          SetNewSoundSilence(const SilenceParams& p) { NewSoundSilenceRef() = p; }
 constexpr double kDefaultSyncOffsetMs = 0.0;  // Antho 2026-10-19: on the point itself (was -2 ms, 13-25)
 // 13-23 (A4): the fade each part gets at a cut or zone edge (s).
 constexpr double kDefaultCutFade = 0.002;
@@ -267,7 +282,7 @@ struct PartSettings {
 struct SoundData {
     SoundSource              source;
     DetectMode               mode = DetectMode::Whole;
-    SilenceParams            silence;
+    SilenceParams            silence = NewSoundSilence();  // Antho 2026-10-20: the user's default
     std::vector<SoundFrame>  frames;
     bool                     edited = false;        // frames edited after detection
     bool                     linked_copies = true;  // copies of the pile share the takes

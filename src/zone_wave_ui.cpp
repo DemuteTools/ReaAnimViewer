@@ -41,6 +41,12 @@ constexpr const char kSnapModePref[] = "lib_edit_snap_mode";  // 13-67b: the sna
 int g_snap_mode = -1;                                       // < 0 = not read yet
 constexpr const char kNewSidesPref[] = "lib_edit_new_sides";  // 13-73: Left / Right of new Sounds (default Off)
 int g_new_sides = -1;                                         // < 0 = not read yet
+// Antho 2026-10-20: the silence detection of new Sounds (threshold dB, min gap / pre-roll / tail ms)
+constexpr const char kNewThrPref[] = "lib_new_thr_db";
+constexpr const char kNewGapPref[] = "lib_new_gap_ms";
+constexpr const char kNewPrePref[] = "lib_new_pre_ms";
+constexpr const char kNewTailPref[] = "lib_new_tail_ms";
+bool g_new_silence_read = false;
 
 constexpr ImU32 kGapCol = IM_COL32(0x8B, 0x91, 0x9C, 0xFF);  // the mockup's GAPC (--muted)
 
@@ -1769,6 +1775,7 @@ void LoadZoneNewSnapMode()
 {
     (void)ZoneNewSnapMode();
     (void)ZoneNewSides();  // 13-73: read with it (plugin load), before any Sound is made
+    (void)ZoneNewSilence();  // Antho 2026-10-20: the detection defaults too
 }
 
 bool ZoneNewSides()
@@ -1785,6 +1792,44 @@ void SetZoneNewSides(bool on)
     g_new_sides = on ? 1 : 0;
     SetNewSoundSides(on);
     SavePrefBool(kNewSidesPref, on);
+}
+
+// The per-Sound fields' ranges (DetectionControls): a hand-edited ExtState never yields a value they refuse.
+static SilenceParams ClampSilence(SilenceParams p)
+{
+    p.threshold_db = std::clamp(p.threshold_db, -90.0, 0.0);
+    p.min_gap_ms = std::clamp(p.min_gap_ms, 0.0, 5000.0);
+    p.preroll_ms = std::clamp(p.preroll_ms, 0.0, 1000.0);
+    p.tail_ms = std::clamp(p.tail_ms, 0.0, 5000.0);
+    return p;
+}
+
+SilenceParams ZoneNewSilence()
+{
+    if (!g_new_silence_read) {
+        g_new_silence_read = true;
+        const SilenceParams b;
+        SilenceParams p;
+        p.threshold_db = LoadPrefFloat(kNewThrPref, static_cast<float>(b.threshold_db));
+        p.min_gap_ms = LoadPrefFloat(kNewGapPref, static_cast<float>(b.min_gap_ms));
+        p.preroll_ms = LoadPrefFloat(kNewPrePref, static_cast<float>(b.preroll_ms));
+        p.tail_ms = LoadPrefFloat(kNewTailPref, static_cast<float>(b.tail_ms));
+        for (double* v : {&p.threshold_db, &p.min_gap_ms, &p.preroll_ms, &p.tail_ms})
+            *v = std::round(*v * 10.0) / 10.0;  // the pref's 0.1 (SavePrefFloat): -45.3, not the float's -45.2999992
+        SetNewSoundSilence(ClampSilence(p));
+    }
+    return NewSoundSilence();
+}
+
+void SetZoneNewSilence(const SilenceParams& in)
+{
+    const SilenceParams p = ClampSilence(in);
+    g_new_silence_read = true;
+    SetNewSoundSilence(p);
+    SavePrefFloat(kNewThrPref, static_cast<float>(p.threshold_db));
+    SavePrefFloat(kNewGapPref, static_cast<float>(p.min_gap_ms));
+    SavePrefFloat(kNewPrePref, static_cast<float>(p.preroll_ms));
+    SavePrefFloat(kNewTailPref, static_cast<float>(p.tail_ms));
 }
 
 void ZoneEditReset(ZoneEditView& v)

@@ -720,7 +720,7 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
                     }
                 }
                 const std::vector<SoundFrame> fr =
-                    st == PeakState::Ready ? DetectFrames(sm.facts, DetectMode::Silence, SilenceParams{}, &pk) : std::vector<SoundFrame>();
+                    st == PeakState::Ready ? DetectFrames(sm.facts, DetectMode::Silence, req.pile_params, &pk) : std::vector<SoundFrame>();
                 MediaItem_Take* take = GetActiveTake(item);
                 if (take && !fr.empty()) {
                     const SoundFrame& sl = fr[static_cast<size_t>(req.pile_slice) % fr.size()];

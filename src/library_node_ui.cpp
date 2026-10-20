@@ -1559,6 +1559,19 @@ NumRowOut SettingsNumberRow(const std::string& key, const NumRow& f, double valu
     return out;
 }
 
+// The Detection card's Silence rows and the New sounds detection defaults (Sound Edit options): one table, one set of ranges.
+struct DetectField {
+    NumRow                  row;
+    double SilenceParams::*field;
+};
+const DetectField kDetectFields[] = {
+    // 13-67c: the fader -80 to 0 dB (a -60 dB default no longer sits at its end); the field takes -90.
+    {{"##thr", "Threshold", "dB", 0.1, -90.0, 0.0, -80.0f, 0.0f, nullptr}, &SilenceParams::threshold_db},
+    {{"##gap", "Min gap", "ms", 1.0, 0.0, 5000.0, 0.0f, 400.0f, nullptr}, &SilenceParams::min_gap_ms},
+    {{"##pre", "Pre-roll", "ms", 0.5, 0.0, 1000.0, 0.0f, 50.0f, nullptr}, &SilenceParams::preroll_ms},
+    {{"##tail", "Tail", "ms", 1.0, 0.0, 5000.0, 0.0f, 300.0f, nullptr}, &SilenceParams::tail_ms},
+};
+
 // 13-74: the Tail fader's tick tip (the v1 mockup's): "From 42 ms the first zone is stopped short".
 std::string TailMarkTip(double ms)
 {
@@ -2691,7 +2704,7 @@ void ReplaceFromDrop(const std::string& lib_uid, const std::string& uid, const S
     for (const SoundFrame& f : dropped) picked = picked || f.hand;
     if (!picked && read) frames.clear();  // 13-67c review: an unreadable file keeps the dropped variations
     if (frames.empty() && read) {
-        SilenceParams sp;
+        SilenceParams sp = NewSoundSilence();
         {
             const SoundStore&   store = GetSoundStore(nullptr);
             const SoundLibrary* lib = FindLibrary(store, lib_uid);
@@ -3069,18 +3082,7 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
         }
     }
     if (d.mode == DetectMode::Silence) {
-        struct F {
-            NumRow                  row;
-            double SilenceParams::*field;
-        };
-        static const F kFields[] = {
-            // 13-67c: the fader -80 to 0 dB (a -60 dB default no longer sits at its end); the field takes -90.
-            {{"##thr", "Threshold", "dB", 0.1, -90.0, 0.0, -80.0f, 0.0f, nullptr}, &SilenceParams::threshold_db},
-            {{"##gap", "Min gap", "ms", 1.0, 0.0, 5000.0, 0.0f, 400.0f, nullptr}, &SilenceParams::min_gap_ms},
-            {{"##pre", "Pre-roll", "ms", 0.5, 0.0, 1000.0, 0.0f, 50.0f, nullptr}, &SilenceParams::preroll_ms},
-            {{"##tail", "Tail", "ms", 1.0, 0.0, 5000.0, 0.0f, 300.0f, nullptr}, &SilenceParams::tail_ms},
-        };
-        for (const F& f : kFields) {
+        for (const DetectField& f : kDetectFields) {
             // 13-62h: a zoned Sound's Pre-roll / Tail are its Settings of rows (the zones' edges, no re-detection).
             if (UsesZones(d) && (f.field == &SilenceParams::preroll_ms || f.field == &SilenceParams::tail_ms)) continue;
             // 13-62h: the shared row (SettingsNumberRow); its fader or field re-detects live, entered once.
@@ -4991,7 +4993,8 @@ constexpr const char kZoneHelp[] =
 int ZoneOptionsChanged()
 {
     return (ZoneClickPlays() ? 0 : 1) + (ZoneTailWins() ? 0 : 1) + (ZoneNewSnapMode() == SyncMode::Peak ? 0 : 1) +
-           (ZoneNewSides() ? 1 : 0);  // 13-73
+           (ZoneNewSides() ? 1 : 0) +  // 13-73
+           (ZoneNewSilence() != SilenceParams{} ? 1 : 0);  // Antho 2026-10-20: the detection defaults
 }
 
 // The header's "Click plays" toggle (the speaker icon, on = accent): a pref of the user, no undo point.
@@ -5087,6 +5090,35 @@ void SoundEditOptionItems()
                                  false);
             }
         }
+        // Antho 2026-10-20: the silence detection a new Sound starts with (its Detection card's rows and ranges)
+        ImGui::Dummy(ImVec2(1.0f, ui::Dp(2.0f)));
+        ui::ToneText("Silence detection", ui::kText, true);
+        for (const DetectField& f : kDetectFields) {
+            NumRowLook look;
+            look.label_w = ui::Dp(84.0f);  // the Snap offset / Left / Right label column
+            look.label_col = ui::kText;
+            const SilenceParams cur = ZoneNewSilence();
+            const NumRowOut     o = SettingsNumberRow(std::string("##onew") + f.row.id, f.row, cur.*(f.field), look);
+            if (o.e != ui::DragNumberEvent::Commit || o.v == cur.*(f.field)) continue;  // the row shows its live value itself
+            SilenceParams nw = cur;
+            nw.*(f.field) = o.v;
+            SetZoneNewSilence(nw);
+            char buf[112];
+            std::snprintf(buf, sizeof(buf), "New sounds: %s %g %s (yours, every project)", f.row.label, ZoneNewSilence().*(f.field),
+                          f.row.unit);
+            ShowLibraryToast(buf, false);
+        }
+        ImGui::BeginDisabled(ZoneNewSilence() == SilenceParams{});
+        const SilenceParams b;
+        char                bt[192];
+        std::snprintf(bt, sizeof(bt), "Threshold %g dB, Min gap %g ms, Pre-roll %g ms, Tail %g ms", b.threshold_db, b.min_gap_ms,
+                      b.preroll_ms, b.tail_ms);
+        if (ui::SolidButton("Built-in detection")) {
+            SetZoneNewSilence(b);
+            ShowLibraryToast(std::string("New sounds: detection back to ") + bt + " (yours, every project)", false);
+        }
+        ImGui::EndDisabled();
+        ui::ItemTipText((std::string(bt) + ". A sound already made keeps its own: its Detection card.").c_str());
         ui::ToneText("For the sounds you make from now on.", ui::kMuted, true);
     }
 }

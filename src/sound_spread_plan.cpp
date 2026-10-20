@@ -67,7 +67,7 @@ SoundNode SoundOf(const SpreadSource& s, const std::string& uid, const std::stri
 SoundData SilenceVariations(SoundData d, const EntryFacts& facts, const PeakData* peaks)
 {
     if (d.mode == DetectMode::Takes || !peaks) return d;
-    const SilenceParams           sp;  // what a new Sound gets (-60 dB, 200 ms gap, its pre-roll and tail)
+    const SilenceParams           sp = NewSoundSilence();  // what a new Sound gets (the user's New sounds defaults)
     // Its regions of sound alone (DetectFrames would fall back on the item's stretch: nothing found = `d` as it came).
     const std::vector<SoundFrame> frames = SplitOnSilence(*peaks, sp, facts.source_len);
     if (frames.empty()) return d;

@@ -92,6 +92,7 @@ struct PlaceRequest {
     // Antho 2026-10-20: that Sound was cut on silence: each member plays its own `pile_slice`-th region of sound (its
     // peaks read at placement), never its take-marker slices.
     bool pile_silence = false;
+    SilenceParams pile_params;  // the Sound's own detection (its k-th region is the one its frames were cut with)
 };
 struct PlaceResult {
     bool                     ok = false;

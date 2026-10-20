@@ -493,6 +493,7 @@ constexpr SyncMode kRecordSyncMode = SyncMode::Attack;
 
 void SetRecordBaseline(SoundData& s)
 {
+    s.silence = SilenceParams{};  // Antho 2026-10-20: the built-in gap / pre / tail, whatever the New sounds pref
     s.silence.threshold_db = kRecordThresholdDb;
     s.sync_mode = kRecordSyncMode;
     s.sides = false;  // 13-73: a Sound saved without `sides` has Left / Right off (whatever the New sounds pref)

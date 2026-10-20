@@ -274,6 +274,10 @@ void     LoadZoneNewSnapMode();
 // SetNewSoundSides; read by LoadZoneNewSnapMode.
 bool ZoneNewSides();
 void SetZoneNewSides(bool on);
+// Antho 2026-10-20: the silence detection (Threshold / Min gap / Pre-roll / Tail) a new Sound gets (Options > New
+// sounds; the user's pref, default SilenceParams{}), pushed to SetNewSoundSilence; read by LoadZoneNewSnapMode.
+SilenceParams ZoneNewSilence();
+void          SetZoneNewSilence(const SilenceParams& p);
 
 }  // namespace rav
 

@@ -400,7 +400,7 @@ Fields LibraryFields(const SoundLibrary& l)
 {
     Fields f = {{"uid", Enc(l.uid)}, {"name", Enc(l.name)}, {"root", Enc(l.root)}};
     if (l.color != 0) f.push_back({"color", FmtColor(l.color)});
-    if (l.user) f.push_back({"user", "1"});
+    // 13-77a: `user` is read (a pre-13-77 project) and never written: a library is linked by its `ravlib` name.
     if (l.attached) f.push_back({"attached", "1"});  // 13-68 v2
     if (!l.attached_type.empty()) f.push_back({"atype", Enc(l.attached_type)});
     if (!l.ravlib_path.empty()) f.push_back({"ravlib", Enc(l.ravlib_path)});
@@ -1140,6 +1140,89 @@ Got SetPlace(SoundPlacement& p, const std::string& k, const std::string& v)
     return Got::Unknown;
 }
 
+// ---- 13-77a: the common version of a linked library ----------------------------------------------
+
+constexpr size_t kBlineChunk = 32 * 1024;  // the project chunk reader's buffer is 64 KB (sound_project.cpp)
+
+std::string EncMapItem(const std::string& s)
+{
+    std::string out;
+    for (char ch : Enc(s)) {
+        if (ch == ':') out += "%3A";
+        else out += ch;
+    }
+    return out;
+}
+
+Fields LinkBaseFields(const LinkBase& b)
+{
+    Fields f = {{"lib", Enc(b.lib_uid)}};
+    if (b.synced_at != 0) f.push_back({"synced", FmtInt(b.synced_at)});
+    if (!b.file_by.empty()) f.push_back({"by", Enc(b.file_by)});
+    if (b.file_at != 0) f.push_back({"at", FmtInt(b.file_at)});
+    if (!b.uid_map.empty()) {
+        std::string m;
+        for (const auto& kv : b.uid_map) m += (m.empty() ? "" : ",") + EncMapItem(kv.first) + ":" + EncMapItem(kv.second);
+        f.push_back({"map", m});
+    }
+    return f;
+}
+
+Got SetLinkBase(LinkBase& b, const std::string& k, const std::string& v)
+{
+    if (k == "lib") return G(ReadStr(v, &b.lib_uid));
+    if (k == "synced") return G(ReadInt(v, &b.synced_at));
+    if (k == "by") return G(ReadStr(v, &b.file_by));
+    if (k == "at") return G(ReadInt(v, &b.file_at));
+    if (k == "map") {
+        std::vector<std::pair<std::string, std::string>> out;
+        size_t pos = 0;
+        while (pos <= v.size() && !v.empty()) {
+            size_t comma = v.find(',', pos);
+            if (comma == std::string::npos) comma = v.size();
+            const std::string item = v.substr(pos, comma - pos);
+            const size_t      colon = item.find(':');
+            std::string       a, c;
+            if (colon == std::string::npos || !Dec(item.substr(0, colon), &a) || !Dec(item.substr(colon + 1), &c))
+                return Got::Bad;
+            out.push_back({a, c});
+            pos = comma + 1;
+        }
+        b.uid_map = out;
+        return Got::Ok;
+    }
+    return Got::Unknown;
+}
+
+void WriteLinkBase(std::string& out, const LinkBase& b)
+{
+    WriteLine(out, "linkbase", LinkBaseFields(b), b.kept);
+    size_t pos = 0;
+    while (pos < b.text.size()) {
+        size_t nl = b.text.find('\n', pos);
+        if (nl == std::string::npos) nl = b.text.size();
+        std::string line = b.text.substr(pos, nl - pos);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        const std::string enc = Enc(line);
+        size_t            at = 0;
+        do {
+            size_t end = std::min(enc.size(), at + kBlineChunk);
+            // Never cut a %XX triplet.
+            if (end < enc.size()) {
+                if (enc[end - 1] == '%') --end;
+                else if (end >= 2 && enc[end - 2] == '%') end -= 2;
+            }
+            const bool more = end < enc.size();
+            out += "bline t=" + enc.substr(at, end - at);
+            if (more) out += " more=1";
+            out += '\n';
+            at = end;
+        } while (at < enc.size());
+        pos = nl + 1;
+    }
+    WriteLines(out, b.kept_lines);
+}
+
 void WriteHeader(std::string& out, const char* magic, int version, const Fields& f, const Kept& kept)
 {
     std::string kind = std::string(magic) + ' ' + FmtInt(version < 1 ? 1 : version);
@@ -1166,10 +1249,42 @@ bool ParseStoreCore(const std::string& text, SoundStore& s)
     AutoSoundAssign* au = nullptr;
     SoundAssign*     asg = nullptr;  // 13-15a: the project / character assign read last
     SoundCharacter*  chr = nullptr;
+    LinkBase*        lb = nullptr;  // 13-77a: the linkbase read last
+    std::string      lb_pending;    // a bline split in continuations
+    bool             lb_open = false;
+    auto             flush_bline = [&]() {
+        if (lb && lb_open) lb->text += lb_pending + "\n";
+        lb_pending.clear();
+        lb_open = false;
+    };
     for (; i < lines.size(); ++i) {
         std::vector<std::string> t;
         const std::string        kind = KindOf(lines[i], &t);
-        if (kind == "auto") {
+        if (kind != "bline") flush_bline();
+        if (kind == "linkbase") {
+            s.link_bases.emplace_back();
+            lb = &s.link_bases.back();
+            asg = nullptr;
+            chr = nullptr;
+            au = nullptr;
+            group = nullptr;
+            lib = nullptr;
+            node = nullptr;
+            ReadFields(t, 1, lb->kept, [&](const std::string& k, const std::string& v) { return SetLinkBase(*lb, k, v); });
+            unknown_to = &lb->kept_lines;
+        } else if (kind == "bline" && lb) {
+            std::string chunk;
+            bool        more = false;
+            Kept        ignored;
+            ReadFields(t, 1, ignored, [&](const std::string& k, const std::string& v) {
+                if (k == "t") return G(ReadStr(v, &chunk));
+                if (k == "more") return G(ReadFlag(v, &more));
+                return Got::Unknown;
+            });
+            lb_pending += chunk;
+            lb_open = true;
+            if (!more) flush_bline();
+        } else if (kind == "auto") {
             s.auto_sounds.emplace_back();
             au = &s.auto_sounds.back();
             asg = nullptr;
@@ -1306,6 +1421,7 @@ bool ParseStoreCore(const std::string& text, SoundStore& s)
             unknown_to->push_back(lines[i]);
         }
     }
+    flush_bline();
     // 13-62h: a divided Sound of an old project / .ravlib (cuts, owners, Sound-level zones, part gains) becomes
     // zones, once, on read. 13-62i: an undivided Sound's variations too (any mode, Takes included), and a divided
     // Sound's takes get proposed zones.
@@ -1431,7 +1547,7 @@ bool ParseSoundStore(const std::string& text, SoundStore* out)
 bool SoundStoreEmpty(const SoundStore& s)
 {
     return s.groups.empty() && s.libraries.empty() && s.kept.empty() && s.kept_lines.empty() && s.auto_sounds.empty() &&
-           s.project.empty() && s.characters.empty() && s.attach_scope == 1;
+           s.project.empty() && s.characters.empty() && s.attach_scope == 1 && s.link_bases.empty();
 }
 
 std::string SerializeSoundStore(const SoundStore& s)
@@ -1492,6 +1608,12 @@ std::string SerializeSoundStore(const SoundStore& s)
             }
             WriteLines(out, n.kept_lines);
         }
+    }
+    // 13-77a: the common versions, only of a library that is in the store and linked (the others are pruned on write).
+    for (const LinkBase& b : s.link_bases) {
+        bool linked = false;
+        for (const SoundLibrary& l : s.libraries) linked = linked || (l.uid == b.lib_uid && !l.ravlib_path.empty());
+        if (linked) WriteLinkBase(out, b);
     }
     return out;
 }

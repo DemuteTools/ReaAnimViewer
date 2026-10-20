@@ -1580,9 +1580,9 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
         rx -= ImGui::CalcTextSize(t).x;
         dl->AddText(ImVec2(rx, cy - ImGui::GetTextLineHeight() * 0.5f), Faded(ui::kMissText, is_cut), t);
         rx -= gap;
-    } else if (lib.user && n && n->type == SoundNodeType::Sound && n->sound.source.kind == SoundSourceKind::Item &&
+    } else if (LibraryLinked(lib) && n && n->type == SoundNodeType::Sound && n->sound.source.kind == SoundSourceKind::Item &&
                r.kind == TreeRowKind::Node) {
-        // 13-24 (C6): an item Sound in a User Library plays only in this project.
+        // 13-24 (C6): an item Sound in a library saved to a file plays only in this project.
         const char* t = "project";
         const float tw = ui::SmallTagWidth(t);
         rx -= tw;
@@ -1792,8 +1792,8 @@ void ListCaption(const char* text, const char* tip = nullptr)
     ImGui::Dummy(ImVec2(0.0f, std::max(0.0f, ui::Dp(2.0f) - ImGui::GetStyle().ItemSpacing.y)));
 }
 
-// The library's menu (the row's right-click, the tree header's ⋯): Rename, a User Library's
-// Export / Locate / Refresh, Delete. Sets *to_delete for the caller to delete after its loop.
+// The library's menu (the row's right-click, the tree header's ⋯): Rename, Fix missing sounds, the file's items
+// (Save to a file / Show in Explorer / Unlink), Export, Refresh, Kit, Assign, Delete. Sets *to_delete for the caller to delete after its loop.
 void LibraryMenuItems(const SoundLibrary& lib, std::string* to_delete, bool rename_item)
 {
     if (rename_item && ImGui::MenuItem("Rename")) StartLibraryRename(lib);
@@ -1806,22 +1806,31 @@ void LibraryMenuItems(const SoundLibrary& lib, std::string* to_delete, bool rena
                                     " in this project: search a folder, locate a file or use a REAPER item")
                                        .c_str()
                                  : "No missing sound in any library");
-    if (lib.user) {
-        if (ImGui::MenuItem("Export .ravlib...")) RequestUserLibraryExport(lib.uid);
-        ui::ItemTipText("Save a copy of this library's file anywhere, to share it");
+    ImGui::Separator();
+    if (LibraryLinked(lib)) {
+        // 13-77c adds "Sync with file..." here.
         // 13-36: the file itself, selected in File Explorer (to copy, send or back it up).
         if (ImGui::MenuItem("Show in Explorer")) RequestUserLibraryReveal(lib.uid);
         ui::ItemTipText("Open the User Library folder in File Explorer, this library's .ravlib selected");
-        if (ImGui::MenuItem("Refresh the User Library folder")) RefreshUserLibraries();
-    } else {
-        // 13-24: reusable in other projects; its item Sounds become File Sounds of their files.
-        if (ImGui::MenuItem("Convert to User Library")) {
+        if (ImGui::MenuItem("Unlink from file")) {
             const std::string uid = lib.uid;
-            Later([uid] { ConvertToUserLibrary(uid); });
+            Later([uid] { UnlinkLibrary(uid); });
         }
-        ui::ItemTipText("Save it as a User Library (.ravlib) for other projects. Sounds whose item plays a media file "
-                        "use that file; the others (MIDI, piles, ...) stay project-only");
+        ui::ItemTipText("This project keeps its copy with all its sounds; the .ravlib is not touched");
+    } else if (!lib.attached) {
+        // 13-77a: write it as a .ravlib of the User Library folder (its Item Sounds that play a plain media file
+        // become File Sounds, the others stay project-only).
+        if (ImGui::MenuItem("Save to a file...")) {
+            const std::string uid = lib.uid;
+            Later([uid] { SaveLibraryToFile(uid); });
+        }
+        ui::ItemTipText("Save it as a .ravlib in the User Library folder: other projects can Add it. Sounds whose "
+                        "item plays a media file use that file; the others (MIDI, piles, ...) stay project-only");
     }
+    if (ImGui::MenuItem("Export .ravlib...")) RequestUserLibraryExport(lib.uid);
+    ui::ItemTipText("Save a copy of this library anywhere, without a link, to share it");
+    if (ImGui::MenuItem("Refresh the User Library folder")) RefreshUserLibraries();
+    ImGui::Separator();
     // 13-15c: the body parts this library suggests itself for (its kit, stored in the library): a tick per part,
     // each toggle one undo point.
     if (ui::BeginSubMenu("Kit...")) {
@@ -1872,9 +1881,14 @@ void LibraryListRow(const SoundStore& store, const SoundLibrary& lib, std::strin
     const std::string  miss_t = miss > 0 ? std::to_string(miss) : std::string();
     ImFont*            blk_f = ui::FontSemibold();
     ImFont*            miss_f = ui::FontCaptionBold();
-    float              tw[2];
-    int                tk[2];
+    float              tw[3];
+    int                tk[3];
     int                nt = 0;
+    // 13-77a: the link glyph after the name (red and with its own tip when the file is not found).
+    const LinkedFileState lfs = LinkedFileOf(lib);
+    const bool            linked = lfs != LinkedFileState::Unlinked;
+    const bool            file_bad = linked && lfs != LinkedFileState::Ok;
+    if (linked) { tk[nt] = 2; tw[nt++] = ui::Dp(14.0f); }
     // 13-21: a red "!" when blocked, an amber one for gaps; the tooltip lists every reason.
     std::string chk_tip;
     if (chk.blocked) chk_tip = "Blocked: " + chk.reason;
@@ -1885,7 +1899,7 @@ void LibraryListRow(const SoundStore& store, const SoundLibrary& lib, std::strin
     }
     if (!chk_tip.empty()) { tk[nt] = 0; tw[nt++] = ui::TextSizeIn(blk_f, "!").x + ui::Dp(2.0f); }
     if (miss > 0) { tk[nt] = 1; tw[nt++] = ui::TextSizeIn(miss_f, miss_t.c_str()).x; }
-    flow::TrailPlace tp[2];
+    flow::TrailPlace tp[3];
     float            name_w = 0.0f;
     {
         ui::FontScope f(ui::FontTitle());
@@ -1905,6 +1919,14 @@ void LibraryListRow(const SoundStore& store, const SoundLibrary& lib, std::strin
         ImFont*     f = tk[i] == 0 ? blk_f : miss_f;
         const char* t = tk[i] == 0 ? "!" : miss_t.c_str();
         ImGui::SetCursorScreenPos(ImVec2(tp[i].x, y));
+        if (tk[i] == 2) {
+            const float gs = ui::Dp(14.0f);
+            DrawLinkGlyph(dl, ImVec2(tp[i].x, std::floor(y + (rh - gs) * 0.5f)), gs, file_bad ? ui::kBad : ui::kMuted);
+            ImGui::Dummy(ImVec2(tp[i].w, rh));
+            ui::ItemTipText(file_bad ? (lib.ravlib_path + " not found in the User Library folder: click the library, then Locate...").c_str()
+                                     : ("Linked to " + lib.ravlib_path + " (User Library folder)").c_str());
+            continue;
+        }
         // The missing count is a button over the row (the row allows the overlap), so its click is its
         // own: a Dummy never saw it, the row took the press first (Antho 2026-10-20). No rename there.
         bool shown = false;
@@ -1951,7 +1973,7 @@ void UserFileRow(const UserLibraryFile& f, std::string* add_file)
     const float  tw = f.readable ? ui::ButtonWidth(trail) : ui::TextWidth(trail);
     ImGui::SetNextItemAllowOverlap();
     ui::SelectRow("##ufile", false, 0, rh, ImGuiSelectableFlags_AllowOverlap, ui::kRadiusMd);
-    if (f.readable) ui::ItemTip("%s\nNot in this project: Add puts it in", f.file.c_str());
+    if (f.readable) ui::ItemTip("%s\nNot in this project: Add puts a linked copy in", f.file.c_str());
     else ui::ItemTip("%s\nThis file cannot be read", f.file.c_str());
     if (f.readable) dl->AddCircleFilled(ImVec2(p.x + ui::Dp(10.0f), p.y + rh * 0.5f), ui::Dp(4.0f), Faded(LibDot(f.color), true));
     const float tx = std::max(nx, p.x + w - ui::Dp(6.0f) - tw);
@@ -1973,7 +1995,7 @@ void UserFileRow(const UserLibraryFile& f, std::string* add_file)
 
 // 13-7a (audit C1.1 - C1.4): a fixed "Libraries" section, « at its header's right; the project's
 // libraries under PROJECT, the User Library's under USER (with the folder's files not in the
-// project); "+ Library" and "+ User Library" side by side, then "Import .ravlib..." full width.
+// project); "+ Library" and "Import .ravlib..." side by side (13-77a: one kind of library).
 void LibrariesSectionWidgets()
 {
     g.gen = SoundStoreGeneration();
@@ -1993,7 +2015,7 @@ void LibrariesSectionWidgets()
         std::string                        to_delete, add_file;
         const std::vector<UserLibraryFile> files = UserFilesNotInProject();
         // 13-68 v2: the Attached libraries (made from selected sounds by the Spread actions) between them.
-        auto category = [](const SoundLibrary& lib) { return lib.user ? 2 : lib.attached ? 1 : 0; };
+        auto category = [](const SoundLibrary& lib) { return lib.attached ? 1 : 0; };  // 13-77a: every other library is the project's
         bool any[3] = {false, false, !files.empty()};
         for (const SoundLibrary& lib : store.libraries) any[category(lib)] = true;
         const bool any_project = any[0] || any[1], any_user = any[2];
@@ -2002,10 +2024,10 @@ void LibrariesSectionWidgets()
             if (!any[cat]) continue;
             const bool        user = cat == 2;
             const std::string folder_tip = user ? "Folder: " + UserLibraryFolderText() : std::string();
-            ListCaption(user ? "User" : cat == 1 ? "Attached" : "Project",
+            ListCaption(user ? "User Library folder" : cat == 1 ? "Attached" : "Project",
                         user ? folder_tip.c_str() : cat == 1 ? "Made from selected sounds, one per marker type" : nullptr);
             for (const SoundLibrary& lib : store.libraries) {
-                if (category(lib) != cat) continue;
+                if (user || category(lib) != cat) continue;
                 LibraryListRow(store, lib, &to_delete);
                 if (StoreReplaced()) break;
             }
@@ -2027,11 +2049,10 @@ void LibrariesSectionWidgets()
                 std::string uid;
                 if (Gesture("Add library", [&](SoundStore& s) { return NewLibrary(s, &uid); })) PickLibrary(uid);
             });
+        ui::ItemTipText("A library of this project. Save to a file... (its menu) shares it with other projects");
         ImGui::SameLine(0.0f, sp);
-        if (ui::SolidButton("+ User Library", ImVec2(std::max(1.0f, avail - half - sp), 0.0f))) Later([] { NewUserLibrary(); });
-        ui::ItemTipText("A library saved in its own file in the User Library folder, for every project");
-        if (ui::SolidButton("Import .ravlib...", ImVec2(avail, 0.0f))) RequestUserLibraryImport();
-        ui::ItemTipText("Add a .ravlib file: it is copied into the User Library folder");
+        if (ui::SolidButton("Import .ravlib...", ImVec2(std::max(1.0f, avail - half - sp), 0.0f))) RequestUserLibraryImport();
+        ui::ItemTipText("Add a .ravlib file: it is copied into the User Library folder and linked");
         DrawLibraryLocateStatus();  // 13-50 (13-11): a Locate scan in progress, with its Cancel
     }
     ui::EndSection(sec);

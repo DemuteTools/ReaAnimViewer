@@ -66,11 +66,86 @@ bool ParseRavlib(const std::string& text, SoundStore* out)
 
 std::string SerializeRavlib(const SoundStore& one)
 {
+    return SerializeRavlib(one, std::string(), 0);
+}
+
+namespace {
+std::string PctEnc(const std::string& s)
+{
+    static const char kHex[] = "0123456789ABCDEF";
+    std::string       out;
+    for (char ch : s) {
+        const unsigned char c = static_cast<unsigned char>(ch);
+        if (c <= 0x20 || c == 0x7F || c == ',' || c == '=' || c == '%') {
+            out += '%';
+            out += kHex[c >> 4];
+            out += kHex[c & 15];
+        } else {
+            out += ch;
+        }
+    }
+    return out;
+}
+bool PctDec(const std::string& s, std::string* out)
+{
+    auto hex = [](char c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1; };
+    std::string r;
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] != '%') {
+            r += s[i];
+            continue;
+        }
+        if (i + 2 >= s.size()) return false;
+        const int h = hex(s[i + 1]), l = hex(s[i + 2]);
+        if (h < 0 || l < 0) return false;
+        r += static_cast<char>(h * 16 + l);
+        i += 2;
+    }
+    *out = r;
+    return true;
+}
+}  // namespace
+
+std::string SerializeRavlib(const SoundStore& one, const std::string& by, int64_t at)
+{
     const std::string body = SerializeSoundStore(one);
     const size_t      nl = body.find('\n');
-    std::string       out = std::string(kRavlibMagic) + " " + std::to_string(kRavlibVersion) + "\n";
+    std::string       out = std::string(kRavlibMagic) + " " + std::to_string(kRavlibVersion);
+    if (!by.empty()) out += " by=" + PctEnc(by);
+    if (at != 0) out += " at=" + std::to_string(at);
+    out += "\n";
     if (nl != std::string::npos) out += body.substr(nl + 1);
     return out;
+}
+
+void RavlibWriter(const SoundStore& parsed, std::string* by, int64_t* at)
+{
+    if (by) by->clear();
+    if (at) *at = 0;
+    for (const std::string& tok : parsed.kept) {
+        if (tok.compare(0, 3, "by=") == 0 && by) {
+            std::string v;
+            if (PctDec(tok.substr(3), &v)) *by = v;
+        } else if (tok.compare(0, 3, "at=") == 0 && at) {
+            try {
+                *at = std::stoll(tok.substr(3));
+            } catch (...) {
+            }
+        }
+    }
+}
+
+bool SameRavlibContent(const std::string& a, const std::string& b)
+{
+    SoundStore sa, sb;
+    if (ParseRavlib(a, &sa) && ParseRavlib(b, &sb)) return SerializeRavlib(sa) == SerializeRavlib(sb);
+    auto body = [](const std::string& t) {
+        const size_t nl = t.find('\n');
+        std::string  r = nl == std::string::npos ? std::string() : t.substr(nl + 1);
+        r.erase(std::remove(r.begin(), r.end(), '\r'), r.end());
+        return r;
+    };
+    return body(a) == body(b);
 }
 
 SoundStore RavlibOf(const SoundStore& store, const std::string& lib_uid, int* item_sounds)
@@ -81,6 +156,7 @@ SoundStore RavlibOf(const SoundStore& store, const std::string& lib_uid, int* it
     if (!lib) return out;
     SoundLibrary copy = *lib;
     copy.ravlib_path.clear();
+    copy.user = false;  // 13-77a: legacy flag, never written
     copy.kit_offered = false;  // 13-15a: "offered already" is this project's, not the library's
     std::set<std::string> used_groups;
     for (SoundNode& n : copy.nodes) {
@@ -97,7 +173,7 @@ SoundStore RavlibOf(const SoundStore& store, const std::string& lib_uid, int* it
 }
 
 bool AddRavlibLibrary(SoundStore& store, const SoundStore& file, const std::string& file_name, std::string* lib_uid,
-                      std::string* why)
+                      std::string* why, std::vector<std::pair<std::string, std::string>>* uid_map_out, LinkBase* base_out)
 {
     if (file.libraries.size() != 1) {
         if (why) *why = "Not a User Library file";
@@ -227,17 +303,81 @@ bool AddRavlibLibrary(SoundStore& store, const SoundStore& file, const std::stri
     std::vector<std::string> names;
     for (const SoundLibrary& l : s.libraries) names.push_back(l.name);
     lib.name = UniqueName(lib.name.empty() ? std::string("User Library") : lib.name, names);
-    lib.user = true;
+    lib.user = false;  // 13-77a: linked = ravlib_path
     lib.ravlib_path = file_name;
     s.libraries.push_back(lib);
     store = s;
     if (lib_uid) *lib_uid = lib.uid;
+    if (uid_map_out || base_out) {
+        std::vector<std::pair<std::string, std::string>> changed;
+        auto note = [&](const std::string& from, const std::string& to) {
+            if (from != to) changed.push_back({from, to});
+        };
+        note(src.uid, lib.uid);
+        for (const auto& kv : nmap) note(kv.first, kv.second);
+        for (const auto& kv : gmap) note(kv.first, kv.second);
+        for (const auto& kv : vmap) note(kv.first, kv.second);
+        if (uid_map_out) *uid_map_out = changed;
+        if (base_out) {
+            LinkBase b;
+            b.lib_uid = lib.uid;
+            b.text = SerializeRavlib(RavlibOf(store, lib.uid, nullptr));
+            b.uid_map = changed;
+            RavlibWriter(file, &b.file_by, &b.file_at);
+            *base_out = b;
+        }
+    }
+    return true;
+}
+
+std::string FolderFileOfUid(const std::vector<FolderRavlib>& folder, const std::string& uid)
+{
+    if (uid.empty()) return {};
+    for (const FolderRavlib& f : folder)
+        if (f.uid == uid) return f.file;
+    return {};
+}
+
+LinkedFileState LinkedFileStateOf(const SoundLibrary& lib, const std::vector<FolderRavlib>& folder)
+{
+    if (lib.ravlib_path.empty() || lib.attached) return LinkedFileState::Unlinked;
+    const std::string want = LowerAscii(lib.ravlib_path);
+    for (const FolderRavlib& f : folder) {
+        if (LowerAscii(f.file) != want) continue;
+        if (f.uid.empty()) return LinkedFileState::Unreadable;
+        return f.uid == lib.uid ? LinkedFileState::Ok : LinkedFileState::OtherLibrary;
+    }
+    return LinkedFileState::Missing;
+}
+
+LinkBase MakeLinkBase(const SoundStore& store, const std::string& lib_uid, const std::string& by, int64_t at,
+                      int64_t synced_at)
+{
+    LinkBase b;
+    b.lib_uid = lib_uid;
+    if (FindLibrary(store, lib_uid)) b.text = SerializeRavlib(RavlibOf(store, lib_uid, nullptr));
+    b.file_by = by;
+    b.file_at = at;
+    b.synced_at = synced_at;
+    return b;
+}
+
+bool AdoptFileAsBase(SoundStore& store, const std::string& lib_uid, const std::string& file_text, int64_t synced_at)
+{
+    const SoundLibrary* lib = FindLibrary(store, lib_uid);
+    if (!lib || !LibraryLinked(*lib) || FindLinkBase(store, lib_uid)) return false;
+    const std::string mine = SerializeRavlib(RavlibOf(store, lib_uid, nullptr));
+    if (!SameRavlibContent(mine, file_text)) return false;
+    SoundStore parsed;
+    std::string by;
+    int64_t     at = 0;
+    if (ParseRavlib(file_text, &parsed)) RavlibWriter(parsed, &by, &at);
+    store.link_bases.push_back(MakeLinkBase(store, lib_uid, by, at, synced_at));
     return true;
 }
 
 std::string EffectiveLandsIn(const SoundLibrary& lib, const std::string& node_uid)
 {
-    if (!lib.user) return kDefaultLandsIn;
     const SoundNode* n = FindNode(lib, node_uid);
     for (size_t guard = 0; n && guard <= lib.nodes.size(); ++guard) {
         if (!n->lands_in.empty()) return n->lands_in;
@@ -538,9 +678,8 @@ bool ConvertLibraryToUser(SoundStore& store, const std::string& lib_uid, const s
 {
     ConvertReport r;
     SoundLibrary* found = FindLibrary(store, lib_uid);
-    if (!found || found->user) return false;
+    if (!found || LibraryLinked(*found)) return false;
     SoundLibrary lib = *found;
-    lib.user = true;
     lib.ravlib_path = file_name;
     for (SoundNode& n : lib.nodes) {
         if (n.type != SoundNodeType::Sound) continue;
@@ -563,12 +702,12 @@ bool ConvertLibraryToUser(SoundStore& store, const std::string& lib_uid, const s
     return true;
 }
 
-std::string ConvertReportText(const ConvertReport& r, const std::string& file_name)
+std::string SaveToFileToastText(const std::string& lib_name, const std::string& file, const ConvertReport& r)
 {
-    std::string t = "Converted to a User Library (" + file_name + ")";
+    std::string t = lib_name + " saved to " + file + " in the User Library folder: other projects can Add it";
     const int   n = static_cast<int>(r.project_only.size());
     if (n == 0) return t;
-    t += ": " + std::to_string(n) + " of " + std::to_string(r.sounds) +
+    t += ". " + std::to_string(n) + " of " + std::to_string(r.sounds) +
          (r.sounds == 1 ? " sound is" : " sounds are") + " project-only and will be missing in other projects (";
     for (int i = 0; i < n && i < 3; ++i) {
         const ProjectOnlySound& p = r.project_only[static_cast<size_t>(i)];

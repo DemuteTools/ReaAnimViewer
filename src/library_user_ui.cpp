@@ -2,7 +2,10 @@
 //
 // See library_user_ui.h. Spec 13-11 (decisions 2, 5, 8 to 13).
 //
-// Threads: the UI thread draws, runs the pickers and the autosave from this module's REAPER timer
+// 13-77a: a library is linked to a .ravlib of the user folder or not; nothing writes a .ravlib but an explicit
+// gesture (Save to a file, Import, Save it again, Export, the sync of 13-77b/c): no autosave.
+//
+// Threads: the UI thread draws, runs the pickers and the first-sight pass from this module's REAPER timer
 // and applies a published Locate result; the Locate worker (StartLocateJob) runs RelocateFolder or
 // LocateUnderRoot through the folder cache (media_db.h), the only recursive folder scans: none runs
 // on the UI thread, and Cancel / unload stop them (13-50, 13-5 review). Listing RAV's own Libraries folder (non-recursive) is done on the UI
@@ -26,6 +29,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <ctime>
 #include <set>
 #include <sstream>
 #include <string>
@@ -41,6 +45,7 @@
 #include <windows.h>  // GetAsyncKeyState (no re-check during a drag)
 
 #include "file_dialogs.h"
+#include "library_icons.h"  // 13-77a: DrawLinkGlyph, DrawToolGlyphAt
 #include "library_tree_edit.h"
 #include "library_media_ui.h"  // freeze audit #2: MediaReachAsk / MediaReachLast (the probe worker)
 #include "library_tree_ui.h"
@@ -97,9 +102,10 @@ struct UserFile {
     std::string name;
     uint32_t    color = 0;
     SoundStore  store;  // parsed
+    std::string text;   // 13-77a: as read (the first-sight pass compares it with the project's copy)
 };
 
-enum class PickKind { None, Import, Export, Reveal, Locate, LocateFolder };
+enum class PickKind { None, Import, Export, Reveal, Locate, LocateFolder, Relink, SaveFile, SaveAgain };
 
 struct LocateJob {
     std::thread                                       worker;
@@ -140,8 +146,10 @@ struct State {
     std::string pick_node;
     bool        pick_rename = false;  // Locate: a file of another name relinks the Sound (13-50 review)
     bool        in_timer = false;
-    // Autosave: per (project, its file + library uid) the text last written / seen (SavedKey).
-    std::map<std::pair<ReaProject*, std::string>, std::string> saved;
+    // 13-77a: the (project, file + library uid) pairs the first-sight pass has looked at (SavedKey).
+    std::set<std::pair<ReaProject*, std::string>> sighted;
+    // 13-77a: the folder listing as LinkedFileStateOf reads it (file, library uid).
+    std::vector<FolderRavlib> folder;
     int         last_state = -1;
     ReaProject* last_proj = nullptr;
     // Missing caches (decision 10).
@@ -259,6 +267,7 @@ void ListUserFolder()
         f.file = p.filename().u8string();
         std::string text;
         if (ReadText(p, &text) && ParseRavlib(text, &f.store)) {
+            f.text = text;
             const SoundLibrary& lib = f.store.libraries.front();
             f.uid = lib.uid;
             f.name = lib.name;
@@ -270,6 +279,8 @@ void ListUserFolder()
     }
     std::sort(g.files.begin(), g.files.end(),
               [](const UserFile& a, const UserFile& b) { return LowerAscii(a.name) < LowerAscii(b.name); });
+    g.folder.clear();
+    for (const UserFile& f : g.files) g.folder.push_back({f.file, f.uid});
 }
 
 std::vector<std::string> FolderFileNames()
@@ -502,14 +513,14 @@ void ApplyHooks()
     SetLibraryTreeHooks(n);
 }
 
-// ---- Autosave (decision 9) ----------------------------------------------------------------------
+// ---- The user folder's files (13-77a: no autosave) ----------------------------------------------
 
 fs::path FileOf(const std::string& name)
 {
     return UserFolder() / fs::u8path(name);
 }
 
-// The autosave key: REAPER reuses a project tab's ReaProject* when another project is opened in it,
+// The first-sight key: REAPER reuses a project tab's ReaProject* when another project is opened in it,
 // so the project's file name is part of the key (a newly opened project is a first sight).
 std::pair<ReaProject*, std::string> SavedKey(ReaProject* proj, const std::string& lib_uid)
 {
@@ -552,48 +563,50 @@ std::string FreeFileName(const SoundStore& store, const std::string& lib_uid, co
     return FreeOnDisk(lib_name, taken);
 }
 
-void Autosave(ReaProject* proj)
+// ---- Writing a .ravlib (13-77a: only on an explicit gesture) ------------------------------------------
+
+int64_t NowS()
+{
+    return static_cast<int64_t>(std::time(nullptr));
+}
+
+// The open project's file name (the `by` of the files this project writes).
+std::string ProjectFileName()
+{
+    char fn[4096] = {};
+    EnumProjects(-1, fn, sizeof fn);
+    const std::string b = BaseNameOf(fn);
+    return b.empty() ? std::string("unsaved project") : b;
+}
+
+// First sight (decision 2): a linked library with no common version whose own text equals its file takes the file's
+// as the common version, silently (no undo point). Once per (project, library) per session: a file that differs
+// stays without a common version (13-77b shows each difference as changed on both sides).
+void FirstSightPass(ReaProject* proj)
 {
     if (ResourcePath().empty()) return;
-    bool wrote = false;
-    const SoundStore store = GetSoundStore(proj);
-    for (const SoundLibrary& lib : store.libraries) {
-        if (!lib.user) continue;
-        std::string file = lib.ravlib_path;
-        const fs::path p0 = file.empty() ? fs::path() : FileOf(file);
-        std::error_code ec;
-        bool clash = false;
-        if (!file.empty() && fs::exists(p0, ec)) {
-            const std::string other = UidInFile(p0);
-            clash = !other.empty() && other != lib.uid;
-        }
-        if (file.empty() || clash) {  // a name of its own, kept in the project (no undo point)
-            if (!g.listed) ListUserFolder();
-            file = FreeFileName(store, lib.uid, lib.name);
-            const std::string uid = lib.uid;
-            ModifySoundStore(proj, nullptr, [&](SoundStore& s) {
-                SoundLibrary* l = FindLibrary(s, uid);
-                if (!l || l->ravlib_path == file) return false;
-                l->ravlib_path = file;
-                return true;
-            });
-        }
-        const fs::path    p = FileOf(file);
-        const std::string text = SerializeRavlib(RavlibOf(store, lib.uid, nullptr));
-        const auto        key = SavedKey(proj, lib.uid);
-        const auto        it = g.saved.find(key);
-        if (it == g.saved.end()) {  // first sight: write only when the file is absent
-            g.saved[key] = text;
-            if (!fs::exists(p, ec) && WriteText(p, text)) wrote = true;
-            continue;
-        }
-        if (it->second == text) continue;
-        if (WriteText(p, text)) {
-            it->second = text;
-            wrote = true;
+    if (!g.listed) ListUserFolder();
+    std::vector<std::pair<std::string, std::string>> todo;  // lib uid, file text
+    {
+        const SoundStore& store = GetSoundStore(proj);
+        for (const SoundLibrary& lib : store.libraries) {
+            if (!LibraryLinked(lib) || FindLinkBase(store, lib.uid)) continue;
+            const auto key = SavedKey(proj, lib.uid);
+            if (!g.sighted.insert(key).second) continue;
+            for (const UserFile& f : g.files)
+                if (!f.uid.empty() && f.uid == lib.uid && LowerAscii(f.file) == LowerAscii(lib.ravlib_path)) {
+                    todo.push_back({lib.uid, f.text});
+                    break;
+                }
         }
     }
-    if (wrote) ListUserFolder();
+    if (todo.empty()) return;
+    const int64_t now = NowS();
+    ModifySoundStore(proj, nullptr, [&](SoundStore& s) {
+        bool any = false;
+        for (const auto& t : todo) any = AdoptFileAsBase(s, t.first, t.second, now) || any;
+        return any;
+    });
 }
 
 // ---- Locate (decision 11) -----------------------------------------------------------------------
@@ -976,22 +989,36 @@ void RunImport()
         ShowToastNoUndo("Already in this project");
         return;
     }
-    // Copied into the user folder; a file of that library already there takes the imported text, so
-    // the folder and the project agree.
+    // 13-77a (reverses 13-11 B7): a library whose file is in the folder already is not copied over it (a shared file
+    // is never overwritten silently): it is added from the list.
     ListUserFolder();
-    std::string name;
-    for (const UserFile& f : g.files)
-        if (f.uid == flib.uid) name = f.file;
-    if (name.empty()) name = FreeOnDisk(flib.name, FolderFileNames());
+    const std::string there = FolderFileOfUid(g.folder, flib.uid);
+    if (!there.empty()) {
+        ShowToastNoUndo(there + " in the User Library folder is that library: Add it from the list");
+        return;
+    }
+    const std::string name = FreeOnDisk(flib.name, FolderFileNames());
     if (!WriteText(FileOf(name), text)) {
         ShowToastNoUndo("Could not copy the file into " + UserFolderText());
         return;
     }
     ListUserFolder();
     std::string uid, why;
-    if (Gesture("Import user library", [&](SoundStore& s) { return AddRavlibLibrary(s, file, name, &uid, &why); })) {
+    const int64_t now = NowS();
+    const char*   desc = "RAV: Import user library";
+    if (ModifySoundStore(nullptr, desc, [&](SoundStore& s) {
+            std::vector<std::pair<std::string, std::string>> map;
+            LinkBase                                         base;
+            if (!AddRavlibLibrary(s, file, name, &uid, &why, &map, &base)) return false;
+            base.uid_map = map;
+            base.synced_at = now;
+            return SetLinkBase(s, base);
+        })) {
         const SoundLibrary* l = FindLibrary(GetSoundStore(nullptr), uid);
-        if (l) SelectLibraryRow(uid, LibraryRow{"", l->root});
+        if (l) {
+            SelectLibraryRow(uid, LibraryRow{"", l->root});
+            ShowLibraryToast(l->name + " added: this project's own copy, linked to " + name, true, desc);
+        }
     } else if (!why.empty()) {
         ShowToastNoUndo(why);
     }
@@ -1017,12 +1044,11 @@ void RunExport(const std::string& lib_uid)
 }
 
 // 13-36: the library's .ravlib selected in a File Explorer window (the folder alone when the file
-// is not written yet). The autosave runs first, so the file shown holds the latest change.
+// is not written yet).
 void RunReveal(const std::string& lib_uid)
 {
-    Autosave(EnumProjects(-1, nullptr, 0));
     const SoundLibrary* lib = FindLibrary(GetSoundStore(nullptr), lib_uid);
-    if (!lib || !lib->user) return;
+    if (!lib || !LibraryLinked(*lib)) return;
     std::error_code ec;
     fs::create_directories(UserFolder(), ec);
     const fs::path file = lib->ravlib_path.empty() ? fs::path() : FileOf(lib->ravlib_path);
@@ -1082,6 +1108,49 @@ void RunLocateFolderPick()
     std::string root;
     if (!PickFolder(Owner(), root)) return;  // cancelled
     StartLocateFolder(root);
+}
+
+// 13-77a: Locate... on a linked library whose file is gone: any .ravlib, which must hold this library. Outside the
+// folder it is copied in. One undo point; the common version is unchanged (13-77b compares three ways).
+void RunRelinkPick(const std::string& lib_uid)
+{
+    std::string lib_name;
+    {
+        const SoundLibrary* lib = FindLibrary(GetSoundStore(nullptr), lib_uid);
+        if (!lib || !LibraryLinked(*lib)) return;
+        lib_name = lib->name;
+    }  // no store reference across the dialog
+    std::string path;
+    if (!PickOpenFile(Owner(), L"Locate the library file", kRavlibFilter, UserFolderText(), path)) return;
+    std::string text;
+    SoundStore  file;
+    if (!ReadText(fs::u8path(path), &text) || !ParseRavlib(text, &file)) {
+        ShowToastNoUndo("Not a User Library file");
+        return;
+    }
+    if (file.libraries.front().uid != lib_uid) {
+        ShowToastNoUndo("That file holds another library");
+        return;
+    }
+    ListUserFolder();
+    std::string name = BaseNameOf(path);
+    bool        inside = false;
+    try {
+        std::error_code ec;
+        inside = fs::equivalent(fs::u8path(path).parent_path(), UserFolder(), ec) && !ec;
+    } catch (...) {
+    }
+    if (!inside) {
+        name = FreeOnDisk(lib_name, FolderFileNames());
+        if (!WriteText(FileOf(name), text)) {
+            ShowToastNoUndo("Could not copy the file into " + UserFolderText());
+            return;
+        }
+        ListUserFolder();
+    }
+    if (!Gesture("Relink library file", [&](SoundStore& s) { return RelinkLibraryFile(s, lib_uid, name); },
+                 lib_name + " linked to " + name))
+        ShowToastNoUndo(lib_name + " is linked to " + name + " already");
 }
 
 // Spec missing-sounds-window: every item Sound whose item is in the project remembers the file its active take plays
@@ -1155,6 +1224,9 @@ void OnTimer()
         if (k == PickKind::Import) RunImport();
         else if (k == PickKind::Export) RunExport(lib);
         else if (k == PickKind::Reveal) RunReveal(lib);
+        else if (k == PickKind::Relink) RunRelinkPick(lib);
+        else if (k == PickKind::SaveFile) SaveLibraryToFile(lib);
+        else if (k == PickKind::SaveAgain) SaveLibraryFileAgain(lib);
         else if (k == PickKind::Locate) RunLocatePick(lib, node, rename);
         else if (k == PickKind::LocateFolder) RunLocateFolderPick();
 
@@ -1166,7 +1238,7 @@ void OnTimer()
             g.last_state = st;
             g.last_proj = proj;
             RefreshItemAssets(proj);  // spec missing-sounds-window: item Sounds remember their item's file
-            Autosave(proj);
+            FirstSightPass(proj);
         }
     } catch (...) {
     }
@@ -1239,7 +1311,7 @@ MediaTrack* LayerTrack(ReaProject* proj, MediaTrack* folder, int layer)
     return nullptr;
 }
 
-// ---- 13-24: Convert to User Library -------------------------------------------------------------
+// ---- 13-24: the conversion of Item Sounds (Save to a file) -------------------------------------------------------------
 
 // An older build's imported User Library source item (kLibSourceTagKey). A File Sound's item that
 // is not one is the project item a converted Sound came from (spec 13-24 C3).
@@ -1462,7 +1534,7 @@ bool PrepareFileSound(ReaProject* proj, const std::string& lib_uid, const std::s
 
 // ---- 13-7a (audit C1.4): the User Library pieces of the Libraries list -------------------------
 // The mockup has no User Library section: user libraries are listed under USER in Libraries
-// (library_tree_ui.cpp), with "+ User Library" and "Import .ravlib..." under the list; Export,
+// (library_tree_ui.cpp), with "+ Library" and "Import .ravlib..." under the list; Export,
 // Locate and Refresh sit in the tree header's menu. This module keeps the folder, the files and
 // the pickers; the list asks it through these functions.
 
@@ -1509,9 +1581,21 @@ void AddUserLibraryFile(const std::string& file)
         if (f.file != file || f.uid.empty()) continue;
         std::string      uid, why;
         const SoundStore src = f.store;
-        if (Gesture("Add user library", [&](SoundStore& s) { return AddRavlibLibrary(s, src, file, &uid, &why); })) {
+        const int64_t    now = NowS();
+        const char*      desc = "RAV: Add user library";
+        if (ModifySoundStore(nullptr, desc, [&](SoundStore& s) {
+                std::vector<std::pair<std::string, std::string>> map;
+                LinkBase                                         base;
+                if (!AddRavlibLibrary(s, src, file, &uid, &why, &map, &base)) return false;
+                base.uid_map = map;
+                base.synced_at = now;
+                return SetLinkBase(s, base);
+            })) {
             const SoundLibrary* l = FindLibrary(GetSoundStore(nullptr), uid);
-            if (l) SelectLibraryRow(uid, LibraryRow{"", l->root});
+            if (l) {
+                SelectLibraryRow(uid, LibraryRow{"", l->root});
+                ShowLibraryToast(l->name + " added: this project's own copy, linked to " + file, true, desc);
+            }
         } else if (!why.empty()) {
             ShowToastNoUndo(why);
         }
@@ -1519,45 +1603,21 @@ void AddUserLibraryFile(const std::string& file)
     }
 }
 
-void NewUserLibrary()
-{
-    std::string       uid;
-    const std::string file_dir_ok = ResourcePath();
-    if (!Gesture("New user library", [&](SoundStore& s) {
-            if (!NewLibrary(s, &uid)) return false;
-            SoundLibrary* l = FindLibrary(s, uid);
-            if (!l) return false;
-            std::vector<std::string> names;
-            for (const SoundLibrary& o : s.libraries)
-                if (o.uid != uid) names.push_back(o.name);
-            l->name = UniqueName("New User Library", names);
-            if (SoundNode* root = FindNode(*l, l->root)) root->name = l->name;
-            l->user = true;
-            l->ravlib_path = FreeFileName(s, uid, l->name);
-            return true;
-        }))
-        return;
-    const SoundStore&   now = GetSoundStore(nullptr);
-    const SoundLibrary* l = FindLibrary(now, uid);
-    if (l && !file_dir_ok.empty()) {
-        const std::string text = SerializeRavlib(RavlibOf(now, uid, nullptr));
-        if (WriteText(FileOf(l->ravlib_path), text)) g.saved[SavedKey(nullptr, uid)] = text;
-        ListUserFolder();
-        SelectLibraryRow(uid, LibraryRow{"", l->root});
-    }
-}
-
-void ConvertToUserLibrary(const std::string& lib_uid)
+// 13-77a: "Save to a file..." on an unlinked library: no dialog; the file name comes from the library's name (the
+// file this library was saved to before, when its link was undone, is reused). The 13-24 conversion runs first
+// (Item Sounds that play a plain media file become File Sounds, the rest stay project-only). The file is written
+// first, then the store changes (one undo point): a failed write changes nothing.
+void SaveLibraryToFile(const std::string& lib_uid)
 {
     const SoundStore    store = GetSoundStore(nullptr);
     const SoundLibrary* lib = FindLibrary(store, lib_uid);
-    if (!lib || lib->user) return;
+    if (!lib || lib->attached || LibraryLinked(*lib)) return;
     if (ResourcePath().empty()) {
-        ShowToastNoUndo("No REAPER resource folder: a User Library cannot be saved");
+        ShowToastNoUndo("No REAPER resource folder: a library cannot be saved to a file");
         return;
     }
     // REAPER read once, before the gesture: every Item Sound's item.
-    BusyScope                            busy("Converting to User Library");  // 13-59: many sounds
+    BusyScope busy("Saving library to a file");  // 13-59: many sounds
     busy.Phase("Reading sounds");
     const std::string                    dir = ProjectFolder();
     std::map<std::string, ItemFileFacts> facts;
@@ -1569,8 +1629,6 @@ void ConvertToUserLibrary(const std::string& lib_uid)
             facts[n.sound.source.item_guid] = ReadItemFileFacts(n.sound.source.item_guid, dir);
     }
     ListUserFolder();
-    // 13-24 review: the file this library was already saved to (a conversion undone, then made
-    // again) is reused, never a second "<name> 2" file with the same uid.
     std::string file;
     for (const UserFile& f : g.files)
         if (!f.uid.empty() && f.uid == lib_uid) {
@@ -1578,31 +1636,89 @@ void ConvertToUserLibrary(const std::string& lib_uid)
             break;
         }
     if (file.empty()) file = FreeFileName(store, lib_uid, lib->name);
-    ConvertReport     rep;
+    const auto get_facts = [&facts](const std::string& guid) {
+        const auto it = facts.find(guid);
+        return it == facts.end() ? ItemFileFacts{} : it->second;
+    };
+    const std::string by = ProjectFileName();
+    const int64_t     at = NowS();
+    // The text the file will hold: the same conversion on a copy.
+    SoundStore    copy = store;
+    ConvertReport rep;
+    if (!ConvertLibraryToUser(copy, lib_uid, file, get_facts, &rep)) return;
     busy.Phase("Writing");
-    const char*       desc = "RAV: Convert to user library";
-    const bool        ok = ModifySoundStore(nullptr, desc, [&](SoundStore& s) {
-        return ConvertLibraryToUser(
-            s, lib_uid, file,
-            [&facts](const std::string& guid) {
-                const auto it = facts.find(guid);
-                return it == facts.end() ? ItemFileFacts{} : it->second;
-            },
-            &rep);
-    });
-    if (!ok) return;
-    std::string         toast = ConvertReportText(rep, file);
-    const SoundStore&   now = GetSoundStore(nullptr);
-    const SoundLibrary* l = FindLibrary(now, lib_uid);
-    if (l) {
-        // Written at once (as New); on failure the autosave tries again (first sight: file absent).
-        const std::string text = SerializeRavlib(RavlibOf(now, lib_uid, nullptr));
-        if (WriteText(FileOf(l->ravlib_path), text)) g.saved[SavedKey(nullptr, lib_uid)] = text;
-        else toast += ". Could not write it to " + UserFolderText() + " yet";
-        ListUserFolder();
-        SelectLibraryRow(lib_uid, LibraryRow{"", l->root});
+    if (!WriteText(FileOf(file), SerializeRavlib(RavlibOf(copy, lib_uid, nullptr), by, at))) {
+        ShowToastNoUndo("Could not write " + file + " in " + UserFolderText() + ": nothing changed");
+        return;
     }
-    ShowLibraryToast(toast, true, desc);
+    const std::string name = lib->name;
+    const char*       desc = "RAV: Save library to a file";
+    const bool        ok = ModifySoundStore(nullptr, desc, [&](SoundStore& s) {
+        ConvertReport r2;
+        if (!ConvertLibraryToUser(s, lib_uid, file, get_facts, &r2)) return false;
+        return SetLinkBase(s, MakeLinkBase(s, lib_uid, by, at, at));
+    });
+    ListUserFolder();
+    if (!ok) return;
+    if (const SoundLibrary* l = FindLibrary(GetSoundStore(nullptr), lib_uid)) SelectLibraryRow(lib_uid, LibraryRow{"", l->root});
+    ShowLibraryToast(SaveToFileToastText(name, file, rep), true, desc);
+}
+
+// 13-77a: "Unlink from file": the library stays in the project with all its sounds; the file is not touched.
+void UnlinkLibrary(const std::string& lib_uid)
+{
+    const SoundLibrary* lib = FindLibrary(GetSoundStore(nullptr), lib_uid);
+    if (!lib || !LibraryLinked(*lib)) return;
+    const std::string name = lib->name;
+    Gesture("Unlink library from file", [&](SoundStore& s) { return UnlinkLibraryFromFile(s, lib_uid); },
+            name + " unlinked: it stays in this project with all its sounds. The file is not touched.");
+}
+
+void RequestSaveLibraryToFile(const std::string& lib_uid)
+{
+    g.pick = PickKind::SaveFile;
+    g.pick_lib = lib_uid;
+}
+
+void RequestSaveLibraryFileAgain(const std::string& lib_uid)
+{
+    g.pick = PickKind::SaveAgain;
+    g.pick_lib = lib_uid;
+}
+
+void RequestRelinkLibrary(const std::string& lib_uid)
+{
+    g.pick = PickKind::Relink;
+    g.pick_lib = lib_uid;
+}
+
+// 13-77a: "Save it again" on a library whose file is gone: this project's copy is written as the file. When the name
+// now holds another library, the copy goes to a free name and the library is linked to it (that file is never
+// overwritten).
+void SaveLibraryFileAgain(const std::string& lib_uid)
+{
+    const SoundStore    store = GetSoundStore(nullptr);
+    const SoundLibrary* lib = FindLibrary(store, lib_uid);
+    if (!lib || !LibraryLinked(*lib) || ResourcePath().empty()) return;
+    ListUserFolder();
+    std::string file = lib->ravlib_path;
+    const bool  other = LinkedFileStateOf(*lib, g.folder) != LinkedFileState::Missing;
+    if (other) file = FreeFileName(store, lib_uid, lib->name);
+    const std::string by = ProjectFileName();
+    const int64_t     at = NowS();
+    if (!WriteText(FileOf(file), SerializeRavlib(RavlibOf(store, lib_uid, nullptr), by, at))) {
+        ShowToastNoUndo("Could not write " + file + " in " + UserFolderText() + ": nothing changed");
+        return;
+    }
+    const std::string name = lib->name;
+    Gesture("Save library file again",
+            [&](SoundStore& s) {
+                bool any = other && RelinkLibraryFile(s, lib_uid, file);
+                any = SetLinkBase(s, MakeLinkBase(s, lib_uid, by, at, at)) || any;
+                return any;
+            },
+            name + " saved again as " + file + " in the User Library folder");
+    ListUserFolder();
 }
 
 void RequestUserLibraryImport() { g.pick = PickKind::Import; }
@@ -1682,7 +1798,95 @@ void DrawLocateButtons(const std::string& lib_uid, const std::string& node_uid)
                     "it and its subfolders for the missing sounds of every library");
 }
 
-void DrawUserLibraryNodeSection()
+LinkedFileState LinkedFileOf(const SoundLibrary& lib)
+{
+    if (!g.listed) return LibraryLinked(lib) ? LinkedFileState::Ok : LinkedFileState::Unlinked;  // not listed yet: no red flash
+    return LinkedFileStateOf(lib, g.folder);
+}
+
+namespace {
+
+// A status line of the File section: a drawn glyph (0 = the open circle "only here", 1 = the green tick) and its text.
+void FileStatusLine(int glyph, const std::string& text)
+{
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float  gw = ui::Dp(18.0f);
+    ImDrawList*  dl = ImGui::GetWindowDrawList();
+    const float  cy = p.y + ImGui::GetTextLineHeight() * 0.5f;
+    if (glyph == 1) DrawToolGlyphAt(dl, ImVec2(p.x + ui::Dp(6.0f), cy), ui::Dp(5.0f), kToolCheck, ui::kOk);
+    else dl->AddCircle(ImVec2(p.x + ui::Dp(6.0f), cy), ui::Dp(3.5f), ui::kFaint, 0, std::max(1.0f, ui::Dp(1.2f)));
+    ImGui::SetCursorScreenPos(ImVec2(p.x + gw, p.y));
+    ui::ToneText(text, glyph == 1 ? ui::kMuted : ui::kMuted, true, std::max(ui::Dp(60.0f), ImGui::GetContentRegionAvail().x - gw));
+}
+
+}  // namespace
+
+// 13-77a: the mockup's File section (fileSection): where this library's file stands. 13-77b replaces the tick lines
+// by its change bars.
+void DrawLibraryFileSection()
+{
+    const SoundStore&   store = GetSoundStore(nullptr);
+    const SoundLibrary* lib = FindLibrary(store, SelectedLibraryUid());
+    const std::string   node_uid = LibraryRowNode();
+    const SoundNode*    n = lib && !node_uid.empty() ? FindNode(*lib, node_uid) : nullptr;
+    if (!lib || !n || lib->attached) return;  // an Attached library is never saved to a file
+    const bool            is_root = n->uid == lib->root || n->parent.empty();
+    const LinkedFileState st = LinkedFileOf(*lib);
+    if (st == LinkedFileState::Unlinked && !is_root) return;
+    if (st != LinkedFileState::Unlinked && st != LinkedFileState::Ok && !is_root) return;
+    ui::Section sec;
+    if (ui::BeginSection(sec, "File", ImTextureID(), false)) {
+        const std::string lib_uid = lib->uid;
+        if (st == LinkedFileState::Unlinked) {
+            FileStatusLine(0, "Only in this project. Save it to a file to use it in other projects.");
+            if (ui::SolidButton("Save to a file...")) RequestSaveLibraryToFile(lib_uid);
+            ui::ItemTipText("Write this library as a .ravlib in the User Library folder: other projects can Add it");
+            ui::SameLineIfFits(ui::ButtonWidth("Export .ravlib..."));
+            if (ui::SolidButton("Export .ravlib...")) RequestUserLibraryExport(lib_uid);
+            ui::ItemTipText("Save a copy anywhere, without a link");
+        } else if (st == LinkedFileState::Ok) {
+            if (is_root) {
+                const float fw = ui::LabelRow("File", ui::Dp(80.0f));
+                const ImVec2 p = ImGui::GetCursorScreenPos();
+                const float  gs = ui::Dp(14.0f);
+                DrawLinkGlyph(ImGui::GetWindowDrawList(), ImVec2(p.x, p.y + (ImGui::GetTextLineHeight() - gs) * 0.5f), gs, ui::kMuted);
+                ImGui::Dummy(ImVec2(gs, ImGui::GetTextLineHeight()));
+                ImGui::SameLine(0.0f, ui::Dp(6.0f));
+                ui::FitText(lib->ravlib_path, ui::kText, std::max(ui::Dp(20.0f), fw - gs - ui::Dp(6.0f)));
+                ui::ItemTipText(("In " + UserFolderText()).c_str());
+                FileStatusLine(1, "Same as the file. Changes made here stay here until you send them.");
+                if (ui::SolidButton("Export .ravlib...")) RequestUserLibraryExport(lib_uid);
+                ui::ItemTipText("Save a copy of this library's file anywhere, to share it");
+                ui::SameLineIfFits(ui::ButtonWidth("Show in Explorer"));
+                if (ui::SolidButton("Show in Explorer")) RequestUserLibraryReveal(lib_uid);
+                ui::ItemTipText("Open its folder in File Explorer, its file selected");
+            } else {
+                FileStatusLine(1, "Same as in " + lib->ravlib_path);
+            }
+        } else {
+            // Gone, renamed, or the name now holds another library: the red bar of the mockup.
+            ui::Card bar;
+            ui::BeginCard(bar, ui::Dp(4.0f));
+            const bool other = st == LinkedFileState::OtherLibrary;
+            ui::ToneText(lib->ravlib_path + (other ? " holds another library" : " is not in the User Library folder"), ui::kBadInk,
+                         true);
+            ui::ToneText(other ? "The file was replaced by another library. This project's copy is intact."
+                               : "Moved, renamed or deleted. This project's copy is intact.",
+                         ui::kMuted, true);
+            if (ui::SolidButton("Locate...")) RequestRelinkLibrary(lib_uid);
+            ui::ItemTipText("Pick the .ravlib of this library: it is linked again (copied into the folder when elsewhere)");
+            ui::SameLineIfFits(ui::ButtonWidth("Save it again"));
+            if (ui::SolidButton("Save it again")) RequestSaveLibraryFileAgain(lib_uid);
+            ui::ItemTipText(other ? "Write this project's copy as a new file (the file now there is not touched)"
+                                  : "Write this project's copy as the file again");
+            ui::EndCard(bar, ui::kBadSoft, ui::kBadLine);
+        }
+    }
+    ui::EndSection(sec);
+}
+
+// 13-77a: the Tracks section: Lands in, now on every library (the Attached ones keep their sources' tracks).
+void DrawLibraryTracksSection()
 {
     const SoundStore&   store = GetSoundStore(nullptr);
     const SoundLibrary* lib = FindLibrary(store, SelectedLibraryUid());
@@ -1690,24 +1894,11 @@ void DrawUserLibraryNodeSection()
     const SoundNode*    n = lib && !node_uid.empty() ? FindNode(*lib, node_uid) : nullptr;
     // 13-50 (13-7b review): a missing File Sound's Locate buttons sit on the Sound panel's red Source
     // line only (DrawLocateButtons), never twice in the column.
-    if (!lib || !n || !lib->user) return;
+    if (!lib || !n || lib->attached) return;
     ui::Section sec;
-    if (ui::BeginSection(sec, "User Library", ImTextureID(), false)) {
+    if (ui::BeginSection(sec, "Tracks", ImTextureID(), false)) {
         {
             const bool        is_root = n->uid == lib->root || n->parent.empty();
-            if (is_root) {
-                // 13-36: its file, to share: a copy saved anywhere, or the file shown in File Explorer.
-                // Not saved yet (no file name given): said so, never a guessed name (13-50 review).
-                const std::string file = lib->ravlib_path.empty() ? std::string("(not saved yet)") : lib->ravlib_path;
-                const float       fw = ui::LabelRow("File", ui::Dp(80.0f));
-                ui::FitText(file, ui::kText, fw);
-                ui::ItemTipText(("In " + UserFolderText()).c_str());
-                if (ui::SolidButton("Export .ravlib...")) RequestUserLibraryExport(lib->uid);
-                ui::ItemTipText("Save a copy of this library's file anywhere, to share it");
-                ui::SameLineIfFits(ui::ButtonWidth("Show in Explorer"));
-                if (ui::SolidButton("Show in Explorer")) RequestUserLibraryReveal(lib->uid);
-                ui::ItemTipText("Open its folder in File Explorer, its file selected");
-            }
             const std::string inherit =
                 is_root ? std::string() : "Inherit (" + EffectiveLandsIn(*lib, n->parent) + ")";
             std::string shown = n->lands_in.empty() ? (is_root ? std::string(kDefaultLandsIn) : inherit) : n->lands_in;

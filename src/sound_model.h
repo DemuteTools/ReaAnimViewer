@@ -377,8 +377,9 @@ struct SoundLibrary {
     std::string              name;
     uint32_t                 color = 0;   // 0 = none, else 0x1000000 | 0xRRGGBB (Block::color form)
     std::string              root;        // the root node's uid
-    bool                     user = false;  // a User Library (13-11)
-    std::string              ravlib_path;   // its .ravlib file (13-11)
+    bool                     user = false;  // 13-77a: legacy, read only (a pre-13-77 project's User Library); never written
+    // 13-77a: linked = a .ravlib file name of the User Library folder (LibraryLinked, library_tree_edit.h).
+    std::string              ravlib_path;
     std::vector<SoundNode>   nodes;         // children in line order
     std::vector<std::string> kept;
     std::vector<std::string> kept_lines;
@@ -445,6 +446,19 @@ struct SoundCharacter {
     std::vector<std::string> kept_lines;
 };
 
+// 13-77a: the common version of a linked library: the .ravlib text this project last read from or wrote to the
+// file (the merge base of 13-77b), in the project's uid space, with a plain "RAVLIB 2" header line.
+struct LinkBase {
+    std::string                                      lib_uid;
+    std::string                                      text;
+    std::vector<std::pair<std::string, std::string>> uid_map;  // file uid -> project uid, the renewed ones only
+    int64_t                                          synced_at = 0;  // unix s
+    std::string                                      file_by;  // who wrote the file (its header `by`) when read / written
+    int64_t                                          file_at = 0;
+    std::vector<std::string>                         kept;
+    std::vector<std::string>                         kept_lines;
+};
+
 // The project's store (the .rpp's <RAVSOUNDS chunk).
 struct SoundStore {
     int                       version = 1;
@@ -460,6 +474,8 @@ struct SoundStore {
     // 13-68e v5 (appended): the Attach manager's "Apply to" (0 Item, 1 Anim, 2 Project; header field `amscope`, written
     // only when not Anim): how far an Attach manager gesture, or a gesture on an instance in REAPER, goes.
     int                          attach_scope = 1;
+    // 13-77a (appended): the common version of each linked library (`linkbase` / `bline` lines, after the libraries).
+    std::vector<LinkBase>        link_bases;
 };
 
 // ---- Per-animation-item state (the take's P_EXT:RAV_SOUNDS) -------------------------------------

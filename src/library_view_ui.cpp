@@ -147,8 +147,8 @@ void DrawColumn(int i)
 {
     switch (i) {
     case 0:
-        // 13-7a (audit C1.1 / C1.4): the collapse button sits in the Libraries header, and the user
-        // libraries are listed in Libraries under USER (no User Library section of their own).
+        // 13-7a (audit C1.1 / C1.4): the collapse button sits in the Libraries header; 13-77a: the
+        // folder's files not in the project are listed there under "User Library folder".
         DrawLibrariesSection();
         DrawSwitchGroupsSection();
         break;
@@ -159,7 +159,8 @@ void DrawColumn(int i)
             DrawLibraryBatchPanel();
         } else {
             DrawNodePanel();
-            DrawUserLibraryNodeSection();
+            DrawLibraryFileSection();    // 13-77a: where the library's file stands
+            DrawLibraryTracksSection();  // 13-77a: Lands in, on every library
             DrawLibraryRolesSection();
         }
         break;

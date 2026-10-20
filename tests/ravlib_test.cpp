@@ -10,6 +10,7 @@
 #include <vector>
 #include <string>
 
+#include "library_tree_edit.h"
 #include "media_db.h"
 #include "sound_place_plan.h"
 #include "sound_record.h"
@@ -74,7 +75,6 @@ static SoundStore RichStore()
     lib.name = "Steps";
     lib.color = 0x1FF8800;
     lib.root = "n000000000000001";
-    lib.user = true;
     lib.ravlib_path = "Steps.ravlib";
     SoundNode sw = Node("n000000000000001", "", SoundNodeType::Switch, "Steps");
     sw.group_uid = g.uid;
@@ -230,7 +230,7 @@ static void TestImportMerge()
     CHECK(proj.groups[0].default_value == "p000000000000002");  // a merged group keeps the project's
     CHECK(proj.groups[0].values.size() == 2 && proj.groups[0].values[1].name == "Metal");
     const SoundLibrary* lib = FindLibrary(proj, uid);
-    CHECK(lib && lib->user && lib->ravlib_path == "Steps.ravlib");
+    CHECK(lib && LibraryLinked(*lib) && lib->ravlib_path == "Steps.ravlib");
     if (lib) {
         const SoundNode* sw = FindNode(*lib, lib->root);
         CHECK(sw && sw->group_uid == "p000000000000001");
@@ -347,8 +347,8 @@ static void TestLandsInAndLayer()
     CHECK(EffectiveLandsIn(lib, "n000000000000004") == kDefaultLandsIn);
     FindNode(lib, "n000000000000004")->lands_in = "Mine";
     CHECK(EffectiveLandsIn(lib, "n000000000000004") == "Mine");
-    lib.user = false;
-    CHECK(EffectiveLandsIn(lib, "n000000000000004") == kDefaultLandsIn);
+    lib.ravlib_path.clear();  // 13-77a: Lands in works on every library, linked or not
+    CHECK(EffectiveLandsIn(lib, "n000000000000004") == "Mine");
     // 13-16: the nearest Blend and its child on the path (BlendLayerOf's cases, now uids).
     std::string blend, child;
     CHECK(BlendLayerPath(lib, "n000000000000006", &blend, &child) && blend == "n000000000000003" &&
@@ -660,7 +660,7 @@ static void TestConvertLibrary()
     ConvertReport r;
     CHECK(ConvertLibraryToUser(s, lib.uid, "Foley.ravlib", facts, &r));
     const SoundLibrary* out = FindLibrary(s, lib.uid);
-    CHECK(out && out->user && out->ravlib_path == "Foley.ravlib" && out->name == "Foley");
+    CHECK(out && LibraryLinked(*out) && !out->user && out->ravlib_path == "Foley.ravlib" && out->name == "Foley");
     CHECK(r.sounds == 4 && r.converted == 2 && r.project_only.size() == 1);
     CHECK(r.project_only.size() == 1 && r.project_only[0].uid == "n000000000000093" && r.project_only[0].why == "MIDI");
     if (out) {
@@ -683,16 +683,16 @@ static void TestConvertLibrary()
         const SoundNode* xa = one.libraries.empty() ? nullptr : FindNode(one.libraries.front(), "n000000000000091");
         CHECK(xa && xa->sound.source.item_guid.empty());
     }
-    const std::string txt = ConvertReportText(r, "Foley.ravlib");
-    CHECK(txt == "Converted to a User Library (Foley.ravlib): 1 of 4 sounds are project-only and will be missing in "
-                 "other projects (snd n000000000000093: MIDI)");
+    const std::string txt = SaveToFileToastText("Foley", "Foley.ravlib", r);
+    CHECK(txt == "Foley saved to Foley.ravlib in the User Library folder: other projects can Add it. 1 of 4 sounds are "
+                 "project-only and will be missing in other projects (snd n000000000000093: MIDI)");
     ConvertReport clean;
-    CHECK(ConvertReportText(clean, "X.ravlib") == "Converted to a User Library (X.ravlib)");
+    CHECK(SaveToFileToastText("X", "X.ravlib", clean) == "X saved to X.ravlib in the User Library folder: other projects can Add it");
     ConvertReport many;
     many.sounds = 5;
     for (int i = 0; i < 5; ++i) many.project_only.push_back({"u", "S" + std::to_string(i), "MIDI"});
-    CHECK(ConvertReportText(many, "M.ravlib").find("(S0: MIDI, S1: MIDI, S2: MIDI, +2 more)") != std::string::npos);
-    // Already a User Library / unknown uid: false, store unchanged.
+    CHECK(SaveToFileToastText("M", "M.ravlib", many).find("(S0: MIDI, S1: MIDI, S2: MIDI, +2 more)") != std::string::npos);
+    // Already linked / unknown uid: false, store unchanged.
     const std::string before = SerializeSoundStore(s);
     CHECK(!ConvertLibraryToUser(s, lib.uid, "Other.ravlib", facts, &r));
     CHECK(!ConvertLibraryToUser(s, "nope", "Other.ravlib", facts, &r));
@@ -995,8 +995,179 @@ static void TestDividedTravels()
           v1.libraries[0].nodes[0].sound.sync_offset_ms == kDefaultSyncOffsetMs);
 }
 
+// ---- 13-77a: one kind of library, linked to a file or not ---------------------------------------------
+
+static const char kOldUser[] =
+    "RAVSOUNDS 1\nlibrary uid=L1 name=Foot root=n1 user=1 ravlib=Foot.ravlib\nnode uid=n1 type=random name=Foot\n"
+    "node uid=n2 type=sound parent=n1 name=Step vol=-3\n"
+    "library uid=L2 name=NeverSaved root=m1 user=1\nnode uid=m1 type=random\n"
+    "library uid=L3 name=Proj root=p1\nnode uid=p1 type=random\n";
+
+static void TestOldProjectConversion()
+{
+    SoundStore s;
+    CHECK(ParseSoundStore(kOldUser, &s) && s.libraries.size() == 3);
+    // A User Library with a file is linked, a never-saved one and a Project Library are not; no base yet.
+    CHECK(LibraryLinked(s.libraries[0]) && s.libraries[0].ravlib_path == "Foot.ravlib");
+    CHECK(!LibraryLinked(s.libraries[1]) && !LibraryLinked(s.libraries[2]));
+    CHECK(s.link_bases.empty());
+    // `user` is read and never written again; the link is the ravlib name.
+    const std::string out = SerializeSoundStore(s);
+    CHECK(out.find("user=1") == std::string::npos && out.find("ravlib=Foot.ravlib") != std::string::npos);
+    SoundStore again;
+    CHECK(ParseSoundStore(out, &again) && LibraryLinked(again.libraries[0]) && !LibraryLinked(again.libraries[1]));
+    // Lands in reads on every library (the Project one too).
+    FindNode(s.libraries[2], "p1")->lands_in = "Foley";
+    CHECK(EffectiveLandsIn(s.libraries[2], "p1") == "Foley");
+
+    // File equal: the project's copy was autosaved to the file (an old file even holds `user=1`, and was written
+    // by another project): the common version is set silently, from the file's header.
+    const std::string mine = SerializeRavlib(RavlibOf(s, "L1", nullptr));
+    std::string       file_text = SerializeRavlib(RavlibOf(s, "L1", nullptr), "Other project.rpp", 1700000000);
+    const size_t      lp = file_text.find("library uid=L1");
+    CHECK(lp != std::string::npos);
+    file_text.insert(file_text.find('\n', lp), " user=1");
+    CHECK(SameRavlibContent(mine, file_text));
+    SoundStore a = s;
+    CHECK(AdoptFileAsBase(a, "L1", file_text, 1700000100));
+    const LinkBase* b = FindLinkBase(a, "L1");
+    CHECK(b && b->text == mine && b->file_by == "Other project.rpp" && b->file_at == 1700000000 && b->synced_at == 1700000100);
+    CHECK(!AdoptFileAsBase(a, "L1", file_text, 5));  // it has one now
+    // The text round-trips through the project chunk.
+    SoundStore rt;
+    CHECK(ParseSoundStore(SerializeSoundStore(a), &rt) && rt.link_bases.size() == 1 && rt.link_bases[0].text == mine &&
+          rt.link_bases[0].file_by == "Other project.rpp");
+
+    // File different: it stays without a common version.
+    SoundStore other = s;
+    FindNode(other.libraries[0], "n2")->volume_db = -9.0;
+    const std::string other_text = SerializeRavlib(RavlibOf(other, "L1", nullptr), "Else.rpp", 5);
+    CHECK(!SameRavlibContent(mine, other_text));
+    SoundStore c = s;
+    CHECK(!AdoptFileAsBase(c, "L1", other_text, 9) && c.link_bases.empty());
+    // Not linked: nothing to adopt.
+    CHECK(!AdoptFileAsBase(c, "L2", mine, 9) && !AdoptFileAsBase(c, "L3", mine, 9));
+}
+
+static void TestLinkUnlink()
+{
+    SoundStore s;
+    CHECK(ParseSoundStore(kOldUser, &s));
+    const std::string before = SerializeSoundStore(s);
+    // Save to a file: linked to the name, the common version = what was written, the writer in its header.
+    const LinkBase base = MakeLinkBase(s, "L3", "Proj.rpp", 1700000000, 1700000001);
+    CHECK(LinkLibraryToFile(s, "L3", "Proj.ravlib", base));
+    CHECK(LibraryLinked(*FindLibrary(s, "L3")) && FindLinkBase(s, "L3") && FindLinkBase(s, "L3")->text == base.text);
+    CHECK(base.text.compare(0, 9, "RAVLIB 2\n") == 0 && base.file_by == "Proj.rpp");
+    // An edit stays in the project: the base text does not move.
+    FindNode(*FindLibrary(s, "L3"), "p1")->volume_db = -2.0;
+    CHECK(FindLinkBase(s, "L3")->text == base.text);
+    // Unlink: path and base gone, everything else kept.
+    CHECK(UnlinkLibraryFromFile(s, "L3"));
+    CHECK(!LibraryLinked(*FindLibrary(s, "L3")) && !FindLinkBase(s, "L3") && FindNode(*FindLibrary(s, "L3"), "p1")->volume_db == -2.0);
+    CHECK(!UnlinkLibraryFromFile(s, "L3"));
+    // Undo = the earlier store text (the base is in it): a link round trip through the chunk keeps it.
+    SoundStore t;
+    CHECK(ParseSoundStore(before, &t));
+    CHECK(LinkLibraryToFile(t, "L3", "Proj.ravlib", base));
+    const std::string linked = SerializeSoundStore(t);
+    SoundStore back;
+    CHECK(ParseSoundStore(linked, &back) && LibraryLinked(*FindLibrary(back, "L3")) && FindLinkBase(back, "L3"));
+    // Attached libraries never link; an unknown uid neither.
+    SoundLibrary att;
+    att.uid = "A1";
+    att.attached = true;
+    t.libraries.push_back(att);
+    CHECK(!LinkLibraryToFile(t, "A1", "A.ravlib", base) && !LinkLibraryToFile(t, "nope", "A.ravlib", base));
+    // Locate: another name, the base stays.
+    CHECK(RelinkLibraryFile(t, "L3", "Moved.ravlib") && FindLinkBase(t, "L3")->text == base.text);
+    CHECK(!RelinkLibraryFile(t, "L3", "Moved.ravlib") && !RelinkLibraryFile(t, "L2", "X.ravlib"));
+    // Delete library prunes the base; a base of an unlinked library is not written.
+    SoundStore d = t;
+    CHECK(DeleteLibrary(d, "L3") && d.link_bases.empty());
+    SoundStore e = t;
+    e.libraries[2].ravlib_path.clear();
+    CHECK(SerializeSoundStore(e).find("linkbase") == std::string::npos);
+    CHECK(PruneLinkBases(e) && e.link_bases.empty());
+}
+
+static void TestLinkedFileState()
+{
+    SoundLibrary lib;
+    lib.uid = "L1";
+    CHECK(LinkedFileStateOf(lib, {}) == LinkedFileState::Unlinked);
+    lib.ravlib_path = "Foot.ravlib";
+    CHECK(LinkedFileStateOf(lib, {}) == LinkedFileState::Missing);
+    CHECK(LinkedFileStateOf(lib, {{"foot.RAVLIB", "L1"}}) == LinkedFileState::Ok);
+    CHECK(LinkedFileStateOf(lib, {{"Foot.ravlib", "L9"}}) == LinkedFileState::OtherLibrary);
+    CHECK(LinkedFileStateOf(lib, {{"Foot.ravlib", ""}}) == LinkedFileState::Unreadable);
+    CHECK(LinkedFileStateOf(lib, {{"Other.ravlib", "L1"}}) == LinkedFileState::Missing);  // by name, not by uid
+    lib.attached = true;
+    CHECK(LinkedFileStateOf(lib, {{"Foot.ravlib", "L1"}}) == LinkedFileState::Unlinked);
+}
+
+static void TestImportRefusal()
+{
+    const std::vector<FolderRavlib> folder = {{"Steps.ravlib", "L1"}, {"Bad.ravlib", ""}, {"Other.ravlib", "L2"}};
+    CHECK(FolderFileOfUid(folder, "L2") == "Other.ravlib");  // refused: that library's file is in the folder
+    CHECK(FolderFileOfUid(folder, "L7").empty() && FolderFileOfUid(folder, "").empty());
+}
+
+static void TestAddLinkedBase()
+{
+    // A file whose group, value and node uids clash with the project's: renewed in the project, the common version
+    // is the file's library in project uids, the map holds the renewed ones.
+    SoundStore file = RichStore();
+    SoundStore one = RavlibOf(file, file.libraries[0].uid, nullptr);
+    SoundStore proj = RichStore();
+    proj.libraries.clear();
+    SoundLibrary clash;
+    clash.uid = "x000000000000009";
+    clash.name = "Clash";
+    clash.root = "n000000000000001";  // a node uid the file also uses
+    SoundNode cn;
+    cn.uid = "n000000000000001";
+    cn.type = SoundNodeType::Random;
+    clash.nodes.push_back(cn);
+    proj.libraries.push_back(clash);
+    const std::string text = SerializeRavlib(one, "Other.rpp", 1700000000);
+    SoundStore        parsed;
+    CHECK(ParseRavlib(text, &parsed));
+    std::string                                      uid, why;
+    std::vector<std::pair<std::string, std::string>> map;
+    LinkBase                                         base;
+    CHECK(AddRavlibLibrary(proj, parsed, "Steps.ravlib", &uid, &why, &map, &base));
+    const SoundLibrary* lib = FindLibrary(proj, uid);
+    CHECK(lib && LibraryLinked(*lib) && lib->ravlib_path == "Steps.ravlib");
+    CHECK(base.lib_uid == uid && base.file_by == "Other.rpp" && base.file_at == 1700000000);
+    CHECK(base.text == SerializeRavlib(RavlibOf(proj, uid, nullptr)));
+    CHECK(lib && lib->root != "n000000000000001");  // renewed
+    bool has_root = false;
+    for (const auto& kv : map) has_root = has_root || (kv.first == "n000000000000001" && kv.second == lib->root);
+    CHECK(has_root);
+    for (const auto& kv : map) CHECK(kv.first != kv.second);
+    // The map round-trips through the project chunk, with the base.
+    base.uid_map = map;
+    CHECK(LinkLibraryToFile(proj, uid, "Steps.ravlib", base));
+    SoundStore rt;
+    CHECK(ParseSoundStore(SerializeSoundStore(proj), &rt));
+    const LinkBase* rb = FindLinkBase(rt, uid);
+    CHECK(rb && rb->uid_map == map && rb->text == base.text);
+    // The header fields are the older readers' unknown fields: a file written by 13-77 reads as before.
+    std::string by;
+    int64_t     at = 0;
+    RavlibWriter(parsed, &by, &at);
+    CHECK(by == "Other.rpp" && at == 1700000000);
+    CHECK(text.compare(0, 35, "RAVLIB 2 by=Other.rpp at=1700000000") == 0);
+}
+
 int main()
 {
+    TestOldProjectConversion();
+    TestLinkUnlink();
+    TestLinkedFileState();
+    TestImportRefusal();
+    TestAddLinkedBase();
     TestDividedTravels();
     TestPartsTravel();  // 13-62
     TestFileSourceFromItem();

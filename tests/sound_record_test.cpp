@@ -7,6 +7,7 @@
 #include "sound_record.h"
 #include "sound_zones.h"  // MigrateLegacyZones (13-62h)
 
+#include <algorithm>
 #include <cstdio>
 #include <string>
 
@@ -236,7 +237,6 @@ SoundStore BigStore()
     user.uid = "b000000000000002";
     user.name = "Mine";
     user.root = "d000000000000001";
-    user.user = true;
     user.ravlib_path = "C:\\libs\\mine.ravlib";
     SoundNode uroot;
     uroot.uid = "d000000000000001";
@@ -933,6 +933,57 @@ int main()
         CHECK((dk.libraries[0].kit == std::vector<std::string>{"legs.step"}));
         SoundStore n2;
         CHECK(ParseSoundStore(nt, &n2) && SerializeSoundStore(n2) == nt);
+    }
+
+    // ---- 13-77a: link bases ------------------------------------------------------------------------------
+    {
+        SoundStore s = BigStore();
+        s.libraries[1].ravlib_path = "mine.ravlib";
+        LinkBase b;
+        b.lib_uid = s.libraries[1].uid;
+        b.text = "RAVLIB 2\nlibrary uid=b000000000000002 name=Mine root=d1\nnode uid=d1 type=random name=a b=c,%\n\n";
+        b.text += "node uid=big type=random name=" + std::string(40000, 'x') + "\n";  // a 40 KB line
+        b.text += "node uid=pct type=random name=" + std::string(20000, ' ') + "\n";  // encodes to 3 bytes each
+        b.uid_map = {{"f1", "p1"}, {"f:2", "p,2"}};
+        b.synced_at = 1700000001;
+        b.file_by = "Other project.rpp";
+        b.file_at = 1700000000;
+        b.kept = {"future=1"};
+        s.link_bases = {b};
+        const std::string text = SerializeSoundStore(s);
+        CHECK(text.find("user=1") == std::string::npos);
+        size_t longest = 0, pos = 0;
+        while (pos < text.size()) {
+            size_t nl = text.find('\n', pos);
+            if (nl == std::string::npos) nl = text.size();
+            longest = std::max(longest, nl - pos);
+            pos = nl + 1;
+        }
+        CHECK(longest < 40000);  // the 64 KB reader buffer is never reached
+        SoundStore p;
+        CHECK(ParseSoundStore(text, &p) && p.link_bases.size() == 1);
+        if (p.link_bases.size() == 1) {
+            const LinkBase& q = p.link_bases[0];
+            CHECK(q.lib_uid == b.lib_uid && q.text == b.text && q.uid_map == b.uid_map && q.synced_at == b.synced_at &&
+                  q.file_by == b.file_by && q.file_at == b.file_at && q.kept == b.kept);
+        }
+        CHECK(SameStore(Migrated(s), p));
+        // A base of a library no longer linked (or gone) is not written.
+        SoundStore u = s;
+        u.libraries[1].ravlib_path.clear();
+        CHECK(SerializeSoundStore(u).find("linkbase") == std::string::npos);
+        u.libraries.erase(u.libraries.begin() + 1);
+        CHECK(SerializeSoundStore(u).find("linkbase") == std::string::npos);
+        // An older reader's view: the lines after the libraries are unknown lines and travel unchanged.
+        // `user=1` of an old project reads, then is gone.
+        SoundStore old;
+        CHECK(ParseSoundStore("RAVSOUNDS 1\nlibrary uid=l name=L root=n user=1 ravlib=L.ravlib\nnode uid=n type=random\n", &old));
+        CHECK(old.libraries[0].user && old.libraries[0].ravlib_path == "L.ravlib");
+        CHECK(SerializeSoundStore(old).find("user=") == std::string::npos);
+        // Only link bases make a store non-empty.
+        SoundStore only;
+        only.link_bases = {b};
+        CHECK(!SoundStoreEmpty(only));
     }
 
     if (g_fails) {

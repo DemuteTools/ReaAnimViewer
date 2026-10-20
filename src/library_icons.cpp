@@ -81,6 +81,27 @@ ui::Icon TypeIconInk(SoundNodeType t)
     return i;
 }
 
+void DrawLinkGlyph(ImDrawList* dl, ImVec2 p, float s, ImU32 col)
+{
+    // ICON.link (16x16): M6.6 9.4l2.8-2.8  M7.2 4.6l1.1-1.1a2.6 2.6 0 0 1 3.7 3.7l-1.1 1.1
+    //                    M8.8 11.4l-1.1 1.1a2.6 2.6 0 0 1-3.7-3.7l1.1-1.1   (stroke 1.4, round caps)
+    const float k = s / 16.0f;
+    auto        P = [&](float x, float y) { return ImVec2(p.x + x * k, p.y + y * k); };
+    const float w = std::max(1.0f, 1.4f * k);
+    const float pi = 3.14159265f;
+    dl->AddLine(P(6.6f, 9.4f), P(9.4f, 6.6f), col, w);
+    dl->PathLineTo(P(7.2f, 4.6f));
+    dl->PathLineTo(P(8.3f, 3.5f));
+    dl->PathArcTo(P(10.15f, 5.35f), 2.6f * k, -0.75f * pi, 0.25f * pi, 10);
+    dl->PathLineTo(P(10.9f, 8.3f));
+    dl->PathStroke(col, ImDrawFlags_None, w);
+    dl->PathLineTo(P(8.8f, 11.4f));
+    dl->PathLineTo(P(7.7f, 12.5f));
+    dl->PathArcTo(P(5.85f, 10.65f), 2.6f * k, 0.25f * pi, 1.25f * pi, 10);
+    dl->PathLineTo(P(5.1f, 7.9f));
+    dl->PathStroke(col, ImDrawFlags_None, w);
+}
+
 void DrawLibraryGlyph(ImDrawList* dl, ImVec2 p, float s, int which, ImU32 col)
 {
     const float k = s / 16.0f;
@@ -117,6 +138,7 @@ void DrawLibraryGlyph(ImDrawList* dl, ImVec2 p, float s, int which, ImU32 col)
         dl->PathStroke(col, ImDrawFlags_None, w);
         break;
     }
+    case kGlyphLink: DrawLinkGlyph(dl, p, s, col); break;
     case kGlyphEvPopulated:
     case kGlyphEvAttached:
     case kGlyphEvSpread:

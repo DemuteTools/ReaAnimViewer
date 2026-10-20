@@ -39,6 +39,14 @@ constexpr const char kDefaultLandsIn[] = "RAV Library";
 bool ParseRavlib(const std::string& text, SoundStore* out);
 // Writes one library and the groups its Switches use (pass RavlibOf's result).
 std::string SerializeRavlib(const SoundStore& one);
+// 13-77a: the same, the header saying who wrote the file: "RAVLIB 2 by=<project file name> at=<unix s>" (an empty
+// `by` / zero `at` is left out). Older readers keep the two fields as the header's unknown fields.
+std::string SerializeRavlib(const SoundStore& one, const std::string& by, int64_t at);
+// The by / at of a parsed .ravlib (its header's kept fields); "" / 0 when it has none.
+void RavlibWriter(const SoundStore& parsed, std::string* by, int64_t* at);
+// True when two .ravlib texts hold the same library, whoever wrote them and whenever (headers ignored, and a
+// pre-13-77 `user=1` too). Unreadable texts compare by their lines after the first.
+bool SameRavlibContent(const std::string& a, const std::string& b);
 
 // The export form of one library of `store`: the library (ravlib_path cleared, File sources'
 // item_guid cleared) and the groups its Switches use or its Sounds are divided by, in store order. `item_sounds` (optional)
@@ -51,11 +59,38 @@ SoundStore RavlibOf(const SoundStore& store, const std::string& lib_uid, int* it
 // 13-23 (D2): a group new to the project comes with its values' roles; a group the project has keeps
 // the project's role map (a value it adds brings only the role keys no value of that group holds).
 // Divide groups and values, role maps, zones' parts and Blend layer parts follow the merge's uids.
+// 13-77a: the library comes in linked to `file_name`. `uid_map` (optional) gets every uid the merge changed (file
+// uid -> project uid: renewed uids and groups / values merged into the project's own); `base_out` (optional)
+// gets the common version: the file's library in project uid space (lib_uid, text, uid_map, the file's by / at;
+// `synced_at` is left for the caller).
 bool AddRavlibLibrary(SoundStore& store, const SoundStore& file, const std::string& file_name, std::string* lib_uid,
-                      std::string* why);
+                      std::string* why, std::vector<std::pair<std::string, std::string>>* uid_map = nullptr,
+                      LinkBase* base_out = nullptr);
+
+// ---- 13-77a: linked libraries (pure) -------------------------------------------------------------------
+
+// One .ravlib of the User Library folder: its file name and its library's uid ("" = unreadable).
+struct FolderRavlib {
+    std::string file;
+    std::string uid;
+};
+// The file of the folder that holds library `uid` ("" = none): Import refuses a library whose file is there.
+std::string FolderFileOfUid(const std::vector<FolderRavlib>& folder, const std::string& uid);
+enum class LinkedFileState { Unlinked, Ok, Missing, OtherLibrary, Unreadable };
+// Where a library's file is: Unlinked (and Attached ones); Ok (the file is in the folder, holding this library);
+// Missing (no such file); OtherLibrary (the file holds another uid); Unreadable. File names compare ignoring case.
+LinkedFileState LinkedFileStateOf(const SoundLibrary& lib, const std::vector<FolderRavlib>& folder);
+// The common version of library `lib_uid` as it is now in `store` (plain header, project uids) with the file's
+// by / at / time. An unknown uid gives an empty text.
+LinkBase MakeLinkBase(const SoundStore& store, const std::string& lib_uid, const std::string& by, int64_t at,
+                      int64_t synced_at);
+// Decision 2: a linked library with no common version whose own text equals `file_text` (the file in the folder)
+// takes it as the common version, silently. False (store unchanged) when it is not linked, has one already, or
+// differs.
+bool AdoptFileAsBase(SoundStore& store, const std::string& lib_uid, const std::string& file_text, int64_t synced_at);
 
 // The node's destination folder: its lands_in, else its nearest ancestor's, else kDefaultLandsIn.
-// A library that is not a User Library always gives kDefaultLandsIn.
+// 13-77a: every library has a Lands in (an Attached one's Sounds are placed from their sources' tracks).
 std::string EffectiveLandsIn(const SoundLibrary& lib, const std::string& node_uid);
 // Story 13-16: the node's nearest Blend ancestor (`blend_uid`) and that Blend's child on its path
 // (`child_uid`, the node itself when it is one). False (both cleared) when it has none or on a cycle.
@@ -140,9 +175,8 @@ struct ConvertReport {
     int                           converted = 0;
     std::vector<ProjectOnlySound> project_only;
 };
-// Turns a Project Library of `store` into a User Library in place: user = true, ravlib_path =
-// `file_name`, every Item Sound that FileSourceFromItem accepts (facts by its item GUID) becomes a
-// File Sound; nothing else changes. False (store unchanged) for an unknown uid or a User Library.
+// Prepares a library of `store` to be saved to a file (13-77a: the link): ravlib_path = `file_name`, every Item Sound that FileSourceFromItem accepts (facts by its item GUID) becomes a
+// File Sound; nothing else changes. False (store unchanged) for an unknown uid or an already linked library.
 // 13-24 review: a converted Sound's frames are frozen from its item's facts (`entry_ok`): empty frames
 // get the item's default detection (DefaultDetectMode without peaks, so Takes / TakeMarkers / the
 // item's portion, never the whole file); unedited Whole / Takes frames get the item's portion in
@@ -150,9 +184,9 @@ struct ConvertReport {
 bool ConvertLibraryToUser(SoundStore& store, const std::string& lib_uid, const std::string& file_name,
                           const std::function<ItemFileFacts(const std::string& item_guid)>& facts,
                           ConvertReport* report);
-// The conversion's toast: "Converted to a User Library (<file>)", then the project-only count and up
-// to 3 "name: reason" (C5).
-std::string ConvertReportText(const ConvertReport& r, const std::string& file_name);
+// 13-77a: Save to a file's toast: "<name> saved to <file> in the User Library folder: other projects can Add it",
+// then, when any, the project-only count and up to 3 "name: reason" (13-24 C5).
+std::string SaveToFileToastText(const std::string& lib_name, const std::string& file, const ConvertReport& r);
 // `path` made absolute against `dir` when it is relative ("C:/p" + "Audio/x.wav"); an absolute one
 // (drive letter, leading slash / backslash) unchanged.
 std::string AbsoluteMediaPath(const std::string& path, const std::string& dir);

@@ -4,8 +4,8 @@
 // Epic 13 (D20). Created by 13-2 with declared interfaces and neutral stub bodies; story 13-11
 // owns this file: it fills the stubs and may ADD declarations. Shared types: sound_model.h.
 //
-// The user folder is <resource>/ReaAnimViewer/Libraries/. A User Library is written to its file
-// whenever its text changes (autosave, checked on a timer). Populate places File Sounds straight
+// The user folder is <resource>/ReaAnimViewer/Libraries/. 13-77a: every library lives in the project and is
+// linked to a .ravlib of that folder or not; a file is written only by an explicit gesture (no autosave). Populate places File Sounds straight
 // from their file (PrepareFileSound, Antho 2026-10-12: no source item); Locate's folder work runs on a
 // worker thread. Every REAPER function beyond reaper_api.h is resolved in InitLibraryUser
 // (missing = that part greys out).
@@ -19,12 +19,16 @@
 #include <vector>
 
 #include "library_tree_edit.h"  // MissingSound
+#include "ravlib.h"  // LinkedFileState
 #include "reaper_api.h"
 #include "sound_model.h"
 
 namespace rav {
 
-void DrawUserLibraryNodeSection();
+// 13-77a: the node panel's File section (where the library's file stands: Save to a file..., the link, the red
+// "file not found" bar) and Tracks section (Lands in, every library but an Attached one).
+void DrawLibraryFileSection();
+void DrawLibraryTracksSection();
 
 // 13-7a (audit C1.4): user libraries are listed in the Libraries list under USER (library_tree_ui.cpp);
 // this module keeps their folder, files and pickers.
@@ -41,13 +45,22 @@ struct UserLibraryFile {
 std::vector<UserLibraryFile> UserFilesNotInProject();
 // Adds that file's library to the project (one undo point) and selects it.
 void AddUserLibraryFile(const std::string& file);
-// "+ User Library": a new library saved to its own file in the folder (one undo point).
-void NewUserLibrary();
-// 13-24: "Convert to User Library" on a Project Library: in place, its Item Sounds that play a plain
-// media file become File Sounds of it (still placed from their item in this project), the library
-// is saved at once to its own .ravlib (one undo point; the toast lists the project-only Sounds).
-// Call outside the ImGui frame's widgets (Later).
-void ConvertToUserLibrary(const std::string& lib_uid);
+// 13-77a "Save to a file...": an unlinked library is written as a .ravlib of the folder and linked to it (one undo
+// point; the 13-24 conversion of its Item Sounds first, the toast lists the project-only ones). A failed write
+// changes nothing. Call outside the ImGui frame's widgets (Later).
+void SaveLibraryToFile(const std::string& lib_uid);
+// "Unlink from file": one undo point; the library stays in the project, the file is not touched.
+void UnlinkLibrary(const std::string& lib_uid);
+// Run by this module's timer (for the File section's buttons, drawn inside the frame).
+void RequestSaveLibraryToFile(const std::string& lib_uid);
+void RequestSaveLibraryFileAgain(const std::string& lib_uid);
+// "Locate..." on a library whose file is gone: picks a .ravlib that must hold this library (the picker runs on the timer).
+void RequestRelinkLibrary(const std::string& lib_uid);
+// "Save it again": this project's copy written as the file; the common version = what was written.
+void SaveLibraryFileAgain(const std::string& lib_uid);
+// Where a linked library's file stands (the folder listing, no disk access): Ok / Missing / OtherLibrary /
+// Unreadable; Unlinked for the others.
+LinkedFileState LinkedFileOf(const SoundLibrary& lib);
 // The pickers (run by this module's timer, never inside the frame).
 void RequestUserLibraryImport();
 void RequestUserLibraryExport(const std::string& lib_uid);
@@ -58,8 +71,8 @@ void RequestUserLibraryLocate(const std::string& lib_uid, const std::string& nod
 // 13-38: "Locate in a folder...": picks a folder (timer), then every missing File Sound of every
 // library is looked for under it and its subfolders on the worker; one undo point "RAV: Locate sounds".
 void RequestLibraryLocateFolder();
-// 13-36: the User Library's .ravlib selected in a File Explorer window (its folder when the file is
-// not written yet; the autosave runs first). Run by the timer, like the pickers.
+// 13-36: the linked library's .ravlib selected in a File Explorer window (its folder when the file is
+// not written). Run by the timer, like the pickers.
 void RequestUserLibraryReveal(const std::string& lib_uid);
 // 13-50 (13-11): a Locate scan is running; Cancel stops it (its results are dropped, nothing changes).
 bool UserLibraryLocating();
@@ -73,7 +86,7 @@ void DrawLocateButtons(const std::string& lib_uid, const std::string& node_uid);
 void RefreshUserLibraries();
 std::string UserLibraryFolderText();
 
-// Resolves this module's functions and registers its timer (pickers, Locate result, autosave).
+// Resolves this module's functions and registers its timer (pickers, Locate result, first-sight common versions).
 void InitLibraryUser(reaper_plugin_info_t* rec);
 // Unload: unregisters the timer and joins the Locate worker.
 void QuitLibraryUser();

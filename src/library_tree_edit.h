@@ -216,6 +216,24 @@ std::string UniqueName(const std::string& base, const std::vector<std::string>& 
 bool NewLibrary(SoundStore& store, std::string* uid);
 bool RenameLibrary(SoundStore& store, const std::string& lib_uid, const std::string& name);
 bool DeleteLibrary(SoundStore& store, const std::string& lib_uid);
+// ---- 13-77a: libraries linked to a .ravlib --------------------------------------------------------
+// Linked = it names a .ravlib of the User Library folder (ravlib_path). An Attached library never is.
+bool LibraryLinked(const SoundLibrary& lib);
+// The common version of a linked library (null = none yet).
+const LinkBase* FindLinkBase(const SoundStore& store, const std::string& lib_uid);
+LinkBase*       FindLinkBase(SoundStore& store, const std::string& lib_uid);
+// Drops the common versions of libraries that are gone or no longer linked. True when any went.
+bool PruneLinkBases(SoundStore& store);
+// Links the library to `file` with `base` as its common version (replacing any). False for an unknown or
+// Attached library.
+bool LinkLibraryToFile(SoundStore& store, const std::string& lib_uid, const std::string& file, const LinkBase& base);
+// Unlinks it: ravlib_path and the common version cleared. False when it was not linked.
+bool UnlinkLibraryFromFile(SoundStore& store, const std::string& lib_uid);
+// Points a linked library at another file name (Locate...); the common version stays. False when not linked or
+// already that name.
+bool RelinkLibraryFile(SoundStore& store, const std::string& lib_uid, const std::string& file);
+// Replaces (or sets) the common version of a linked library. False when it is not linked.
+bool SetLinkBase(SoundStore& store, const LinkBase& base);
 // Why a Sound is missing (spec missing-sounds-window, the one rule): a File Sound whose file is not
 // found; an item Sound whose REAPER item is not in the project AND whose remembered file (its
 // SoundSource::asset) is not found either, or was never remembered (an older Sound: file unknown).

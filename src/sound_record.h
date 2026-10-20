@@ -25,7 +25,9 @@
 //   group uid=<id> name=<s>
 //   value uid=<id> name=<s> [roles=<key>,<key>]      -- a value of the group above (13-23: the side-free
 //                                                       role keys whose events get its part)
-//   library uid=<id> name=<s> root=<id> [color=<hex>] [user=1] [ravlib=<s>]
+//   library uid=<id> name=<s> root=<id> [color=<hex>] [ravlib=<s>]   -- 13-77a: ravlib = the library is linked to
+//                                                       that .ravlib of the User Library folder; `user=1` of a
+//                                                       pre-13-77 project is read and never written
 //   kit parts=<id>,<id> [offered=1]                  -- 13-15a: the body parts the library suggests itself for
 //                                                       (right after its library line; travels in the .ravlib)
 //   Body part words (<part> of the keys, kit parts): legs, arms, body, other. Story 10-9-1: the
@@ -61,6 +63,13 @@
 //                                                       or changed the margins: their key then no longer
 //                                                       matches and this version measures them again)
 //   zone start=<s> len=<s> [to=<id>]                 -- 13-20: a zone of that Sound (no to = excluded; later win)
+//   linkbase lib=<id> [synced=<unix s>] [by=<s>] [at=<unix s>] [map=<file uid>:<project uid>,...]
+//                                                    -- 13-77a (after the libraries): the common version of a
+//                                                       linked library (the .ravlib text last read / written,
+//                                                       project uid space), its file's header by / at, and the
+//                                                       uids the merge renewed; written only for a linked library
+//   bline t=<s> [more=1]                             -- one line of that text, percent-encoded; a line whose
+//                                                       encoded form exceeds 32 KB continues on the next bline
 // The auto / assign / character lines come first (a version without them keeps them as the header's
 // unknown lines), then the groups, then the libraries, each library's nodes in order.
 //

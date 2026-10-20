@@ -1642,6 +1642,73 @@ bool RenameLibrary(SoundStore& store, const std::string& lib_uid, const std::str
     return true;
 }
 
+bool LibraryLinked(const SoundLibrary& lib)
+{
+    return !lib.ravlib_path.empty() && !lib.attached;
+}
+
+const LinkBase* FindLinkBase(const SoundStore& store, const std::string& lib_uid)
+{
+    for (const LinkBase& b : store.link_bases)
+        if (b.lib_uid == lib_uid) return &b;
+    return nullptr;
+}
+
+LinkBase* FindLinkBase(SoundStore& store, const std::string& lib_uid)
+{
+    for (LinkBase& b : store.link_bases)
+        if (b.lib_uid == lib_uid) return &b;
+    return nullptr;
+}
+
+bool PruneLinkBases(SoundStore& store)
+{
+    const size_t n = store.link_bases.size();
+    store.link_bases.erase(std::remove_if(store.link_bases.begin(), store.link_bases.end(),
+                                          [&](const LinkBase& b) {
+                                              const SoundLibrary* l = FindLibrary(store, b.lib_uid);
+                                              return !l || !LibraryLinked(*l);
+                                          }),
+                           store.link_bases.end());
+    return store.link_bases.size() != n;
+}
+
+bool SetLinkBase(SoundStore& store, const LinkBase& base)
+{
+    const SoundLibrary* l = FindLibrary(store, base.lib_uid);
+    if (!l || !LibraryLinked(*l)) return false;
+    if (LinkBase* have = FindLinkBase(store, base.lib_uid)) *have = base;
+    else store.link_bases.push_back(base);
+    return true;
+}
+
+bool LinkLibraryToFile(SoundStore& store, const std::string& lib_uid, const std::string& file, const LinkBase& base)
+{
+    SoundLibrary* l = FindLibrary(store, lib_uid);
+    if (!l || l->attached || file.empty()) return false;
+    l->ravlib_path = file;
+    LinkBase b = base;
+    b.lib_uid = lib_uid;
+    return SetLinkBase(store, b);
+}
+
+bool UnlinkLibraryFromFile(SoundStore& store, const std::string& lib_uid)
+{
+    SoundLibrary* l = FindLibrary(store, lib_uid);
+    if (!l || !LibraryLinked(*l)) return false;
+    l->ravlib_path.clear();
+    PruneLinkBases(store);
+    return true;
+}
+
+bool RelinkLibraryFile(SoundStore& store, const std::string& lib_uid, const std::string& file)
+{
+    SoundLibrary* l = FindLibrary(store, lib_uid);
+    if (!l || !LibraryLinked(*l) || file.empty() || l->ravlib_path == file) return false;
+    l->ravlib_path = file;
+    return true;
+}
+
 bool DeleteLibrary(SoundStore& store, const std::string& lib_uid)
 {
     const size_t n = store.libraries.size();
@@ -1660,6 +1727,7 @@ bool DeleteLibrary(SoundStore& store, const std::string& lib_uid)
     };
     unset(store.project);
     for (SoundCharacter& c : store.characters) unset(c.assigns);
+    PruneLinkBases(store);  // 13-77a: its common version goes with it
     return true;
 }
 

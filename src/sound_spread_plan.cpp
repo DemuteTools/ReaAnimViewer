@@ -199,7 +199,7 @@ namespace {
 
 bool ServesType(const SoundLibrary& l, const std::string& type)
 {
-    return l.attached && !l.user && SameMarkerType(l.attached_type.empty() ? l.name : l.attached_type, type);
+    return l.attached && SameMarkerType(l.attached_type.empty() ? l.name : l.attached_type, type);
 }
 
 }  // namespace

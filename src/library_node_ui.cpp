@@ -6586,19 +6586,19 @@ void NodePanelWidgets()
         if (!StoreReplaced()) ui::FoldScopeBar(fold_scope);
         if (!StoreReplaced() && n->type != SoundNodeType::Blend) DrawMix(store, *lib, *n);
         if (!StoreReplaced() && n->type != SoundNodeType::Switch) DrawPlays(store, *lib, *n);
-        // 13-77a review L5 (mockup v3): File, then Tracks, right after Plays / Mix.
-        if (!StoreReplaced()) DrawLibraryFileSection();
+        // Antho 2026-10-20: Tracks, then the Global library section, the last of the panel.
         if (!StoreReplaced()) DrawLibraryNodeTracksSection();
+        if (!StoreReplaced()) DrawLibraryFileSection();
     } else if (!StoreReplaced()) {
         DrawVolume(*lib, *n);
         if (!StoreReplaced()) DrawSyncPendingLine(lib->uid, n->uid);  // 13-35
-        if (!StoreReplaced()) DrawLibraryFileSection();  // 13-77a review L5 (mockup v3): File right after Volume
         if (!StoreReplaced()) {
             OpenEditKey(*lib, *n);
             ui::FoldScopeBar(fold_scope);
             DrawSoundPanel(*lib, *n);
         }
         if (!StoreReplaced()) DrawLibraryNodeTracksSection();  // Lands in on a Sound: after its own sections
+        if (!StoreReplaced()) DrawLibraryFileSection();  // Antho 2026-10-20: the Global library section is the last
     }
     ui::EndFoldScope(!StoreReplaced());
     // The whole node panel takes a Media Explorer drop too (after the waveform's own target, so

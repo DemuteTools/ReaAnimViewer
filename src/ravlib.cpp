@@ -176,7 +176,7 @@ bool AddRavlibLibrary(SoundStore& store, const SoundStore& file, const std::stri
                       std::string* why, std::vector<std::pair<std::string, std::string>>* uid_map_out, LinkBase* base_out)
 {
     if (file.libraries.size() != 1) {
-        if (why) *why = "Not a User Library file";
+        if (why) *why = "Not a RAV library file";
         return false;
     }
     const SoundLibrary& src = file.libraries.front();
@@ -404,12 +404,12 @@ LinkedFileWords LinkedFileWordsOf(LinkedFileState st, const std::string& file)
 {
     LinkedFileWords w;
     const std::string intact = " This project's copy is intact.";
-    const std::string again_new = "Write this project's copy as a new file (the file now there is not touched)";
+    const std::string again_new = "Write this project's copy as a new global library (the file now there is not touched)";
     if (st == LinkedFileState::Missing) {
-        w.row_tip = file + " not found in the User Library folder: click the library, then Locate...";
-        w.title = file + " is not in the User Library folder";
+        w.row_tip = file + " not found in the global libraries folder: click the library, then Locate...";
+        w.title = file + " is not in the global libraries folder";
         w.detail = "Moved, renamed or deleted." + intact;
-        w.save_again_tip = "Write this project's copy as the file again";
+        w.save_again_tip = "Write this project's copy as the global library again";
     } else if (st == LinkedFileState::OtherLibrary) {
         w.row_tip = file + " now holds another library: click the library, then Locate... or Save it again";
         w.title = file + " holds another library";
@@ -435,7 +435,7 @@ SaveFileDecision DecideSaveToFile(const SoundLibrary& lib, const std::vector<Fol
 
 std::string LinkedExistingToastText(const std::string& file)
 {
-    return file + " already holds this library: linked to it, nothing written. Sync with file will show the differences.";
+    return file + " already holds this library: linked to it, nothing written. Sync with global will show the differences.";
 }
 
 RewriteDecision DecideSaveAgain(const SoundLibrary& lib, const std::vector<FolderRavlib>& folder, bool target_exists_on_disk)
@@ -482,7 +482,7 @@ ImportDecision DecideImport(const SoundStore& store, const std::vector<FolderRav
 
 std::string ImportRefusedToastText(const std::string& file)
 {
-    return file + " in the User Library folder is that library: Add it from the list";
+    return file + " in the global libraries folder is that library: Add it to project from the list";
 }
 
 std::vector<std::pair<std::string, std::string>> FirstSightTargets(const SoundStore& store,
@@ -865,7 +865,7 @@ bool ConvertLibraryToUser(SoundStore& store, const std::string& lib_uid, const s
 
 std::string SaveToFileToastText(const std::string& lib_name, const std::string& file, const ConvertReport& r)
 {
-    std::string t = lib_name + " saved to " + file + " in the User Library folder: other projects can Add it";
+    std::string t = lib_name + " is now global: saved as " + file + ", other projects can add a copy of it";
     const int   n = static_cast<int>(r.project_only.size());
     if (n == 0) return t;
     t += ". " + std::to_string(n) + " of " + std::to_string(r.sounds) +

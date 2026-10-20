@@ -44,7 +44,7 @@ const char kDownArrow[] = "\xE2\x86\x93";
 // The mockup's 640 px window, its size kept, it opens at the mouse.
 constexpr int kDefaultW = 760, kDefaultH = 560;
 constexpr int kMinW = 460, kMinH = 300;
-FloatUiWindow g_host("syncfile.float", L"Sync with file", kDefaultW, kDefaultH, kMinW, kMinH);
+FloatUiWindow g_host("syncfile.float", L"Sync with global", kDefaultW, kDefaultH, kMinW, kMinH);
 
 double ClockSeconds()
 {
@@ -238,10 +238,10 @@ struct SideLook {
 SideLook LookOf(SyncSide s)
 {
     if (s == SyncSide::Here)
-        return {"edited here", "Changed here, not in the file yet", ui::kAccentInk, ui::kAccentLine, ui::kAccentSoft};
+        return {"edited here", "Changed here, not in the global library yet", ui::kAccentInk, ui::kAccentLine, ui::kAccentSoft};
     if (s == SyncSide::File)
-        return {"in file", "Changed in the file since this project last synced", ui::kWarn, ui::kWarnLine, ui::kWarnSoft};
-    return {"both", "Changed here and in the file: you pick the side", ui::kBoth, ui::kBothLine, ui::kBothSoft};
+        return {"in global", "Changed in the global library since this project last synced", ui::kWarn, ui::kWarnLine, ui::kWarnSoft};
+    return {"both", "Changed here and in the global library: you pick the side", ui::kBoth, ui::kBothLine, ui::kBothSoft};
 }
 
 // The side of a set of changes: both when one is, or when both sides hold some.
@@ -306,8 +306,8 @@ float DrawGroupDirs(const Ctx& c, const std::string& id, bool all, float x_right
     const std::vector<std::string>& keys = KeysUnder(*c.d, all ? "*" : id);
     int                            nu = 0, nd = 0;
     SyncDirCounts(*c.d, keys, &nu, &nd);
-    const std::string up = std::string(kUpArrow) + " mine " + std::to_string(nu);
-    const std::string dn = std::string(kDownArrow) + " file's " + std::to_string(nd);
+    const std::string up = std::string(kUpArrow) + " to global " + std::to_string(nu);
+    const std::string dn = std::string(kDownArrow) + " from global " + std::to_string(nd);
     const float       uw = ui::ButtonWidth(up.c_str()), dw = ui::ButtonWidth(dn.c_str());
     const float       gap = ui::Dp(4.0f);
     const float       by = std::floor(y + (rowh - ui::ControlH()) * 0.5f);
@@ -317,13 +317,13 @@ float DrawGroupDirs(const Ctx& c, const std::string& id, bool all, float x_right
     if (ui::SolidButton(up.c_str(), ImVec2(uw, 0.0f))) Defer([keys] { GroupDirGesture(keys, SyncDir::Up); });
     if (nu == 0) ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ui::ShowTip("Tick, and send mine, for what changed here (and pick mine where both changed)");
+        ui::ShowTip("Tick, and send to global, for what changed here (and pick the send side where both changed)");
     ImGui::SetCursorScreenPos(ImVec2(xd, by));
     if (nd == 0) ImGui::BeginDisabled();
     if (ui::SolidButton(dn.c_str(), ImVec2(dw, 0.0f))) Defer([keys] { GroupDirGesture(keys, SyncDir::Down); });
     if (nd == 0) ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ui::ShowTip("Tick, and take the file's, for what changed in the file (and pick the file's where both changed)");
+        ui::ShowTip("Tick, and get from global, for what changed in the global library (and pick the global side where both changed)");
     return xu;
 }
 
@@ -397,7 +397,7 @@ void DrawGroupRow(const Ctx& c, const std::string& id, int depth)
         DrawNodeTypeGlyph(dl, gp, gs, t, ui::kAccentInk);
     }
     x += gs + ui::Dp(6.0f);
-    // the fixed right column: ↑ mine / ↓ file's
+    // the fixed right column: ↑ to global / ↓ from global
     float right = p.x + w - ui::Dp(4.0f);
     right = DrawGroupDirs(c, id, false, right, p.y, rowh) - ui::Dp(8.0f);
     // the middle: name, new tag, count, side tag
@@ -410,7 +410,7 @@ void DrawGroupRow(const Ctx& c, const std::string& id, int depth)
         const SyncChange* ch = d.Find(k);
         if (ch && ch->adds_container && ch->subject == id && ch->side != SyncSide::Both) adds = ch;
     }
-    const std::string newt = adds ? (adds->side == SyncSide::Here ? "new here" : "new in file") : std::string();
+    const std::string newt = adds ? (adds->side == SyncSide::Here ? "new here" : "new in global") : std::string();
     const std::string cnt = SyncChangesWord(static_cast<int>(keys.size()));
     const SyncSide    side = SideOf(d, keys);
     const float       new_w = newt.empty() ? 0.0f : ui::SmallTagWidth(newt.c_str()) + gap;
@@ -465,9 +465,9 @@ void DrawGroupRow(const Ctx& c, const std::string& id, int depth)
 const char* DirTip(const SyncChange& ch, SyncDir k)
 {
     if (k == SyncDir::Up)
-        return ch.side == SyncSide::File ? "Put this project's version back in the file (the file's change is dropped)"
-                                         : "Write this change, as it is here, into the file";
-    return ch.side == SyncSide::Here ? "Take the file's version back here (your change is dropped)" : "Take the file's change here";
+        return ch.side == SyncSide::File ? "Put this project's version back in the global library (its change is dropped)"
+                                         : "Write this change, as it is here, into the global library";
+    return ch.side == SyncSide::Here ? "Take the global library's version back here (your change is dropped)" : "Take the global library's change here";
 }
 
 void ChangeGesture(const std::string& key, bool choose, SyncDir dir)
@@ -506,7 +506,7 @@ void DrawChangeRow(const Ctx& c, const std::string& key, int depth)
     // the fixed right column: ↑ Send mine / ↓ Get file's
     SyncDir     def = SyncDir::Up;
     const bool  has_def = SyncDefaultDir(*ch, &def);
-    const char* labels[2] = {"\xE2\x86\x91 Send mine", "\xE2\x86\x93 Get file's"};
+    const char* labels[2] = {"\xE2\x86\x91 Send to global", "\xE2\x86\x93 Get from global"};
     const float bw[2] = {ui::ButtonWidth(labels[0]), ui::ButtonWidth(labels[1])};
     const float gap = ui::Dp(4.0f);
     float       right = p.x + w - ui::Dp(4.0f);
@@ -578,7 +578,7 @@ void DrawChangeRow(const Ctx& c, const std::string& key, int depth)
     ui::EllipsisTextTip(dl, ImVec2(tx0, top), tx1, ui::kText, name, tip.empty() ? nullptr : tip.c_str());
     if (both) {
         ui::FontScope f(ui::FontSmall());
-        ui::EllipsisTextTip(dl, ImVec2(tx0, top + l1h), tx1, ui::kMuted, "Here " + ch->here_text + std::string(kDot) + "File " + ch->file_text);
+        ui::EllipsisTextTip(dl, ImVec2(tx0, top + l1h), tx1, ui::kMuted, "Here " + ch->here_text + std::string(kDot) + "Global " + ch->file_text);
     }
     ImGui::SetCursorScreenPos(p);
     ImGui::Dummy(ImVec2(w, rowh));
@@ -607,7 +607,7 @@ void DrawTitle(const SoundLibrary* lib)
     g_host.SetDragArea(p.x - ui::Dp(8.0f), p.y - ui::Dp(8.0f), p.x + w - close_w - ui::Dp(4.0f), p.y + h,
                        ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId));
     const float ty = std::floor(p.y + (h - ImGui::GetTextLineHeight()) * 0.5f);
-    const char* title = "Sync with file";
+    const char* title = "Sync with global";
     float       x = p.x + ui::Dp(2.0f);
     ui::AddTextIn(dl, ui::FontSemibold(), ImVec2(x, ty), ui::kText, title);
     x += ui::TextSizeIn(ui::FontSemibold(), title).x;
@@ -623,12 +623,12 @@ void DrawTitle(const SoundLibrary* lib)
 void DrawSub(const LibrarySyncInfo& info)
 {
     std::string line1;
-    if (!info.by.empty()) line1 = "File written by " + info.by + (info.at > 0 ? ", " + When(info.at) : std::string());
+    if (!info.by.empty()) line1 = "Global library written by " + info.by + (info.at > 0 ? ", " + When(info.at) : std::string());
     const std::string synced = info.synced_at > 0 ? "this project last synced " + When(info.synced_at) : std::string("this project never synced");
     line1 += (line1.empty() ? std::string() : std::string(kDot)) + synced + ".";
     ui::ToneText(line1, ui::kMuted, true);
     ui::ToneText(std::string("Nothing is written until you click Apply. Tick what to sync (a whole library, a branch, a container or one change) "
-                             "and pick a direction: ") + kUpArrow + " Send mine writes it into the file, " + kDownArrow + " Get file's takes it here.",
+                             "and pick a direction: ") + kUpArrow + " Send to global writes it into the global library, " + kDownArrow + " Get from global takes it here.",
                  ui::kMuted, true);
 }
 
@@ -746,8 +746,8 @@ void DrawContent()
         DrawSub(info);
         ImGui::Dummy(ImVec2(0.0f, ui::Dp(2.0f)));
         if (!d) {
-            ui::ToneText(info.bad ? "Could not read the file just now: it is read again when REAPER comes back to the front."
-                                  : "Reading the file...",
+            ui::ToneText(info.bad ? "Could not read the global library just now: it is read again when REAPER comes back to the front."
+                                  : "Reading the global library...",
                          ui::kMuted, true);
         } else {
             Ctx c;

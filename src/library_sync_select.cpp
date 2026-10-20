@@ -444,7 +444,7 @@ void SyncSelection::Rekey(const SyncDiff& now)
 
 std::string SyncEffectToast(const SyncDiff& d, const SyncEffect& fx)
 {
-    if (fx.need_side) return std::string("Changed on both sides: pick ") + kUp + " Send mine or " + kDown + " Get file's";
+    if (fx.need_side) return std::string("Changed on both sides: pick ") + kUp + " Send to global or " + kDown + " Get from global";
     auto join = [&](const std::vector<std::string>& keys) {
         std::string s;
         for (size_t i = 0; i < keys.size(); ++i) s += (i ? ", " : "") + TextOf(d, keys[i]);
@@ -460,9 +460,9 @@ std::string SyncEffectToast(const SyncDiff& d, const SyncEffect& fx)
 
 std::string SyncFooterText(const SyncCountsTicked& c, int left)
 {
-    if (left <= 0) return "Nothing left: this project and the file agree.";
+    if (left <= 0) return "Nothing left: this project and the global library agree.";
     if (c.ticked <= 0) return "Nothing ticked. " + SyncChangesWord(left) + " waiting.";
-    std::string s = std::to_string(c.ticked) + " ticked: " + kUp + " " + std::to_string(c.up) + " to the file, " + kDown + " " +
+    std::string s = std::to_string(c.ticked) + " ticked: " + kUp + " " + std::to_string(c.up) + " to global, " + kDown + " " +
                     std::to_string(c.down) + " taken here";
     if (c.auto_ > 0) s += std::string(kDot) + std::to_string(c.auto_) + " ticked for you because another needs it";
     return s;

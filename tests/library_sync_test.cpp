@@ -120,7 +120,7 @@ static void TestChangedInFile()
     CHECK(Has(d, "VX|G1|V3") && Has(d, "VX|G1|V3")->text == "Value Mud added");
     // review H5: the root's row holds its Case, the Random new in the file (no row of its own yet), its Sound and the
     // group value: tag, bar and gesture agree
-    CHECK(SyncTagText(CountsOf(d, "R")) == "in file \xC2\xB7 4");
+    CHECK(SyncTagText(CountsOf(d, "R")) == "in global \xC2\xB7 4");
     CHECK(ContainerChangeKeys(d, "R").size() == 4);
 }
 
@@ -132,7 +132,7 @@ static void TestBoth()
     CHECK(d.changes.size() == 1 && d.both == 1);
     const SyncChange* c = Has(d, "F|A|node|vol");
     CHECK(c && c->side == SyncSide::Both);
-    CHECK(c && c->text == "Gain: here -5 dB \xC2\xB7 file -6 dB");
+    CHECK(c && c->text == "Gain: here -5 dB \xC2\xB7 global -6 dB");
     CHECK(c && c->here_text == "-5 dB" && c->file_text == "-6 dB");
     CHECK(SyncTagText(CountsOf(d, "A")) == "both");
     CHECK(SyncRowUpText(TotalCounts(d)) == "\xE2\x86\x91" "1" && SyncRowDownText(TotalCounts(d)) == "\xE2\x86\x93" "1");
@@ -569,16 +569,16 @@ static void TestTags()
     CHECK(SyncTagText(c).empty() && SyncTagTip(c).empty());
     c.here = 2;
     CHECK(SyncTagText(c) == "edited \xC2\xB7 2");
-    CHECK(SyncTagTip(c) == "Changed here, not in the file yet: 2 changes. Click to see what");
+    CHECK(SyncTagTip(c) == "Changed here, not in the global library yet: 2 changes. Click to see what");
     c.here = 0;
     c.file = 1;
-    CHECK(SyncTagText(c) == "in file");
-    CHECK(SyncTagTip(c) == "Changed in the file since this project last synced: 1 change. Click to see what");
+    CHECK(SyncTagText(c) == "in global");
+    CHECK(SyncTagTip(c) == "Changed in the global library since this project last synced: 1 change. Click to see what");
     c.here = 1;
     CHECK(SyncTagText(c) == "both \xC2\xB7 2");
     c.both = 1;
-    CHECK(SyncRowTip(c).find("1 change made here, not in the file") == 0);
-    CHECK(SyncRowTip(c).find("Click to open Sync with file") != std::string::npos);
+    CHECK(SyncRowTip(c).find("1 change made here, not in the global library") == 0);
+    CHECK(SyncRowTip(c).find("Click to open Sync with global") != std::string::npos);
     CHECK(SyncAppliedToast(2, 1, "Foot.ravlib") ==
           "Applied: 2 written to Foot.ravlib (the version before is kept as Foot.ravlib.bak), 1 taken here");
     CHECK(SyncAppliedToast(0, 3, "Foot.ravlib") == "Applied: 3 taken here");
@@ -913,7 +913,7 @@ static void TestRowsAndCounts()
     const std::string f = Base() + "node uid=M type=random parent=B name=Sub\nnode uid=SM type=sound parent=M name=x\nsound kind=file\n";
     const SyncDiff    d = DiffLibrary(Base(), Base(), f);
     CHECK(CountsOf(d, "B").file == 2 && ContainerChangeKeys(d, "B").size() == 2);
-    CHECK(SyncTagText(CountsOf(d, "B")) == "in file \xC2\xB7 2");
+    CHECK(SyncTagText(CountsOf(d, "B")) == "in global \xC2\xB7 2");
     // the root's own: a library field and a container added in the file directly under it
     std::string f2 = Sub(Base(), "name=Foot", "name=Foot color=ff0000");
     f2 += "node uid=Q type=random parent=R name=Top\n";

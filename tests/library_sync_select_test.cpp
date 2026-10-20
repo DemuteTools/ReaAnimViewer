@@ -130,7 +130,7 @@ static void TestBoth()
     SyncSelection  s;
     SyncEffect     fx = s.Toggle(d, "F|ww|gain");
     CHECK(fx.need_side && !s.IsOn("F|ww|gain"));
-    CHECK(SyncEffectToast(d, fx) == "Changed on both sides: pick \xE2\x86\x91 Send mine or \xE2\x86\x93 Get file's");
+    CHECK(SyncEffectToast(d, fx) == "Changed on both sides: pick \xE2\x86\x91 Send to global or \xE2\x86\x93 Get from global");
     // a parent ticks the file ones and leaves the unsided both
     const auto ww = SyncKeysUnder(d, "ww");
     CHECK(ww.size() == 3);
@@ -201,12 +201,12 @@ static void TestSyncAllTriState()
     CHECK(s.TriState(d, {}) == SyncTri::Disabled);
     const SyncCountsTicked c = s.Counts(d);
     CHECK(c.ticked == 3 && c.up == 1 && c.down == 2 && c.auto_ == 0);
-    CHECK(SyncFooterText(c, 13) == "3 ticked: \xE2\x86\x91 1 to the file, \xE2\x86\x93 2 taken here");
+    CHECK(SyncFooterText(c, 13) == "3 ticked: \xE2\x86\x91 1 to global, \xE2\x86\x93 2 taken here");
     s.Toggle(d, "X|rgs1");
     CHECK(SyncFooterText(s.Counts(d), 13).find("1 ticked for you because another needs it") != std::string::npos);
     CHECK(SyncFooterText(SyncSelection().Counts(d), 4) == "Nothing ticked. 4 changes waiting.");
     CHECK(SyncFooterText(SyncSelection().Counts(d), 1) == "Nothing ticked. 1 change waiting.");
-    CHECK(SyncFooterText(SyncSelection().Counts(d), 0) == "Nothing left: this project and the file agree.");
+    CHECK(SyncFooterText(SyncSelection().Counts(d), 0) == "Nothing left: this project and the global library agree.");
 }
 
 static void TestRekeyAfterApply()

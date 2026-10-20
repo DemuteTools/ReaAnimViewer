@@ -918,7 +918,7 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& file_base_
             if (!known || (here && file)) {
                 c.here_text = pr.m ? "present" : "absent";
                 c.file_text = pr.f ? "present" : "absent";
-                c.text = TypeWord(type) + " " + nm + ": here " + c.here_text + " · file " + c.file_text;
+                c.text = TypeWord(type) + " " + nm + ": here " + c.here_text + " · global " + c.file_text;
                 add(c, Cls::Both);
                 continue;
             }
@@ -938,7 +938,7 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& file_base_
                     cl = Cls::Both;
                     c.here_text = mine_removed ? "removed" : std::to_string(n) + (n == 1 ? " change" : " changes");
                     c.file_text = mine_removed ? std::to_string(n) + (n == 1 ? " change" : " changes") : "removed";
-                    c.text = TypeWord(type) + " " + nm + ": here " + c.here_text + " · file " + c.file_text;
+                    c.text = TypeWord(type) + " " + nm + ": here " + c.here_text + " · global " + c.file_text;
                 } else {
                     cl = mine_removed ? Cls::Here : Cls::File;
                     c.here_text = mine_removed ? "removed" : "present";
@@ -1030,7 +1030,7 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& file_base_
             c.here_text = "in " + pname(t.m);
             c.file_text = "in " + pname(t.f);
             if (cl == Cls::Both) {
-                c.text = "Moved " + subject + ": here to " + pname(t.m) + " · file to " + pname(t.f);
+                c.text = "Moved " + subject + ": here to " + pname(t.m) + " · global to " + pname(t.f);
             } else {
                 const Opt& from = cl == Cls::Here ? t.b : t.fb;
                 const Opt& to = cl == Cls::Here ? t.m : t.f;
@@ -1046,12 +1046,12 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& file_base_
             c.here_text = mh.to + mh.unit;
             c.file_text = fh.to + fh.unit;
             if (mh.rename) {
-                c.text = cl == Cls::Both ? "Renamed: here " + mh.to + " · file " + fh.to : "Renamed " + (cl == Cls::Here ? mh.from : fh.from) + " → " + (cl == Cls::Here ? mh.to : fh.to);
+                c.text = cl == Cls::Both ? "Renamed: here " + mh.to + " · global " + fh.to : "Renamed " + (cl == Cls::Here ? mh.from : fh.from) + " → " + (cl == Cls::Here ? mh.to : fh.to);
             } else if (sh.label.size() > 8 && sh.label.compare(sh.label.size() - 8, 8, " changed") == 0) {
                 c.text = of(sh.label);
                 if (sound_subject) c.text = sh.label + " (" + subject + ")";
             } else if (cl == Cls::Both) {
-                c.text = of(sh.label) + ": here " + c.here_text + " · file " + c.file_text;
+                c.text = of(sh.label) + ": here " + c.here_text + " · global " + c.file_text;
             } else {
                 const Shown& s2 = cl == Cls::Here ? mh : fh;
                 c.text = sentence(sh.label, s2.from, s2.to) + s2.unit;
@@ -1074,7 +1074,7 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& file_base_
             c.label = "Order";
             c.text = "Order of children changed";
             c.here_text = "here order";
-            c.file_text = "file order";
+            c.file_text = "global order";
         } else if (kind == "V") {
             const std::vector<Cluster>& cl2 = var_clusters[p[1]];
             int                         ix = 0, k = 0;
@@ -1088,7 +1088,7 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& file_base_
             c.file_text = t.f.has ? "present" : "absent";
             const Opt& side = cl == Cls::File ? t.f : t.m;
             const Opt& from = cl == Cls::File ? t.fb : t.b;
-            if (cl == Cls::Both) c.text = vn + ": here " + (t.m.has ? "changed" : "removed") + " · file " + (t.f.has ? "changed" : "removed");
+            if (cl == Cls::Both) c.text = vn + ": here " + (t.m.has ? "changed" : "removed") + " · global " + (t.f.has ? "changed" : "removed");
             else if (!side.has) c.text = vn + " removed";
             else if (!from.has) c.text = vn + " added";
             else c.text = vn + " changed";
@@ -1104,7 +1104,7 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& file_base_
             c.file_text = t.f.has ? "plays " + childname(t.f) : "absent";
             const Opt& side = cl == Cls::File ? t.f : t.m;
             const Opt& from = cl == Cls::File ? t.fb : t.b;
-            if (cl == Cls::Both) c.text = "Switch value " + vname + ": here " + c.here_text + " · file " + c.file_text;
+            if (cl == Cls::Both) c.text = "Switch value " + vname + ": here " + c.here_text + " · global " + c.file_text;
             else if (!side.has) c.text = "Switch value " + vname + " removed";
             else if (!from.has) c.text = "Switch value " + vname + " added (plays " + childname(side) + ")";
             else c.text = "Switch value " + vname + " now plays " + childname(side);
@@ -1113,7 +1113,7 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& file_base_
             c.label = mh.label;
             c.here_text = mh.to;
             c.file_text = fh.to;
-            c.text = "Switch Group " + desc.GroupName(p[1]) + ": " + mh.label + (cl == Cls::Both ? ": here " + mh.to + " · file " + fh.to : cl == Cls::Here ? " " + mh.from + " → " + mh.to : " " + fh.from + " → " + fh.to);
+            c.text = "Switch Group " + desc.GroupName(p[1]) + ": " + mh.label + (cl == Cls::Both ? ": here " + mh.to + " · global " + fh.to : cl == Cls::Here ? " " + mh.from + " → " + mh.to : " " + fh.from + " → " + fh.to);
             if (p[2] == "name" && cl != Cls::Here) c.text += " (shared by every library of this project that uses it)";  // review L6
         } else if (kind == "GE") {
             c.label = "Other settings";
@@ -1123,14 +1123,14 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& file_base_
             c.label = p[3] == "roles" ? "Roles" : mh.label;
             c.here_text = mh.to;
             c.file_text = fh.to;
-            c.text = "Value " + desc.ValueName(p[2]) + ": " + c.label + (cl == Cls::Both ? ": here " + mh.to + " · file " + fh.to : cl == Cls::Here ? " " + mh.from + " → " + mh.to : " " + fh.from + " → " + fh.to);
+            c.text = "Value " + desc.ValueName(p[2]) + ": " + c.label + (cl == Cls::Both ? ": here " + mh.to + " · global " + fh.to : cl == Cls::Here ? " " + mh.from + " → " + mh.to : " " + fh.from + " → " + fh.to);
         } else if (kind == "LF") {
             const Shown mh = ShowField(desc, "lib", p[1], t.b, t.m), fh = ShowField(desc, "lib", p[1], t.fb, t.f);
             c.label = p[1] == "name" ? "Library name" : p[1] == "color" ? "Colour" : mh.label;
             c.here_text = mh.to;
             c.file_text = fh.to;
             if (p[1] == "name")
-                c.text = cl == Cls::Both ? "Renamed library: here " + mh.to + " · file " + fh.to : "Renamed library " + (cl == Cls::Here ? mh.from : fh.from) + " → " + (cl == Cls::Here ? mh.to : fh.to);
+                c.text = cl == Cls::Both ? "Renamed library: here " + mh.to + " · global " + fh.to : "Renamed library " + (cl == Cls::Here ? mh.from : fh.from) + " → " + (cl == Cls::Here ? mh.to : fh.to);
             else c.text = "Library " + c.label + " changed";
         } else if (kind == "LK") {
             c.label = "Kit";
@@ -2288,7 +2288,7 @@ std::string SyncTagText(const LibSyncCounts& c)
 {
     const int n = c.Total();
     if (n == 0) return std::string();
-    std::string s = c.both > 0 || (c.here > 0 && c.file > 0) ? "both" : c.here > 0 ? "edited" : "in file";
+    std::string s = c.both > 0 || (c.here > 0 && c.file > 0) ? "both" : c.here > 0 ? "edited" : "in global";
     if (n > 1) s += " · " + std::to_string(n);
     return s;
 }
@@ -2297,9 +2297,9 @@ std::string SyncTagTip(const LibSyncCounts& c)
 {
     const int n = c.Total();
     if (n == 0) return std::string();
-    const char* what = c.both > 0 || (c.here > 0 && c.file > 0) ? "Changed here and in the file"
-                       : c.here > 0                               ? "Changed here, not in the file yet"
-                                                                  : "Changed in the file since this project last synced";
+    const char* what = c.both > 0 || (c.here > 0 && c.file > 0) ? "Changed here and in the global library"
+                       : c.here > 0                               ? "Changed here, not in the global library yet"
+                                                                  : "Changed in the global library since this project last synced";
     return std::string(what) + ": " + std::to_string(n) + (n == 1 ? " change" : " changes") + ". Click to see what";
 }
 
@@ -2318,8 +2318,8 @@ std::string SyncRowDownText(const LibSyncCounts& c)
 std::string SyncCountLine(int n, SyncSide side)
 {
     const std::string c = std::to_string(n) + (n == 1 ? " change" : " changes");
-    if (side == SyncSide::Here) return c + " made here, not in the file";
-    if (side == SyncSide::File) return c + " in the file, not here";
+    if (side == SyncSide::Here) return c + " made here, not in the global library";
+    if (side == SyncSide::File) return c + " in the global library, not here";
     return c + " changed on both sides";
 }
 
@@ -2329,7 +2329,7 @@ std::string SyncRowTip(const LibSyncCounts& c)
     if (c.here > 0) s += SyncCountLine(c.here, SyncSide::Here) + "\n";
     if (c.file > 0) s += SyncCountLine(c.file, SyncSide::File) + "\n";
     if (c.both > 0) s += SyncCountLine(c.both, SyncSide::Both) + "\n";
-    return s + "Click to open Sync with file";
+    return s + "Click to open Sync with global";
 }
 
 std::string SyncAppliedToast(int sent, int taken, const std::string& file, int open)

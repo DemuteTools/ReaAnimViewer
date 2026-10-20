@@ -1819,49 +1819,19 @@ void ListCaption(const char* text, const char* tip = nullptr)
     ImGui::Dummy(ImVec2(0.0f, std::max(0.0f, ui::Dp(2.0f) - ImGui::GetStyle().ItemSpacing.y)));
 }
 
-// The library's menu (the row's right-click, the tree header's ⋯): Rename, Fix missing sounds, the file's items
-// (Save to a file / Show in Explorer / Unlink), Export, Refresh, Kit, Assign, Delete. Sets *to_delete for the caller to delete after its loop.
+// A mark colour pushed toward white (the ↑N ↓N hover).
+ImU32 BrightMarkInk(ImU32 c)
+{
+    auto up = [](ImU32 v) { return static_cast<ImU32>(v + (255 - v) * 45 / 100); };
+    return IM_COL32(up(c & 0xFF), up((c >> 8) & 0xFF), up((c >> 16) & 0xFF), 0xFF);
+}
+
+// The library's menu (the row's right-click, the tree header's ⋯), in three groups (Antho 2026-10-20): Rename, Kit,
+// Assign; "Global library" (Sync with global, Locate, Show in Explorer, Unlink / Make it global); "Files" (Fix missing
+// sounds, Export, Refresh); then Delete. Sets *to_delete for the caller to delete after its loop.
 void LibraryMenuItems(const SoundLibrary& lib, std::string* to_delete, bool rename_item)
 {
     if (rename_item && ImGui::MenuItem("Rename")) StartLibraryRename(lib);
-    // Spec missing-sounds-window: every missing sound of every library is fixed in one window (it replaces the
-    // Locate items), opened on this library. Counted from the list the row's missing count reads.
-    int miss_all = 0;
-    for (const SoundLibrary& l : GetSoundStore(nullptr).libraries) miss_all += static_cast<int>(MissingOf(l).size());
-    if (ImGui::MenuItem("Fix missing sounds...")) OpenMissingSounds(lib.uid);
-    ui::ItemTipText(miss_all > 0 ? (std::to_string(miss_all) + (miss_all == 1 ? " missing sound" : " missing sounds") +
-                                    " in this project: search a folder, locate a file or use a REAPER item")
-                                       .c_str()
-                                 : "No missing sound in any library");
-    ImGui::Separator();
-    if (LibraryLinked(lib)) {
-        if (ImGui::MenuItem("Sync with file...")) {
-            const std::string uid = lib.uid;
-            Later([uid] { OpenSyncWithFile(uid); });
-        }
-        ui::ItemTipText("Choose, change by change, what goes into the file and what is taken from it");
-        // 13-36: the file itself, selected in File Explorer (to copy, send or back it up).
-        if (ImGui::MenuItem("Show in Explorer")) RequestUserLibraryReveal(lib.uid);
-        ui::ItemTipText("Open the User Library folder in File Explorer, this library's .ravlib selected");
-        if (ImGui::MenuItem("Unlink from file")) {
-            const std::string uid = lib.uid;
-            Later([uid] { UnlinkLibrary(uid); });
-        }
-        ui::ItemTipText("This project keeps its copy with all its sounds; the .ravlib is not touched");
-    } else if (!lib.attached) {
-        // 13-77a: write it as a .ravlib of the User Library folder (its Item Sounds that play a plain media file
-        // become File Sounds, the others stay project-only).
-        if (ImGui::MenuItem("Save to a file...")) {
-            const std::string uid = lib.uid;
-            Later([uid] { SaveLibraryToFile(uid); });
-        }
-        ui::ItemTipText("Save it as a .ravlib in the User Library folder: other projects can Add it. Sounds whose "
-                        "item plays a media file use that file; the others (MIDI, piles, ...) stay project-only");
-    }
-    if (ImGui::MenuItem("Export .ravlib...")) RequestUserLibraryExport(lib.uid);
-    ui::ItemTipText("Save a copy of this library anywhere, without a link, to share it");
-    if (ImGui::MenuItem("Refresh the User Library folder")) RefreshUserLibraries();
-    ImGui::Separator();
     // 13-15c: the body parts this library suggests itself for (its kit, stored in the library): a tick per part,
     // each toggle one undo point.
     if (ui::BeginSubMenu("Kit...")) {
@@ -1877,6 +1847,57 @@ void LibraryMenuItems(const SoundLibrary& lib, std::string* to_delete, bool rena
     // 13-43: the Overview of Assign sounds (who plays what), this library's cells lit.
     if (ImGui::MenuItem("Assign...")) OpenAssignOverview(lib.uid);
     ui::ItemTipText("Open Assign sounds on its Overview (Project): the body parts and characters this library plays are lit");
+    if (LibraryLinked(lib)) {
+        ImGui::Separator();
+        ui::MenuCaption("Global library");
+        if (ImGui::MenuItem("Sync with global...")) {
+            const std::string uid = lib.uid;
+            Later([uid] { OpenSyncWithFile(uid); });
+        }
+        ui::ItemTipText("Choose, change by change, what goes into the global library and what is taken from it");
+        const LinkedFileState lfs = LinkedFileOf(lib);
+        if (lfs == LinkedFileState::Missing || lfs == LinkedFileState::OtherLibrary || lfs == LinkedFileState::Unreadable) {
+            if (ImGui::MenuItem("Locate...")) {
+                const std::string uid = lib.uid;
+                Later([uid] { RequestRelinkLibrary(uid); });
+            }
+            ui::ItemTipText("Pick the .ravlib of this library: it is linked again (copied into the folder when elsewhere)");
+        }
+        // 13-36: the file itself, selected in File Explorer (to copy, send or back it up).
+        if (ImGui::MenuItem("Show in Explorer")) RequestUserLibraryReveal(lib.uid);
+        ui::ItemTipText("Open the global libraries folder in File Explorer, this library's .ravlib selected");
+        if (ImGui::MenuItem("Unlink from global")) {
+            const std::string uid = lib.uid;
+            Later([uid] { UnlinkLibrary(uid); });
+        }
+        ui::ItemTipText("This project keeps its copy with all its sounds; the global library is not touched");
+    } else if (!lib.attached) {
+        // 13-77a: write it as a .ravlib of the global libraries folder (its Item Sounds that play a plain media file
+        // become File Sounds, the others stay project-only).
+        ImGui::Separator();
+        ui::MenuCaption("Global library");
+        if (ImGui::MenuItem("Make it global...")) {
+            const std::string uid = lib.uid;
+            Later([uid] { SaveLibraryToFile(uid); });
+        }
+        ui::ItemTipText("Save it as a global library: other projects can add a copy of it. Sounds whose "
+                        "item plays a media file use that file; the others (MIDI, piles, ...) stay project-only");
+    }
+    ImGui::Separator();
+    ui::MenuCaption("Files");
+    // Spec missing-sounds-window: every missing sound of every library is fixed in one window (it replaces the
+    // Locate items), opened on this library. Counted from the list the row's missing count reads.
+    int miss_all = 0;
+    for (const SoundLibrary& l : GetSoundStore(nullptr).libraries) miss_all += static_cast<int>(MissingOf(l).size());
+    if (ImGui::MenuItem("Fix missing sounds...")) OpenMissingSounds(lib.uid);
+    ui::ItemTipText(miss_all > 0 ? (std::to_string(miss_all) + (miss_all == 1 ? " missing sound" : " missing sounds") +
+                                    " in this project: search a folder, locate a file or use a REAPER item")
+                                       .c_str()
+                                 : "No missing sound in any library");
+    if (ImGui::MenuItem("Export .ravlib...")) RequestUserLibraryExport(lib.uid);
+    ui::ItemTipText("Save a backup copy of this library anywhere, without a link");
+    if (ImGui::MenuItem("Refresh global libraries")) RefreshUserLibraries();
+    ui::ItemTipText("Read the global libraries folder again");
     ImGui::Separator();
     if (ImGui::MenuItem("Delete library")) *to_delete = lib.uid;
 }
@@ -1974,13 +1995,23 @@ void LibraryListRow(const SoundStore& store, const SoundLibrary& lib, std::strin
             }
             const bool clicked = ImGui::InvisibleButton("##sync", ImVec2(tp[i].w, rh));
             const bool hov = ImGui::IsItemHovered();
-            if (hov) dl->AddRectFilled(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), ui::kHover, ui::kRadiusSm);
+            // Antho 2026-10-20: no hover frame; the numbers alone get brighter and bolder (drawn twice, a pixel apart).
+            // The mark keeps its fixed slot, so nothing moves.
             float mx = tp[i].x + ui::Dp(4.0f);
+            const float my = std::floor(y + (rh - mark_f->FontSize) * 0.5f);
+            auto        mark = [&](float x, ImU32 col, const std::string& t) {
+                if (hov) {
+                    ui::AddTextIn(dl, mark_f, ImVec2(x + 1.0f, my), BrightMarkInk(col), t.c_str());
+                    ui::AddTextIn(dl, mark_f, ImVec2(x, my), BrightMarkInk(col), t.c_str());
+                } else {
+                    ui::AddTextIn(dl, mark_f, ImVec2(x, my), col, t.c_str());
+                }
+            };
             if (up_w > 0.0f) {
-                ui::AddTextIn(dl, mark_f, ImVec2(mx, std::floor(y + (rh - mark_f->FontSize) * 0.5f)), ui::kAccentInk, up_t.c_str());
+                mark(mx, ui::kAccentInk, up_t);
                 mx += up_w + mark_gap;
             }
-            if (down_w > 0.0f) ui::AddTextIn(dl, mark_f, ImVec2(mx, std::floor(y + (rh - mark_f->FontSize) * 0.5f)), ui::kWarn, down_t.c_str());
+            if (down_w > 0.0f) mark(mx, ui::kWarn, down_t);
             if (hov) ui::ItemTipText(SyncRowTip(sync_c).c_str());
             if (clicked) {
                 const std::string uid = lib.uid;
@@ -1993,7 +2024,9 @@ void LibraryListRow(const SoundStore& store, const SoundLibrary& lib, std::strin
             DrawLinkGlyph(dl, ImVec2(tp[i].x, std::floor(y + (rh - gs) * 0.5f)), gs, file_bad ? ui::kBad : ui::kMuted);
             ImGui::Dummy(ImVec2(tp[i].w, rh));
             ui::ItemTipText(file_bad ? LinkedFileWordsOf(lfs, lib.ravlib_path).row_tip.c_str()
-                                     : ("Linked to " + lib.ravlib_path + " (User Library folder)").c_str());
+                                     : ("Copy of the global library " + lib.ravlib_path +
+                                        ". Your edits stay here until you send them.")
+                                           .c_str());
             continue;
         }
         // The missing count is a button over the row (the row allows the overlap), so its click is its
@@ -2028,8 +2061,9 @@ void LibraryListRow(const SoundStore& store, const SoundLibrary& lib, std::strin
     ImGui::PopID();
 }
 
-// 13-7a (audit C1.4): a .ravlib of the User Library folder not in this project, under USER:
-// dimmed, its dot, an "Add" button (or "unreadable").
+// A .ravlib of the global libraries folder, under GLOBAL LIBRARIES (Antho 2026-10-20: every file shows). Not in this
+// project: dimmed, its dot, an "Add to project" button (or "unreadable"). Already in it: muted with an "in this project"
+// hint, a click selects its project copy, its ↑N ↓N shown when it has changes.
 void UserFileRow(const UserLibraryFile& f, std::string* add_file)
 {
     ImGui::PushID(f.file.c_str());
@@ -2038,23 +2072,52 @@ void UserFileRow(const UserLibraryFile& f, std::string* add_file)
     const float  w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
     ImDrawList*  dl = ImGui::GetWindowDrawList();
     const float  nx = p.x + ui::Dp(6.0f + 8.0f + 7.0f);
-    const char*  trail = f.readable ? "Add" : "unreadable";
-    const float  tw = f.readable ? ui::ButtonWidth(trail) : ui::TextWidth(trail);
+    const bool   in_project = !f.project_uid.empty();
+    const char*  trail = in_project ? "in this project" : f.readable ? "Add to project" : "unreadable";
+    const bool   add_btn = f.readable && !in_project;
+    // The copy's pending changes (↑N changes made here, ↓N in the global library), as on its own row.
+    std::string up_t, down_t;
+    if (in_project) {
+        const SoundLibrary* pl = FindLibrary(GetSoundStore(nullptr), f.project_uid);
+        if (pl && LinkedFileOf(*pl) == LinkedFileState::Ok)
+            if (const SyncDiff* sd = LibrarySyncDiff(pl->uid)) {
+                const LibSyncCounts c = TotalCounts(*sd);
+                up_t = SyncRowUpText(c);
+                down_t = SyncRowDownText(c);
+            }
+    }
+    const std::string marks = up_t + (up_t.empty() || down_t.empty() ? "" : " ") + down_t;
+    const float       tw = add_btn ? ui::ButtonWidth(trail) : ui::TextWidth(trail);
+    const float       mw = marks.empty() ? 0.0f : ui::TextWidth(marks.c_str()) + ui::Dp(8.0f);
     ImGui::SetNextItemAllowOverlap();
-    ui::SelectRow("##ufile", false, 0, rh, ImGuiSelectableFlags_AllowOverlap, ui::kRadiusMd);
-    if (f.readable) ui::ItemTip("%s\nNot in this project: Add puts a linked copy in", f.file.c_str());
+    const bool clicked = ui::SelectRow("##ufile", in_project && g.lib == f.project_uid, 0, rh, ImGuiSelectableFlags_AllowOverlap, ui::kRadiusMd);
+    if (in_project) ui::ItemTip("%s\nA copy of it is in this project: click to select it", f.file.c_str());
+    else if (f.readable) ui::ItemTip("%s\nNot in this project: Add to project puts a copy in", f.file.c_str());
     else ui::ItemTip("%s\nThis file cannot be read", f.file.c_str());
-    if (f.readable) dl->AddCircleFilled(ImVec2(p.x + ui::Dp(10.0f), p.y + rh * 0.5f), ui::Dp(4.0f), Faded(LibDot(f.color), true));
+    if (clicked && in_project) PickLibrary(f.project_uid);
+    if (f.readable) dl->AddCircleFilled(ImVec2(p.x + ui::Dp(10.0f), p.y + rh * 0.5f), ui::Dp(4.0f), Faded(LibDot(f.color), !in_project));
     const float tx = std::max(nx, p.x + w - ui::Dp(6.0f) - tw);
-    if (f.readable) {
+    if (add_btn) {
         ImGui::SetCursorScreenPos(ImVec2(tx, std::floor(p.y + (rh - ui::ControlH()) * 0.5f)));
         if (ui::SolidButton(trail, ImVec2(std::min(tw, p.x + w - ui::Dp(6.0f) - tx), 0.0f))) *add_file = f.file;
     } else {
         dl->AddText(ImVec2(tx, std::floor(p.y + (rh - ImGui::GetTextLineHeight()) * 0.5f)), ui::kFaint, trail);
     }
+    float name_end = tx - ui::Dp(7.0f);
+    if (mw > 0.0f && tx - mw > nx) {
+        const float mx = tx - mw + ui::Dp(4.0f);
+        float       x = mx;
+        if (!up_t.empty()) {
+            ui::AddTextIn(dl, ui::FontSemibold(), ImVec2(x, std::floor(p.y + (rh - ui::FontSemibold()->FontSize) * 0.5f)), ui::kAccentInk, up_t.c_str());
+            x += ui::TextSizeIn(ui::FontSemibold(), up_t.c_str()).x + ui::Dp(4.0f);
+        }
+        if (!down_t.empty())
+            ui::AddTextIn(dl, ui::FontSemibold(), ImVec2(x, std::floor(p.y + (rh - ui::FontSemibold()->FontSize) * 0.5f)), ui::kWarn, down_t.c_str());
+        name_end = tx - mw - ui::Dp(3.0f);
+    }
     {
         ui::FontScope fs(ui::FontTitle());
-        ui::EllipsisTextTip(dl, ImVec2(nx, std::floor(p.y + (rh - ImGui::GetTextLineHeight()) * 0.5f)), tx - ui::Dp(7.0f),
+        ui::EllipsisTextTip(dl, ImVec2(nx, std::floor(p.y + (rh - ImGui::GetTextLineHeight()) * 0.5f)), name_end,
                             f.readable ? ui::kMuted : ui::kFaint, f.name, f.file.c_str());
     }
     ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + rh));
@@ -2063,8 +2126,8 @@ void UserFileRow(const UserLibraryFile& f, std::string* add_file)
 }
 
 // 13-7a (audit C1.1 - C1.4): a fixed "Libraries" section, « at its header's right; the project's
-// libraries under PROJECT, the User Library's under USER (with the folder's files not in the
-// project); "+ Library" and "Import .ravlib..." side by side (13-77a: one kind of library).
+// libraries under IN THIS PROJECT, every .ravlib of the global libraries folder under GLOBAL LIBRARIES; "+ Library"
+// and "Import a library file..." side by side (13-77a: one kind of library).
 void LibrariesSectionWidgets()
 {
     g.gen = SoundStoreGeneration();
@@ -2082,32 +2145,34 @@ void LibrariesSectionWidgets()
     ui::EndSectionHeaderRight(sec);
     if (open) {
         std::string                        to_delete, add_file;
-        const std::vector<UserLibraryFile> files = UserFilesNotInProject();
+        const std::vector<UserLibraryFile> files = UserLibraryFiles();
         // 13-68 v2: the Attached libraries (made from selected sounds by the Spread actions) between them.
         auto category = [](const SoundLibrary& lib) { return lib.attached ? 1 : 0; };  // 13-77a: every other library is the project's
-        bool any[3] = {false, false, !files.empty()};
+        bool any[3] = {false, false, true};  // Global libraries: always shown
         for (const SoundLibrary& lib : store.libraries) any[category(lib)] = true;
-        const bool any_project = any[0] || any[1], any_user = any[2];
+        const bool any_project = any[0] || any[1];
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, ui::Dp(1.0f)));
         for (int cat = 0; cat < 3 && !StoreReplaced(); ++cat) {
             if (!any[cat]) continue;
             const bool        user = cat == 2;
             const std::string folder_tip = user ? "Folder: " + UserLibraryFolderText() : std::string();
-            ListCaption(user ? "User Library folder" : cat == 1 ? "Attached" : "Project",
+            ListCaption(user ? "Global libraries" : cat == 1 ? "Attached" : "In this project",
                         user ? folder_tip.c_str() : cat == 1 ? "Made from selected sounds, one per marker type" : nullptr);
             for (const SoundLibrary& lib : store.libraries) {
                 if (user || category(lib) != cat) continue;
                 LibraryListRow(store, lib, &to_delete);
                 if (StoreReplaced()) break;
             }
-            if (user && !StoreReplaced())
+            if (user && !StoreReplaced()) {
                 for (const UserLibraryFile& f : files) UserFileRow(f, &add_file);
+                if (files.empty()) ui::SubText("No global library yet: use Make it global... on a library");
+            }
         }
         ImGui::PopStyleVar();
         if (!to_delete.empty())
             Later([to_delete] { Gesture("Delete library", [&](SoundStore& s) { return DeleteLibrary(s, to_delete); }); });
         if (!add_file.empty()) Later([add_file] { AddUserLibraryFile(add_file); });
-        if (!any_project && !any_user) ui::SubText("No library yet");
+        if (!any_project) ui::SubText("No library in this project yet");
         ImGui::Dummy(ImVec2(0.0f, 0.0f));
         // .two: the two add buttons share the width (6 px apart); Import under them, full width.
         const float avail = std::max(1.0f, ImGui::GetContentRegionAvail().x);
@@ -2118,10 +2183,10 @@ void LibrariesSectionWidgets()
                 std::string uid;
                 if (Gesture("Add library", [&](SoundStore& s) { return NewLibrary(s, &uid); })) PickLibrary(uid);
             });
-        ui::ItemTipText("A library of this project. Save to a file... (its menu) shares it with other projects");
+        ui::ItemTipText("A library of this project. Make it global... (its menu) shares it with other projects");
         ImGui::SameLine(0.0f, sp);
-        if (ui::SolidButton("Import .ravlib...", ImVec2(std::max(1.0f, avail - half - sp), 0.0f))) RequestUserLibraryImport();
-        ui::ItemTipText("Add a .ravlib file: it is copied into the User Library folder and linked");
+        if (ui::SolidButton("Import a library file...", ImVec2(std::max(1.0f, avail - half - sp), 0.0f))) RequestUserLibraryImport();
+        ui::ItemTipText("Pick a .ravlib file: it is copied into the global libraries folder and a copy is added to this project");
         DrawLibraryLocateStatus();  // 13-50 (13-11): a Locate scan in progress, with its Cancel
     }
     ui::EndSection(sec);

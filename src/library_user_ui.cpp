@@ -97,7 +97,7 @@ int (*g_register)(const char*, void*) = nullptr;
 bool g_timer_on = false;
 
 
-const FileDialogFilter kRavlibFilter = {L"ReaAnimViewer User Library", L"*.ravlib", L"ravlib"};
+const FileDialogFilter kRavlibFilter = {L"ReaAnimViewer library", L"*.ravlib", L"ravlib"};
 const FileDialogFilter kAudioFilter = {L"Audio files", L"*.wav;*.aif;*.aiff;*.flac;*.mp3;*.ogg;*.opus;*.wv;*.m4a",
                                        L"wav"};
 
@@ -990,11 +990,11 @@ HWND__* Owner()
 void RunImport()
 {
     std::string path;
-    if (!PickOpenFile(Owner(), L"Import a User Library", kRavlibFilter, path)) return;
+    if (!PickOpenFile(Owner(), L"Import a library file", kRavlibFilter, path)) return;
     std::string text;
     SoundStore  file;
     if (!ReadText(fs::u8path(path), &text) || !ParseRavlib(text, &file)) {
-        ShowToastNoUndo("Not a User Library file");
+        ShowToastNoUndo("Not a RAV library file");
         return;
     }
     const SoundLibrary& flib = file.libraries.front();
@@ -1032,7 +1032,7 @@ void RunImport()
         const SoundLibrary* l = FindLibrary(GetSoundStore(nullptr), uid);
         if (l) {
             SelectLibraryRow(uid, LibraryRow{"", l->root});
-            ShowLibraryToast(l->name + " added: this project's own copy, linked to " + name, true, desc);
+            ShowLibraryToast(l->name + " added to this project: your own copy of the global library " + name, true, desc);
         }
     } else if (!why.empty()) {
         ShowToastNoUndo(why);
@@ -1047,7 +1047,7 @@ void RunExport(const std::string& lib_uid)
     int               items = 0;
     const std::string text = SerializeRavlib(RavlibOf(store, lib_uid, &items));
     std::string       path;
-    if (!PickSaveFile(Owner(), L"Export a User Library", kRavlibFilter, RavlibFileName(lib->name, {}), path)) return;
+    if (!PickSaveFile(Owner(), L"Export a library", kRavlibFilter, RavlibFileName(lib->name, {}), path)) return;
     if (!WriteText(fs::u8path(path), text)) {
         ShowToastNoUndo("Could not write " + path);
         return;
@@ -1140,7 +1140,7 @@ void RunRelinkPick(const std::string& lib_uid)
     std::string text;
     SoundStore  file;
     if (!ReadText(fs::u8path(path), &text) || !ParseRavlib(text, &file)) {
-        ShowToastNoUndo("Not a User Library file");
+        ShowToastNoUndo("Not a RAV library file");
         return;
     }
     if (file.libraries.front().uid != lib_uid) {
@@ -1239,7 +1239,7 @@ void RefreshItemAssets(ReaProject* proj)
 // (ReaProject* + its file name, review M5): a tab switch keeps the other project's journals and holds an Apply's answer
 // until its project is shown again.
 
-constexpr const char kSyncUndo[] = "RAV: Sync with file";
+constexpr const char kSyncUndo[] = "RAV: Sync with global";
 
 enum class SyncKind { Diff, Apply, Journal };
 enum class SyncSt { Ok, Gone, Unreadable, OtherLibrary, FileChanged, WriteFailed, Failed };
@@ -1721,10 +1721,10 @@ void HandleApplyOut(ProjSync& ps, SyncOut& o)
     }
     if (it != ps.slots.end()) it->second.force = true;
     if (o.st != SyncSt::Ok) {
-        if (o.st == SyncSt::Gone) ShowToastNoUndo(o.file + " is not in the User Library folder any more: nothing written");
+        if (o.st == SyncSt::Gone) ShowToastNoUndo(o.file + " is not in the global libraries folder any more: nothing written");
         else if (o.st == SyncSt::Unreadable || o.st == SyncSt::OtherLibrary) ShowToastNoUndo(o.file + " cannot be read as this library's file: nothing written");
         else if (o.st == SyncSt::WriteFailed) ShowToastNoUndo("Could not write " + o.file + " in " + UserFolderText() + ": nothing changed");
-        else ShowToastNoUndo("Sync with file failed: nothing changed");
+        else ShowToastNoUndo("Sync with global failed: nothing changed");
         FinishApply(ps, o, SyncApplyOutcome::Failed);
         return;
     }
@@ -1763,7 +1763,7 @@ void HandleApplyOut(ProjSync& ps, SyncOut& o)
     SoundStore merged, before;
     if (!ParseRavlib(r.mine, &merged)) {
         ShowToastNoUndo(o.file_written ? o.file + " was written, but this project's copy could not be updated: check the changes again"
-                                       : "Sync with file failed: nothing changed");
+                                       : "Sync with global failed: nothing changed");
         FinishApply(ps, o, SyncApplyOutcome::Failed);
         return;
     }
@@ -1786,7 +1786,7 @@ void HandleApplyOut(ProjSync& ps, SyncOut& o)
     });
     if (!ok) {
         ShowToastNoUndo(o.file_written ? o.file + " was written, but this project's copy could not be updated: check the changes again"
-                                       : "Sync with file failed: nothing changed");
+                                       : "Sync with global failed: nothing changed");
         FinishApply(ps, o, SyncApplyOutcome::Failed);
         return;
     }
@@ -2012,7 +2012,7 @@ void SyncTick(ReaProject* proj)
     }
     for (auto it = ps.slots.begin(); it != ps.slots.end();) it = live.count(it->first) ? std::next(it) : ps.slots.erase(it);
 
-    // A gesture of the frame (Send mine / Get file's): one at a time.
+    // A gesture of the frame (Send to global / Get from global): one at a time.
     // M3: the other tabs' queued requests are dropped (they would fire, unexpected, when the tab is shown again).
     for (auto& kv : gs.projs) {
         if (kv.first == key || kv.second.reqs.empty()) continue;
@@ -2417,13 +2417,16 @@ void PrepareUserLibraries()
     seen_set = true;
 }
 
-std::vector<UserLibraryFile> UserFilesNotInProject()
+std::vector<UserLibraryFile> UserLibraryFiles()
 {
     std::vector<UserLibraryFile> out;
     const SoundStore&            store = GetSoundStore(nullptr);
     for (const UserFile& f : g.files) {
-        if (!f.uid.empty() && FindLibrary(store, f.uid)) continue;
         UserLibraryFile u;
+        if (!f.uid.empty() && FindLibrary(store, f.uid)) u.project_uid = f.uid;
+        else
+            for (const SoundLibrary& l : store.libraries)
+                if (!l.attached && !l.ravlib_path.empty() && SameFileName(l.ravlib_path, f.file)) u.project_uid = l.uid;
         u.file = f.file;
         u.name = f.name;
         u.color = f.color;
@@ -2441,7 +2444,7 @@ void AddUserLibraryFile(const std::string& file)
         const SoundStore src = f.store;
         const std::string ftext = f.text;
         const int64_t    now = NowS();
-        const char*      desc = "RAV: Add user library";
+        const char*      desc = "RAV: Add global library";
         if (ModifySoundStore(nullptr, desc, [&](SoundStore& s) {
                 std::vector<std::pair<std::string, std::string>> map;
                 LinkBase                                         base;
@@ -2454,7 +2457,7 @@ void AddUserLibraryFile(const std::string& file)
             const SoundLibrary* l = FindLibrary(GetSoundStore(nullptr), uid);
             if (l) {
                 SelectLibraryRow(uid, LibraryRow{"", l->root});
-                ShowLibraryToast(l->name + " added: this project's own copy, linked to " + file, true, desc);
+                ShowLibraryToast(l->name + " added to this project: your own copy of the global library " + file, true, desc);
             }
         } else if (!why.empty()) {
             ShowToastNoUndo(why);
@@ -2494,7 +2497,7 @@ void SaveLibraryToFile(const std::string& lib_uid)
     const SaveFileDecision dec = DecideSaveToFile(*lib, g.folder);
     if (dec.action == SaveFileAction::Refuse) return;
     if (dec.action == SaveFileAction::LinkExisting) {
-        const bool linked = Gesture("Save library to a file",
+        const bool linked = Gesture("Make library global",
                                     [&](SoundStore& s) { return LinkLibraryWithoutBase(s, lib_uid, dec.file); },
                                     LinkedExistingToastText(dec.file));
         if (linked)
@@ -2541,10 +2544,10 @@ void UnlinkLibrary(const std::string& lib_uid)
     const std::string name = lib->name;
     int unsent = 0;  // 13-77b: the changes made here that the file never got
     if (const SyncDiff* sd = LibrarySyncDiff(lib_uid)) unsent = sd->here + sd->both;
-    Gesture("Unlink library from file", [&](SoundStore& s) { return UnlinkLibraryFromFile(s, lib_uid); },
+    Gesture("Unlink library from global", [&](SoundStore& s) { return UnlinkLibraryFromFile(s, lib_uid); },
             name + " unlinked: it stays in this project with all its sounds" +
                 (unsent > 0 ? ", your " + std::to_string(unsent) + " unsent " + (unsent == 1 ? "change" : "changes") + " included" : std::string()) +
-                ". The file is not touched.");
+                ". The global library is not touched.");
 }
 
 void RequestSaveLibraryToFile(const std::string& lib_uid)
@@ -2605,7 +2608,7 @@ void SaveLibraryFileAgain(const std::string& lib_uid)
                 any = SetLinkBase(s, b) || any;
                 return any;
             },
-            name + " saved again as " + file + " in the User Library folder");
+            name + " saved again as " + file + " in the global libraries folder");
     ListUserFolder();
 }
 
@@ -2783,7 +2786,7 @@ void RequestNodeSync(const std::string& lib_uid, const std::string& node_uid, Sy
     for (const SyncChange* c : RowChanges(*d, *n)) keys.push_back(c->key);
     for (const std::string& k : SyncKeysForDir(*d, keys, dir)) picks[k] = dir;
     if (picks.empty()) {  // M2: nothing of that side (the buttons say so); never a click that does nothing silently
-        ShowToastNoUndo(dir == SyncDir::Up ? "Nothing made here to send" : "Nothing changed in the file to take");
+        ShowToastNoUndo(dir == SyncDir::Up ? "Nothing made here to send" : "Nothing changed in the global library to take");
         return;
     }
     RequestSyncApply(lib_uid, CloseSelection(*d, picks), {}, SyncDiffSignature(*d));
@@ -2841,7 +2844,7 @@ void DrawRootSyncBar(const SyncDiff& d, const LibrarySyncInfo& info)
     const ImU32 ink = BarInk(tone);
     if (c.here > 0) ui::ToneText(SyncCountLine(c.here, SyncSide::Here), ink, true);
     if (c.file > 0) {
-        std::string t = ChangesWord(c.file) + " in the file";
+        std::string t = ChangesWord(c.file) + " in the global library";
         if (!info.by.empty()) t += " \xC2\xB7 by " + info.by + (info.at > 0 ? ", " + SyncWhen(info.at) : std::string());
         ui::ToneText(t, ink, true);
     }
@@ -2850,7 +2853,7 @@ void DrawRootSyncBar(const SyncDiff& d, const LibrarySyncInfo& info)
     EndSyncBar(bar, tone);
 }
 
-// A container's (or a Sound's) bar: its own changes listed, Send mine / Get file's for all of them.
+// A container's (or a Sound's) bar: its own changes listed, Send to global / Get from global for all of them.
 void DrawOwnSyncBar(const std::string& lib_uid, const std::string& node_uid, const std::vector<const SyncChange*>& own,
                     const std::string& file_by)
 {
@@ -2863,14 +2866,14 @@ void DrawOwnSyncBar(const std::string& lib_uid, const std::string& node_uid, con
     const ImU32 ink = BarInk(tone);
     std::string head = ChangesWord(c.Total());
     if (tone == BarTone::Here) head += " made here";
-    else if (tone == BarTone::File) head += " in the file" + (file_by.empty() ? std::string() : std::string(" \xC2\xB7 ") + file_by);
+    else if (tone == BarTone::File) head += " in the global library" + (file_by.empty() ? std::string() : std::string(" \xC2\xB7 ") + file_by);
     ui::ToneText(head, ink, true);
     const size_t kMaxLines = 12;
     for (size_t i = 0; i < own.size() && i < kMaxLines; ++i) {
         const SyncChange* ch = own[i];
         std::string       t = "\xE2\x80\xA2 " + ch->text;
         if (ch->side == SyncSide::Here && mixed) t += " (here)";
-        else if (ch->side == SyncSide::File && mixed) t += " (file)";
+        else if (ch->side == SyncSide::File && mixed) t += " (global)";
         ui::ToneText(t, ui::kMuted, true);
     }
     if (own.size() > kMaxLines) ui::ToneText("... and " + std::to_string(own.size() - kMaxLines) + " more", ui::kFaint, true);
@@ -2878,24 +2881,24 @@ void DrawOwnSyncBar(const std::string& lib_uid, const std::string& node_uid, con
     // M2: a side with no change to take is disabled (visible, never moved), the tooltip says why
     const bool can_up = c.here + c.both > 0, can_down = c.file + c.both > 0;
     if (!can_up) ImGui::BeginDisabled();
-    if (up_primary ? ui::PrimaryButton("\xE2\x86\x91 Send mine") : ui::SolidButton("\xE2\x86\x91 Send mine"))
+    if (up_primary ? ui::PrimaryButton("\xE2\x86\x91 Send to global") : ui::SolidButton("\xE2\x86\x91 Send to global"))
         RequestNodeSync(lib_uid, node_uid, SyncDir::Up);
     if (!can_up) ImGui::EndDisabled();
-    ui::ItemTipText(can_up ? "Write these changes, as they are here, into the file. What they need goes with them."
-                           : "Nothing made here to send. The changes are the file's: Get file's takes them, or Change by change... drops one.");
-    ui::SameLineIfFits(ui::ButtonWidth("\xE2\x86\x93 Get file's"));
+    ui::ItemTipText(can_up ? "Write these changes, as they are here, into the global library. What they need goes with them."
+                           : "Nothing made here to send. The changes are the global library's: Get from global takes them, or Change by change... drops one.");
+    ui::SameLineIfFits(ui::ButtonWidth("\xE2\x86\x93 Get from global"));
     if (!can_down) ImGui::BeginDisabled();
-    if (down_primary ? ui::PrimaryButton("\xE2\x86\x93 Get file's") : ui::SolidButton("\xE2\x86\x93 Get file's"))
+    if (down_primary ? ui::PrimaryButton("\xE2\x86\x93 Get from global") : ui::SolidButton("\xE2\x86\x93 Get from global"))
         RequestNodeSync(lib_uid, node_uid, SyncDir::Down);
     if (!can_down) ImGui::EndDisabled();
-    ui::ItemTipText(can_down ? "Take the file's changes here. What they need goes with them."
-                             : "Nothing changed in the file to take. The changes are yours: Send mine writes them, or Change by change... drops one.");
+    ui::ItemTipText(can_down ? "Take the global library's changes here. What they need goes with them."
+                             : "Nothing changed in the global library to take. The changes are yours: Send to global writes them, or Change by change... drops one.");
     ui::SameLineIfFits(ui::ButtonWidth("Change by change..."));
     if (ui::SolidButton("Change by change...")) {
         const std::string focus = own.empty() ? node_uid : own[0]->node;
         OpenSyncWithFile(lib_uid, focus);
     }
-    ui::ItemTipText("Open Sync with file on this container: tick each change and pick its direction");
+    ui::ItemTipText("Open Sync with global on this container: tick each change and pick its direction");
     EndSyncBar(bar, tone);
 }
 
@@ -2914,25 +2917,25 @@ void DrawLibraryFileSection()
     if (st == LinkedFileState::Unlinked && !is_root) return;
     if (st != LinkedFileState::Unlinked && st != LinkedFileState::Ok && !is_root) return;
     ui::Section sec;
-    if (ui::BeginSection(sec, "File", ImTextureID(), false)) {
+    if (ui::BeginSection(sec, "Global library", ImTextureID(), false)) {
         const std::string lib_uid = lib->uid;
         if (st == LinkedFileState::Unlinked) {
-            FileStatusLine(0, "Only in this project. Save it to a file to use it in other projects.");
-            if (ui::SolidButton("Save to a file...")) RequestSaveLibraryToFile(lib_uid);
-            ui::ItemTipText("Write this library as a .ravlib in the User Library folder: other projects can Add it");
+            FileStatusLine(0, "Only in this project. Make it global to use it in other projects.");
+            if (ui::SolidButton("Make it global...")) RequestSaveLibraryToFile(lib_uid);
+            ui::ItemTipText("Write this library as a global library: other projects can add a copy of it");
             ui::SameLineIfFits(ui::ButtonWidth("Export .ravlib..."));
             if (ui::SolidButton("Export .ravlib...")) RequestUserLibraryExport(lib_uid);
-            ui::ItemTipText("Save a copy anywhere, without a link");
+            ui::ItemTipText("Save a backup copy anywhere, without a link");
         } else if (st == LinkedFileState::Ok) {
             if (is_root) {
-                const float fw = ui::LabelRow("File", ui::Dp(80.0f));
+                const float fw = ui::LabelRow("Global", ui::Dp(80.0f));
                 const ImVec2 p = ImGui::GetCursorScreenPos();
                 const float  gs = ui::Dp(14.0f);
                 DrawLinkGlyph(ImGui::GetWindowDrawList(), ImVec2(p.x, p.y + (ImGui::GetTextLineHeight() - gs) * 0.5f), gs, ui::kMuted);
                 ImGui::Dummy(ImVec2(gs, ImGui::GetTextLineHeight()));
                 ImGui::SameLine(0.0f, ui::Dp(6.0f));
                 ui::FitText(lib->ravlib_path, ui::kText, std::max(ui::Dp(20.0f), fw - gs - ui::Dp(6.0f)));
-                ui::ItemTipText(("In " + UserFolderText()).c_str());
+                ui::ItemTipText(("Copy of the global library, in " + UserFolderText()).c_str());
                 const SyncDiff*       sd = LibrarySyncDiff(lib_uid);
                 const LibrarySyncInfo info = LibrarySyncInfoOf(lib_uid);
                 if (sd && TotalCounts(*sd).Total() > 0) {
@@ -2941,24 +2944,24 @@ void DrawLibraryFileSection()
                     // right under it ...) with both buttons, until 13-77c's window
                     const std::vector<const SyncChange*> own = RowChanges(*sd, *n);
                     if (!own.empty()) DrawOwnSyncBar(lib_uid, n->uid, own, info.by);
-                    if (ui::PrimaryButton("Sync with file...")) OpenSyncWithFile(lib_uid);
-                    ui::ItemTipText("Choose, change by change, what goes into the file and what is taken from it");
+                    if (ui::PrimaryButton("Sync with global...")) OpenSyncWithFile(lib_uid);
+                    ui::ItemTipText("Choose, change by change, what goes into the global library and what is taken from it");
                 } else if (sd) {
-                    FileStatusLine(1, "Same as the file. Changes made here stay here until you send them.");
+                    FileStatusLine(1, "Same as the global library. Changes made here stay here until you send them.");
                 }
-                else if (info.bad) FileStatusLine(0, "Could not read the file just now: it is read again when REAPER comes back to the front.");
-                else FileStatusLine(0, "Reading the file...");
+                else if (info.bad) FileStatusLine(0, "Could not read the global library just now: it is read again when REAPER comes back to the front.");
+                else FileStatusLine(0, "Reading the global library...");
                 if (ui::SolidButton("Export .ravlib...")) RequestUserLibraryExport(lib_uid);
-                ui::ItemTipText("Save a copy of this library's file anywhere, to share it");
+                ui::ItemTipText("Save a backup copy of this library anywhere");
                 ui::SameLineIfFits(ui::ButtonWidth("Show in Explorer"));
                 if (ui::SolidButton("Show in Explorer")) RequestUserLibraryReveal(lib_uid);
-                ui::ItemTipText("Open its folder in File Explorer, its file selected");
+                ui::ItemTipText("Open the folder in File Explorer, its file selected");
             } else {
                 const SyncDiff* sd = LibrarySyncDiff(lib_uid);
                 std::vector<const SyncChange*> own;
                 if (sd) own = RowChanges(*sd, *n);
-                if (!sd) FileStatusLine(0, "Reading the file...");
-                else if (own.empty()) FileStatusLine(1, "Same as in " + lib->ravlib_path);
+                if (!sd) FileStatusLine(0, "Reading the global library...");
+                else if (own.empty()) FileStatusLine(1, "Same as in the global library " + lib->ravlib_path);
                 else DrawOwnSyncBar(lib_uid, n->uid, own, LibrarySyncInfoOf(lib_uid).by);
             }
         } else {

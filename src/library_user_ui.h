@@ -38,21 +38,22 @@ void DrawLibraryNodeTracksSection();
 // Once a frame before the list: installs the tree's missing hook, refreshes the caches, lists the
 // folder (again when its files change).
 void PrepareUserLibraries();
-// A .ravlib of the user folder whose library is not in this project (unreadable ones included).
+// A .ravlib of the global libraries folder (unreadable ones included); project_uid = its copy in this project, if any.
 struct UserLibraryFile {
     std::string file;      // file name
     std::string name;      // its library's name (the file's stem when unreadable)
     uint32_t    color = 0;
     bool        readable = false;
+    std::string project_uid;  // the project library that is this file ("" = not in this project)
 };
-std::vector<UserLibraryFile> UserFilesNotInProject();
+std::vector<UserLibraryFile> UserLibraryFiles();
 // Adds that file's library to the project (one undo point) and selects it.
 void AddUserLibraryFile(const std::string& file);
-// 13-77a "Save to a file...": an unlinked library is written as a .ravlib of the folder and linked to it (one undo
+// 13-77a "Make it global...": an unlinked library is written as a .ravlib of the folder and linked to it (one undo
 // point; the 13-24 conversion of its Item Sounds first, the toast lists the project-only ones). A failed write
 // changes nothing. Call outside the ImGui frame's widgets (Later).
 void SaveLibraryToFile(const std::string& lib_uid);
-// "Unlink from file": one undo point; the library stays in the project, the file is not touched.
+// "Unlink from global": one undo point; the library stays in the project, the file is not touched.
 void UnlinkLibrary(const std::string& lib_uid);
 // Run by this module's timer (for the File section's buttons, drawn inside the frame).
 void RequestSaveLibraryToFile(const std::string& lib_uid);

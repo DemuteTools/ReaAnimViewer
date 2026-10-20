@@ -684,10 +684,10 @@ static void TestConvertLibrary()
         CHECK(xa && xa->sound.source.item_guid.empty());
     }
     const std::string txt = SaveToFileToastText("Foley", "Foley.ravlib", r);
-    CHECK(txt == "Foley saved to Foley.ravlib in the User Library folder: other projects can Add it. 1 of 4 sounds are "
+    CHECK(txt == "Foley is now global: saved as Foley.ravlib, other projects can add a copy of it. 1 of 4 sounds are "
                  "project-only and will be missing in other projects (snd n000000000000093: MIDI)");
     ConvertReport clean;
-    CHECK(SaveToFileToastText("X", "X.ravlib", clean) == "X saved to X.ravlib in the User Library folder: other projects can Add it");
+    CHECK(SaveToFileToastText("X", "X.ravlib", clean) == "X is now global: saved as X.ravlib, other projects can add a copy of it");
     ConvertReport many;
     many.sounds = 5;
     for (int i = 0; i < 5; ++i) many.project_only.push_back({"u", "S" + std::to_string(i), "MIDI"});
@@ -1104,7 +1104,7 @@ static void TestFileDecisions()
     SaveFileDecision                d = DecideSaveToFile(lib, held);
     CHECK(d.action == SaveFileAction::LinkExisting && d.file == "Foot shared.ravlib");
     CHECK(LinkedExistingToastText(d.file) ==
-          "Foot shared.ravlib already holds this library: linked to it, nothing written. Sync with file will show the differences.");
+          "Foot shared.ravlib already holds this library: linked to it, nothing written. Sync with global will show the differences.");
     SoundLibrary linked = lib;
     linked.ravlib_path = "X.ravlib";
     CHECK(DecideSaveToFile(linked, none).action == SaveFileAction::Refuse);
@@ -1149,7 +1149,7 @@ static void TestFileDecisions()
     CHECK(!SameFileName("a", "b"));
 
     // L2: each bad state has its own words.
-    CHECK(LinkedFileWordsOf(LinkedFileState::Missing, "F.ravlib").title == "F.ravlib is not in the User Library folder");
+    CHECK(LinkedFileWordsOf(LinkedFileState::Missing, "F.ravlib").title == "F.ravlib is not in the global libraries folder");
     CHECK(LinkedFileWordsOf(LinkedFileState::OtherLibrary, "F.ravlib").title == "F.ravlib holds another library");
     CHECK(LinkedFileWordsOf(LinkedFileState::Unreadable, "F.ravlib").title == "F.ravlib cannot be read");
     CHECK(LinkedFileWordsOf(LinkedFileState::Unreadable, "F.ravlib").row_tip.find("cannot be read") != std::string::npos);
@@ -1170,7 +1170,7 @@ static void TestFileDecisions()
     CHECK(DecideImport(proj, none, "L9").action == ImportAction::Copy);
     ImportDecision im = DecideImport(proj, held, "L2");
     CHECK(im.action == ImportAction::Refuse && im.file == "Other.ravlib");
-    CHECK(ImportRefusedToastText(im.file) == "Other.ravlib in the User Library folder is that library: Add it from the list");
+    CHECK(ImportRefusedToastText(im.file) == "Other.ravlib in the global libraries folder is that library: Add it to project from the list");
     CHECK(DecideImport(proj, held, "L1").action == ImportAction::AlreadyInProject);  // the project wins over the folder
 }
 

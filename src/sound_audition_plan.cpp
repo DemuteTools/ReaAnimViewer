@@ -689,10 +689,20 @@ bool EditLoopEndedAtEnd(const EditTransport& tp, double last_pos, double since_s
            since_s <= 0.5 && last_pos + std::max(since_s, 0.0) >= total - 0.05;  // review: a recent end only
 }
 
-void ReachCache::Set(const std::string& path, bool ok, double now_s)
+void ReachCache::Set(const std::string& path, bool ok, double now_s, int64_t size)
 {
-    if (m_.size() > 512) m_.clear();  // a session of previews: never grows without end
-    m_[path] = Entry{ok, now_s};
+    if (m_.size() > 20000) m_.clear();  // a session of previews: never grows without end
+    m_[path] = Entry{ok, now_s, size};
+}
+
+bool ReachCache::Last(const std::string& path, bool* ok, int64_t* size, double* age_s, double now_s) const
+{
+    const auto it = m_.find(path);
+    if (it == m_.end()) return false;
+    if (ok) *ok = it->second.ok;
+    if (size) *size = it->second.size;
+    if (age_s) *age_s = std::max(0.0, now_s - it->second.at);
+    return true;
 }
 
 Reach ReachCache::Get(const std::string& path, double now_s) const

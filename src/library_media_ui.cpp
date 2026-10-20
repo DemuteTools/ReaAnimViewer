@@ -162,6 +162,7 @@ struct TaskResult {
     uint64_t    id = 0;
     PeakOwner   owner = PeakOwner::Preview;
     bool        ok = false;  // the file is there
+    long long   size = -1;   // Reach: its size when it is there
     std::vector<std::string> paths;  // Exists: the batch, and whether each file is there
     std::vector<char>        found;
 };
@@ -256,8 +257,11 @@ private:
                     std::error_code ec;
                     const std::filesystem::path fp = std::filesystem::u8path(t.path);
                     r.ok = std::filesystem::exists(fp, ec);
-                    if (r.ok && t.kind == TaskKind::Reach)  // its size answers too: the share is awake
-                        r.ok = std::filesystem::file_size(fp, ec) != static_cast<std::uintmax_t>(-1) && !ec;
+                    if (r.ok && t.kind == TaskKind::Reach) {  // its size answers too: the share is awake
+                        const std::uintmax_t sz = std::filesystem::file_size(fp, ec);
+                        r.ok = sz != static_cast<std::uintmax_t>(-1) && !ec;
+                        if (r.ok) r.size = static_cast<long long>(sz);
+                    }
                 }
             } catch (...) {
                 r.ok = false;
@@ -279,7 +283,8 @@ DiskWorker g_rows;    // Exists: the rows' checks, never ahead of a preview or a
 DiskWorker g_probe;   // Reach (quick, but may stall on an offline share)
 
 // Freeze fix (audit #1): the files the probe reached lately, for sound_audition (which asks before it opens).
-ReachCache g_reach;
+ReachCache            g_reach;
+std::set<std::string> g_reach_inflight;  // asked and not answered yet (main thread): one task per path at a time
 double     ReachNow()
 {
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -690,7 +695,8 @@ void PollWorkers()
     }
     for (TaskResult& r : g_probe.Take()) {
         g.exists.Set(r.path, r.ok);
-        g_reach.Set(r.path, r.ok, ReachNow());
+        g_reach.Set(r.path, r.ok, ReachNow(), r.size);
+        g_reach_inflight.erase(r.path);
         if (r.owner == PeakOwner::Audition) continue;  // only the cache: sound_audition reads it
         if (r.owner == PeakOwner::Open) {
             if (!g_pv.opening || r.id != g_open_gen) continue;
@@ -1626,15 +1632,26 @@ void InitLibraryMedia(void* (*get_func)(const char* name))
 
 void StopMediaPreview() { StopPreviewNow(); }
 
-void MediaReachAsk(const std::string& path)
+void MediaReachAsk(const std::string& path, bool urgent)
 {
     if (path.empty() || g_quitting) return;
+    if (!g_reach_inflight.insert(path).second) return;
     Task t;
     t.kind = TaskKind::Reach;
     t.path = path;
     t.owner = PeakOwner::Audition;
-    g_probe.Push(std::move(t), true);
+    g_probe.Push(std::move(t), urgent);  // urgent: ahead of the queued background checks
 }
+
+bool MediaReachLast(const std::string& path, bool* ok, long long* size, double* age_s)
+{
+    int64_t sz = -1;
+    const bool known = g_reach.Last(path, ok, &sz, age_s, ReachNow());
+    if (size) *size = sz;
+    return known;
+}
+
+int MediaReachInflight() { return static_cast<int>(g_reach_inflight.size()); }
 
 int MediaReachGet(const std::string& path) { return static_cast<int>(g_reach.Get(path, ReachNow())); }
 
@@ -1651,6 +1668,7 @@ void QuitLibraryMedia()
     g_quitting = true;
     g_rows.Stop();
     g_probe.Stop();
+    g_reach_inflight.clear();
     g.exists.Clear();
     MediaDbStop();
     if (g_pv.cs_ready) {

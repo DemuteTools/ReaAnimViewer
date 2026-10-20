@@ -1079,6 +1079,14 @@ void TestReachCache()
     CHECK(c.Get("b", 14.0) == Reach::Unknown);  // a negative answer is asked again after kNo
     CHECK(c.Get("a", 41.0) == Reach::Unknown);  // a positive one after kYes
     CHECK(c.Get("a", 5.0) == Reach::Unknown);   // a clock that went back
+    bool ok = false;
+    int64_t sz = 0;
+    double  age = 0.0;
+    CHECK(!c.Last("zz", &ok, &sz, &age, 50.0));  // never answered
+    c.Set("f", true, 10.0, 1234);
+    CHECK(c.Last("f", &ok, &sz, &age, 500.0) && ok && sz == 1234 && age > 489.0);  // the last answer, however old
+    c.Set("f", false, 20.0);
+    CHECK(c.Last("f", &ok, &sz, &age, 21.0) && !ok && sz == -1 && age > 0.9 && age < 1.1);
 }
 
 int main()

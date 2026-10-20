@@ -28,7 +28,11 @@ void QuitLibraryMedia();
 void StopMediaPreview();
 // Freeze fix (audit #1): is a file reachable (the probe worker answers; the UI never waits on a stalled share).
 // Ask, poll each frame, then read: 0 = no answer yet, 1 = reached, 2 = not reachable (rav::Reach).
-void MediaReachAsk(const std::string& path);
+void MediaReachAsk(const std::string& path, bool urgent = true);
+// Freeze audit #2: the last answer for a path whatever its age (false: never answered), its size (-1 unknown) and age.
+bool MediaReachLast(const std::string& path, bool* ok, long long* size, double* age_s);
+// How many asked paths have not been answered yet.
+int  MediaReachInflight();
 void MediaReachPoll();
 int  MediaReachGet(const std::string& path);
 // True when the panel had the focus (not typing) with results last frame: Up/Down move its row.

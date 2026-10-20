@@ -38,8 +38,11 @@
 
 #include <imgui.h>
 
+#include <windows.h>  // GetAsyncKeyState (no re-check during a drag)
+
 #include "file_dialogs.h"
 #include "library_tree_edit.h"
+#include "library_media_ui.h"  // freeze audit #2: MediaReachAsk / MediaReachLast (the probe worker)
 #include "library_tree_ui.h"
 #include "library_view_ui.h"
 #include "media_db.h"
@@ -146,6 +149,15 @@ struct State {
     // The project's items (lower GUID -> its active take's file when on disk, "" when offline).
     std::unordered_map<std::string, std::string> live_files;
     int                                          live_state = -1;
+    // Freeze audit #2: the items' files are checked on the probe worker, never on the UI thread. The items read at the
+    // last project change (REAPER API only), their set's signature (from_items survives a change that left it alone),
+    // and whether an answer is still awaited (the next frame builds live_files again from what came back).
+    struct LiveItem {
+        std::string guid, path;
+    };
+    std::vector<LiveItem> live_items;
+    size_t                live_sig = 0;
+    bool                  live_dirty = false;
     // A missing file found in another project item playing it (asset key -> path, "" = none): read
     // again when the project changes.
     std::unordered_map<std::string, std::string> from_items;
@@ -291,6 +303,40 @@ std::string AssetKey(const AssetIdentity& a)
 
 std::string ProjectFolder();  // below
 
+// Freeze audit #2 (a project on Google Drive or a share that stalls): a file's presence is asked of the probe worker
+// and the last answer kept. "Not asked yet" counts as present (never "missing" for a moment), an answer older than
+// kRecheckS is asked again (at most that often, and not while the mouse button is down: a drag edits the project at
+// every step) without losing the old one meanwhile.
+enum class Disk { Yes, No, Unknown };
+constexpr double kRecheckS = 3.0;
+
+Disk DiskState(const std::string& path, long long* size)
+{
+    bool      ok = false;
+    long long sz = -1;
+    double    age = 0.0;
+    const bool known = MediaReachLast(path, &ok, &sz, &age);
+    if (!known || age > kRecheckS) {
+        g.live_dirty = true;  // an answer is awaited (or the drag ends and it is asked)
+        if ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) == 0) MediaReachAsk(path, /*urgent=*/false);
+    }
+    if (!known) return Disk::Unknown;
+    if (size) *size = sz;
+    return ok ? Disk::Yes : Disk::No;
+}
+
+void RebuildLiveFiles()
+{
+    g.live_dirty = false;
+    g.live_files.clear();
+    for (const State::LiveItem& li : g.live_items) {
+        std::string path = li.path;
+        if (!path.empty() && DiskState(path, nullptr) == Disk::No) path.clear();
+        g.live_files[li.guid] = path;
+    }
+    if (MediaReachInflight() > 0) g.live_dirty = true;
+}
+
 void RefreshCaches()
 {
     const std::shared_ptr<const MediaDbIndex> idx = MediaDbGet();
@@ -303,33 +349,48 @@ void RefreshCaches()
     if (st != g.live_state || proj != g.live_proj) {
         g.live_state = st;
         g.live_proj = proj;
-        g.live_files.clear();
-        g.from_items.clear();
+        g.live_items.clear();
         const std::string dir = ProjectFolder();
         const int         n = CountMediaItems(proj);
-        RAV_SCOPE("RefreshCaches stat", n);  // freeze audit: a stalled drive names itself here
+        RAV_QUIET_SCOPE("RefreshCaches items", n);  // freeze audit (REAPER API only: the disk is asked of the worker)
+        size_t sig = static_cast<size_t>(n);
         for (int i = 0; i < n; ++i) {
             MediaItem* it = GetMediaItem(proj, i);
             if (!it) continue;
             MediaItem_Take* t = GetActiveTake(it);
             PCM_source*     src = t ? GetMediaItemTake_Source(t) : nullptr;
             const char*     fn = src ? src->GetFileName() : nullptr;
-            std::string     path = fn && fn[0] ? AbsoluteMediaPath(fn, dir) : std::string();
-            if (!path.empty() && FileSize(path) < 0) path.clear();
-            g.live_files[LowerAscii(ItemGuidOf(it))] = path;
+            State::LiveItem li;
+            li.path = fn && fn[0] ? AbsoluteMediaPath(fn, dir) : std::string();
+            li.guid = LowerAscii(ItemGuidOf(it));
+            sig = sig * 1099511628211ULL ^ std::hash<std::string>()(li.path);
+            g.live_items.push_back(std::move(li));
         }
+        // The files other items play only change with the set of items: kept when the edit left it alone.
+        if (sig != g.live_sig) {
+            g.live_sig = sig;
+            g.from_items.clear();
+        }
+        RebuildLiveFiles();
+    } else if (g.live_dirty) {
+        MediaReachPoll();  // the worker's answers
+        RebuildLiveFiles();
     }
 }
 
 // The file of a project item that plays the same file (same name, same size when known, still on
 // disk), "" when none: a Sound whose own item was deleted finds its audio in a copy kept elsewhere.
-std::string FileFromProjectItems(const AssetIdentity& a)
+// `*settled` false: a candidate's file was not answered yet; it is taken as present for now (not missing) and the
+// result is not kept, so the next frame decides again.
+std::string FileFromProjectItems(const AssetIdentity& a, bool* settled)
 {
+    *settled = true;
     if (a.name.empty()) return {};
     RAV_QUIET_SCOPE("FileFromProjectItems", a.name);  // freeze audit
     const std::string name = LowerAscii(a.name);
     const std::string dir = ProjectFolder();
     const int         n = CountMediaItems(nullptr);
+    std::string       maybe;
     for (int i = 0; i < n; ++i) {
         MediaItem*      it = GetMediaItem(nullptr, i);
         MediaItem_Take* t = it ? GetActiveTake(it) : nullptr;
@@ -337,11 +398,19 @@ std::string FileFromProjectItems(const AssetIdentity& a)
         const char*     fn = src ? src->GetFileName() : nullptr;
         if (!fn || !fn[0] || LowerAscii(BaseNameOf(fn)) != name) continue;
         const std::string path = AbsoluteMediaPath(fn, dir);
-        const int64_t     size = FileSize(path);
-        if (size < 0 || (a.size >= 0 && size != a.size)) continue;
+        long long         size = -1;
+        const Disk        d = DiskState(path, &size);
+        if (d == Disk::No) continue;
+        if (d == Disk::Unknown) {
+            *settled = false;
+            if (maybe.empty()) maybe = path;
+            continue;
+        }
+        if (a.size >= 0 && size != a.size) continue;
+        *settled = true;
         return path;
     }
-    return {};
+    return maybe;  // "" when no candidate; else the first one not answered yet
 }
 
 std::string ResolvedPath(const AssetIdentity& a)
@@ -360,7 +429,10 @@ std::string ResolvedPath(const AssetIdentity& a)
     // Not at its last path nor in the Media Explorer: another item of the project that plays it.
     const auto hit = g.from_items.find(key);
     if (hit != g.from_items.end()) return hit->second;
-    return g.from_items[key] = FileFromProjectItems(a);
+    bool        settled = true;
+    std::string found = FileFromProjectItems(a, &settled);
+    if (settled) g.from_items[key] = found;
+    return found;
 }
 
 // Where a File Sound's audio is on disk ("" = missing): its file (last path, Media Explorer, another

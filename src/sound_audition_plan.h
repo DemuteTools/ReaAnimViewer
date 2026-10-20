@@ -270,13 +270,17 @@ enum class Reach { Unknown, Yes, No };
 class ReachCache {
 public:
     static constexpr double kYes = 30.0, kNo = 3.0;
-    void  Set(const std::string& path, bool ok, double now_s);
+    void  Set(const std::string& path, bool ok, double now_s, int64_t size = -1);
     Reach Get(const std::string& path, double now_s) const;
+    // Freeze audit #2: the last answer whatever its age (the missing-sounds checks keep it while a newer one is
+    // asked: "unknown yet" never turns a present file missing): false when the path was never answered.
+    bool Last(const std::string& path, bool* ok, int64_t* size, double* age_s, double now_s) const;
 
 private:
     struct Entry {
-        bool   ok = false;
-        double at = 0.0;
+        bool    ok = false;
+        double  at = 0.0;
+        int64_t size = -1;  // the file's size when reached
     };
     std::map<std::string, Entry> m_;
 };

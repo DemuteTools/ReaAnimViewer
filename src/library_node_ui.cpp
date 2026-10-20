@@ -99,6 +99,9 @@ struct PanelState {
     AuditionHistory       hist;
     AuditionPlan          plan;
     std::string           plan_lib;
+    std::vector<AuditionVoice> plan_read;  // review L1: the voices handed to PlayVoices, and which of them it kept
+    std::vector<int>           plan_kept;
+    std::string                plan_tag;
     NodePanelHooks        hooks;
     uint64_t              gen = 0;  // SoundStoreGeneration when this frame's drawing began
     // The shown Sound's media, re-read on a project change.
@@ -587,6 +590,9 @@ bool PlayPlan(const std::string& lib_uid, const SoundLibrary& lib, AuditionPlan 
     plan.played = PlayedText(lib, plan.voices);  // only the voices that play
     P.plan = plan;
     P.plan_lib = lib_uid;
+    P.plan_read = read;
+    P.plan_kept = kept;
+    P.plan_tag = tag;
     return true;
 }
 
@@ -6524,6 +6530,20 @@ void NodePanelWidgets()
         CancelLive();
     MergeTreeHooks();
     AuditionPlaying();  // frees an audition that has played to its end
+    {   // review L1: a play that waited for its files started without some: "played:" names only the ones heard
+        std::vector<int> dropped;
+        if (!P.plan_tag.empty() && AuditionTakeDropped(P.plan_tag, &dropped)) {
+            const SoundLibrary* pl = FindLibrary(GetSoundStore(nullptr), P.plan_lib);
+            if (pl && P.plan.root == P.plan_tag) {
+                P.plan.voices.clear();
+                for (int k : P.plan_kept)
+                    if (std::find(dropped.begin(), dropped.end(), k) == dropped.end() && k >= 0 &&
+                        static_cast<size_t>(k) < P.plan_read.size())
+                        P.plan.voices.push_back(P.plan_read[static_cast<size_t>(k)]);
+                P.plan.played = PlayedText(*pl, P.plan.voices);
+            }
+        }
+    }
     const SoundStore&   store = GetSoundStore(nullptr);
     const SoundLibrary* lib = FindLibrary(store, SelectedLibraryUid());
     const std::string   uid = lib ? LibraryRowNode() : std::string();

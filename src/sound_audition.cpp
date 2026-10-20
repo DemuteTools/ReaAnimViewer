@@ -19,6 +19,7 @@
 
 #include "console_log.h"
 #include "library_media_ui.h"
+#include "library_view_ui.h"  // review L1: the toast of a play that waited and failed
 #include "reaper_api.h"
 #include "sound_audition_plan.h"
 
@@ -208,6 +209,13 @@ struct Pending {
     double                t0 = 0.0;
 };
 Pending           g_pend;
+// Review L1: the voices a play that waited for its files finally dropped (its caller named them all when it started).
+struct StartedPlay {
+    bool             ready = false;
+    std::string      tag;
+    std::vector<int> dropped;
+};
+StartedPlay       g_started;
 constexpr double  kPendGiveUpS = 6.0;
 std::string g_empty;
 
@@ -242,6 +250,7 @@ void InitSoundAudition(void* (*get_func)(const char* name))
 void StopAudition()
 {
     g_pend.active = false;  // a play still waiting for its files is cancelled too
+    g_started = StartedPlay{};
     if (!g_play.active) return;
     RAV_CRUMB("StopAudition", nullptr);  // freeze audit
     if (f_stop) f_stop(&g_play.reg);
@@ -375,17 +384,32 @@ void PumpPending()
 {
     if (!g_pend.active) return;
     MediaReachPoll();
-    if (!AllReachKnown(g_pend.head, g_pend.loop, false)) {
-        if (NowS() - g_pend.t0 > kPendGiveUpS) {
-            LogWarn("audition: the sound files did not answer in %.0f s; not played", kPendGiveUpS);
-            g_pend.active = false;
-        }
+    const bool        known = AllReachKnown(g_pend.head, g_pend.loop, false);
+    const PendingStep step = PendingNext(known, NowS() - g_pend.t0, kPendGiveUpS);
+    if (step == PendingStep::Wait) return;
+    if (step == PendingStep::GiveUp) {  // review L2: also when the answers came but nothing polled for too long
+        LogWarn("audition: the sound files did not answer in %.0f s; not played", kPendGiveUpS);
+        g_pend.active = false;
+        ShowLibraryToast("Cannot play: the sound files did not answer in time (is the drive offline?)", false);
         return;
     }
     Pending p = std::move(g_pend);  // moved out first: starting the play cancels a pending one
     g_pend = Pending{};
-    if (p.looped) PlayLoopedNow(p.head, p.head_s, p.loop, p.loop_s, p.tag);
-    else PlayVoicesNow(p.head, p.tag, nullptr, nullptr);
+    std::string      why;
+    std::vector<int> used;
+    const bool       ok = p.looped ? PlayLoopedNow(p.head, p.head_s, p.loop, p.loop_s, p.tag)
+                                   : PlayVoicesNow(p.head, p.tag, &why, &used);
+    if (!ok) {  // review L1: a play that waited and then could not start says so
+        ShowLibraryToast("Cannot play: " + (why.empty() ? std::string("the sound files could not be read") : why), false);
+        return;
+    }
+    if (p.looped) return;
+    g_started = StartedPlay{};
+    g_started.tag = p.tag;
+    for (size_t i = 0; i < p.head.size(); ++i)
+        if (!p.head[i].path.empty() && std::find(used.begin(), used.end(), static_cast<int>(i)) == used.end())
+            g_started.dropped.push_back(static_cast<int>(i));
+    g_started.ready = !g_started.dropped.empty();
 }
 
 }  // namespace
@@ -480,6 +504,14 @@ bool AuditionPlaying()
         StopAudition();
         return false;
     }
+    return true;
+}
+
+bool AuditionTakeDropped(const std::string& tag, std::vector<int>* dropped)
+{
+    if (!g_started.ready || g_started.tag != tag) return false;
+    if (dropped) *dropped = std::move(g_started.dropped);
+    g_started = StartedPlay{};
     return true;
 }
 

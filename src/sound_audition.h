@@ -62,6 +62,9 @@ bool AuditionFile(const std::string& path, double start_s, double length_s, cons
 bool AuditionPlaying();
 // Seconds played into the current audition (0 when none).
 double AuditionPosition();
+// Review L1: a play that waited for its files (PlayVoices returned true with every voice in `kept`) started without
+// some of them: true once, with their indices in the voices handed to PlayVoices, when `tag` is the play concerned.
+bool AuditionTakeDropped(const std::string& tag, std::vector<int>* dropped);
 // The tag of the playing audition ("" when none).
 const std::string& AuditionTag();
 

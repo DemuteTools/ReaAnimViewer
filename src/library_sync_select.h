@@ -91,12 +91,15 @@ std::string SyncFooterNoun(const SyncChange& c);
 // (when not null) gets the same with no cut (the tooltip).
 std::string SyncFooterSummary(const SyncFooter& f, std::string* full);
 
-// Names: the common start / end of a set of sound names is hidden (the start up to a space or '_', the end from a '_').
-struct SyncNameTrim {
-    std::string pfx, sfx;
+// The Sync window's three columns (CHANGE | GLOBAL | THIS PROJECT): fractions of the width, equal by default, each at
+// least kSyncColMin. SyncColsFrom: the saved first two (the third is what is left); bad values give equal thirds.
+// SyncColsDrag: moves separator `sep` (0 = CHANGE|GLOBAL, 1 = GLOBAL|THIS PROJECT) by `d` (a fraction), the others stay.
+constexpr float kSyncColMin = 0.1f;
+struct SyncColFrac {
+    float f[3] = {1.0f / 3.0f, 1.0f / 3.0f, 1.0f / 3.0f};
 };
-SyncNameTrim SyncCommonTrim(const std::vector<std::string>& names);
-std::string  SyncTrimName(const SyncNameTrim& t, const std::string& name);
+SyncColFrac SyncColsFrom(float a, float b);
+SyncColFrac SyncColsDrag(SyncColFrac f, int sep, float d);
 // The differing part of two names, token-wise (split before a space or '_'): [a0, a1) in a, [b0, b1) in b.
 void SyncDiffRange(const std::string& a, const std::string& b, size_t* a0, size_t* a1, size_t* b0, size_t* b1);
 

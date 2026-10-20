@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <map>
 #include <string>
@@ -689,13 +690,19 @@ static void TestV5FooterAndNames()
     const std::string many_sum = SyncFooterSummary(many, &many_full);
     CHECK(many_sum == "Apply: 5 changes \xC2\xB7 the global gets a, b, c +2 more" && many_full.find("d, e") != std::string::npos);
 
-    // names: common start (up to a space or '_') and common end (from a '_') hidden, the differing middle kept
-    const std::vector<std::string> n = {"FEETHmn_Boots Concrete Walk 01_B00M_ONE.wav", "FEETHmn_Boots Wood Walk 02_B00M_ONE.wav",
-                                        "FEETHmn_Boots Metal Plate 01_B00M_ONE.wav"};
-    const SyncNameTrim t = SyncCommonTrim(n);
-    CHECK(t.pfx == "FEETHmn_Boots " && t.sfx == "_B00M_ONE.wav");
-    CHECK(SyncTrimName(t, n[1]) == "Wood Walk 02");
-    CHECK(SyncCommonTrim({"only one"}).pfx.empty());
+    // columns: equal by default, bad saved values fall back, a drag moves one separator and respects the minimum
+    {
+        const SyncColFrac e = SyncColsFrom(0.0f, 0.0f);
+        CHECK(std::fabs(e.f[0] - e.f[1]) < 1e-6f && std::fabs(e.f[1] - e.f[2]) < 1e-6f);
+        const SyncColFrac s = SyncColsFrom(0.5f, 0.3f);
+        CHECK(std::fabs(s.f[0] - 0.5f) < 1e-6f && std::fabs(s.f[2] - 0.2f) < 1e-5f);
+        const SyncColFrac d0 = SyncColsDrag(s, 0, 0.1f);
+        CHECK(std::fabs(d0.f[0] - 0.6f) < 1e-5f && std::fabs(d0.f[1] - 0.2f) < 1e-5f && std::fabs(d0.f[2] - 0.2f) < 1e-5f);
+        const SyncColFrac d1 = SyncColsDrag(s, 1, 5.0f);
+        CHECK(std::fabs(d1.f[2] - kSyncColMin) < 1e-5f && std::fabs(d1.f[0] + d1.f[1] + d1.f[2] - 1.0f) < 1e-5f);
+        const SyncColFrac d2 = SyncColsDrag(s, 0, -5.0f);
+        CHECK(std::fabs(d2.f[0] - kSyncColMin) < 1e-5f);
+    }
     size_t a0, a1, b0, b1;
     SyncDiffRange("Gravel Light Walk 01", "Gravel Light Jog 01", &a0, &a1, &b0, &b1);
     CHECK(std::string("Gravel Light Walk 01").substr(a0, a1 - a0) == "Walk" && std::string("Gravel Light Jog 01").substr(b0, b1 - b0) == "Jog");
@@ -834,15 +841,6 @@ static void TestRekeyFinalPrune()
     CHECK(!s.IsOn("X|rg") && !s.IsOn("X|rgs"));
 }
 
-static void TestTrimNeverToNothing()
-{
-    const SyncNameTrim a = SyncCommonTrim({"Walk_Hit", "Walk_Hit_Hit"});
-    CHECK(a.pfx == "Walk_" && a.sfx.empty());
-    const SyncNameTrim b = SyncCommonTrim({"Walk_", "Walk_B"});
-    CHECK(b.pfx.empty() && b.sfx.empty());
-    CHECK(SyncTrimName(b, "Walk_") == "Walk_");
-}
-
 static void TestFooterDedupe()
 {
     SyncFooter f;
@@ -886,7 +884,6 @@ int main()
     TestM1MirroredFileSide();
     TestKeepOnSubsetPrunes();
     TestRekeyFinalPrune();
-    TestTrimNeverToNothing();
     TestFooterDedupe();
     if (g_fail == 0) std::printf("library_sync_select_test: all passed\n");
     return g_fail == 0 ? 0 : 1;

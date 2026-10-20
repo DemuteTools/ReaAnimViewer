@@ -22,6 +22,7 @@
 #include <imgui.h>
 
 #include "float_ui_window.h"
+#include "shortcuts.h"  // LoadPrefFloat, SavePrefFloat
 #include "library_icons.h"      // DrawNodeTypeGlyph, ToolIcon
 #include "library_sync.h"
 #include "library_sync_select.h"
@@ -88,7 +89,6 @@ struct Model {
     std::map<std::string, int> row_of;
     std::vector<std::string>   all;  // every key, in diff order
     std::map<std::string, int> group_of;
-    float                      gw = 0.0f, pw = 0.0f;  // the widest value of each side (px): the columns hug it (set once per diff)
 };
 
 struct State {
@@ -264,19 +264,6 @@ std::string GroupIdOf(const SyncDiff& d, const SyncChange& ch)
 void BuildModel(const Ctx& c, Model* m)
 {
     const SyncDiff& d = *c.d;
-    // pass 1: the sound names on show (the common start and end of those are hidden)
-    std::vector<std::string> sound_names;
-    for (const SyncChange& ch : d.changes) {
-        const std::string kind = KindOf(ch);
-        if (kind == "X" && !ch.adds_container) sound_names.push_back(ch.label);
-        else if (ch.label == "Name" && IsSoundId(c, ch.subject)) {
-            if (!NoneText(ch.here_text)) sound_names.push_back(ch.here_text);
-            if (!NoneText(ch.file_text)) sound_names.push_back(ch.file_text);
-        }
-        if (kind != "X" && ch.subject != ch.node && IsSoundId(c, ch.subject)) sound_names.push_back(NodeName(c, ch.subject));
-    }
-    const SyncNameTrim trim = SyncCommonTrim(sound_names);
-
     const std::vector<SyncRowGroup> rg = SyncGroupChanges(d);
     std::map<std::string, int>      gix;
     for (const SyncRowGroup& sg : rg) {
@@ -339,12 +326,31 @@ void BuildModel(const Ctx& c, Model* m)
                 r.tree.push_back(ln.second);
             }
         } else if (sg.kind == SyncRowKind::Edited) {
-            r.par = sound_subject ? SyncTrimName(trim, subj_name) : subj_name;
+            r.par = sound_subject ? subj_name : subj_name;
             r.last = SyncEditSummary(sg);
             r.full_name = subj_name + kArrow + r.last;
             r.gtxt = sg.side == SyncSide::Here ? "unchanged" : "edited";
             r.ptxt = sg.side == SyncSide::File ? "unchanged" : "edited";
             r.gfull = r.pfull = SyncEditSummary(sg);
+            {  // every key an addition by the same side: one box, on the side that added (a mix keeps two boxes)
+                bool       all_add = !sg.keys.empty();
+                SyncSide   who = SyncSide::Both;
+                for (size_t ki = 0; ki < sg.keys.size() && all_add; ++ki) {
+                    const SyncChange* mc = d.Find(sg.keys[ki]);
+                    SyncSide          ad = SyncSide::Both;
+                    if (!mc || !SyncIsAddition(*mc, &ad)) all_add = false;
+                    else if (ki == 0) who = ad;
+                    else if (ad != who) all_add = false;
+                }
+                if (all_add && who != SyncSide::Both) {
+                    r.add = true;
+                    r.adder = who;
+                    r.gnone = who == SyncSide::Here;
+                    r.pnone = who == SyncSide::File;
+                    (who == SyncSide::Here ? r.ptxt : r.gtxt) = "added";
+                    (who == SyncSide::Here ? r.gtxt : r.ptxt).clear();
+                }
+            }
             for (const std::string& k : sg.keys)
                 if (const SyncChange* mc = d.Find(k)) {
                     r.tree_ind.push_back(0);
@@ -360,17 +366,16 @@ void BuildModel(const Ctx& c, Model* m)
                     r.last = ch.label.empty() ? ch.text : ch.label;
                 }
             } else if (kind == "X") {
-                r.last = sound_subject ? SyncTrimName(trim, x_name) : x_name;
+                r.last = sound_subject ? x_name : x_name;
             } else if (kind == "C") {
                 r.last = SyncCaseValueName(ch.label);  // the value that plays, not "Switch value X"
             } else {
-                if (!ch.subject.empty() && ch.subject != ch.node) r.par = sound_subject ? SyncTrimName(trim, subj_name) : subj_name;
+                if (!ch.subject.empty() && ch.subject != ch.node) r.par = sound_subject ? subj_name : subj_name;
                 r.last = ch.label.empty() ? ch.text : SyncSettingName(ch.label);
             }
             r.full_name = r.par.empty() ? r.last : r.par + kArrow + r.last;
             // the two cells
-            const bool trim_vals = sound_subject && (kind == "X" || ch.label == "Name");
-            auto       tr = [&](const std::string& s2) { return trim_vals ? SyncTrimName(trim, s2) : s2; };
+            auto tr = [](const std::string& s2) { return s2; };  // sound names are shown whole (the column ellipsizes at the end)
             r.gnone = NoneText(ch.file_text);
             r.pnone = NoneText(ch.here_text);
             const std::string elem = kind == "X" ? x_name : (ch.label.empty() ? ch.text : ch.label);
@@ -437,14 +442,6 @@ void BuildModel(const Ctx& c, Model* m)
     m->groups.swap(sorted);
     for (Row& r : m->rows) r.group = remap[static_cast<size_t>(r.group)];
     for (size_t i = 0; i < m->groups.size(); ++i) m->group_of[m->groups[i].id] = static_cast<int>(i);
-    // the widest value of each side: the two value columns hug it (measured once per diff, never per frame)
-    for (const Row& r : m->rows) {
-        const float icon = r.icon >= 0 ? ui::Dp(18.0f) : 0.0f;
-        if (!r.gnone) m->gw = std::max(m->gw, icon + ui::TextSizeIn(ui::FontBody(), r.gtxt.c_str()).x);
-        if (!r.pnone) m->pw = std::max(m->pw, icon + ui::TextSizeIn(ui::FontBody(), r.ptxt.c_str()).x);
-    }
-    m->gw += ui::Dp(14.0f);
-    m->pw += ui::Dp(14.0f);
 }
 
 bool IsOpen(const std::string& id)
@@ -481,50 +478,54 @@ const ImU32 kHlGlobal = IM_COL32(255, 209, 102, 0x3D);
 const ImU32 kHlProject = IM_COL32(91, 140, 255, 0x4D);
 const ImU32 kWarmInk = IM_COL32(0xCD, 0xB4, 0x6A, 0xFF);
 
-// The columns of every row: [name] [box] [GLOBAL] [connector] [box] [THIS PROJECT]; fixed, so marks never move.
+// The columns of every row: [CHANGE] [box GLOBAL value glyph] [box THIS PROJECT value], three equal parts of the width by
+// default; the user drags the separators (fractions kept in the preferences). Only the window's width, the fractions and
+// the diff decide, so nothing moves while scrolling.
 struct Cols {
     float x0 = 0, w = 0;
     float name_x = 0, name_w = 0;
     float gbox_x = 0, g_x = 0, g_w = 0;
     float conn_x = 0, conn_w = 0;
     float pbox_x = 0, p_x = 0, p_w = 0;
+    float sep_x[2] = {0, 0};  // the two separators (column edges)
 };
 
-// The CHANGE column takes the free width; each value column hugs its widest value (between a minimum and 30% of the
-// window). Only the window's width and the diff decide, so nothing moves while scrolling.
-Cols MakeCols(float x0, float w, const Model& m)
+SyncColFrac g_frac;
+bool        g_frac_loaded = false;
+
+void LoadFrac()
 {
+    if (g_frac_loaded) return;
+    g_frac_loaded = true;
+    g_frac = SyncColsFrom(LoadPrefFloat("sync_col_a", 0.0f), LoadPrefFloat("sync_col_b", 0.0f));
+}
+
+void SaveFrac()
+{
+    SavePrefFloat("sync_col_a", g_frac.f[0]);
+    SavePrefFloat("sync_col_b", g_frac.f[1]);
+}
+
+Cols MakeCols(float x0, float w)
+{
+    LoadFrac();
     Cols c;
     c.x0 = x0;
     c.w = w;
-    const float gap = ui::Dp(4.0f), box = ui::Dp(20.0f);
+    const float gap = ui::Dp(4.0f), edge = ui::Dp(6.0f), box = ui::Dp(20.0f);
     c.conn_w = ui::Dp(30.0f);
-    const float avail = std::max(ui::Dp(120.0f), w - 2.0f * box - c.conn_w - 5.0f * gap - ui::Dp(8.0f));
-    const float vmin = ui::Dp(84.0f), vmax = std::max(vmin, w * 0.30f);
-    float       gv = std::min(std::max(m.gw, vmin), vmax), pv = std::min(std::max(m.pw, vmin), vmax);
-    const float name_min = ui::Dp(150.0f);
-    if (avail - gv - pv < name_min) {  // a narrow window: the values give way, the names keep their room
-        const float room = std::max(avail - name_min, ui::Dp(60.0f));
-        const float k = room / (gv + pv);
-        gv = std::max(ui::Dp(30.0f), gv * k);
-        pv = std::max(ui::Dp(30.0f), pv * k);
-    }
-    const float name = std::max(ui::Dp(40.0f), avail - gv - pv);
-    float       x = x0 + ui::Dp(4.0f);
-    c.name_x = x;
-    c.name_w = name;
-    x += name + gap;
-    c.gbox_x = x;
-    x += box + gap;
-    c.g_x = x;
-    c.g_w = gv;
-    x += gv + gap;
-    c.conn_x = x;
-    x += c.conn_w + gap;
-    c.pbox_x = x;
-    x += box + gap;
-    c.p_x = x;
-    c.p_w = pv;
+    const float s1 = x0 + w * g_frac.f[0], s2 = x0 + w * (g_frac.f[0] + g_frac.f[1]), end = x0 + w;
+    c.sep_x[0] = s1;
+    c.sep_x[1] = s2;
+    c.name_x = x0 + ui::Dp(4.0f);
+    c.name_w = std::max(ui::Dp(20.0f), s1 - edge - c.name_x);
+    c.gbox_x = s1 + edge;
+    c.g_x = c.gbox_x + box + gap;
+    c.conn_x = s2 - edge - c.conn_w;
+    c.g_w = std::max(ui::Dp(10.0f), c.conn_x - gap - c.g_x);
+    c.pbox_x = s2 + edge;
+    c.p_x = c.pbox_x + box + gap;
+    c.p_w = std::max(ui::Dp(10.0f), end - gap - c.p_x);
     return c;
 }
 
@@ -1066,6 +1067,35 @@ void DrawHeader(const SoundLibrary* lib, const Model& m, const SyncDiff& d, cons
     if (SideBox("##kg", c.gbox_x, y2, l2, TriInt(tl), true, false, "Keep all global")) KeepGesture(m.all, SyncDir::Down);
     if (SideBox("##kp", c.pbox_x, y2, l2, TriInt(tp), false, false, "Keep all mine")) KeepGesture(m.all, SyncDir::Up);
     ImGui::PopID();
+    {  // the two separators: drag to resize, double-click for equal thirds (widths change only here)
+        const float hw = ui::Dp(4.0f), hh = l1 + l2;
+        bool        changed = false, done = false;
+        for (int i = 0; i < 2; ++i) {
+            ImGui::SetCursorScreenPos(ImVec2(std::floor(c.sep_x[i] - hw), p.y));
+            ImGui::PushID(i);
+            ImGui::InvisibleButton("##sep", ImVec2(hw * 2.0f, hh));
+            const bool hov = ImGui::IsItemHovered() || ImGui::IsItemActive();
+            if (hov) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+            if (ImGui::IsItemActive() && c.w > 1.0f) {
+                const float dx = ImGui::GetIO().MouseDelta.x / c.w;
+                if (dx != 0.0f) {
+                    g_frac = SyncColsDrag(g_frac, i, dx);
+                    changed = true;
+                }
+            }
+            if (ImGui::IsItemDeactivated()) done = true;
+            if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
+                g_frac = SyncColFrac();
+                done = true;
+            }
+            if (hov) ui::ShowTip("Drag: resize the columns. Double-click: equal columns");
+            const float lx = std::floor(c.sep_x[i]) + 0.5f;
+            dl->AddLine(ImVec2(lx, p.y + ui::Dp(2.0f)), ImVec2(lx, p.y + hh - ui::Dp(2.0f)), hov ? ui::kAccent : ui::kStroke, hov ? 2.0f : 1.0f);
+            ImGui::PopID();
+        }
+        (void)changed;
+        if (done) SaveFrac();
+    }
     const float ty = std::floor(y2 + (l2 - ui::FontBody()->FontSize) * 0.5f);
     auto keep_label = [&](float x, float w, const char* t) {  // ellipsized to its column (a larger font, a narrow window)
         const std::string shown = ui::EllipsizeToWidth(ui::FontBody(), t, std::max(1.0f, w - ui::Dp(6.0f)));
@@ -1222,7 +1252,7 @@ void DrawContent()
     if (d && !d->changes.empty()) {
         const float x0 = ImGui::GetCursorScreenPos().x;
         const float w = std::max(1.0f, ImGui::GetContentRegionAvail().x - g.body_sb);
-        DrawHeader(lib, g.model, *d, MakeCols(x0, w, g.model));
+        DrawHeader(lib, g.model, *d, MakeCols(x0, w));
     }
     const float body_h = std::max(ui::Dp(60.0f), ImGui::GetContentRegionAvail().y - footer_h - ui::Dp(4.0f));
     if (ImGui::BeginChild("##sfbody", ImVec2(0.0f, body_h), ImGuiChildFlags_None)) {
@@ -1231,7 +1261,7 @@ void DrawContent()
                                   : "Reading the global library...",
                          ui::kMuted, true);
         } else if (!d->changes.empty()) {
-            const Cols cols = MakeCols(ImGui::GetCursorScreenPos().x, std::max(1.0f, ImGui::GetContentRegionAvail().x), g.model);
+            const Cols cols = MakeCols(ImGui::GetCursorScreenPos().x, std::max(1.0f, ImGui::GetContentRegionAvail().x));
             g.body_sb = ImGui::GetScrollMaxY() > 0.0f ? ImGui::GetStyle().ScrollbarSize : 0.0f;
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 0.0f));  // rows are exactly 24 px apart
             for (size_t gi = 0; gi < g.model.groups.size(); ++gi) {

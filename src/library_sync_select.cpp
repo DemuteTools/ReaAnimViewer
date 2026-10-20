@@ -617,33 +617,25 @@ std::string SyncFooterSummary(const SyncFooter& f, std::string* full)
     return build(true);
 }
 
-SyncNameTrim SyncCommonTrim(const std::vector<std::string>& names)
+SyncColFrac SyncColsFrom(float a, float b)
 {
-    SyncNameTrim t;
-    if (names.size() < 2) return t;
-    std::string p = names[0], e = names[0];
-    for (const std::string& s : names) {
-        while (!p.empty() && s.compare(0, p.size(), p) != 0) p.pop_back();
-        while (!e.empty() && (s.size() < e.size() || s.compare(s.size() - e.size(), e.size(), e) != 0)) e.erase(0, 1);
-    }
-    const size_t cut = p.find_last_of(" _");
-    if (cut != std::string::npos) t.pfx = p.substr(0, cut + 1);
-    const size_t k = e.find('_');
-    if (k != std::string::npos) t.sfx = e.substr(k);
-    for (const std::string& s : names)  // a name is never cut to nothing
-        if (s.size() <= t.pfx.size() + t.sfx.size()) {
-            t.sfx.clear();
-            if (s.size() <= t.pfx.size()) t.pfx.clear();
-        }
-    return t;
+    const float c = 1.0f - a - b;
+    const bool  ok = a >= kSyncColMin && b >= kSyncColMin && c >= kSyncColMin && a <= 0.8f && b <= 0.8f && c <= 0.8f;  // false for NaN too
+    if (!ok) return SyncColFrac();
+    SyncColFrac f;
+    f.f[0] = a;
+    f.f[1] = b;
+    f.f[2] = c;
+    return f;
 }
 
-std::string SyncTrimName(const SyncNameTrim& t, const std::string& name)
+SyncColFrac SyncColsDrag(SyncColFrac f, int sep, float d)
 {
-    size_t a = 0, b = name.size();
-    if (!t.pfx.empty() && name.compare(0, t.pfx.size(), t.pfx) == 0) a = t.pfx.size();
-    if (!t.sfx.empty() && b - a > t.sfx.size() && name.compare(b - t.sfx.size(), t.sfx.size(), t.sfx) == 0) b -= t.sfx.size();
-    return b > a ? name.substr(a, b - a) : name;
+    const int l = sep == 0 ? 0 : 1, r = l + 1;
+    d = std::min(std::max(d, kSyncColMin - f.f[l]), f.f[r] - kSyncColMin);
+    f.f[l] += d;
+    f.f[r] -= d;
+    return f;
 }
 
 namespace {

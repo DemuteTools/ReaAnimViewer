@@ -1191,6 +1191,23 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& file_base_
                 if (ValueLine(g, v)) return g.uid;
         return std::string();
     };
+    // child node -> the case keys that play it, once per side and version (now: m / f; common version: b / fb)
+    std::map<std::string, std::vector<std::string>> playedNowHere, playedNowFile, playedWasHere, playedWasFile;
+    for (const auto& kv : trips) {
+        if (kv.first.compare(0, 2, "C|") != 0) continue;
+        auto put = [&](const Opt& o, std::map<std::string, std::vector<std::string>>& m) {
+            if (o.has) m[TokOr(ParseLine("case " + o.v), "child")].push_back(kv.first);
+        };
+        put(kv.second.m, playedNowHere);
+        put(kv.second.f, playedNowFile);
+        put(kv.second.b, playedWasHere);
+        put(kv.second.fb, playedWasFile);
+    }
+    auto casesOf = [](const std::map<std::string, std::vector<std::string>>& m, const std::string& u) {
+        const auto it = m.find(u);
+        static const std::vector<std::string> none;
+        return it == m.end() ? none : it->second;
+    };
     for (SyncChange& c : out.changes) {
         if (c.side == SyncSide::Both) continue;
         const bool        here = c.side == SyncSide::Here;
@@ -1201,17 +1218,9 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& file_base_
             if (const NodeDoc* n = sd->N(u)) {  // added: its parent on that side
                 need(c, KeyOf({"X", n->parent}));
                 // 13-77 feedback: the case that makes it play travels with it (the case needs the node too)
-                for (const auto& kv : trips) {
-                    if (kv.first.compare(0, 2, "C|") != 0) continue;
-                    const Opt& now = here ? kv.second.m : kv.second.f;
-                    if (now.has && TokOr(ParseLine("case " + now.v), "child") == u) need(c, kv.first);
-                }
+                for (const std::string& k : casesOf(here ? playedNowHere : playedNowFile, u)) need(c, k);
             } else {  // removal: the cases that played it (in that side's common version) go too
-                for (const auto& kv : trips) {
-                    if (kv.first.compare(0, 2, "C|") != 0) continue;
-                    const Opt& was = here ? kv.second.b : kv.second.fb;
-                    if (was.has && TokOr(ParseLine("case " + was.v), "child") == u) need(c, kv.first);
-                }
+                for (const std::string& k : casesOf(here ? playedWasHere : playedWasFile, u)) need(c, k);
             }
         } else if (p[0] == "C") {
             const Trip& t = trips[c.key];

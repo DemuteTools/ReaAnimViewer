@@ -230,6 +230,29 @@ std::vector<std::string> SyncSelection::Prune(const SyncDiff& d)
                 const std::vector<std::string> others = NeededBy(d, c.key);
                 if (!others.empty()) it->second.by = others[0];
             }
+            // a mutual pair (a new node and its case) must not hold itself ticked: an auto tick stays only while a tick
+            // the user made (on, same direction, same side) has it in its closure
+            if (s.auto_) {
+                bool rooted = false;
+                for (const auto& kv : ticks_) {
+                    const SyncTick& u = kv.second;
+                    if (!u.on || u.auto_ || u.dir != s.dir) continue;
+                    const SyncChange* uc = d.Find(kv.first);
+                    if (!uc || uc->side != c.side) continue;
+                    const std::vector<std::string> cl = ClosureFor(d, *uc, u.dir);
+                    if (std::find(cl.begin(), cl.end(), c.key) != cl.end()) {
+                        rooted = true;
+                        if (!asker_ok(s)) it->second.by = kv.first;
+                        break;
+                    }
+                }
+                if (!rooted) {
+                    it->second.on = false;
+                    gone.push_back(c.key);
+                    again = true;
+                    continue;
+                }
+            }
             bool            bad = s.auto_ && !asker_ok(s);
             if (!bad && c.side != SyncSide::Both)
                 for (const std::string& k : ClosureFor(d, c, s.dir)) {

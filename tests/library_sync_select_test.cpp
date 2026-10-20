@@ -275,6 +275,16 @@ static bool Consistent(const SyncDiff& d, const SyncSelection& s)
         if (!t || !t->on || !t->auto_) continue;
         const SyncTick* b = s.Tick(t->by);
         if (!b || !b->on || b->dir != t->dir) return false;
+        // and it traces back to a tick the user made (same direction), never to a ring of auto ticks
+        bool rooted = false;
+        for (const SyncChange& u : d.changes) {
+            const SyncTick* ut = s.Tick(u.key);
+            if (!ut || !ut->on || ut->auto_ || ut->dir != t->dir || u.side != c.side) continue;
+            const bool adopts = (u.side == SyncSide::Here && ut->dir == SyncDir::Up) || (u.side == SyncSide::File && ut->dir == SyncDir::Down);
+            const auto cl = adopts ? NeedsClosure(d, u.key) : DependentsClosure(d, u.key);
+            if (std::find(cl.begin(), cl.end(), c.key) != cl.end()) { rooted = true; break; }
+        }
+        if (!rooted) return false;
     }
     return true;
 }
@@ -340,6 +350,33 @@ static void TestGroupUntickPrunes()
     CHECK(s.IsOn("X|rg"));
     s.ToggleGroup(d, {"X|rg"});  // all ticked: untick the Random from its group row
     CHECK(!s.IsOn("X|rg") && !s.IsOn("X|rgs1"));
+}
+
+static void TestMutualPairNeedsUserTick()
+{
+    SyncDiff d;
+    d.root = "R";
+    d.parent = {{"N", "R"}, {"SN", "N"}};
+    Add(&d, "X|N", SyncSide::Here, "N", "Random N added", {"C|V3"});
+    Add(&d, "X|SN", SyncSide::Here, "N", "Sound SN added", {"X|N"});
+    Add(&d, "C|V3", SyncSide::Here, "N", "V3 now plays N (new)", {"X|N"});
+    d.BuildIndex();
+    {  // tick SN, then untick it: the pair does not keep itself
+        SyncSelection s;
+        s.Toggle(d, "X|SN");
+        CHECK(s.IsOn("X|N") && s.IsOn("C|V3") && Consistent(d, s));
+        s.Toggle(d, "X|SN");
+        CHECK(!s.IsOn("X|SN") && !s.IsOn("X|N") && !s.IsOn("C|V3"));
+        CHECK(s.Picks(d).empty());
+    }
+    {  // tick SN, then send it Down: only SN stays
+        SyncSelection s;
+        s.Toggle(d, "X|SN");
+        s.Choose(d, "X|SN", SyncDir::Down);
+        CHECK(s.IsOn("X|SN") && !s.IsOn("X|N") && !s.IsOn("C|V3"));
+        CHECK(Consistent(d, s));
+        CHECK(s.Picks(d).size() == 1);
+    }
 }
 
 static void TestRekeyPrunesOrphanAuto()
@@ -461,6 +498,7 @@ int main()
     TestH2Flips();
     TestCrossSideIgnored();
     TestGroupUntickPrunes();
+    TestMutualPairNeedsUserTick();
     TestRekeyPrunesOrphanAuto();
     TestUntickOnUnsidedBoth();
     TestValueMovedDropsTick();

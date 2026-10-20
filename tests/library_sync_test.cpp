@@ -4,6 +4,7 @@
 
 #include "library_sync.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <map>
 #include <string>
@@ -117,7 +118,10 @@ static void TestChangedInFile()
     const SyncChange* m = Has(d, "X|M");
     CHECK(m && m->adds_container && m->node == "M" && m->text == "Random Walk_Mud added");
     CHECK(Has(d, "VX|G1|V3") && Has(d, "VX|G1|V3")->text == "Value Mud added");
-    CHECK(SyncTagText(CountsOf(d, "R")) == "in file");
+    // review H5: the root's row holds its Case, the Random new in the file (no row of its own yet), its Sound and the
+    // group value: tag, bar and gesture agree
+    CHECK(SyncTagText(CountsOf(d, "R")) == "in file \xC2\xB7 4");
+    CHECK(ContainerChangeKeys(d, "R").size() == 4);
 }
 
 static void TestBoth()
@@ -406,21 +410,42 @@ static void TestApplyOrdering()
 
 static void TestAdaptationsAreNotFileChanges()
 {
-    // the merge renamed the library and replaced the Switch's default on a merged group: base == mine != file
-    std::string file = Sub(Base(), "name=Foot", "name=Foot2");
-    std::string mine = Base();
-    const SyncDiff d = DiffLibrary(Base(), mine, file, true);  // the file's by / at are the base's
-    CHECK(d.changes.empty());
-    // someone else wrote the file since: now its name is a file change
-    const SyncDiff d2 = DiffLibrary(Base(), mine, file, false);
-    CHECK(d2.changes.size() == 1 && d2.changes[0].side == SyncSide::File);
-    // a here edit still reads as here, the adaptation is not written to the file
+    // Review 13-77b H3: the merge renamed the library on a clash. The base (merged copy) says Foot, the file base Foot2.
+    const std::string file = Sub(Base(), "name=Foot", "name=Foot2");
+    const std::string mine = Base();
+    CHECK(DiffLibrary(Base(), file, mine, file).changes.empty());
+    // someone else wrote the file since, for another reason: the adaptation still never reads as a file change
+    const std::string file2 = Sub(file, "vol=-4", "vol=-6");
+    const SyncDiff    d2 = DiffLibrary(Base(), file, mine, file2);
+    CHECK(d2.changes.size() == 1 && Has(d2, "F|A|node|vol") && Has(d2, "F|A|node|vol")->side == SyncSide::File);
+    CHECK(!Has(d2, "LF|name"));
+    // a hand edit of the name in the file is seen exactly (no clock): a file change from the file's own name
+    const std::string file3 = Sub(Base(), "name=Foot", "name=Footsteps");
+    const SyncDiff    d3n = DiffLibrary(Base(), file, mine, file3);
+    CHECK(Has(d3n, "LF|name") && Has(d3n, "LF|name")->side == SyncSide::File);
+    CHECK(Has(d3n, "LF|name") && Has(d3n, "LF|name")->text == "Renamed library Foot2 \xE2\x86\x92 Footsteps");
+    // a here edit reads as here; the root's Send mine never writes the project's name into the shared file
     const std::string m3 = Sub(Base(), "vol=-4", "vol=-3");
-    const SyncDiff    d3 = DiffLibrary(Base(), m3, file, true);
+    const SyncDiff    d3 = DiffLibrary(Base(), file, m3, file);
     CHECK(d3.changes.size() == 1 && d3.changes[0].side == SyncSide::Here);
+    CHECK(ContainerChangeKeys(d3, "A").size() == 1);
     SyncResult r;
-    CHECK(ApplySync(Base(), m3, file, d3, All(d3, SyncDir::Up), &r));
+    CHECK(ApplySync(Base(), file, m3, file, d3, All(d3, SyncDir::Up), &r));
     CHECK(r.file.find("name=Foot2") != std::string::npos && r.file.find("vol=-3") != std::string::npos);
+    CHECK(r.base.find("name=Foot ") != std::string::npos);  // the project's own name stays in the base
+    CHECK(r.file_base == r.file);
+    CHECK(DiffLibrary(r.base, r.file_base, r.mine, r.file).changes.empty());
+    // ... and Get file's never takes the file's name over the project's: nothing listed, nothing taken
+    const SyncDiff d4 = DiffLibrary(Base(), file, mine, file2);
+    SyncResult     r4;
+    CHECK(ApplySync(Base(), file, mine, file2, d4, All(d4, SyncDir::Down), &r4));
+    CHECK(r4.mine.find("name=Foot ") != std::string::npos && r4.mine.find("vol=-6") != std::string::npos);
+    // probe P5: here -5, file -9 (base -4): both, never a silent Send mine over the file's edit
+    const SyncDiff d5 = DiffLibrary(Base(), Base(), Sub(Base(), "vol=-4", "vol=-5"), Sub(Base(), "vol=-4", "vol=-9"));
+    CHECK(d5.changes.size() == 1 && d5.changes[0].side == SyncSide::Both);
+    // a project saved before the file base existed: unknown, every difference reads as both (never as untouched)
+    const SyncDiff d6 = DiffLibrary(Base(), "", m3, file);
+    CHECK(!d6.had_base && d6.both == 2 && d6.here == 0 && d6.file == 0);
 }
 
 static void TestUidTranslation()
@@ -626,17 +651,17 @@ static void TestRealStoreAddEditApply()
     const std::string proj_file = TranslateUidsText(file_text, map, true);
     // the merge's own adaptations (name "Foot 2", the project's group name / values) are not file changes while the file
     // is as it was
-    const SyncDiff quiet = DiffLibrary(base.text, mine, proj_file, true);
+    const SyncDiff quiet = DiffLibrary(base.text, proj_file, mine, proj_file);
     CHECK(quiet.changes.empty());
     CHECK(TranslateUidsText(proj_file, map, false) == file_text);
     // edit here: a gain; the file is untouched: one Here change
     SoundStore edited = b;
     FindNode(*FindLibrary(edited, uid), "A")->volume_db = -1;
     const std::string mine2 = SerializeRavlib(RavlibOf(edited, uid, nullptr));
-    const SyncDiff    d = DiffLibrary(base.text, mine2, proj_file, true);
+    const SyncDiff    d = DiffLibrary(base.text, proj_file, mine2, proj_file);
     CHECK(d.changes.size() == 1 && d.changes[0].side == SyncSide::Here);
     SyncResult r;
-    CHECK(ApplySync(base.text, mine2, proj_file, d, All(d, SyncDir::Up), &r));
+    CHECK(ApplySync(base.text, proj_file, mine2, proj_file, d, All(d, SyncDir::Up), &r));
     CHECK(r.file_changed && !r.mine_changed);
     // what the worker writes: back to the file's uids, still the file's own group and library names
     const std::string back = TranslateUidsText(r.file, map, false);
@@ -649,8 +674,8 @@ static void TestRealStoreAddEditApply()
     CHECK(ParseRavlib(r.mine, &merged));
     CHECK(ReplaceLibraryFromMerge(edited, uid, merged));
     CHECK(SerializeRavlib(RavlibOf(edited, uid, nullptr)) == r.mine);
-    CHECK(DiffLibrary(r.base, r.mine, r.file, true).changes.empty());  // the file's header is the marker now
-    const SyncDiff raw = DiffLibrary(r.base, r.mine, r.file, false);   // no marker: only the adaptations read as file changes
+    CHECK(DiffLibrary(r.base, r.file_base, r.mine, r.file).changes.empty());  // the two common versions
+    const SyncDiff raw = DiffLibrary(r.base, r.mine, r.file);  // file base = base: only the adaptations differ
     CHECK(raw.here == 0 && raw.both == 0);
     CHECK(FindLibrary(edited, uid)->ravlib_path == "Foot.ravlib");
     CHECK(edited.groups.size() == 1);  // merged into the project's own group, nothing added or removed
@@ -682,6 +707,335 @@ static void TestReplaceKeepsLocalFields()
     CHECK(!ReplaceLibraryFromMerge(st, "nope", fewer));
 }
 
+// ---- review 13-77b ---------------------------------------------------------------------------------------
+
+static bool In(const std::string& text, const std::string& what) { return text.find(what) != std::string::npos; }
+
+static std::map<std::string, SyncDir> PickSubject(const SyncDiff& d, const std::string& s, SyncDir dir)
+{
+    std::map<std::string, SyncDir> m;
+    for (const SyncChange& c : d.changes)
+        if (c.subject == s) m[c.key] = dir;
+    return CloseSelection(d, m);
+}
+
+static std::map<std::string, SyncDir> PickRow(const SyncDiff& d, const std::string& row, SyncDir dir)
+{
+    std::map<std::string, SyncDir> m;
+    for (const std::string& k : ContainerChangeKeys(d, row)) m[k] = dir;
+    return CloseSelection(d, m);
+}
+
+static void TestMoveIntoNewContainer()
+{
+    // H1 / probe P1: here, a new Random N and FS_C_01 moved into it; Send mine on the Sound's own panel
+    std::string m = Sub(Base(), "node uid=S1 type=sound parent=A", "node uid=S1 type=sound parent=N");
+    m += "node uid=N type=random parent=R name=NewRand\n";
+    const SyncDiff    d = DiffLibrary(Base(), m, Base());
+    const SyncChange* mv = Has(d, "F|S1|node|parent");
+    CHECK(mv && mv->side == SyncSide::Here && mv->node == "N" && mv->row == "N");
+    CHECK(mv && mv->text == "Moved FS_C_01 from Walk_Concrete to NewRand");
+    CHECK(mv && std::find(mv->needs.begin(), mv->needs.end(), "X|N") != mv->needs.end());
+    SyncResult r;
+    CHECK(ApplySync(Base(), m, Base(), d, PickSubject(d, "S1", SyncDir::Up), &r));
+    CHECK(In(r.file, "node uid=N ") && In(r.file, "node uid=S1 type=sound parent=N"));
+    CHECK(In(r.base, "uid=S1") && r.open.empty());
+    CHECK(DiffLibrary(r.base, r.mine, r.file).changes.empty());
+    // the same through the new container's gesture
+    SyncResult r2;
+    CHECK(ApplySync(Base(), m, Base(), d, PickRow(d, "N", SyncDir::Up), &r2));
+    CHECK(In(r2.file, "node uid=S1 type=sound parent=N") && In(r2.file, "node uid=N "));
+    // dropped (Down): the Sound goes back to Walk_Concrete, the new Random goes away, nothing is lost
+    SyncResult r3;
+    CHECK(ApplySync(Base(), m, Base(), d, PickRow(d, "N", SyncDir::Down), &r3));
+    CHECK(In(r3.mine, "node uid=S1 type=sound parent=A") && !In(r3.mine, "node uid=N "));
+    // probe P2: the file made Random N2 and moved FS_C_01 into it; Get file's on Walk_Concrete's parent row (N2 has no
+    // row here: its changes sit under the Switch) and on the Sound's panel
+    std::string f = Sub(Base(), "node uid=S1 type=sound parent=A", "node uid=S1 type=sound parent=N2");
+    f += "node uid=N2 type=random parent=R name=FileRand\n";
+    const SyncDiff    df = DiffLibrary(Base(), Base(), f);
+    const SyncChange* fm = Has(df, "F|S1|node|parent");
+    CHECK(fm && fm->side == SyncSide::File && fm->node == "N2" && fm->row == "R");
+    CHECK(ContainerChangeKeys(df, "A").empty());
+    SyncResult r4;
+    CHECK(ApplySync(Base(), Base(), f, df, PickRow(df, "R", SyncDir::Down), &r4));
+    CHECK(In(r4.mine, "node uid=S1 type=sound parent=N2") && In(r4.mine, "node uid=N2 "));
+    SyncResult r5;
+    CHECK(ApplySync(Base(), Base(), f, df, PickSubject(df, "S1", SyncDir::Down), &r5));
+    CHECK(In(r5.mine, "node uid=S1 type=sound parent=N2") && In(r5.mine, "node uid=N2 "));
+    CHECK(DiffLibrary(r5.base, r5.mine, r5.file).changes.empty());
+}
+
+static void TestMoveNeverDropsANode()
+{
+    // a move picked alone (Both: nothing pulled) into a container the other side lacks: the node keeps its old parent,
+    // the move stays open, the base does not take it
+    std::string m = Sub(Base(), "node uid=S1 type=sound parent=A", "node uid=S1 type=sound parent=N");
+    m += "node uid=N type=random parent=R name=NewRand\n";
+    const std::string f = Sub(Base(), "node uid=S1 type=sound parent=A", "node uid=S1 type=sound parent=B");
+    const SyncDiff    d = DiffLibrary(Base(), m, f);
+    CHECK(Has(d, "F|S1|node|parent") && Has(d, "F|S1|node|parent")->side == SyncSide::Both);
+    SyncResult r;
+    CHECK(ApplySync(Base(), m, f, d, {{"F|S1|node|parent", SyncDir::Up}}, &r));
+    CHECK(In(r.file, "node uid=S1 type=sound parent=B"));  // still in the file, under its file parent
+    CHECK(r.open.size() == 1 && r.sent == 0);
+    CHECK(In(r.base, "node uid=S1 type=sound parent=A"));
+    CHECK(Has(DiffLibrary(r.base, r.mine, r.file), "F|S1|node|parent"));
+    // L3: here A moved under B, the file B under A: taking the file's move makes a loop: refused, both stay
+    const std::string ml = Sub(Base(), "node uid=A type=random parent=R", "node uid=A type=random parent=B");
+    const std::string fl = Sub(Base(), "node uid=B type=random parent=R", "node uid=B type=random parent=A");
+    const SyncDiff    dl = DiffLibrary(Base(), ml, fl);
+    SyncResult        rl;
+    CHECK(ApplySync(Base(), ml, fl, dl, {{"F|B|node|parent", SyncDir::Down}}, &rl));
+    CHECK(In(rl.mine, "node uid=A type=random parent=B") && In(rl.mine, "node uid=B type=random parent=R"));
+    CHECK(rl.open.size() == 1);
+}
+
+static void TestAddedUnderRemoved()
+{
+    // M1 / probe P6: here a Sound added under Walk_Concrete, the file removed Walk_Concrete: ONE both change
+    const std::string m = Base() + "node uid=S8 type=sound parent=A name=New\nsound kind=file\n";
+    std::string       f = Base();
+    f.erase(f.find("node uid=A "), f.find("node uid=B ") - f.find("node uid=A "));
+    f = Sub(f, "case value=V1 child=A\n", "");
+    const SyncDiff d = DiffLibrary(Base(), m, f);
+    CHECK(!Has(d, "X|S8"));
+    CHECK(Has(d, "X|A") && Has(d, "X|A")->side == SyncSide::Both && Has(d, "X|A")->here_text == "1 change");
+    // Send mine of it: the file gets Walk_Concrete back with the new Sound
+    SyncResult r;
+    CHECK(ApplySync(Base(), m, f, d, {{"X|A", SyncDir::Up}}, &r));
+    CHECK(In(r.file, "node uid=A ") && In(r.file, "node uid=S8 "));
+    CHECK(r.sent == 1);
+    // a Sound whose parent is gone on the target side is never counted as sent
+    const SyncDiff d2 = DiffLibrary(Base(), Base() + "node uid=S9 type=sound parent=Q name=Orphan\nsound kind=file\n", Base());
+    SyncResult     r2;
+    CHECK(ApplySync(Base(), Base() + "node uid=S9 type=sound parent=Q name=Orphan\nsound kind=file\n", Base(), d2, {{"X|S9", SyncDir::Up}}, &r2));
+    CHECK(r2.sent == 0 && r2.open.size() == 1 && !In(r2.base, "uid=S9"));
+}
+
+static void TestBothAddedFold()
+{
+    // M2 / probe P3: both sides added the same Sound; after an unrelated Apply the base has it, so removing it here later
+    // reads as a here removal (not a file addition)
+    const std::string add = "node uid=S9 type=sound parent=B name=FS_W_09\nsound kind=file\n";
+    const std::string m = Sub(Base(), "vol=-4", "vol=-3") + add, f = Base() + add;
+    const SyncDiff    d = DiffLibrary(Base(), m, f);
+    CHECK(std::find(d.folds.begin(), d.folds.end(), "X|S9") != d.folds.end());
+    SyncResult r;
+    CHECK(ApplySync(Base(), m, f, d, PickRow(d, "A", SyncDir::Up), &r));
+    CHECK(In(r.base, "node uid=S9 "));
+    std::string m2 = r.mine;
+    m2 = m2.substr(0, m2.find("node uid=S9"));
+    const SyncDiff d2 = DiffLibrary(r.base, r.file_base, m2, r.file);
+    CHECK(Has(d2, "X|S9") && Has(d2, "X|S9")->side == SyncSide::Here && Has(d2, "X|S9")->text == "Sound FS_W_09 removed");
+    // added on both sides with different settings: both, and not folded until they agree
+    const std::string m3 = Base() + "node uid=S9 type=sound parent=B name=FS_W_09 vol=-2\nsound kind=file\n";
+    const SyncDiff    d3 = DiffLibrary(Base(), m3, f);
+    CHECK(Has(d3, "F|S9|node|vol") && Has(d3, "F|S9|node|vol")->side == SyncSide::Both);
+    CHECK(std::find(d3.folds.begin(), d3.folds.end(), "X|S9") == d3.folds.end());
+}
+
+static void TestValueNameMerge()
+{
+    // M4 / probe p2: the project's group has its own Mud (V7); another project added Mud (V3) to the file: matched by name
+    std::vector<SwitchGroup> proj;
+    SwitchGroup              g;
+    g.uid = "G1";
+    g.name = "Surface";
+    g.values = {SwitchValue{"V1", "Concrete", {}, {}}, SwitchValue{"V2", "Wood", {}, {}}, SwitchValue{"V7", "mud", {}, {}}};
+    proj.push_back(g);
+    std::string f = Sub(Base(), "value uid=V2 name=Wood\n", "value uid=V2 name=Wood\nvalue uid=V3 name=Mud\n");
+    f = Sub(f, "case value=V2 child=B\n", "case value=V2 child=B\ncase value=V3 child=B\n");
+    const auto extra = NameMergeMap(proj, f, {});
+    CHECK(extra.size() == 1 && extra[0].first == "V3" && extra[0].second == "V7");
+    const std::string fp = TranslateUidsText(f, extra, true);
+    const std::string m = Sub(Base(), "value uid=V2 name=Wood\n", "value uid=V2 name=Wood\nvalue uid=V7 name=mud\n");
+    const SyncDiff    d = DiffLibrary(Base(), m, fp);
+    CHECK(!Has(d, "VX|G1|V3") && !Has(d, "VX|G1|V7"));
+    CHECK(Has(d, "C|R|V7") && Has(d, "C|R|V7")->side == SyncSide::File);
+    SyncResult r;
+    CHECK(ApplySync(Base(), m, fp, d, All(d, SyncDir::Down), &r));
+    CHECK(In(r.mine, "case value=V7 child=B") && !In(r.mine, "V3"));
+    // a group of another uid but the same name merges too; a value a file uid already maps to is never matched twice
+    std::string f2 = Sub(Base(), "group uid=G1 name=Surface", "group uid=G9 name=surface");
+    const auto  e2 = NameMergeMap(proj, f2, {});
+    CHECK(e2.size() == 1 && e2[0].first == "G9" && e2[0].second == "G1");
+    CHECK(NameMergeMap(proj, f, {{"V9", "V7"}}).empty());
+    // probe p2: Send mine of a value only the file has (no case uses it) drops it from the file, for good
+    const std::string fl = Sub(Base(), "value uid=V2 name=Wood\n", "value uid=V2 name=Wood\nvalue uid=V3 name=Mud\n");
+    const SyncDiff    dl = DiffLibrary(Base(), Base(), fl);
+    CHECK(Has(dl, "VX|G1|V3") && Has(dl, "VX|G1|V3")->row == "R");  // H5 / probe P9: on the root's row
+    SyncResult rl;
+    CHECK(ApplySync(Base(), Base(), fl, dl, {{"VX|G1|V3", SyncDir::Up}}, &rl));
+    CHECK(rl.sent == 1 && !In(rl.file, "V3"));
+    CHECK(DiffLibrary(rl.base, rl.file_base, rl.mine, rl.file).changes.empty());
+    // used by a case in the file: it stays there, and is not listed again
+    SyncResult ru;
+    CHECK(ApplySync(Base(), Base(), f, DiffLibrary(Base(), Base(), f), {{"VX|G1|V3", SyncDir::Up}, {"C|R|V3", SyncDir::Up}}, &ru));
+    CHECK(DiffLibrary(ru.base, ru.file_base, ru.mine, ru.file).changes.empty());
+    // the store: a value added to a project group keeps only the roles no value there holds; a group this library did
+    // not use keeps its name and default
+    SoundStore st = MkFileStore();
+    st.groups[0].values[0].roles = {"heel"};
+    st.groups[0].default_value = "V2";
+    SoundStore merged = MkFileStore();
+    merged.groups[0].values.push_back(SwitchValue{"V3", "Mud", {}, {"heel", "toe"}});
+    merged.groups[0].name = "FileName";
+    merged.groups[0].default_value = "V1";
+    SoundStore before = MkFileStore();
+    before.groups.clear();
+    CHECK(ReplaceLibraryFromMerge(st, "L1", merged, &before));
+    CHECK(st.groups[0].name == "Surface" && st.groups[0].default_value == "V2");
+    CHECK(st.groups[0].values.size() == 3 && st.groups[0].values[2].roles == std::vector<std::string>{"toe"});
+    // a library name another library holds stays unique
+    SoundStore two = MkFileStore();
+    SoundLibrary other;
+    other.uid = "L2";
+    other.name = "Footsteps";
+    other.root = "Z";
+    two.libraries.push_back(other);
+    SoundStore renamed = MkFileStore();
+    renamed.libraries[0].name = "Footsteps";
+    CHECK(ReplaceLibraryFromMerge(two, "L1", renamed));
+    CHECK(two.libraries[0].name != "Footsteps");
+}
+
+static void TestRowsAndCounts()
+{
+    // H5 / probe P10: the file adds a Random (and its Sound) under Walk_Wood, which has no change of its own
+    const std::string f = Base() + "node uid=M type=random parent=B name=Sub\nnode uid=SM type=sound parent=M name=x\nsound kind=file\n";
+    const SyncDiff    d = DiffLibrary(Base(), Base(), f);
+    CHECK(CountsOf(d, "B").file == 2 && ContainerChangeKeys(d, "B").size() == 2);
+    CHECK(SyncTagText(CountsOf(d, "B")) == "in file \xC2\xB7 2");
+    // the root's own: a library field and a container added in the file directly under it
+    std::string f2 = Sub(Base(), "name=Foot", "name=Foot color=ff0000");
+    f2 += "node uid=Q type=random parent=R name=Top\n";
+    const SyncDiff d2 = DiffLibrary(Base(), Base(), f2);
+    CHECK(ContainerChangeKeys(d2, "R").size() == 2 && CountsOf(d2, "R").file == 2);
+    CHECK(TotalCounts(d2).file == 2);
+}
+
+static void TestCloseFrames()
+{
+    // L1 / probe P7: a second variation 0.8 ms after another one in the same text is its own variation
+    const std::string m = Sub(Base(), "frame start=1.5 len=0.3\n", "frame start=1.5 len=0.3\nframe start=1.5008 len=0.1\n");
+    const SyncDiff    d = DiffLibrary(Base(), m, Base());
+    CHECK(d.changes.size() == 1 && d.changes[0].side == SyncSide::Here && d.changes[0].text == "Variation 3 of FS_C_01 added");
+    SyncResult r;
+    CHECK(ApplySync(Base(), m, Base(), d, All(d, SyncDir::Up), &r));
+    CHECK(In(r.file, "frame start=1.5 len=0.3") && In(r.file, "frame start=1.5008 len=0.1"));
+    CHECK(DiffLibrary(r.base, r.mine, r.file).changes.empty());
+}
+
+static void TestMutantsKilled()
+{
+    // Sanitize of the project copy: the file's removal of Walk_Wood taken alone (Both: nothing pulled) drops the case
+    // that played it
+    std::string f = Base();
+    f.erase(f.find("node uid=B "));
+    f = Sub(f, "case value=V2 child=B\n", "");
+    const std::string m = Sub(Base(), "name=FS_W_01", "name=FS_W_01 vol=-1");
+    const SyncDiff    d = DiffLibrary(Base(), m, f);
+    CHECK(Has(d, "X|B") && Has(d, "X|B")->side == SyncSide::Both);
+    SyncResult r;
+    CHECK(ApplySync(Base(), m, f, d, {{"X|B", SyncDir::Down}}, &r));
+    CHECK(!In(r.mine, "child=B") && !In(r.mine, "node uid=B "));
+    // InsertPos: a container added between two siblings lands between them in the written file
+    std::string mi = Base();
+    mi = Sub(mi, "node uid=B type=random", "node uid=K type=random parent=R name=Mid\nnode uid=B type=random");
+    const SyncDiff di = DiffLibrary(Base(), mi, Base());
+    SyncResult     ri;
+    CHECK(ApplySync(Base(), mi, Base(), di, All(di, SyncDir::Up), &ri));
+    CHECK(ri.file.find("node uid=S1 ") < ri.file.find("node uid=K ") && ri.file.find("node uid=K ") < ri.file.find("node uid=B "));
+    // the per-part gains' keys follow the uid map
+    const std::string t = "RAVLIB 2\nframe start=0 pdb.V1=-3\n";
+    CHECK(TranslateUidsText(t, {{"V1", "V9"}}, true) == "RAVLIB 2\nframe start=0 pdb.V9=-3\n");
+    // a value the file has had since the last sync but the project lacks is never a change (decision 5)
+    const std::string fv = Sub(Base(), "value uid=V2 name=Wood\n", "value uid=V2 name=Wood\nvalue uid=V3 name=Mud\n");
+    CHECK(DiffLibrary(Base(), fv, Base(), fv).changes.empty());
+    CHECK(DiffLibrary(Base(), Base(), Base(), fv).file == 1);
+}
+
+static SyncJournal Jr(const std::string& before, const std::string& after, uint64_t sb, uint64_t sa)
+{
+    SyncJournal j;
+    j.lib_uid = "L1";
+    j.file = "Foot.ravlib";
+    j.before = before;
+    j.after = after;
+    j.base_before = sb;
+    j.base_after = sa;
+    return j;
+}
+
+static void TestJournalChain()
+{
+    const std::vector<SyncJournal> js = {Jr("f0", "f1", 10, 11), Jr("f1", "f2", 11, 12)};
+    const std::vector<bool>        none = {false, false};
+    // H2: the state is back (a revert, a reopened project) but REAPER's redo is not the sync: nothing
+    CHECK(!JournalChainCandidate(js, none, 11, false, false));
+    CHECK(DecideJournalChain(js, none, 11, false, false, true, SyncTextHash("f2")).step == JournalStep::None);
+    // one real Ctrl+Z
+    JournalPlan p1 = DecideJournalChain(js, none, 11, true, false, true, SyncTextHash("f2"));
+    CHECK(p1.step == JournalStep::RestoreBefore && p1.write == "f1" && p1.undone == std::vector<bool>({false, true}));
+    // M7: two quick Ctrl+Z (the timer saw only the second state): the file goes straight back to f0
+    JournalPlan p2 = DecideJournalChain(js, none, 10, true, false, true, SyncTextHash("f2"));
+    CHECK(p2.step == JournalStep::RestoreBefore && p2.write == "f0" && p2.undone == std::vector<bool>({true, true}));
+    // written by someone else since: only the project is back, the journals are dropped
+    JournalPlan p3 = DecideJournalChain(js, none, 10, true, false, true, SyncTextHash("other"));
+    CHECK(p3.step == JournalStep::FileWrittenSince && p3.drop);
+    // redo of both after the double undo
+    JournalPlan p4 = DecideJournalChain(js, {true, true}, 12, false, true, true, SyncTextHash("f0"));
+    CHECK(p4.step == JournalStep::RestoreAfter && p4.write == "f2" && p4.undone == none);
+    // redo while the file moved: nothing written
+    CHECK(DecideJournalChain(js, {true, true}, 12, false, true, true, SyncTextHash("x")).step == JournalStep::None);
+    // a gap between the two Applies (someone wrote between them): no chained restore over it
+    const std::vector<SyncJournal> gap = {Jr("f0", "f1", 10, 11), Jr("g1", "f2", 11, 12)};
+    CHECK(DecideJournalChain(gap, none, 10, true, false, true, SyncTextHash("f2")).step == JournalStep::FileWrittenSince);
+    // link state: every Apply moves it, even with the same texts
+    LinkBase b;
+    b.text = "t";
+    LinkBase b2 = b;
+    b2.syncs = 1;
+    CHECK(LinkStateHash(b) != LinkStateHash(b2));
+    SyncResult r;
+    r.base = "B";
+    r.file_base = "FB";
+    const LinkBase nb = NextLinkBase(&b, "L1", r, {{"a", "b"}}, 77, "P.rpp", 70);
+    CHECK(nb.text == "B" && nb.file_base == "FB" && nb.syncs == 1 && nb.synced_at == 77 && nb.uid_map.size() == 1);
+    SyncResult partial;  // no common version and a partial Apply: the old ones stay, the sync still counts
+    const LinkBase nb2 = NextLinkBase(&nb, "L1", partial, {}, 78, "P.rpp", 70);
+    CHECK(nb2.text == "B" && nb2.file_base == "FB" && nb2.syncs == 2);
+    CHECK(SyncAppliedToast(1, 0, "F.ravlib", 1) == "Applied: 1 written to F.ravlib (the version before is kept as F.ravlib.bak) \xC2\xB7 1 could not be applied: it stays listed");
+}
+
+static void TestFileBaseStored()
+{
+    // the file base round-trips through the project chunk, a line longer than 32 KB included; syncs too
+    SoundStore s = MkFileStore();
+    s.libraries[0].ravlib_path = "Foot.ravlib";
+    LinkBase b;
+    b.lib_uid = "L1";
+    b.text = "RAVLIB 2\nlibrary uid=L1 name=Foot root=R\n";
+    b.file_base = "RAVLIB 2 by=X at=1\nlibrary uid=L1 name=" + std::string(70000, 'a') + " root=R\n";
+    b.syncs = 3;
+    s.link_bases.push_back(b);
+    SoundStore back;
+    CHECK(ParseSoundStore(SerializeSoundStore(s), &back));
+    CHECK(back.link_bases.size() == 1 && back.link_bases[0].text == b.text && back.link_bases[0].file_base == b.file_base);
+    CHECK(back.link_bases[0].syncs == 3);
+    // a link with no common version yet (empty text) still lets the first-sight pass adopt the file
+    SoundStore e = MkFileStore();
+    e.libraries[0].ravlib_path = "Foot.ravlib";
+    LinkBase empty;
+    empty.lib_uid = "L1";
+    empty.syncs = 2;
+    e.link_bases.push_back(empty);
+    const std::string ft = SerializeRavlib(RavlibOf(e, "L1", nullptr), "Q", 5);
+    CHECK(AdoptFileAsBase(e, "L1", ft, 9));
+    CHECK(e.link_bases.size() == 1 && !e.link_bases[0].text.empty() && e.link_bases[0].file_base == ft && e.link_bases[0].syncs == 2);
+}
+
 int main()
 {
     TestUpToDate();
@@ -711,6 +1065,16 @@ int main()
     TestTags();
     TestRealStoreAddEditApply();
     TestReplaceKeepsLocalFields();
+    TestMoveIntoNewContainer();
+    TestMoveNeverDropsANode();
+    TestAddedUnderRemoved();
+    TestBothAddedFold();
+    TestValueNameMerge();
+    TestRowsAndCounts();
+    TestCloseFrames();
+    TestMutantsKilled();
+    TestJournalChain();
+    TestFileBaseStored();
     if (g_fail == 0) std::printf("library_sync_test: all passed\n");
     return g_fail == 0 ? 0 : 1;
 }

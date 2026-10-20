@@ -455,6 +455,11 @@ struct LinkBase {
     int64_t                                          synced_at = 0;  // unix s
     std::string                                      file_by;  // who wrote the file (its header `by`) when read / written
     int64_t                                          file_at = 0;
+    // Review 13-77b H3 (appended): the file's own text as this project last read or wrote it, in the project's uid
+    // space ("" = unknown: a project saved before; every difference then reads as changed on both sides), and the
+    // count of Applies (the Ctrl+Z journal follows it).
+    std::string                                      file_base;
+    int64_t                                          syncs = 0;
     std::vector<std::string>                         kept;
     std::vector<std::string>                         kept_lines;
 };

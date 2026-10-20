@@ -491,7 +491,8 @@ std::vector<std::pair<std::string, std::string>> FirstSightTargets(const SoundSt
 {
     std::vector<std::pair<std::string, std::string>> out;
     for (const SoundLibrary& lib : store.libraries) {
-        if (!LibraryLinked(lib) || FindLinkBase(store, lib.uid)) continue;
+        const LinkBase* have = FindLinkBase(store, lib.uid);
+        if (!LibraryLinked(lib) || (have && !have->text.empty())) continue;  // review 13-77b: an empty text = no common version
         if (first_time && !first_time(lib.uid)) continue;
         for (const FolderRavlibText& f : files)
             if (!f.uid.empty() && f.uid == lib.uid && SameFileName(f.file, lib.ravlib_path)) {
@@ -517,14 +518,22 @@ LinkBase MakeLinkBase(const SoundStore& store, const std::string& lib_uid, const
 bool AdoptFileAsBase(SoundStore& store, const std::string& lib_uid, const std::string& file_text, int64_t synced_at)
 {
     const SoundLibrary* lib = FindLibrary(store, lib_uid);
-    if (!lib || !LibraryLinked(*lib) || FindLinkBase(store, lib_uid)) return false;
+    const LinkBase* have = FindLinkBase(store, lib_uid);
+    if (!lib || !LibraryLinked(*lib) || (have && !have->text.empty())) return false;
     const std::string mine = SerializeRavlib(RavlibOf(store, lib_uid, nullptr));
     if (!SameRavlibContent(mine, file_text)) return false;
     SoundStore parsed;
     std::string by;
     int64_t     at = 0;
     if (ParseRavlib(file_text, &parsed)) RavlibWriter(parsed, &by, &at);
-    store.link_bases.push_back(MakeLinkBase(store, lib_uid, by, at, synced_at));
+    LinkBase b = MakeLinkBase(store, lib_uid, by, at, synced_at);
+    b.file_base = file_text;  // review 13-77b H3: the file's own text (equal to the copy: no uid renewed)
+    if (LinkBase* old = FindLinkBase(store, lib_uid)) {
+        b.syncs = old->syncs;
+        *old = b;
+    } else {
+        store.link_bases.push_back(b);
+    }
     return true;
 }
 

@@ -10,7 +10,9 @@
 #include <cstdlib>
 #include <functional>
 
+#include "library_tree_edit.h"  // UniqueName
 #include "sound_record.h"
+#include "sound_switch.h"     // SwitchNameKey
 
 namespace rav {
 
@@ -468,21 +470,31 @@ struct Opt {
     bool operator!=(const Opt& o) const { return !(*this == o); }
 };
 
+// The four texts of a key: the base (merged project copy at the last sync), mine, the file, the file base (the file as
+// this project last read / wrote it).
 struct Trip {
-    Opt b, m, f;
+    Opt b, m, f, fb;
 };
+
+enum Role { kB = 0, kM = 1, kF = 2, kFB = 3 };
 
 struct Docs {
-    const Doc* b = nullptr;  // null = no common version
-    const Doc* m = nullptr;
-    const Doc* f = nullptr;
-    const Doc* at(int i) const { return i == 0 ? b : i == 1 ? m : f; }
+    const Doc* d[4] = {nullptr, nullptr, nullptr, nullptr};  // by Role; b / fb null = unknown
+    const Doc* at(int i) const { return d[i]; }
 };
 
-// Variation clusters of one node: frames of the three texts matched by start within 1 ms.
+Opt& Slot(Trip& t, int role)
+{
+    return role == kB ? t.b : role == kM ? t.m : role == kF ? t.f : t.fb;
+}
+
+// Variation clusters of one node (review 13-77b L1): the frames of the texts matched by order and nearest start, at
+// most one frame per text in a cluster, each cluster anchored on its first start (no chaining); two frames of one text
+// less than 1 ms apart are two clusters. The id is the anchor in ms, "~2", "~3" ... when it repeats.
 struct Cluster {
-    long long ms = 0;
-    int       member[3] = {-1, -1, -1};  // frame index per text (b, m, f)
+    std::string id;
+    double      anchor = 0.0;
+    int         member[4] = {-1, -1, -1, -1};  // frame index per Role
 };
 
 std::vector<Cluster> ClustersOf(const Docs& ds, const std::string& uid)
@@ -492,34 +504,43 @@ std::vector<Cluster> ClustersOf(const Docs& ds, const std::string& uid)
         int    doc, idx;
     };
     std::vector<Item> items;
-    for (int di = 0; di < 3; ++di) {
+    for (int di = 0; di < 4; ++di) {
         const Doc* d = ds.at(di);
         if (!d) continue;
         const NodeDoc* n = d->N(uid);
         if (!n) continue;
         for (size_t i = 0; i < n->frames.size(); ++i) items.push_back({FrameStart(n->frames[i]), di, static_cast<int>(i)});
     }
-    std::stable_sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.start < b.start; });
+    std::stable_sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.start != b.start ? a.start < b.start : a.doc < b.doc; });
     std::vector<Cluster> cl;
-    double               last = -1e18;
+    const double         tol = 0.00105;
     for (const Item& it : items) {
-        if (cl.empty() || it.start - last > 0.00105) {
-            Cluster c;
-            c.ms = std::llround(it.start * 1000.0);
-            cl.push_back(c);
+        int    best = -1;
+        double bd = 1e18;
+        for (int k = static_cast<int>(cl.size()) - 1; k >= 0; --k) {
+            const double dd = it.start - cl[static_cast<size_t>(k)].anchor;
+            if (dd > tol) break;
+            if (cl[static_cast<size_t>(k)].member[it.doc] >= 0) continue;
+            if (std::fabs(dd) < bd) {
+                bd = std::fabs(dd);
+                best = k;
+            }
         }
-        Cluster& c = cl.back();
-        if (c.member[it.doc] < 0) c.member[it.doc] = it.idx;
-        last = it.start;
+        if (best < 0) {
+            Cluster c;
+            c.anchor = it.start;
+            cl.push_back(c);
+            best = static_cast<int>(cl.size()) - 1;
+        }
+        cl[static_cast<size_t>(best)].member[it.doc] = it.idx;
+    }
+    std::map<long long, int> seen;
+    for (Cluster& c : cl) {
+        const long long ms = std::llround(c.anchor * 1000.0);
+        const int       k = ++seen[ms];
+        c.id = std::to_string(ms) + (k > 1 ? "~" + std::to_string(k) : std::string());
     }
     return cl;
-}
-
-int FindFrame(const NodeDoc& n, long long ms)
-{
-    for (size_t i = 0; i < n.frames.size(); ++i)
-        if (std::fabs(FrameStart(n.frames[i]) * 1000.0 - static_cast<double>(ms)) <= 1.6) return static_cast<int>(i);
-    return -1;
 }
 
 // ---- display -------------------------------------------------------------------------------------------------
@@ -541,12 +562,14 @@ std::string TypeWord(const std::string& t)
     return "Node";
 }
 
+const int kNameOrder[4] = {kM, kF, kB, kFB};
+
 struct Describe {
     const Docs& ds;
 
     std::string NodeName(const std::string& uid) const
     {
-        for (int i : {1, 2, 0}) {
+        for (int i : kNameOrder) {
             const std::string n = NameIn(ds.at(i), uid);
             if (!n.empty()) return n;
         }
@@ -554,13 +577,13 @@ struct Describe {
     }
     const NodeDoc* AnyNode(const std::string& uid) const
     {
-        for (int i : {1, 2, 0})
+        for (int i : kNameOrder)
             if (ds.at(i) && ds.at(i)->N(uid)) return ds.at(i)->N(uid);
         return nullptr;
     }
     std::string ValueName(const std::string& vuid) const
     {
-        for (int i : {1, 2, 0}) {
+        for (int i : kNameOrder) {
             const Doc* d = ds.at(i);
             if (!d) continue;
             for (const GroupDoc& g : d->groups)
@@ -570,7 +593,7 @@ struct Describe {
     }
     std::string GroupName(const std::string& guid) const
     {
-        for (int i : {1, 2, 0}) {
+        for (int i : kNameOrder) {
             const Doc* d = ds.at(i);
             if (d && d->G(guid)) return PctDecode(TokOr(d->G(guid)->group, "name", guid));
         }
@@ -654,19 +677,23 @@ Shown ShowField(const Describe& ds, const std::string& sect, const std::string& 
     return s;
 }
 
+
 // ---- classification --------------------------------------------------------------------------------------------
 
 enum class Cls { None, Here, File, Both };
 
-Cls Classify(const Trip& t, bool had_base, bool untouched)
+// Review 13-77b H3: here = mine moved from the base, file = the file moved from the file base. Neither moved while they
+// differ = an adaptation of the merge (never listed). `known` false (no common version, or the key's owner is missing
+// from a common version): every difference is Both.
+Cls Classify(const Trip& t, bool known)
 {
     if (t.m == t.f) return Cls::None;
-    if (!had_base) return Cls::Both;
-    const Opt& ef = untouched ? t.b : t.f;
-    if (t.m == ef) return Cls::None;
-    if (t.m == t.b) return Cls::File;
-    if (ef == t.b) return Cls::Here;
-    return Cls::Both;
+    if (!known) return Cls::Both;
+    const bool here = t.m != t.b, file = t.f != t.fb;
+    if (here && file) return Cls::Both;
+    if (here) return Cls::Here;
+    if (file) return Cls::File;
+    return Cls::None;
 }
 
 SyncSide SideOf(Cls c)
@@ -680,7 +707,7 @@ bool NodeScoped(const std::string& kind)
 }
 
 struct Pres {
-    bool b = false, m = false, f = false;
+    bool b = false, m = false, f = false, fb = false;
 };
 
 Opt MakeOpt(const std::string* v)
@@ -713,26 +740,42 @@ int DepthOf(const std::map<std::string, std::string>& parent, std::string uid)
     return n;
 }
 
+std::set<std::string> SubtreeIn(const Doc& d, const std::string& top)
+{
+    std::set<std::string>                   sub;
+    std::function<void(const std::string&)> walk = [&](const std::string& u) {
+        if (!sub.insert(u).second) return;
+        for (const std::string& c : ChildrenIn(d, u)) walk(c);
+    };
+    walk(top);
+    return sub;
+}
+
 }  // namespace
 
-SyncDiff DiffLibrary(const std::string& base_text, const std::string& mine_text, const std::string& file_text,
-                     bool file_untouched)
+SyncDiff DiffLibrary(const std::string& base_text, const std::string& mine_text, const std::string& file_text)
+{
+    return DiffLibrary(base_text, base_text, mine_text, file_text);
+}
+
+SyncDiff DiffLibrary(const std::string& base_text, const std::string& file_base_text, const std::string& mine_text,
+                     const std::string& file_text)
 {
     SyncDiff out;
-    Doc      db, dm, df;
+    Doc      db, dfb, dm, df;
     if (!ParseDoc(mine_text, &dm) || !ParseDoc(file_text, &df)) return out;
-    const bool had_base = !base_text.empty() && ParseDoc(base_text, &db);
-    out.had_base = had_base;
-    out.file_untouched = had_base && file_untouched;
+    const bool known = !base_text.empty() && !file_base_text.empty() && ParseDoc(base_text, &db) && ParseDoc(file_base_text, &dfb);
+    out.had_base = known;
     out.root = dm.RootUid();
     Docs ds;
-    ds.b = had_base ? &db : nullptr;
-    ds.m = &dm;
-    ds.f = &df;
+    ds.d[kB] = known ? &db : nullptr;
+    ds.d[kM] = &dm;
+    ds.d[kF] = &df;
+    ds.d[kFB] = known ? &dfb : nullptr;
     Describe desc{ds};
 
-    // union tree
-    for (int i : {1, 2, 0}) {
+    // union tree (mine's parent first)
+    for (int i : kNameOrder) {
         const Doc* d = ds.at(i);
         if (!d) continue;
         for (const NodeDoc& n : d->nodes)
@@ -740,93 +783,92 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& mine_text,
     }
     for (const NodeDoc& n : dm.nodes) out.mine_nodes.insert(n.uid);
 
-    // triples
+    // the keys of the four texts
     std::map<std::string, Trip> trips;
-    {
-        KV kb, km, kf;
-        if (had_base) Collect(db, &kb);
-        Collect(dm, &km);
-        Collect(df, &kf);
-        for (const auto& kv : kb) trips[kv.first].b = MakeOpt(&kv.second);
-        for (const auto& kv : km) trips[kv.first].m = MakeOpt(&kv.second);
-        for (const auto& kv : kf) trips[kv.first].f = MakeOpt(&kv.second);
+    for (int i = 0; i < 4; ++i) {
+        const Doc* d = ds.at(i);
+        if (!d) continue;
+        KV kv;
+        Collect(*d, &kv);
+        for (const auto& e : kv) Slot(trips[e.first], i) = MakeOpt(&e.second);
     }
     std::map<std::string, Pres> pres;
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
         const Doc* d = ds.at(i);
         if (!d) continue;
         for (const NodeDoc& n : d->nodes) {
             Pres& p = pres[n.uid];
-            (i == 0 ? p.b : i == 1 ? p.m : p.f) = true;
+            (i == kB ? p.b : i == kM ? p.m : i == kF ? p.f : p.fb) = true;
         }
     }
     // variations and order
     std::map<std::string, std::vector<Cluster>> var_clusters;
     for (const auto& pp : pres) {
         const std::string& u = pp.first;
-        if (!((pp.second.m && pp.second.f) || (had_base && pp.second.b && (pp.second.m || pp.second.f)))) continue;
+        if (!pp.second.m && !pp.second.f) continue;
         const std::vector<Cluster> cl = ClustersOf(ds, u);
         var_clusters[u] = cl;
         for (const Cluster& c : cl) {
-            const std::string key = KeyOf({"V", u, std::to_string(c.ms)});
-            Trip&             t = trips[key];
-            for (int di = 0; di < 3; ++di) {
+            Trip& t = trips[KeyOf({"V", u, c.id})];
+            for (int di = 0; di < 4; ++di) {
                 const Doc* d = ds.at(di);
                 if (!d || c.member[di] < 0) continue;
-                const NodeDoc* n = d->N(u);
-                Opt            o;
-                o.has = true;
-                o.v = VarValue(n->frames[c.member[di]]);
-                (di == 0 ? t.b : di == 1 ? t.m : t.f) = o;
+                Slot(t, di) = Opt{true, VarValue(d->N(u)->frames[static_cast<size_t>(c.member[di])])};
             }
         }
         // order of the children present everywhere
-        std::vector<std::string> kids[3];
-        for (int di = 0; di < 3; ++di) {
+        std::vector<std::string> kids[4];
+        for (int di = 0; di < 4; ++di) {
             const Doc* d = ds.at(di);
             if (!d) continue;
             for (const std::string& c : ChildrenIn(*d, u)) {
                 const Pres& cp = pres[c];
-                if (cp.m && cp.f && (!had_base || cp.b)) kids[di].push_back(c);
+                if (cp.m && cp.f && (!known || (cp.b && cp.fb))) kids[di].push_back(c);
             }
         }
-        if (kids[1].size() >= 2) {
+        if (kids[kM].size() >= 2 && pp.second.m && pp.second.f) {
             Trip& t = trips[KeyOf({"O", u})];
-            t.m = Opt{true, Join(kids[1], ",")};
-            t.f = Opt{true, Join(kids[2], ",")};
-            if (had_base) t.b = Opt{true, Join(kids[0], ",")};
+            for (int di = 0; di < 4; ++di)
+                if (ds.at(di) && ds.at(di)->N(u)) Slot(t, di) = Opt{true, Join(kids[di], ",")};
         }
     }
 
-    // the group / value universe for needs
     auto key_node = [](const std::string& key) {
         const std::vector<std::string> p = Split(key, '|');
         return p.size() > 1 ? p[1] : std::string();
     };
+    // Is the key's owner (node / group / value) in both common versions? Not: no common version for it (both sides
+    // added it on their own): every difference reads as both.
+    auto owner_known = [&](const std::vector<std::string>& p) {
+        if (!known) return false;
+        const std::string& kind = p[0];
+        if (NodeScoped(kind)) {
+            const Pres& pr = pres[p[1]];
+            return pr.b && pr.fb;
+        }
+        if (kind == "GF" || kind == "GE") return db.G(p[1]) && dfb.G(p[1]);
+        if (kind == "VF") return db.G(p[1]) && dfb.G(p[1]) && ValueLine(*db.G(p[1]), p[2]) && ValueLine(*dfb.G(p[1]), p[2]);
+        return true;
+    };
 
-    // count of changed keys of a node subtree between the base and one side (decision 4)
+    // count of changed keys of a node subtree on one side (decision 4): mine against the base, the file against the file
+    // base; added nodes count.
     auto subtree_changes = [&](const std::string& top, const Doc& holder, bool file_side) {
-        std::set<std::string> sub;
-        std::function<void(const std::string&)> walk = [&](const std::string& u) {
-            sub.insert(u);
-            for (const std::string& c : ChildrenIn(holder, u)) walk(c);
-        };
-        walk(top);
-        int n = 0;
+        const std::set<std::string> sub = SubtreeIn(holder, top);
+        int                         n = 0;
         for (const auto& kv : trips) {
             const std::vector<std::string> p = Split(kv.first, '|');
-            if (p.size() < 2 || !NodeScoped(p[0]) || !sub.count(p[1])) continue;
-            const Opt& side = file_side ? kv.second.f : kv.second.m;
-            if (side != kv.second.b) ++n;
+            if (p.size() < 2 || !(NodeScoped(p[0]) || p[0] == "X") || !sub.count(p[1])) continue;
+            if (p[0] == "X" && p[1] == top) continue;
+            if (p[0] != "X" && !(file_side ? pres[p[1]].fb : pres[p[1]].b)) continue;  // an added node counts once
+            if (file_side ? kv.second.f != kv.second.fb : kv.second.m != kv.second.b) ++n;
         }
         return n;
     };
 
-    const bool untouched = out.file_untouched;
-    std::map<std::string, Cls> cls_of;
+    std::vector<std::string> both_added;  // nodes both sides added (the base gets them once they agree, review M2)
     auto add = [&](SyncChange c, Cls cl) {
         c.side = SideOf(cl);
-        cls_of[c.key] = cl;
         out.changes.push_back(std::move(c));
     };
 
@@ -838,9 +880,9 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& mine_text,
         if (kind == "X") {
             const std::string& u = p[1];
             const Pres&        pr = pres[u];
-            const bool         pf = untouched ? pr.b : pr.f;
-            if (pr.m == pf) {
-                if (pr.m && pr.f && !pr.b && had_base) {}  // both added the same uid: equal presence
+            if (pr.m == pr.f) {
+                if (known && pr.m && !pr.b) both_added.push_back(u);
+                else if (known && !pr.m && pr.b) out.folds.push_back(key);  // removed on both sides: the base drops it
                 continue;
             }
             SyncChange c;
@@ -851,23 +893,25 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& mine_text,
             const std::string type = desc.Type(u);
             c.adds_container = type != "sound";
             const std::string nm = desc.NodeName(u);
-            Cls               cl;
             const bool        sound = type == "sound";
-            if (!had_base) {
-                cl = Cls::Both;
+            c.label = nm;
+            if (sound) c.node = out.parent[u];
+            const bool here = pr.m != pr.b, file = pr.f != pr.fb;
+            if (!known || (here && file)) {
                 c.here_text = pr.m ? "present" : "absent";
                 c.file_text = pr.f ? "present" : "absent";
                 c.text = TypeWord(type) + " " + nm + ": here " + c.here_text + " · file " + c.file_text;
-                c.node = sound ? out.parent[u] : u;
-                c.label = nm;
-                add(c, cl);
+                add(c, Cls::Both);
                 continue;
             }
-            if (pr.b) {  // removed by the side that lacks it
-                const bool mine_removed = !pr.m;
-                const Doc* lack = mine_removed ? &dm : &df;
-                const Doc* keep = mine_removed ? &df : &dm;
-                const std::string par = out.parent[u];
+            if (!here && !file) continue;  // an adaptation of the merge
+            Cls cl;
+            if (here ? !pr.m : !pr.f) {  // removed by the side that moved
+                const bool     mine_removed = here;
+                const Doc*     lack = mine_removed ? &dm : &df;
+                const Doc*     keep = mine_removed ? &df : &dm;
+                const NodeDoc* kn = keep->N(u);
+                const std::string par = kn ? kn->parent : out.parent[u];
                 if (par.empty() || !lack->N(par)) continue;  // not the topmost removed
                 const int n = subtree_changes(u, *keep, mine_removed);
                 const int sounds = desc.SoundsUnder(keep, u);
@@ -883,27 +927,30 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& mine_text,
                     c.file_text = mine_removed ? "present" : "removed";
                     c.text = TypeWord(type) + " " + nm + " removed" + tail;
                 }
-            } else {  // added by the side that has it
-                cl = pr.m ? Cls::Here : Cls::File;
+            } else {  // added by the side that moved
+                cl = here ? Cls::Here : Cls::File;
                 c.here_text = pr.m ? "present" : "absent";
                 c.file_text = pr.f ? "present" : "absent";
                 c.text = TypeWord(type) + " " + nm + " added";
             }
-            c.label = nm;
-            if (sound) c.node = out.parent[u];
             add(c, cl);
             continue;
         }
         if (kind == "GX" || kind == "VX") {
-            if (!had_base) continue;
-            if (t.m == t.f || t.b.has) continue;
-            const bool mh = t.m.has, fh = t.f.has;
-            if (mh == fh) continue;
-            if (untouched && fh) continue;
+            if (!known) continue;  // no common version: the Apply copies what a picked change references
+            if (t.m == t.f) {
+                if (t.m != t.b) out.folds.push_back(key);
+                continue;
+            }
+            // decision 5: only an addition is a change (a group / value missing on one side is never removed through sync)
+            const bool here_add = t.m.has && !t.b.has && !t.f.has;
+            const bool file_add = t.f.has && !t.fb.has && !t.m.has;
+            if (!here_add && !file_add) continue;
             SyncChange c;
             c.key = key;
             c.node = "grp:" + p[1];
-            const Cls cl = mh ? Cls::Here : Cls::File;
+            c.subject = c.node;
+            const Cls cl = here_add ? Cls::Here : Cls::File;
             if (kind == "GX") {
                 c.text = "Switch Group " + desc.GroupName(p[1]) + " added";
                 c.label = desc.GroupName(p[1]);
@@ -911,8 +958,8 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& mine_text,
                 c.text = "Value " + desc.ValueName(p[2]) + " added";
                 c.label = desc.ValueName(p[2]);
             }
-            c.here_text = mh ? "present" : "absent";
-            c.file_text = fh ? "present" : "absent";
+            c.here_text = t.m.has ? "present" : "absent";
+            c.file_text = t.f.has ? "present" : "absent";
             add(c, cl);
             continue;
         }
@@ -927,14 +974,14 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& mine_text,
             const Pres&        pr = pres[u];
             if (kind == "C") {
                 if (!pr.m && !pr.f) continue;
-                if ((!pr.m || !pr.f) && had_base && pr.b) continue;  // under a removed node
+                if ((!pr.m || !pr.f) && known && (pr.b || pr.fb)) continue;  // under a removed node
             } else if (!(pr.m && pr.f)) {
                 continue;
             }
         }
-        const Cls cl = Classify(t, had_base, untouched);
+        const Cls cl = Classify(t, owner_known(p));
         if (cl == Cls::None) {
-            if (had_base && t.m == t.f && t.m != t.b) out.folds.push_back(key);
+            if (known && t.m == t.f && t.m != t.b) out.folds.push_back(key);
             continue;
         }
         SyncChange c;
@@ -956,16 +1003,31 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& mine_text,
         auto sentence = [&](const std::string& lab, const std::string& from, const std::string& to) {
             return of(lab) + " " + from + " → " + to;
         };
-        if (kind == "F") {
+        if (kind == "F" && p[2] == "node" && p[3] == "parent") {
+            // review 13-77b H1: a move, listed under its new parent (that side's)
+            auto pname = [&](const Opt& o) { return o.has && !o.v.empty() ? desc.NodeName(o.v) : std::string("the root"); };
+            c.label = "Moved";
+            c.here_text = "in " + pname(t.m);
+            c.file_text = "in " + pname(t.f);
+            if (cl == Cls::Both) {
+                c.text = "Moved " + subject + ": here to " + pname(t.m) + " · file to " + pname(t.f);
+            } else {
+                const Opt& from = cl == Cls::Here ? t.b : t.fb;
+                const Opt& to = cl == Cls::Here ? t.m : t.f;
+                c.text = "Moved " + subject + " from " + pname(from) + " to " + pname(to);
+            }
+            const Opt& np = cl == Cls::File ? t.f : t.m;
+            if (np.has && !np.v.empty()) c.node = np.v;
+        } else if (kind == "F") {
             const Shown sh = ShowField(desc, p[2], p[3], t.b, t.m);  // labels / units
             const Shown mh = ShowField(desc, p[2], p[3], t.b, t.m);
-            const Shown fh = ShowField(desc, p[2], p[3], t.b, t.f);
+            const Shown fh = ShowField(desc, p[2], p[3], t.fb, t.f);
             c.label = sh.label;
             c.here_text = mh.to + mh.unit;
             c.file_text = fh.to + fh.unit;
             if (mh.rename) {
                 c.text = cl == Cls::Both ? "Renamed: here " + mh.to + " · file " + fh.to : "Renamed " + (cl == Cls::Here ? mh.from : fh.from) + " → " + (cl == Cls::Here ? mh.to : fh.to);
-            } else if (p[3] != "name" && sh.label.size() > 8 && sh.label.compare(sh.label.size() - 8, 8, " changed") == 0) {
+            } else if (sh.label.size() > 8 && sh.label.compare(sh.label.size() - 8, 8, " changed") == 0) {
                 c.text = of(sh.label);
                 if (sound_subject) c.text = sh.label + " (" + subject + ")";
             } else if (cl == Cls::Both) {
@@ -998,16 +1060,17 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& mine_text,
             int                         ix = 0, k = 0;
             for (const Cluster& cc : cl2) {
                 ++k;
-                if (std::to_string(cc.ms) == p[2]) ix = k;
+                if (cc.id == p[2]) ix = k;
             }
             c.label = "Variation " + std::to_string(ix);
             const std::string vn = "Variation " + std::to_string(ix) + " of " + subject;
             c.here_text = t.m.has ? "present" : "absent";
             c.file_text = t.f.has ? "present" : "absent";
             const Opt& side = cl == Cls::File ? t.f : t.m;
+            const Opt& from = cl == Cls::File ? t.fb : t.b;
             if (cl == Cls::Both) c.text = vn + ": here " + (t.m.has ? "changed" : "removed") + " · file " + (t.f.has ? "changed" : "removed");
             else if (!side.has) c.text = vn + " removed";
-            else if (!t.b.has) c.text = vn + " added";
+            else if (!from.has) c.text = vn + " added";
             else c.text = vn + " changed";
         } else if (kind == "C") {
             const std::string vname = desc.ValueName(p[2]);
@@ -1020,27 +1083,29 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& mine_text,
             c.here_text = t.m.has ? "plays " + childname(t.m) : "absent";
             c.file_text = t.f.has ? "plays " + childname(t.f) : "absent";
             const Opt& side = cl == Cls::File ? t.f : t.m;
+            const Opt& from = cl == Cls::File ? t.fb : t.b;
             if (cl == Cls::Both) c.text = "Switch value " + vname + ": here " + c.here_text + " · file " + c.file_text;
             else if (!side.has) c.text = "Switch value " + vname + " removed";
-            else if (!t.b.has) c.text = "Switch value " + vname + " added (plays " + childname(side) + ")";
+            else if (!from.has) c.text = "Switch value " + vname + " added (plays " + childname(side) + ")";
             else c.text = "Switch value " + vname + " now plays " + childname(side);
         } else if (kind == "GF") {
-            const Shown mh = ShowField(desc, "group", p[2], t.b, t.m), fh = ShowField(desc, "group", p[2], t.b, t.f);
+            const Shown mh = ShowField(desc, "group", p[2], t.b, t.m), fh = ShowField(desc, "group", p[2], t.fb, t.f);
             c.label = mh.label;
             c.here_text = mh.to;
             c.file_text = fh.to;
             c.text = "Switch Group " + desc.GroupName(p[1]) + ": " + mh.label + (cl == Cls::Both ? ": here " + mh.to + " · file " + fh.to : cl == Cls::Here ? " " + mh.from + " → " + mh.to : " " + fh.from + " → " + fh.to);
+            if (p[2] == "name" && cl != Cls::Here) c.text += " (shared by every library of this project that uses it)";  // review L6
         } else if (kind == "GE") {
             c.label = "Other settings";
             c.text = "Other settings of Switch Group " + desc.GroupName(p[1]) + " changed";
         } else if (kind == "VF") {
-            const Shown mh = ShowField(desc, "value", p[3], t.b, t.m), fh = ShowField(desc, "value", p[3], t.b, t.f);
+            const Shown mh = ShowField(desc, "value", p[3], t.b, t.m), fh = ShowField(desc, "value", p[3], t.fb, t.f);
             c.label = p[3] == "roles" ? "Roles" : mh.label;
             c.here_text = mh.to;
             c.file_text = fh.to;
             c.text = "Value " + desc.ValueName(p[2]) + ": " + c.label + (cl == Cls::Both ? ": here " + mh.to + " · file " + fh.to : cl == Cls::Here ? " " + mh.from + " → " + mh.to : " " + fh.from + " → " + fh.to);
         } else if (kind == "LF") {
-            const Shown mh = ShowField(desc, "lib", p[1], t.b, t.m), fh = ShowField(desc, "lib", p[1], t.b, t.f);
+            const Shown mh = ShowField(desc, "lib", p[1], t.b, t.m), fh = ShowField(desc, "lib", p[1], t.fb, t.f);
             c.label = p[1] == "name" ? "Library name" : p[1] == "color" ? "Colour" : mh.label;
             c.here_text = mh.to;
             c.file_text = fh.to;
@@ -1055,6 +1120,34 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& mine_text,
             c.text = "Other library settings changed";
         }
         add(c, cl);
+    }
+
+    // Review 13-77b M1 (decision 4): a node removed on one side and changed on the other is ONE both change: the changes
+    // inside it (an edit, a Sound added under it) are not listed on their own.
+    {
+        std::set<std::string> swallowed;
+        for (const SyncChange& c : out.changes) {
+            if (c.side != SyncSide::Both || c.key.compare(0, 2, "X|") != 0) continue;
+            if (c.here_text != "removed" && c.file_text != "removed") continue;
+            const Doc&                  keep = c.here_text == "removed" ? df : dm;
+            const std::set<std::string> sub = SubtreeIn(keep, c.subject);
+            for (const SyncChange& o : out.changes)
+                if (o.key != c.key && o.subject.compare(0, 4, "grp:") != 0 && sub.count(o.subject)) swallowed.insert(o.key);
+        }
+        if (!swallowed.empty())
+            out.changes.erase(std::remove_if(out.changes.begin(), out.changes.end(), [&](const SyncChange& c) { return swallowed.count(c.key) > 0; }),
+                              out.changes.end());
+    }
+
+    // nodes both sides added: into the base once every key of theirs agrees (until then they read as both)
+    if (!both_added.empty()) {
+        std::set<std::string> differs;
+        for (const auto& kv : trips) {
+            const std::vector<std::string> p = Split(kv.first, '|');
+            if (p.size() > 1 && NodeScoped(p[0]) && kv.second.m != kv.second.f) differs.insert(p[1]);
+        }
+        for (const std::string& u : both_added)
+            if (!differs.count(u)) out.folds.push_back(KeyOf({"X", u}));
     }
 
     // needs (same side, never for Both)
@@ -1078,15 +1171,13 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& mine_text,
         const std::vector<std::string> p = Split(c.key, '|');
         if (p[0] == "X") {
             const std::string& u = p[1];
-            const Pres&        pr = pres[u];
-            const bool added = !pr.b || !had_base;
-            if (added) {
-                need(c, KeyOf({"X", out.parent[u]}));
-            } else {  // removal: the cases that play it go too
+            if (const NodeDoc* n = sd->N(u)) {  // added: its parent on that side
+                need(c, KeyOf({"X", n->parent}));
+            } else {  // removal: the cases that played it (in that side's common version) go too
                 for (const auto& kv : trips) {
-                    const std::vector<std::string> q = Split(kv.first, '|');
-                    if (q[0] != "C" || !kv.second.b.has) continue;
-                    if (TokOr(ParseLine("case " + kv.second.b.v), "child") == u) need(c, kv.first);
+                    if (kv.first.compare(0, 2, "C|") != 0) continue;
+                    const Opt& was = here ? kv.second.b : kv.second.fb;
+                    if (was.has && TokOr(ParseLine("case " + was.v), "child") == u) need(c, kv.first);
                 }
             }
         } else if (p[0] == "C") {
@@ -1101,17 +1192,39 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& mine_text,
             }
         } else if (p[0] == "VX") {
             need(c, KeyOf({"GX", p[1]}));
+        } else if (p[0] == "F" && p.size() > 3 && p[2] == "node" && p[3] == "parent") {
+            need(c, KeyOf({"X", p[1]}));
+            if (const NodeDoc* n = sd->N(p[1])) need(c, KeyOf({"X", n->parent}));  // review H1: its new parent
         } else if (p[0] == "U" || p[0] == "F" || p[0] == "P" || p[0] == "V") {
             need(c, KeyOf({"X", p[1]}));
         }
     }
 
-    for (const SyncChange& c : out.changes) {
+    // rows (review H5 / M8): the project row each change belongs to, and the counts per row, once
+    for (SyncChange& c : out.changes) {
+        if (c.node.compare(0, 4, "grp:") == 0) {
+            c.row = out.root;
+        } else {
+            std::string u = c.node;
+            for (int i = 0; i < 1000 && !u.empty(); ++i) {
+                if (out.mine_nodes.count(u)) break;
+                auto it = out.parent.find(u);
+                u = it == out.parent.end() ? std::string() : it->second;
+            }
+            c.row = out.mine_nodes.count(u) ? u : out.root;
+        }
+        LibSyncCounts& rc = out.row_counts[c.row];
+        (c.side == SyncSide::Here ? rc.here : c.side == SyncSide::File ? rc.file : rc.both)++;
         if (c.side == SyncSide::Here) ++out.here;
         else if (c.side == SyncSide::File) ++out.file;
         else ++out.both;
     }
+    bool untouched = known;
+    for (const auto& kv : trips)
+        if (untouched && kv.second.f != kv.second.fb) untouched = false;
+    out.file_untouched = untouched;
     std::sort(out.folds.begin(), out.folds.end());
+    out.folds.erase(std::unique(out.folds.begin(), out.folds.end()), out.folds.end());
     return out;
 }
 
@@ -1162,29 +1275,15 @@ std::map<std::string, SyncDir> CloseSelection(const SyncDiff& d, const std::map<
 std::vector<std::string> ContainerChangeKeys(const SyncDiff& d, const std::string& container)
 {
     std::vector<std::string> keys;
-    for (const SyncChange& c : d.changes) {
-        bool in = c.node == container;
-        if (!in && c.node.compare(0, 4, "grp:") != 0 && !d.mine_nodes.count(c.node)) {
-            std::string u = c.node;
-            for (int i = 0; i < 1000 && !u.empty() && !in; ++i) {
-                auto it = d.parent.find(u);
-                if (it == d.parent.end()) break;
-                u = it->second;
-                if (u == container) in = true;
-                else if (d.mine_nodes.count(u)) break;
-            }
-        }
-        if (in) keys.push_back(c.key);
-    }
+    for (const SyncChange& c : d.changes)
+        if (c.row == container) keys.push_back(c.key);
     return keys;
 }
 
 LibSyncCounts CountsOf(const SyncDiff& d, const std::string& node)
 {
-    LibSyncCounts n;
-    for (const SyncChange& c : d.changes)
-        if (c.node == node) (c.side == SyncSide::Here ? n.here : c.side == SyncSide::File ? n.file : n.both)++;
-    return n;
+    const auto it = d.row_counts.find(node);
+    return it == d.row_counts.end() ? LibSyncCounts() : it->second;
 }
 
 LibSyncCounts TotalCounts(const SyncDiff& d)
@@ -1200,9 +1299,16 @@ LibSyncCounts TotalCounts(const SyncDiff& d)
 
 namespace {
 
+// One variation cluster's frame in each original text, by its exact `start` token.
+struct VarRef {
+    bool        has[4] = {false, false, false, false};
+    std::string start[4];
+};
+
 struct ApplyCtx {
-    std::set<std::string> x_keys;      // every Exists key of the diff
-    std::set<std::string> case_nodes;  // nodes the diff lists Case changes of
+    std::set<std::string>         x_keys;      // every Exists key of the diff
+    std::set<std::string>         case_nodes;  // nodes the diff lists Case changes of
+    std::map<std::string, VarRef> var;         // V key -> its frames
 };
 
 void CopyNodeRecord(NodeDoc* dst, const NodeDoc& src, bool with_cases)
@@ -1216,19 +1322,13 @@ void CopyNodeRecord(NodeDoc* dst, const NodeDoc& src, bool with_cases)
 
 void RemoveSubtree(Doc& d, const std::string& uid)
 {
-    std::set<std::string> gone;
-    std::function<void(const std::string&)> walk = [&](const std::string& u) {
-        gone.insert(u);
-        for (const std::string& c : ChildrenIn(d, u))
-            if (!gone.count(c)) walk(c);
-    };
-    walk(uid);
+    const std::set<std::string> gone = SubtreeIn(d, uid);
     d.nodes.erase(std::remove_if(d.nodes.begin(), d.nodes.end(), [&](const NodeDoc& n) { return gone.count(n.uid) > 0; }), d.nodes.end());
     d.Reindex();
 }
 
-// Where a node of `src` goes in `dst`: after the nearest earlier sibling `dst` has, else before its first sibling,
-// else at the end. Returns the vector index to insert at.
+// Where a node of `src` goes in `dst`: after the nearest earlier sibling `dst` has (and that sibling's subtree), else
+// before its first sibling, else right after its parent. Returns the vector index to insert at.
 size_t InsertPos(const Doc& dst, const Doc& src, const std::string& uid, const std::string& parent)
 {
     const std::vector<std::string> sib = ChildrenIn(src, parent);
@@ -1237,8 +1337,9 @@ size_t InsertPos(const Doc& dst, const Doc& src, const std::string& uid, const s
         if (sib[i] == uid) me = i;
     for (size_t i = me; i-- > 0;)
         if (const NodeDoc* p = dst.N(sib[i])) {
-            // after the sibling's own record and its subtree records that directly follow
-            size_t at = static_cast<size_t>(p - &dst.nodes[0]) + 1;
+            const std::set<std::string> sub = SubtreeIn(dst, p->uid);
+            size_t                      at = static_cast<size_t>(p - &dst.nodes[0]) + 1;
+            while (at < dst.nodes.size() && sub.count(dst.nodes[at].uid)) ++at;
             return at;
         }
     const std::vector<std::string> mine = ChildrenIn(dst, parent);
@@ -1255,8 +1356,16 @@ void EnsureSound(NodeDoc& n)
     }
 }
 
-// Copies one key's value from `src` into `dst`. `src_side_is_dst` is never passed.
-void CopyKey(Doc& dst, const Doc& src, const std::string& key, const ApplyCtx& cx)
+int FrameByStart(const NodeDoc& n, const std::string& start)
+{
+    for (size_t i = 0; i < n.frames.size(); ++i)
+        if (TokOr(n.frames[i].frame, "start") == start) return static_cast<int>(i);
+    return -1;
+}
+
+// Copies one key's value from `src` into `dst` (roles: which original text each one started from). True when `dst`
+// now holds src's value for that key (false: nothing to hang it on, e.g. a node whose parent is not there).
+bool CopyKey(Doc& dst, int dst_role, const Doc& src, int src_role, const std::string& key, const ApplyCtx& cx)
 {
     const std::vector<std::string> p = Split(key, '|');
     const std::string&             kind = p[0];
@@ -1265,10 +1374,10 @@ void CopyKey(Doc& dst, const Doc& src, const std::string& key, const ApplyCtx& c
         const NodeDoc*     sn = src.N(u);
         if (!sn) {
             RemoveSubtree(dst, u);
-            return;
+            return true;
         }
-        if (dst.N(u)) return;
-        if (!sn->parent.empty() && !dst.N(sn->parent)) return;  // its parent is not there: nothing to hang it on
+        if (dst.N(u)) return true;
+        if (!sn->parent.empty() && !dst.N(sn->parent)) return false;  // its parent is not there: nothing to hang it on
         std::vector<std::string> order = {u};
         std::function<void(const std::string&)> walk = [&](const std::string& x) {
             for (const std::string& c : ChildrenIn(src, x))
@@ -1286,27 +1395,27 @@ void CopyKey(Doc& dst, const Doc& src, const std::string& key, const ApplyCtx& c
             ++at;
         }
         dst.Reindex();
-        return;
+        return true;
     }
     if (kind == "C") {
         NodeDoc* dn = dst.N(p[1]);
-        if (!dn) return;
+        if (!dn) return false;
         const NodeDoc* sn = src.N(p[1]);
         dn->cases.erase(std::remove_if(dn->cases.begin(), dn->cases.end(), [&](const Line& l) { return TokOr(l, "value") == p[2]; }), dn->cases.end());
         if (sn)
             for (const Line& l : sn->cases)
                 if (TokOr(l, "value") == p[2]) dn->cases.push_back(l);
-        return;
+        return true;
     }
     if (kind == "F" || kind == "P" || kind == "PK" || kind == "XL" || kind == "U" || kind == "V" || kind == "O") {
         NodeDoc*       dn = dst.N(p[1]);
         const NodeDoc* sn = src.N(p[1]);
-        if (!dn || !sn) return;
+        if (!dn || !sn) return false;
         if (kind == "F" && p[2] == "node") {
             CopyTok(dn->node, sn->node, p[3]);
             if (p[3] == "parent") dn->parent = TokOr(dn->node, "parent");
         } else if (kind == "F") {
-            if (!sn->has_sound && !dn->has_sound) return;
+            if (!sn->has_sound && !dn->has_sound) return true;
             EnsureSound(*dn);
             if (p[3] == "fades") {
                 for (const char* k : {"fin", "fout"}) {
@@ -1319,7 +1428,7 @@ void CopyKey(Doc& dst, const Doc& src, const std::string& key, const ApplyCtx& c
                 EraseTok(dn->sound, p[3]);
             }
         } else if (kind == "P") {
-            if (!sn->has_sound && !dn->has_sound) return;
+            if (!sn->has_sound && !dn->has_sound) return true;
             EnsureSound(*dn);
             for (const char* k : kPartKeys) {
                 if (sn->has_sound) CopyTok(dn->sound, sn->sound, k);
@@ -1334,13 +1443,17 @@ void CopyKey(Doc& dst, const Doc& src, const std::string& key, const ApplyCtx& c
         } else if (kind == "U") {
             dn->unassigned = sn->unassigned;
         } else if (kind == "V") {
-            const long long ms = std::atoll(p[2].c_str());
-            const int       di = FindFrame(*dn, ms);
-            const int       si = FindFrame(*sn, ms);
-            if (di >= 0) dn->frames.erase(dn->frames.begin() + di);
-            if (si >= 0) {
+            const auto vr = cx.var.find(key);
+            if (vr == cx.var.end()) return false;
+            if (vr->second.has[dst_role]) {
+                const int di = FrameByStart(*dn, vr->second.start[dst_role]);
+                if (di >= 0) dn->frames.erase(dn->frames.begin() + di);
+            }
+            if (vr->second.has[src_role]) {
+                const int si = FrameByStart(*sn, vr->second.start[src_role]);
+                if (si < 0) return false;
                 EnsureSound(*dn);
-                const Var& v = sn->frames[si];
+                const Var& v = sn->frames[static_cast<size_t>(si)];
                 size_t     at = 0;
                 while (at < dn->frames.size() && FrameStart(dn->frames[at]) <= FrameStart(v)) ++at;
                 dn->frames.insert(dn->frames.begin() + static_cast<long>(at), v);
@@ -1354,35 +1467,36 @@ void CopyKey(Doc& dst, const Doc& src, const std::string& key, const ApplyCtx& c
             std::vector<size_t> slots;  // indices in dst.nodes of the children that are common
             for (const std::string& u : mine)
                 if (std::find(common.begin(), common.end(), u) != common.end()) slots.push_back(static_cast<size_t>(dst.N(u) - &dst.nodes[0]));
-            if (slots.size() != common.size()) return;
+            if (slots.size() != common.size()) return false;
             std::vector<NodeDoc> recs;
             for (const std::string& u : common) recs.push_back(*dst.N(u));
             for (size_t i = 0; i < slots.size(); ++i) dst.nodes[slots[i]] = recs[i];
             dst.Reindex();
         }
-        return;
+        return true;
     }
     if (kind == "GX") {
         const GroupDoc* sg = src.G(p[1]);
-        if (!sg || dst.G(p[1])) return;
+        if (!sg) return false;
+        if (dst.G(p[1])) return true;
         GroupDoc g = *sg;
         g.values.clear();
         for (const Line& v : sg->values)
             if (!cx.x_keys.count(KeyOf({"VX", p[1], TokOr(v, "uid")}))) g.values.push_back(v);
         dst.groups.push_back(g);
-        return;
+        return true;
     }
     if (kind == "GF" || kind == "GE") {
         GroupDoc*       dg = dst.G(p[1]);
         const GroupDoc* sg = src.G(p[1]);
-        if (!dg || !sg) return;
+        if (!dg || !sg) return false;
         if (kind == "GF") CopyTok(dg->group, sg->group, p[2]);
         else dg->extra = sg->extra;
-        return;
+        return true;
     }
     if (kind == "VX" || kind == "VF") {
         const GroupDoc* sg = src.G(p[1]);
-        if (!sg) return;
+        if (!sg) return false;
         GroupDoc* dg = dst.G(p[1]);
         if (!dg) {
             GroupDoc g = *sg;
@@ -1392,13 +1506,13 @@ void CopyKey(Doc& dst, const Doc& src, const std::string& key, const ApplyCtx& c
         }
         const Line* sv = ValueLine(*sg, p[2]);
         if (kind == "VX") {
-            if (!sv || ValueLine(*dg, p[2])) return;
-            dg->values.push_back(*sv);
-            return;
+            if (!sv) return false;
+            if (!ValueLine(*dg, p[2])) dg->values.push_back(*sv);
+            return true;
         }
         for (Line& l : dg->values)
             if (TokOr(l, "uid") == p[2] && sv) CopyTok(l, *sv, p[3]);
-        return;
+        return true;
     }
     if (kind == "LF") {
         CopyTok(dst.lib, src.lib, p[1]);
@@ -1408,6 +1522,74 @@ void CopyKey(Doc& dst, const Doc& src, const std::string& key, const ApplyCtx& c
     } else if (kind == "LE") {
         dst.lib_extra = src.lib_extra;
     }
+    return true;
+}
+
+// Review M2: a node both sides added goes into the base on its own (its record only; its parent must be there).
+void FoldNodeOnly(Doc& dst, const Doc& src, const std::string& uid)
+{
+    const NodeDoc* sn = src.N(uid);
+    if (!sn || dst.N(uid) || (!sn->parent.empty() && !dst.N(sn->parent))) return;
+    const size_t at = InsertPos(dst, src, uid, sn->parent);
+    dst.nodes.insert(dst.nodes.begin() + static_cast<long>(at), *sn);
+    dst.Reindex();
+}
+
+// Does any line of `d` but the definitions refer to `uid` (a value or a group)?
+bool Referenced(const Doc& d, const std::string& uid)
+{
+    auto in_tok = [&](const std::string& tok) {
+        const size_t e = EqPos(tok);
+        if (e == std::string::npos) return false;
+        std::string key = tok.substr(0, e);
+        if (key == "uid") return false;
+        if (key.compare(0, 4, "pdb.") == 0 && key.substr(4) == uid) return true;
+        for (const std::string& a : Split(tok.substr(e + 1), ','))
+            for (const std::string& b : Split(a, ':'))
+                if (b == uid) return true;
+        return false;
+    };
+    auto in_line = [&](const Line& l) {
+        for (const std::string& t : l.toks)
+            if (in_tok(t)) return true;
+        return false;
+    };
+    auto in_lines = [&](const std::vector<Line>& v) {
+        for (const Line& l : v)
+            if (in_line(l)) return true;
+        return false;
+    };
+    for (const GroupDoc& g : d.groups)
+        if (in_line(g.group)) return true;
+    for (const NodeDoc& n : d.nodes) {
+        if (in_line(n.node) || in_lines(n.cases) || in_lines(n.unassigned) || in_lines(n.parts) || in_lines(n.zones) ||
+            in_lines(n.parked) || in_lines(n.extra))
+            return true;
+        if (n.has_sound && in_line(n.sound)) return true;
+        for (const Var& v : n.frames)
+            if (in_line(v.frame) || in_lines(v.fz)) return true;
+    }
+    return false;
+}
+
+// Review M4: Send mine of a value / group only the file has drops it from the file when nothing there uses it.
+void DropUnusedFromFile(Doc& f, const std::string& key)
+{
+    const std::vector<std::string> p = Split(key, '|');
+    GroupDoc*                      g = f.G(p[1]);
+    if (!g) return;
+    auto drop_value = [&](const std::string& v) {
+        if (Referenced(f, v)) return false;
+        g->values.erase(std::remove_if(g->values.begin(), g->values.end(), [&](const Line& l) { return TokOr(l, "uid") == v; }), g->values.end());
+        return true;
+    };
+    if (p[0] == "VX") {
+        drop_value(p[2]);
+        return;
+    }
+    for (const Line& v : std::vector<Line>(g->values)) drop_value(TokOr(v, "uid"));
+    if (g->values.empty() && !Referenced(f, p[1]))
+        f.groups.erase(std::remove_if(f.groups.begin(), f.groups.end(), [&](const GroupDoc& x) { return x.uid == p[1]; }), f.groups.end());
 }
 
 // Every group / value a node or case of `d` refers to is there (copied whole from `from` when not).
@@ -1454,6 +1636,39 @@ void EnsureGroups(Doc& d, const std::vector<const Doc*>& from)
     }
 }
 
+// Review H1 / L3: a node `orig` had whose parent this Apply changed, when that parent is not there or the change makes a
+// loop, keeps its old parent; its move key is reported (it stays open).
+void KeepOldParents(Doc& dst, const Doc& orig, std::set<std::string>* reverted)
+{
+    for (size_t guard = 0; guard <= dst.nodes.size() + 1; ++guard) {
+        dst.Reindex();
+        std::string bad;
+        for (const NodeDoc& n : dst.nodes) {
+            const NodeDoc* o = orig.N(n.uid);
+            if (!o || o->parent == n.parent) continue;
+            if (!n.parent.empty() && !dst.N(n.parent)) {
+                bad = n.uid;
+                break;
+            }
+            std::string u = n.parent;
+            for (size_t k = 0; k <= dst.nodes.size() && !u.empty() && u != n.uid; ++k) {
+                const NodeDoc* pn = dst.N(u);
+                u = pn ? pn->parent : std::string();
+            }
+            if (u == n.uid) {
+                bad = n.uid;
+                break;
+            }
+        }
+        if (bad.empty()) return;
+        NodeDoc*       n = dst.N(bad);
+        const NodeDoc* o = orig.N(bad);
+        CopyTok(n->node, o->node, "parent");
+        n->parent = o->parent;
+        if (reverted) reverted->insert(KeyOf({"F", bad, "node", "parent"}));
+    }
+}
+
 void Sanitize(Doc& d)
 {
     bool again = true;
@@ -1480,20 +1695,52 @@ void Sanitize(Doc& d)
 bool ApplySync(const std::string& base_text, const std::string& mine_text, const std::string& file_text,
                const SyncDiff& diff, const std::map<std::string, SyncDir>& picks, SyncResult* out)
 {
-    Doc m0, f0, b0;
+    return ApplySync(base_text, base_text, mine_text, file_text, diff, picks, out);
+}
+
+bool ApplySync(const std::string& base_text, const std::string& file_base_text, const std::string& mine_text,
+               const std::string& file_text, const SyncDiff& diff, const std::map<std::string, SyncDir>& picks,
+               SyncResult* out)
+{
+    Doc m0, f0, b0, fb0;
     if (!ParseDoc(mine_text, &m0) || !ParseDoc(file_text, &f0)) return false;
-    const bool had_base = !base_text.empty() && ParseDoc(base_text, &b0);
+    const bool known = !base_text.empty() && !file_base_text.empty() && ParseDoc(base_text, &b0) && ParseDoc(file_base_text, &fb0);
     Doc        m1 = m0, f1 = f0, b1 = b0;
     ApplyCtx   cx;
+    Docs       ds;
+    ds.d[kB] = known ? &b0 : nullptr;
+    ds.d[kM] = &m0;
+    ds.d[kF] = &f0;
+    ds.d[kFB] = known ? &fb0 : nullptr;
+    std::map<std::string, std::vector<Cluster>> clusters;
+    auto note_var = [&](const std::string& key) {
+        const std::vector<std::string> p = Split(key, '|');
+        if (p.size() < 3 || p[0] != "V") return;
+        if (!clusters.count(p[1])) clusters[p[1]] = ClustersOf(ds, p[1]);
+        for (const Cluster& c : clusters[p[1]]) {
+            if (c.id != p[2]) continue;
+            VarRef r;
+            for (int di = 0; di < 4; ++di)
+                if (ds.at(di) && c.member[di] >= 0) {
+                    r.has[di] = true;
+                    r.start[di] = TokOr(ds.at(di)->N(p[1])->frames[static_cast<size_t>(c.member[di])].frame, "start");
+                }
+            cx.var[key] = r;
+        }
+    };
     for (const SyncChange& c : diff.changes) {
         if (c.key.compare(0, 2, "X|") == 0 || c.key.compare(0, 3, "VX|") == 0 || c.key.compare(0, 3, "GX|") == 0) cx.x_keys.insert(c.key);
         if (c.key.compare(0, 2, "C|") == 0) cx.case_nodes.insert(Split(c.key, '|')[1]);
+        note_var(c.key);
     }
+    for (const std::string& k : diff.folds) note_var(k);
     // order: groups / values first, additions parents first, the rest, removals children first
     struct Op {
         std::string key;
         SyncDir     dir;
         int         phase, depth;
+        bool        applied = false;
+        bool        lone_absent = false;  // a group / value the chosen side does not have
     };
     std::vector<Op> ops;
     for (const auto& pk : picks) {
@@ -1508,46 +1755,90 @@ bool ApplySync(const std::string& base_text, const std::string& mine_text, const
             phase = add ? 1 : 3;
             depth = add ? c->depth : -c->depth;
         }
-        ops.push_back({pk.first, pk.second, phase, depth});
+        Op op;
+        op.key = pk.first;
+        op.dir = pk.second;
+        op.phase = phase;
+        op.depth = depth;
+        ops.push_back(op);
     }
     std::stable_sort(ops.begin(), ops.end(), [](const Op& a, const Op& b) { return a.phase != b.phase ? a.phase < b.phase : a.depth < b.depth; });
-    int sent = 0, taken = 0;
-    for (const Op& op : ops) {
-        const bool        up = op.dir == SyncDir::Up;
-        const Doc&        src = up ? m0 : f0;
-        const std::string kind = Split(op.key, '|')[0];
-        (up ? sent : taken)++;
-        const bool lone_group = kind == "GX" || kind == "VX";
-        if (lone_group) {
-            const std::vector<std::string> p = Split(op.key, '|');
-            const bool                     has = kind == "GX" ? src.G(p[1]) != nullptr : (src.G(p[1]) && ValueLine(*src.G(p[1]), p[2]));
-            if (!has) {  // chosen absent: a group / value is never removed from the project, the base keeps it as is
-                if (had_base) CopyKey(b1, m0, op.key, cx);
+    for (Op& op : ops) {
+        const bool                     up = op.dir == SyncDir::Up;
+        const Doc&                     src = up ? m0 : f0;
+        const std::vector<std::string> p = Split(op.key, '|');
+        if (p[0] == "GX" || p[0] == "VX") {
+            const bool has = p[0] == "GX" ? src.G(p[1]) != nullptr : (src.G(p[1]) && ValueLine(*src.G(p[1]), p[2]));
+            if (!has) {  // chosen absent: never removed from the project; dropped from the file when unused there
+                op.lone_absent = true;
+                op.applied = true;
+                if (up) DropUnusedFromFile(f1, op.key);
                 continue;
             }
         }
-        if (up) CopyKey(f1, src, op.key, cx);
-        else CopyKey(m1, src, op.key, cx);
-        if (had_base) CopyKey(b1, src, op.key, cx);
+        op.applied = up ? CopyKey(f1, kF, src, kM, op.key, cx) : CopyKey(m1, kM, src, kF, op.key, cx);
     }
-    if (had_base)
-        for (const std::string& k : diff.folds) CopyKey(b1, m0, k, cx);
+    // a node a side already had is never dropped by a move (review H1 / L3)
+    std::set<std::string> reverted;
+    KeepOldParents(m1, m0, &reverted);
+    KeepOldParents(f1, f0, &reverted);
+    int sent = 0, taken = 0;
+    std::vector<std::string> open;
+    for (Op& op : ops) {
+        if (op.applied && reverted.count(op.key)) op.applied = false;
+        if (!op.applied) {
+            open.push_back(op.key);
+            continue;
+        }
+        (op.dir == SyncDir::Up ? sent : taken)++;
+    }
     EnsureGroups(m1, {&f0, &m0, &b0});
     EnsureGroups(f1, {&m1, &m0, &f0, &b0});
-    if (had_base) EnsureGroups(b1, {&m1, &f1, &m0, &f0});
     Sanitize(m1);
     Sanitize(f1);
-    if (had_base) Sanitize(b1);
+    if (known) {  // the base takes each applied change's chosen value, and every key equal on both sides
+        for (const Op& op : ops) {
+            if (!op.applied) continue;
+            const bool up = op.dir == SyncDir::Up;
+            if (op.lone_absent) {
+                if (!up) CopyKey(b1, kB, m0, kM, op.key, cx);  // the project keeps it: the base follows the project
+                continue;
+            }
+            CopyKey(b1, kB, up ? m0 : f0, up ? kM : kF, op.key, cx);
+        }
+        std::vector<std::string> folds = diff.folds;
+        std::stable_sort(folds.begin(), folds.end(), [&](const std::string& a, const std::string& b) {
+            const bool xa = a.compare(0, 2, "X|") == 0, xb = b.compare(0, 2, "X|") == 0;
+            if (xa != xb) return xa;
+            return xa && DepthOf(diff.parent, a.substr(2)) < DepthOf(diff.parent, b.substr(2));
+        });
+        for (const std::string& k : folds) {
+            if (k.compare(0, 2, "X|") == 0 && m0.N(k.substr(2))) FoldNodeOnly(b1, m0, k.substr(2));
+            else CopyKey(b1, kB, m0, kM, k, cx);
+        }
+        EnsureGroups(b1, {&m1, &f1, &m0, &f0});
+        KeepOldParents(b1, b0, nullptr);
+        Sanitize(b1);
+    }
     SyncResult r;
     r.sent = sent;
     r.taken = taken;
+    r.open = open;
     r.mine = WriteDoc(m1);
     r.file = WriteDoc(f1);
     r.mine_changed = r.mine != WriteDoc(m0);
     r.file_changed = r.file != WriteDoc(f0);
-    if (had_base) r.base = WriteDoc(b1);
-    else if (picks.size() >= diff.changes.size() && !diff.changes.empty()) r.base = WriteDoc(m1);
-    else if (diff.changes.empty()) r.base = r.mine;
+    if (known) {
+        r.base = WriteDoc(b1);
+        r.file_base = r.file;
+    } else {
+        bool all = open.empty();
+        for (const SyncChange& c : diff.changes) all = all && picks.count(c.key) > 0;
+        if (all) {  // everything settled: the common versions are the result
+            r.base = r.mine;
+            r.file_base = r.file;
+        }
+    }
     *out = std::move(r);
     return true;
 }
@@ -1620,7 +1911,7 @@ std::string TranslateUidsText(const std::string& text, const std::vector<std::pa
 
 // ---- the store side ---------------------------------------------------------------------------------------------
 
-bool ReplaceLibraryFromMerge(SoundStore& store, const std::string& lib_uid, const SoundStore& merged)
+bool ReplaceLibraryFromMerge(SoundStore& store, const std::string& lib_uid, const SoundStore& merged, const SoundStore* before)
 {
     SoundLibrary* lib = FindLibrary(store, lib_uid);
     if (!lib || merged.libraries.size() != 1) return false;
@@ -1635,6 +1926,12 @@ bool ReplaceLibraryFromMerge(SoundStore& store, const std::string& lib_uid, cons
         if (n.type != SoundNodeType::Sound || n.sound.source.kind != SoundSourceKind::File) continue;
         if (const SoundNode* old = FindNode(*lib, n.uid)) n.sound.source.item_guid = old->sound.source.item_guid;
     }
+    if (nl.name != lib->name) {  // a name another library of the project holds stays unique (13-77a's clash rename)
+        std::vector<std::string> taken;
+        for (const SoundLibrary& l : store.libraries)
+            if (l.uid != lib_uid) taken.push_back(l.name);
+        nl.name = UniqueName(nl.name, taken);
+    }
     *lib = std::move(nl);
     for (const SwitchGroup& mg : merged.groups) {
         SwitchGroup* g = FindGroup(store, mg.uid);
@@ -1642,22 +1939,83 @@ bool ReplaceLibraryFromMerge(SoundStore& store, const std::string& lib_uid, cons
             store.groups.push_back(mg);
             continue;
         }
-        g->name = mg.name;
-        g->default_value = mg.default_value;
-        g->rav_owned = mg.rav_owned || g->rav_owned;
-        g->kept = mg.kept;
-        g->kept_lines = mg.kept_lines;
+        // a group of the project this library did not use: only the values it lacks come (its name, default and
+        // values stand)
+        const bool used_before = !before || FindGroup(*before, mg.uid) != nullptr;
+        if (used_before) {
+            g->name = mg.name;
+            g->default_value = mg.default_value;
+            g->rav_owned = mg.rav_owned || g->rav_owned;
+            g->kept = mg.kept;
+            g->kept_lines = mg.kept_lines;
+        }
         for (const SwitchValue& mv : mg.values) {
             bool found = false;
             for (SwitchValue& v : g->values)
                 if (v.uid == mv.uid) {
-                    v = mv;
+                    if (used_before) v = mv;
                     found = true;
                 }
-            if (!found) g->values.push_back(mv);
+            if (found) continue;
+            SwitchValue nv = mv;  // 13-23: the project's role map stands; only the keys no value of the group holds come
+            std::vector<std::string> roles;
+            for (const std::string& r : nv.roles) {
+                bool held = false;
+                for (const SwitchValue& pv : g->values) held = held || std::find(pv.roles.begin(), pv.roles.end(), r) != pv.roles.end();
+                if (!held) roles.push_back(r);
+            }
+            nv.roles = roles;
+            g->values.push_back(nv);
         }
     }
     return true;
+}
+
+std::vector<std::pair<std::string, std::string>> NameMergeMap(const std::vector<SwitchGroup>& project_groups,
+                                                              const std::string& file_proj_text,
+                                                              const std::vector<std::pair<std::string, std::string>>& uid_map)
+{
+    std::vector<std::pair<std::string, std::string>> out;
+    Doc                                              d;
+    if (!ParseDoc(file_proj_text, &d)) return out;
+    std::set<std::string> taken;  // project uids that must not be matched: the file uses them, or a file uid maps there
+    for (const auto& kv : uid_map) taken.insert(kv.second);
+    std::set<std::string> mapped_from;
+    for (const auto& kv : uid_map) mapped_from.insert(kv.first);
+    for (const GroupDoc& g : d.groups) {
+        taken.insert(g.uid);
+        for (const Line& v : g.values) taken.insert(TokOr(v, "uid"));
+    }
+    for (const GroupDoc& g : d.groups) {
+        const SwitchGroup* pg = nullptr;
+        for (const SwitchGroup& x : project_groups)
+            if (x.uid == g.uid) pg = &x;
+        if (!pg && !mapped_from.count(g.uid)) {
+            const std::string key = SwitchNameKey(PctDecode(TokOr(g.group, "name")));
+            for (const SwitchGroup& x : project_groups)
+                if (!taken.count(x.uid) && SwitchNameKey(x.name) == key) {
+                    pg = &x;
+                    out.push_back({g.uid, x.uid});
+                    taken.insert(x.uid);
+                    break;
+                }
+        }
+        if (!pg) continue;
+        for (const Line& v : g.values) {
+            const std::string vu = TokOr(v, "uid");
+            bool              have = false;
+            for (const SwitchValue& pv : pg->values) have = have || pv.uid == vu;
+            if (have || mapped_from.count(vu)) continue;
+            const std::string key = SwitchNameKey(PctDecode(TokOr(v, "name")));
+            for (const SwitchValue& pv : pg->values)
+                if (!taken.count(pv.uid) && SwitchNameKey(pv.name) == key) {
+                    out.push_back({vu, pv.uid});
+                    taken.insert(pv.uid);
+                    break;
+                }
+        }
+    }
+    return out;
 }
 
 // ---- gates ------------------------------------------------------------------------------------------------------
@@ -1689,6 +2047,115 @@ JournalStep DecideJournal(const SyncJournal& j, uint64_t base_now, bool file_exi
     }
     if (base_now == j.base_after && j.base_before != j.base_after && file_exists && file_hash == before) return JournalStep::RestoreAfter;
     return JournalStep::None;
+}
+
+uint64_t LinkStateHash(const LinkBase& b)
+{
+    return SyncTextHash(b.text + '\x1e' + b.file_base + '\x1e' + std::to_string(b.syncs));
+}
+
+LinkBase NextLinkBase(const LinkBase* old, const std::string& lib_uid, const SyncResult& r,
+                      const std::vector<std::pair<std::string, std::string>>& uid_map, int64_t now,
+                      const std::string& file_by, int64_t file_at)
+{
+    LinkBase nb = old ? *old : LinkBase();
+    nb.lib_uid = lib_uid;
+    if (!r.base.empty()) {
+        nb.text = r.base;
+        nb.file_base = r.file_base;
+    }
+    nb.uid_map = uid_map;
+    nb.syncs = (old ? old->syncs : 0) + 1;
+    nb.synced_at = now;
+    nb.file_by = file_by;
+    nb.file_at = file_at;
+    return nb;
+}
+
+namespace {
+
+// The newest Apply not undone (-1: all undone).
+int NewestApplied(const std::vector<bool>& undone)
+{
+    for (int i = static_cast<int>(undone.size()) - 1; i >= 0; --i)
+        if (!undone[static_cast<size_t>(i)]) return i;
+    return -1;
+}
+
+// Undo: the newest k <= newest applied whose state before is the state now. Redo: the newest q >= oldest undone whose
+// state after is the state now. -1 = none.
+int UndoTarget(const std::vector<SyncJournal>& js, const std::vector<bool>& undone, uint64_t state_now)
+{
+    for (int k = NewestApplied(undone); k >= 0; --k)
+        if (js[static_cast<size_t>(k)].base_before == state_now) return k;
+    return -1;
+}
+
+int RedoTarget(const std::vector<SyncJournal>& js, const std::vector<bool>& undone, uint64_t state_now)
+{
+    const int q0 = NewestApplied(undone) + 1;
+    for (int q = static_cast<int>(js.size()) - 1; q >= q0; --q)
+        if (js[static_cast<size_t>(q)].base_after == state_now) return q;
+    return -1;
+}
+
+// Every Apply in [a, b] started from the file the previous one wrote (nobody wrote it between them).
+bool Chained(const std::vector<SyncJournal>& js, int a, int b)
+{
+    for (int i = a + 1; i <= b; ++i)
+        if (js[static_cast<size_t>(i)].before != js[static_cast<size_t>(i - 1)].after) return false;
+    return true;
+}
+
+}  // namespace
+
+bool JournalChainCandidate(const std::vector<SyncJournal>& js, const std::vector<bool>& undone, uint64_t state_now,
+                           bool undo_names_sync, bool redo_names_sync)
+{
+    if (js.size() != undone.size()) return false;
+    if (undo_names_sync && UndoTarget(js, undone, state_now) >= 0) return true;
+    return redo_names_sync && RedoTarget(js, undone, state_now) >= 0;
+}
+
+JournalPlan DecideJournalChain(const std::vector<SyncJournal>& js, const std::vector<bool>& undone, uint64_t state_now,
+                               bool undo_names_sync, bool redo_names_sync, bool file_exists, uint64_t file_hash)
+{
+    JournalPlan plan;
+    plan.undone = undone;
+    if (js.size() != undone.size()) return plan;
+    const int p = NewestApplied(undone);
+    if (undo_names_sync) {
+        const int k = UndoTarget(js, undone, state_now);
+        if (k >= 0) {
+            for (int i = k; i <= p; ++i) plan.undone[static_cast<size_t>(i)] = true;
+            const SyncJournal& newest = js[static_cast<size_t>(p)];
+            if (file_exists && file_hash == SyncTextHash(js[static_cast<size_t>(k)].before)) return plan;  // already back
+            if (file_exists && file_hash == SyncTextHash(newest.after) && Chained(js, k, p)) {
+                plan.step = JournalStep::RestoreBefore;
+                plan.write = js[static_cast<size_t>(k)].before;
+                return plan;
+            }
+            plan.step = JournalStep::FileWrittenSince;
+            plan.drop = true;
+            return plan;
+        }
+    }
+    if (redo_names_sync) {
+        const int q = RedoTarget(js, undone, state_now);
+        if (q >= 0) {
+            const int q0 = p + 1;
+            for (int i = q0; i <= q; ++i) plan.undone[static_cast<size_t>(i)] = false;
+            if (file_exists && file_hash == SyncTextHash(js[static_cast<size_t>(q)].after)) return plan;  // already forward
+            if (file_exists && file_hash == SyncTextHash(js[static_cast<size_t>(q0)].before) && Chained(js, q0, q)) {
+                plan.step = JournalStep::RestoreAfter;
+                plan.write = js[static_cast<size_t>(q)].after;
+                return plan;
+            }
+            plan.undone = undone;  // the file moved: leave it alone, only the project is forward
+            return plan;
+        }
+    }
+    return plan;
 }
 
 // ---- texts ------------------------------------------------------------------------------------------------------
@@ -1741,13 +2208,14 @@ std::string SyncRowTip(const LibSyncCounts& c)
     return s + "Click to open Sync with file";
 }
 
-std::string SyncAppliedToast(int sent, int taken, const std::string& file)
+std::string SyncAppliedToast(int sent, int taken, const std::string& file, int open)
 {
     std::string s = "Applied: ";
     if (sent > 0) s += std::to_string(sent) + " written to " + file + " (the version before is kept as " + file + ".bak)";
     if (sent > 0 && taken > 0) s += ", ";
     if (taken > 0) s += std::to_string(taken) + " taken here";
     if (sent == 0 && taken == 0) s += "nothing to do";
+    if (open > 0) s += " \xC2\xB7 " + std::to_string(open) + (open == 1 ? " could not be applied: it stays listed" : " could not be applied: they stay listed");
     return s;
 }
 

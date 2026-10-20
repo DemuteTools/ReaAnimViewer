@@ -1509,6 +1509,32 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
         if (StoreReplaced()) return;
         rx -= cw + gap;
     }
+    // 13-77b: a linked library's container that differs from its file: "edited" (here) / "in file" / "both", " . N" when
+    // several; a click selects the row (its File section lists the changes). Review L4: right after the marks' column,
+    // before the hover tools, so a play button that shows on hover never moves it, and it never moves a clickable mark.
+    if (n && r.kind == TreeRowKind::Node && LibraryLinked(lib)) {
+        if (const SyncDiff* sd = LibrarySyncDiff(lib.uid)) {
+            const LibSyncCounts  sc = CountsOf(*sd, n->uid);
+            const std::string st = SyncTagText(sc);
+            if (!st.empty()) {
+                const float tw = ui::SmallTagWidth(st.c_str());
+                rx -= tw;
+                const bool  mixed = sc.both > 0 || (sc.here > 0 && sc.file > 0);
+                const ImU32 ink = mixed ? ui::kBoth : sc.here > 0 ? ui::kAccentInk : ui::kWarn;
+                const ImU32 line = mixed ? ui::kBothLine : sc.here > 0 ? ui::kAccentLine : ui::kWarnLine;
+                const ImU32 fill = mixed ? ui::kBothSoft : sc.here > 0 ? ui::kAccentSoft : ui::kWarnSoft;
+                ImGui::SetCursorScreenPos(ImVec2(rx, std::floor(cy - ui::SmallTagHeight() * 0.5f)));
+                ImGui::PushID("##synctag");
+                ImGui::SetNextItemAllowOverlap();
+                const bool clicked = ImGui::InvisibleButton("##st", ImVec2(tw, ui::SmallTagHeight()));
+                ui::DrawSmallTagTone(dl, ImVec2(rx, std::floor(cy - ui::SmallTagHeight() * 0.5f)), st.c_str(), ink, line, fill);
+                ui::ItemTipText(SyncTagTip(sc).c_str());
+                ImGui::PopID();
+                if (clicked) SelectOnly(r.row);
+                rx -= gap;
+            }
+        }
+    }
     if ((show_tools || lit) && n && g.hooks.play) {
         const float bs = ui::Dp(20.0f);
         rx -= bs;
@@ -1571,31 +1597,6 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
             ImGui::Dummy(ImVec2(tw, rh));
             ui::ItemTipText(tip.c_str());
             rx -= gap;
-        }
-    }
-    // 13-77b: a linked library's container that differs from its file: "edited" (here) / "in file" / "both", " . N" when
-    // several; a click selects the row (its File section lists the changes).
-    if (n && r.kind == TreeRowKind::Node && LibraryLinked(lib)) {
-        if (const SyncDiff* sd = LibrarySyncDiff(lib.uid)) {
-            const LibSyncCounts  sc = CountsOf(*sd, n->uid);
-            const std::string st = SyncTagText(sc);
-            if (!st.empty()) {
-                const float tw = ui::SmallTagWidth(st.c_str());
-                rx -= tw;
-                const bool  mixed = sc.both > 0 || (sc.here > 0 && sc.file > 0);
-                const ImU32 ink = mixed ? ui::kBoth : sc.here > 0 ? ui::kAccentInk : ui::kWarn;
-                const ImU32 line = mixed ? ui::kBothLine : sc.here > 0 ? ui::kAccentLine : ui::kWarnLine;
-                const ImU32 fill = mixed ? ui::kBothSoft : sc.here > 0 ? ui::kAccentSoft : ui::kWarnSoft;
-                ImGui::SetCursorScreenPos(ImVec2(rx, std::floor(cy - ui::SmallTagHeight() * 0.5f)));
-                ImGui::PushID("##synctag");
-                ImGui::SetNextItemAllowOverlap();
-                const bool clicked = ImGui::InvisibleButton("##st", ImVec2(tw, ui::SmallTagHeight()));
-                ui::DrawSmallTagTone(dl, ImVec2(rx, std::floor(cy - ui::SmallTagHeight() * 0.5f)), st.c_str(), ink, line, fill);
-                ui::ItemTipText(SyncTagTip(sc).c_str());
-                ImGui::PopID();
-                if (clicked) SelectOnly(r.row);
-                rx -= gap;
-            }
         }
     }
     const bool missing = n && SoundMissing(*n);
@@ -1924,7 +1925,13 @@ void LibraryListRow(const SoundStore& store, const SoundLibrary& lib, std::strin
     if (!up_t.empty()) up_w = ui::TextSizeIn(mark_f, up_t.c_str()).x;
     if (!down_t.empty()) down_w = ui::TextSizeIn(mark_f, down_t.c_str()).x;
     const float mark_gap = ui::Dp(4.0f);
-    if (up_w > 0.0f || down_w > 0.0f) { tk[nt] = 3; tw[nt++] = up_w + down_w + (up_w > 0.0f && down_w > 0.0f ? mark_gap : 0.0f) + ui::Dp(8.0f); }
+    // Review 13-77b L4: a linked library keeps the marks' slot at a fixed width whether they show or not, so their
+    // coming and going never moves the "!" or the missing count (both clickable) nor wraps them onto another line.
+    if (linked && !file_bad) {
+        const float fixed = ui::TextSizeIn(mark_f, "\xE2\x86\x91" "99").x + ui::TextSizeIn(mark_f, "\xE2\x86\x93" "99").x + mark_gap;
+        tk[nt] = 3;
+        tw[nt++] = std::max(fixed, up_w + down_w + (up_w > 0.0f && down_w > 0.0f ? mark_gap : 0.0f)) + ui::Dp(8.0f);
+    }
     // 13-21: a red "!" when blocked, an amber one for gaps; the tooltip lists every reason.
     std::string chk_tip;
     if (chk.blocked) chk_tip = "Blocked: " + chk.reason;
@@ -1956,6 +1963,10 @@ void LibraryListRow(const SoundStore& store, const SoundLibrary& lib, std::strin
         const char* t = tk[i] == 0 ? "!" : miss_t.c_str();
         ImGui::SetCursorScreenPos(ImVec2(tp[i].x, y));
         if (tk[i] == 3) {  // 13-77b: ↑N (accent) ↓N (warn): a click opens the library's root (its File section)
+            if (up_w <= 0.0f && down_w <= 0.0f) {  // nothing to show: the slot stays empty
+                ImGui::Dummy(ImVec2(tp[i].w, rh));
+                continue;
+            }
             const bool clicked = ImGui::InvisibleButton("##sync", ImVec2(tp[i].w, rh));
             const bool hov = ImGui::IsItemHovered();
             if (hov) dl->AddRectFilled(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), ui::kHover, ui::kRadiusSm);

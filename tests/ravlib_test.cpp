@@ -1187,7 +1187,11 @@ static void TestFirstSightTargets()
     s.libraries[3].ravlib_path.clear();  // unlinked
     LinkBase b;
     b.lib_uid = "L2";
+    b.text = "RAVLIB 2\nlibrary uid=L2 root=r\n";
     s.link_bases.push_back(b);  // has a base already
+    LinkBase e;
+    e.lib_uid = "L1";
+    s.link_bases.push_back(e);  // review 13-77b: a link with an empty text (an Apply with no common version) has none
     const std::vector<FolderRavlibText> files = {{"l1.RAVLIB", "L1", "t1"}, {"L2.ravlib", "L2", "t2"},
                                                  {"L3.ravlib", "L9", "t3"}, {"L4.ravlib", "L4", "t4"}};
     std::vector<std::string> asked;

@@ -71,6 +71,9 @@
 //   linkmap m=<file uid>:<project uid>,...           -- more of that map when it exceeds 32 KB (review 13-77a L3)
 //   bline t=<s> [more=1]                             -- one line of that text, percent-encoded; a line whose
 //                                                       encoded form exceeds 32 KB continues on the next bline
+//   fline t=<s> [more=1]                             -- review 13-77b H3: one line of the file's own text as last
+//                                                       read / written (project uid space), the same way; the
+//                                                       linkbase line's syncs=<n> counts the Applies
 // The auto / assign / character lines come first (a version without them keeps them as the header's
 // unknown lines), then the groups, then the libraries, each library's nodes in order.
 //

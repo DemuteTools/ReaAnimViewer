@@ -1160,6 +1160,7 @@ Fields LinkBaseFields(const LinkBase& b)
     if (b.synced_at != 0) f.push_back({"synced", FmtInt(b.synced_at)});
     if (!b.file_by.empty()) f.push_back({"by", Enc(b.file_by)});
     if (b.file_at != 0) f.push_back({"at", FmtInt(b.file_at)});
+    if (b.syncs != 0) f.push_back({"syncs", FmtInt(b.syncs)});
     return f;
 }
 
@@ -1206,6 +1207,7 @@ Got SetLinkBase(LinkBase& b, const std::string& k, const std::string& v)
     if (k == "synced") return G(ReadInt(v, &b.synced_at));
     if (k == "by") return G(ReadStr(v, &b.file_by));
     if (k == "at") return G(ReadInt(v, &b.file_at));
+    if (k == "syncs") return G(ReadInt(v, &b.syncs));
     if (k == "map") {
         b.uid_map.clear();
         return AppendLinkMap(b, v);
@@ -1220,29 +1222,34 @@ void WriteLinkBase(std::string& out, const LinkBase& b)
     if (!maps.empty()) lf.push_back({"map", maps[0]});
     WriteLine(out, "linkbase", lf, b.kept);
     for (size_t i = 1; i < maps.size(); ++i) out += "linkmap m=" + maps[i] + '\n';
-    size_t pos = 0;
-    while (pos < b.text.size()) {
-        size_t nl = b.text.find('\n', pos);
-        if (nl == std::string::npos) nl = b.text.size();
-        std::string line = b.text.substr(pos, nl - pos);
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        const std::string enc = Enc(line);
-        size_t            at = 0;
-        do {
-            size_t end = std::min(enc.size(), at + kBlineChunk);
-            // Never cut a %XX triplet.
-            if (end < enc.size()) {
-                if (enc[end - 1] == '%') --end;
-                else if (end >= 2 && enc[end - 2] == '%') end -= 2;
-            }
-            const bool more = end < enc.size();
-            out += "bline t=" + enc.substr(at, end - at);
-            if (more) out += " more=1";
-            out += '\n';
-            at = end;
-        } while (at < enc.size());
-        pos = nl + 1;
-    }
+    // One line per text line, split at 32 KB (review 13-77a L3); the file base on its own lines (review 13-77b H3).
+    auto lines = [&out](const std::string& text, const char* kind) {
+        size_t pos = 0;
+        while (pos < text.size()) {
+            size_t nl = text.find('\n', pos);
+            if (nl == std::string::npos) nl = text.size();
+            std::string line = text.substr(pos, nl - pos);
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            const std::string enc = Enc(line);
+            size_t            at = 0;
+            do {
+                size_t end = std::min(enc.size(), at + kBlineChunk);
+                // Never cut a %XX triplet.
+                if (end < enc.size()) {
+                    if (enc[end - 1] == '%') --end;
+                    else if (end >= 2 && enc[end - 2] == '%') end -= 2;
+                }
+                const bool more = end < enc.size();
+                out += std::string(kind) + " t=" + enc.substr(at, end - at);
+                if (more) out += " more=1";
+                out += '\n';
+                at = end;
+            } while (at < enc.size());
+            pos = nl + 1;
+        }
+    };
+    lines(b.text, "bline");
+    lines(b.file_base, "fline");
     WriteLines(out, b.kept_lines);
 }
 
@@ -1273,17 +1280,18 @@ bool ParseStoreCore(const std::string& text, SoundStore& s)
     SoundAssign*     asg = nullptr;  // 13-15a: the project / character assign read last
     SoundCharacter*  chr = nullptr;
     LinkBase*        lb = nullptr;  // 13-77a: the linkbase read last
-    std::string      lb_pending;    // a bline split in continuations
+    std::string      lb_pending;    // a bline / fline split in continuations
     bool             lb_open = false;
+    bool             lb_file = false;  // the pending line is the file base's (fline)
     auto             flush_bline = [&]() {
-        if (lb && lb_open) lb->text += lb_pending + "\n";
+        if (lb && lb_open) (lb_file ? lb->file_base : lb->text) += lb_pending + "\n";
         lb_pending.clear();
         lb_open = false;
     };
     for (; i < lines.size(); ++i) {
         std::vector<std::string> t;
         const std::string        kind = KindOf(lines[i], &t);
-        if (kind != "bline") flush_bline();
+        if ((kind != "bline" && kind != "fline") || (lb_open && lb_file != (kind == "fline"))) flush_bline();
         if (kind == "linkbase") {
             s.link_bases.emplace_back();
             lb = &s.link_bases.back();
@@ -1300,7 +1308,8 @@ bool ParseStoreCore(const std::string& text, SoundStore& s)
             ReadFields(t, 1, ignored, [&](const std::string& k, const std::string& v) {
                 return k == "m" ? AppendLinkMap(*lb, v) : Got::Unknown;
             });
-        } else if (kind == "bline" && lb) {
+        } else if ((kind == "bline" || kind == "fline") && lb) {
+            lb_file = kind == "fline";
             std::string chunk;
             bool        more = false;
             Kept        ignored;

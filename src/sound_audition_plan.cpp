@@ -690,10 +690,16 @@ bool EditLoopEndedAtEnd(const EditTransport& tp, double last_pos, double since_s
            since_s <= 0.5 && last_pos + std::max(since_s, 0.0) >= total - 0.05;  // review: a recent end only
 }
 
-void ReachCache::Set(const std::string& path, bool ok, double now_s, int64_t size)
+void ReachCache::Set(const std::string& path, bool ok, double now_s, int64_t size, bool deep)
 {
     if (m_.size() > 20000) m_.clear();  // a session of previews: never grows without end
-    m_[path] = Entry{ok, now_s, size};
+    Entry e{ok, now_s, size, -1.0};
+    if (ok) {
+        const auto it = m_.find(path);
+        // A shallow Yes keeps the deep one already known.
+        e.deep_at = deep ? now_s : (it != m_.end() && it->second.ok ? it->second.deep_at : -1.0);
+    }
+    m_[path] = e;
 }
 
 bool ReachCache::Last(const std::string& path, bool* ok, int64_t* size, double* age_s, double now_s) const
@@ -706,13 +712,33 @@ bool ReachCache::Last(const std::string& path, bool* ok, int64_t* size, double* 
     return true;
 }
 
-Reach ReachCache::Get(const std::string& path, double now_s) const
+Reach ReachCache::Get(const std::string& path, double now_s, bool deep) const
 {
     const auto it = m_.find(path);
     if (it == m_.end()) return Reach::Unknown;
-    const double age = now_s - it->second.at;
-    if (age < 0.0 || age > (it->second.ok ? kYes : kNo)) return Reach::Unknown;
-    return it->second.ok ? Reach::Yes : Reach::No;
+    const Entry& e = it->second;
+    if (!e.ok) {
+        const double age = now_s - e.at;
+        return (age < 0.0 || age > kNo) ? Reach::Unknown : Reach::No;
+    }
+    const double at = deep ? e.deep_at : e.at;
+    if (at < 0.0) return Reach::Unknown;  // only seen by its metadata: the content is not known readable
+    const double age = now_s - at;
+    return (age < 0.0 || age > kYes) ? Reach::Unknown : Reach::Yes;
+}
+
+bool WorkerWanted(int n_threads, int max_threads, int queued, int idle, double oldest_busy_s, double stuck_s)
+{
+    if (queued <= 0) return false;
+    if (n_threads <= 0) return true;
+    if (idle > 0 || n_threads >= max_threads) return false;
+    return oldest_busy_s > stuck_s;
+}
+
+PendingStep PendingNext(bool all_known, double age_s, double give_up_s)
+{
+    if (age_s > give_up_s) return PendingStep::GiveUp;
+    return all_known ? PendingStep::Start : PendingStep::Wait;
 }
 
 }  // namespace rav

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <deque>
 #include <limits>
 #include <set>
 #include <string>
@@ -1084,10 +1085,10 @@ void TestReachCache()
     CHECK(c.Get("a", 0.0) == Reach::Unknown);
     c.Set("a", true, 10.0);
     c.Set("b", false, 10.0);
-    CHECK(c.Get("a", 20.0) == Reach::Yes);
+    CHECK(c.Get("a", 14.0) == Reach::Yes);
     CHECK(c.Get("b", 11.0) == Reach::No);
     CHECK(c.Get("b", 14.0) == Reach::Unknown);  // a negative answer is asked again after kNo
-    CHECK(c.Get("a", 41.0) == Reach::Unknown);  // a positive one after kYes
+    CHECK(c.Get("a", 16.0) == Reach::Unknown);  // a positive one after kYes (5 s: a share that drops is noticed)
     CHECK(c.Get("a", 5.0) == Reach::Unknown);   // a clock that went back
     bool ok = false;
     int64_t sz = 0;
@@ -1097,6 +1098,47 @@ void TestReachCache()
     CHECK(c.Last("f", &ok, &sz, &age, 500.0) && ok && sz == 1234 && age > 489.0);  // the last answer, however old
     c.Set("f", false, 20.0);
     CHECK(c.Last("f", &ok, &sz, &age, 21.0) && !ok && sz == -1 && age > 0.9 && age < 1.1);
+    // Review H2: a metadata-only Yes is never enough to open the file; a deep one is, and a later shallow Yes keeps it.
+    c.Set("m", true, 100.0, 10, /*deep=*/false);
+    CHECK(c.Get("m", 101.0) == Reach::Unknown);
+    CHECK(c.Get("m", 101.0, /*deep=*/false) == Reach::Yes);
+    c.Set("m", true, 102.0, 10, true);
+    CHECK(c.Get("m", 103.0) == Reach::Yes);
+    c.Set("m", true, 104.0, 10, false);
+    CHECK(c.Get("m", 105.0) == Reach::Yes);       // still the deep answer of 102
+    CHECK(c.Get("m", 108.0) == Reach::Unknown);   // which expired (kYes = 5 s)
+    c.Set("m", false, 109.0, -1, false);
+    c.Set("m", true, 110.0, 10, false);
+    CHECK(c.Get("m", 110.5) == Reach::Unknown);   // a failure forgot the deep answer
+    c.Set("n", false, 100.0, -1, false);
+    CHECK(c.Get("n", 101.0) == Reach::No);        // a shallow No holds for the content too
+}
+
+void TestQueueAndPool()
+{
+    {  // M2: an urgent ask moves its queued path to the front
+        std::deque<std::string> q{"a", "b", "c", "d"};
+        CHECK(PromoteToFront(q, [](const std::string& s) { return s == "c"; }));
+        CHECK((q == std::deque<std::string>{"c", "a", "b", "d"}));
+        CHECK(PromoteToFront(q, [](const std::string& s) { return s == "c"; }));  // already first
+        CHECK((q == std::deque<std::string>{"c", "a", "b", "d"}));
+        CHECK(!PromoteToFront(q, [](const std::string& s) { return s == "zz"; }));
+        CHECK(q.size() == 4);
+    }
+    {  // M1: a pool grows only when everything is busy and the oldest has been stuck
+        CHECK(!WorkerWanted(0, 4, 0, 0, 0.0, 2.0));      // no work
+        CHECK(WorkerWanted(0, 4, 1, 0, 0.0, 2.0));       // first thread
+        CHECK(!WorkerWanted(1, 4, 3, 1, 0.0, 2.0));      // an idle one will take it
+        CHECK(!WorkerWanted(1, 4, 3, 0, 1.0, 2.0));      // busy, but not stuck yet
+        CHECK(WorkerWanted(1, 4, 3, 0, 2.5, 2.0));       // stuck: a helper starts
+        CHECK(!WorkerWanted(4, 4, 3, 0, 9.0, 2.0));      // never past the cap
+    }
+    {  // L2: a pending play older than its timeout is dropped even when its files answered
+        CHECK(PendingNext(false, 1.0, 6.0) == PendingStep::Wait);
+        CHECK(PendingNext(true, 1.0, 6.0) == PendingStep::Start);
+        CHECK(PendingNext(false, 7.0, 6.0) == PendingStep::GiveUp);
+        CHECK(PendingNext(true, 300.0, 6.0) == PendingStep::GiveUp);  // polled minutes late: never started
+    }
 }
 
 int main()
@@ -1128,6 +1170,7 @@ int main()
     TestAuditionEnded();
     TestPartsAudition();
     TestReachCache();
+    TestQueueAndPool();
     TestLoopSegNaN();
     if (g_fail) {
         std::printf("%d failure(s)\n", g_fail);

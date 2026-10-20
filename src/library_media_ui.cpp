@@ -30,6 +30,7 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -154,6 +155,7 @@ struct Task {
     std::string path;
     uint64_t    id = 0;  // its owner's generation
     PeakOwner   owner = PeakOwner::Preview;
+    bool        deep = false;  // Reach: also read the content (first and last 64 KB), not only the metadata
     std::vector<std::string> paths;  // Exists: the batch
 };
 
@@ -164,6 +166,7 @@ struct TaskResult {
     PeakOwner   owner = PeakOwner::Preview;
     bool        ok = false;  // the file is there
     long long   size = -1;   // Reach: its size when it is there
+    bool        deep = false;  // Reach: the content was read
     std::vector<std::string> paths;  // Exists: the batch, and whether each file is there
     std::vector<char>        found;
 };
@@ -186,9 +189,32 @@ bool TaskStale(const Task& t)
     }
 }
 
-// One thread running tasks in order (front pushes first); results wait in `out_` for the draw.
+// Review H2: a real read of the file's content (the first and last 64 KB), so a cloud drive fetches it and a dropped
+// share fails here, on the worker, not later on the UI thread's open. Metadata alone is answered from the drive's cache.
+bool ReadsContent(const std::filesystem::path& fp, std::uintmax_t size)
+{
+    std::ifstream in(fp, std::ios::binary);
+    if (!in) return false;
+    constexpr std::streamsize kChunk = 64 * 1024;
+    std::vector<char>         buf(static_cast<size_t>(kChunk));
+    in.read(buf.data(), kChunk);
+    if (in.bad() || (in.fail() && in.gcount() == 0 && size > 0)) return false;
+    if (size > static_cast<std::uintmax_t>(2 * kChunk)) {  // the tail too (WAVs keep chunks after the audio)
+        in.clear();
+        in.seekg(static_cast<std::streamoff>(size - static_cast<std::uintmax_t>(kChunk)), std::ios::beg);
+        in.read(buf.data(), kChunk);
+        if (in.bad() || in.gcount() == 0) return false;
+    }
+    return true;
+}
+
+// Worker threads running tasks in order (front pushes first); results wait in `out_` for the draw. Review M1: one
+// thread by default; when work is queued and every thread has been stuck in a file call for kStuckS (a dead share), a
+// helper starts (up to `max`), so one hung path never blocks the answers of the others.
 class DiskWorker {
 public:
+    explicit DiskWorker(int max_threads = 1) : max_(max_threads) {}
+
     void Push(Task t, bool front)
     {
         if (g_quitting) return;
@@ -196,12 +222,29 @@ public:
             std::lock_guard<std::mutex> lk(m_);
             if (front) q_.push_front(std::move(t));
             else q_.push_back(std::move(t));
-            if (!th_.joinable()) {
-                ++alive_;
-                th_ = std::thread([this] { Run(); });
-            }
+            Grow();
         }
         cv_.notify_one();
+    }
+    // Review M2: the queued Reach task of `path` becomes deep and goes to the front. False: none is queued.
+    bool Promote(const std::string& path)
+    {
+        std::lock_guard<std::mutex> lk(m_);
+        if (!PromoteToFront(q_, [&](const Task& t) { return t.kind == TaskKind::Reach && t.path == path; })) return false;
+        q_.front().deep = true;
+        return true;
+    }
+    // From the polling UI: a helper starts when the queue is blocked behind a stuck call.
+    void Tick()
+    {
+        bool grew;
+        {
+            std::lock_guard<std::mutex> lk(m_);
+            const size_t before = ws_.size();
+            Grow();
+            grew = ws_.size() != before;
+        }
+        if (grew) cv_.notify_one();
     }
     std::vector<TaskResult> Take()
     {
@@ -210,29 +253,62 @@ public:
         r.swap(out_);
         return r;
     }
-    // Unload: the queued tasks are dropped, the running one stops (g_quitting), the thread joined.
+    // Unload: the queued tasks are dropped, the running one stops (g_quitting), the threads joined.
     void Stop()
     {
+        std::vector<std::thread> ths;
         {
             std::lock_guard<std::mutex> lk(m_);
             stop_ = true;
             q_.clear();
+            for (Wk& w : ws_)
+                if (w.th.joinable()) ths.push_back(std::move(w.th));
         }
         cv_.notify_all();
-        JoinWithin(th_, [this] { return alive_.load() == 0; });  // freeze audit #8: a check stuck on a dead share is abandoned
+        // freeze audit #8: a check stuck on a dead share is abandoned
+        const bool ended = JoinAllWithin(ths, [this] { return alive_.load() <= 0; });
         Take();
         std::lock_guard<std::mutex> lk(m_);
+        if (!ended) (void)new std::deque<Wk>(std::move(ws_));  // abandoned threads still point at their slot: leaked
+        ws_.clear();
         stop_ = false;
     }
 
 private:
-    void Run()
+    struct Wk {
+        std::thread th;
+        int64_t     busy_ns = 0;  // when its task started (0 = idle); under m_
+    };
+    static int64_t NowNs()
+    {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
+    // m_ held.
+    void Grow()
+    {
+        if (stop_) return;
+        int    busy = 0;
+        double oldest = 0.0;
+        const int64_t now = NowNs();
+        for (const Wk& w : ws_)
+            if (w.busy_ns > 0) {
+                ++busy;
+                oldest = std::max(oldest, static_cast<double>(now - w.busy_ns) * 1e-9);
+            }
+        const int n = static_cast<int>(ws_.size());
+        if (!WorkerWanted(n, max_, static_cast<int>(q_.size()), n - busy, oldest, kStuckS)) return;
+        ws_.emplace_back();
+        Wk* w = &ws_.back();
+        ++alive_;
+        w->th = std::thread([this, w, n] { Run(w, n); });
+    }
+    void Run(Wk* w, int index)
     {
         struct Alive {
             std::atomic<int>& n;
             ~Alive() { --n; }
         } alive{alive_};
-        const int slot = RAV_WORKER_SLOT("Media Explorer disk", 0);  // freeze audit
+        const int slot = RAV_WORKER_SLOT("Media Explorer disk", index);  // freeze audit
         (void)slot;
         for (;;) {
             RAV_WORKER_IDLE(slot);
@@ -243,14 +319,20 @@ private:
                 if (stop_) return;
                 t = std::move(q_.front());
                 q_.pop_front();
+                w->busy_ns = NowNs();
             }
-            if (TaskStale(t)) continue;
+            if (TaskStale(t)) {
+                std::lock_guard<std::mutex> lk(m_);
+                w->busy_ns = 0;
+                continue;
+            }
             RAV_WORKER_BUSY(slot, "checking", t.path);
             TaskResult r;
             r.kind = t.kind;
             r.path = t.path;
             r.id = t.id;
             r.owner = t.owner;
+            r.deep = t.deep;
             // Nothing may escape this thread (a throw would end REAPER): a failed task still answers,
             // so a waiting use never waits forever.
             try {
@@ -269,6 +351,7 @@ private:
                         const std::uintmax_t sz = std::filesystem::file_size(fp, ec);
                         r.ok = sz != static_cast<std::uintmax_t>(-1) && !ec;
                         if (r.ok) r.size = static_cast<long long>(sz);
+                        if (r.ok && t.deep) r.ok = ReadsContent(fp, sz);  // the file is really readable (H2)
                     }
                 }
             } catch (...) {
@@ -276,10 +359,13 @@ private:
             }
             std::lock_guard<std::mutex> lk(m_);
             out_.push_back(std::move(r));
+            w->busy_ns = 0;
         }
     }
 
-    std::thread             th_;
+    static constexpr double kStuckS = 2.0;
+    const int               max_;
+    std::deque<Wk>          ws_;
     std::atomic<int>        alive_{0};
     std::mutex              m_;
     std::condition_variable cv_;
@@ -289,11 +375,13 @@ private:
 };
 
 DiskWorker g_rows;    // Exists: the rows' checks, never ahead of a preview or a use
-DiskWorker g_probe;   // Reach (quick, but may stall on an offline share)
+DiskWorker g_probe(4);  // Reach (quick, but may stall on an offline share: helpers start behind a stuck call)
 
 // Freeze fix (audit #1): the files the probe reached lately, for sound_audition (which asks before it opens).
 ReachCache            g_reach;
 std::set<std::string> g_reach_inflight;  // asked and not answered yet (main thread): one task per path at a time
+std::set<std::string> g_reach_deep;      // the paths with a deep (content read) ask outstanding
+std::vector<TaskResult> g_probe_mine;    // the panel's own answers (preview, use), kept for its PollWorkers
 double     ReachNow()
 {
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -367,6 +455,7 @@ void StartPreview(const std::string& path, double from, double to, int frame)
     t.path = path;
     t.id = ++g_open_gen;
     t.owner = PeakOwner::Open;
+    t.deep = true;  // the UI thread opens it next
     g_probe.Push(std::move(t), true);
 }
 
@@ -691,6 +780,22 @@ void AskPeaks()
 
 void CommitPending();
 
+// Review H1: the probe's answers go into the reach cache (what the other tools read) from anywhere; what belongs to the
+// Media Explorer's own preview or use waits in g_probe_mine for the panel's PollWorkers, so a store write or a preview
+// start never runs inside someone else's gesture.
+void DrainProbe()
+{
+    g_probe.Tick();
+    for (TaskResult& r : g_probe.Take()) {
+        g.exists.Set(r.path, r.ok);
+        g_reach.Set(r.path, r.ok, ReachNow(), r.size, r.deep);
+        if (r.deep) g_reach_deep.erase(r.path);
+        if (r.deep || g_reach_deep.count(r.path) == 0) g_reach_inflight.erase(r.path);
+        if (r.owner == PeakOwner::Audition) continue;  // only the cache: sound_audition reads it
+        g_probe_mine.push_back(std::move(r));
+    }
+}
+
 // The workers' results (rows found or missing, the preview's source, the files reached) and the
 // peaks read.
 void PollWorkers()
@@ -702,11 +807,10 @@ void PollWorkers()
             g.an.ready = true;
         }
     }
-    for (TaskResult& r : g_probe.Take()) {
-        g.exists.Set(r.path, r.ok);
-        g_reach.Set(r.path, r.ok, ReachNow(), r.size);
-        g_reach_inflight.erase(r.path);
-        if (r.owner == PeakOwner::Audition) continue;  // only the cache: sound_audition reads it
+    DrainProbe();
+    std::vector<TaskResult> mine;
+    mine.swap(g_probe_mine);
+    for (TaskResult& r : mine) {
         if (r.owner == PeakOwner::Open) {
             if (!g_pv.opening || r.id != g_open_gen) continue;
             PCM_source* src = r.ok && f_create ? f_create(r.path.c_str()) : nullptr;
@@ -1644,11 +1748,18 @@ void StopMediaPreview() { StopPreviewNow(); }
 void MediaReachAsk(const std::string& path, bool urgent)
 {
     if (path.empty() || g_quitting) return;
-    if (!g_reach_inflight.insert(path).second) return;
+    if (urgent) {  // an audition about to open the file: a content read, ahead of the background checks
+        if (!g_reach_deep.insert(path).second) return;  // already asked that way
+        const bool queued = !g_reach_inflight.insert(path).second;
+        if (queued && g_probe.Promote(path)) return;  // review M2: its queued background task moves up, deep
+    } else if (!g_reach_inflight.insert(path).second) {
+        return;
+    }
     Task t;
     t.kind = TaskKind::Reach;
     t.path = path;
     t.owner = PeakOwner::Audition;
+    t.deep = urgent;
     g_probe.Push(std::move(t), urgent);  // urgent: ahead of the queued background checks
 }
 
@@ -1662,9 +1773,9 @@ bool MediaReachLast(const std::string& path, bool* ok, long long* size, double* 
 
 int MediaReachInflight() { return static_cast<int>(g_reach_inflight.size()); }
 
-int MediaReachGet(const std::string& path) { return static_cast<int>(g_reach.Get(path, ReachNow())); }
+int MediaReachGet(const std::string& path) { return static_cast<int>(g_reach.Get(path, ReachNow(), /*deep=*/true)); }
 
-void MediaReachPoll() { PollWorkers(); }
+void MediaReachPoll() { DrainProbe(); }
 
 bool MediaPanelTakesArrows() { return g.takes_arrows; }
 
@@ -1678,6 +1789,8 @@ void QuitLibraryMedia()
     g_rows.Stop();
     g_probe.Stop();
     g_reach_inflight.clear();
+    g_reach_deep.clear();
+    g_probe_mine.clear();
     g.exists.Clear();
     MediaDbStop();
     if (g_pv.cs_ready) {

@@ -7,6 +7,7 @@
 #pragma once
 
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <map>
 #include <set>
@@ -266,12 +267,17 @@ std::string VariationCountText(int detected, const std::vector<SoundFrame>& fram
 // Freeze fix (audit #1): what the previews know about a file before they open it (the UI thread never waits on a
 // file that may sit on a stalled share or an offline cloud drive). A probe worker answers "reached" or not; a
 // positive answer stays good for `kYes` s, a negative one for `kNo` s (then the file is asked again).
+// Review H2: a "deep" answer means the worker really read the file's content (first and last 64 KB, which makes a
+// cloud drive fetch it), a shallow one only saw its metadata (a cloud drive answers that from its cache while the
+// content is offline). The UI thread opens a file only on a deep Yes, which is trusted for a short time (kYes): a
+// share that drops later is noticed within seconds. Shallow answers feed the missing-sounds counts (Last).
 enum class Reach { Unknown, Yes, No };
 class ReachCache {
 public:
-    static constexpr double kYes = 30.0, kNo = 3.0;
-    void  Set(const std::string& path, bool ok, double now_s, int64_t size = -1);
-    Reach Get(const std::string& path, double now_s) const;
+    static constexpr double kYes = 5.0, kNo = 3.0;
+    void  Set(const std::string& path, bool ok, double now_s, int64_t size = -1, bool deep = true);
+    // `deep`: the caller is about to open the file itself (only a deep Yes counts).
+    Reach Get(const std::string& path, double now_s, bool deep = true) const;
     // Freeze audit #2: the last answer whatever its age (the missing-sounds checks keep it while a newer one is
     // asked: "unknown yet" never turns a present file missing): false when the path was never answered.
     bool Last(const std::string& path, bool* ok, int64_t* size, double* age_s, double now_s) const;
@@ -280,9 +286,37 @@ private:
     struct Entry {
         bool    ok = false;
         double  at = 0.0;
-        int64_t size = -1;  // the file's size when reached
+        int64_t size = -1;     // the file's size when reached
+        double  deep_at = -1;  // when a deep read last succeeded (< 0: never since the last failure)
     };
     std::map<std::string, Entry> m_;
 };
+
+// Review M2: a path already waiting in a queue moves to the front (true), so an urgent ask is not stuck behind
+// the background checks queued earlier. The queue keeps its other tasks' order.
+template <class T, class Pred>
+bool PromoteToFront(std::deque<T>& q, Pred match)
+{
+    for (size_t i = 0; i < q.size(); ++i)
+        if (match(q[i])) {
+            if (i > 0) {
+                T t = std::move(q[i]);
+                q.erase(q.begin() + static_cast<std::ptrdiff_t>(i));
+                q.push_front(std::move(t));
+            }
+            return true;
+        }
+    return false;
+}
+
+// Review M1: whether a worker pool starts one more thread. Work is queued and every thread is busy, and the oldest
+// busy one has been stuck for `stuck_s` (a stat on a dead share): the others must not wait behind it. Never past
+// `max_threads`; the first thread starts at once.
+bool WorkerWanted(int n_threads, int max_threads, int queued, int idle, double oldest_busy_s, double stuck_s);
+
+// Review L2: what a play waiting for its files does now. A play older than its timeout is dropped whatever the
+// answers (never started minutes late when nothing polled it meanwhile).
+enum class PendingStep { Wait, Start, GiveUp };
+PendingStep PendingNext(bool all_known, double age_s, double give_up_s);
 
 }  // namespace rav

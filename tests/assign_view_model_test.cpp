@@ -678,6 +678,128 @@ static void TestValueSounds()
     CHECK(inherit_uid(item2, "mat") == "mat_Wood" && ChipSound({&item2}, "mat", "").state == ValueSound::Own);
 }
 
+// ---- 13-66: staged Switch values ----------------------------------------------------------------------
+
+static StagedEntry Ent(StageScope sc, const std::string& owner, const std::string& key, const std::string& group, const std::string& value)
+{
+    StagedEntry e;
+    e.scope = sc;
+    e.owner = owner;
+    e.key = key;
+    e.group = group;
+    e.value = value;
+    return e;
+}
+
+static void TestStaging()
+{
+    SoundStore st = MakeStore();
+    SetAssignLibraryIn(st.project, {"legs"}, LibState::Library, "hero");
+    std::vector<Block> blocks = {Auto(AutoKind::Step, 'L', "a0"), Auto(AutoKind::Step, 'R', "")};  // the second has no rid yet
+    ItemSounds         rec;
+
+    // Stage two targets: counts, nothing written (the record is a copy).
+    Staged s;
+    CHECK(s.Empty() && s.Targets() == 0);
+    CHECK(s.Stage(Ent(StageScope::Item, "G1", "b0", "feet", "feet_Boots"), ""));
+    CHECK(s.Stage(Ent(StageScope::Item, "G1", "item", "loco", "loco_Run"), ""));
+    CHECK(s.Changes() == 2 && s.Targets() == 2 && s.Items() == 1 && !s.Empty());
+    CHECK(rec.rules.empty() && rec.item_values.empty());
+    // A second value of the same group on the same target replaces the entry.
+    CHECK(s.Stage(Ent(StageScope::Item, "G1", "b0", "feet", "feet_Shoes"), "") && s.Changes() == 2);
+    CHECK(s.Find(StageScope::Item, "G1", "b0", "feet")->value == "feet_Shoes");
+    // Another item: the bar counts it ("2 items").
+    CHECK(s.Stage(Ent(StageScope::Item, "G2", "b0", "feet", "feet_Boots"), "") && s.Items() == 2 && s.Targets() == 3);
+    const StagedBar bar = StagedBarText(s.Changes(), s.Targets(), s.Items());
+    CHECK(bar.bold == "3 Switch changes" && bar.rest == "on 3 targets \xC2\xB7 2 items, not placed yet" &&
+          bar.sub == " \xC2\xB7 Commit places them in one undo step");
+    const StagedBar one = StagedBarText(1, 1, 1);
+    CHECK(one.bold == "1 Switch change" && one.rest == "on 1 target, not placed yet");
+    CHECK(CommitChangeText("Hero_Run_01", 3, 2).rest == " \xC2\xB7 Hero_Run_01 \xC2\xB7 3 changes on 2 targets");
+
+    // Unstage: clicking the applied value drops the entry; Drop of a missing one is a no-op.
+    CHECK(!s.Stage(Ent(StageScope::Item, "G2", "b0", "feet", ""), ""));
+    CHECK(s.Items() == 1 && s.Changes() == 2 && !s.Drop(StageScope::Item, "G2", "b0", "feet"));
+    CHECK(s.HasTarget(StageScope::Item, "G1", "b0") && !s.HasTarget(StageScope::Item, "G2", "b0"));
+
+    // Reach preview: Loco staged Crouch on the item row, Shoes becomes not reached (as the record would say).
+    Staged r;
+    r.Stage(Ent(StageScope::Item, "G1", "item", "loco", "loco_Crouch"), "loco_Run");
+    ItemSounds run = rec;
+    run.item_values.push_back({"loco", "loco_Run", {}});
+    ItemSounds pre = run;
+    std::vector<Block> pre_blocks = blocks;
+    CHECK(ApplyStagedToItem(r, "G1", pre, pre_blocks) == 1 && run.item_values[0].value_uid == "loco_Run");
+    Target before = MakeTarget(st, run, nullptr, blocks[0], "b0", "x");
+    Target after = MakeTarget(st, pre, nullptr, pre_blocks[0], "b0", "x");
+    CHECK(before.groups[1].reached && !after.groups[1].reached && after.groups[1].not_reached == "not reached under Crouch");
+    CHECK(PlaysText(after) == std::string("FS Hero \xE2\x80\xBA Crouch"));
+
+    // Inherit preview: an item value staged shows as the inherit of a rule.
+    Staged inh;
+    inh.Stage(Ent(StageScope::Item, "G1", "item", "feet", "feet_Boots"), "");
+    ItemSounds pre2 = rec;
+    std::vector<Block> pre2_blocks = blocks;
+    ApplyStagedToItem(inh, "G1", pre2, pre2_blocks);
+    Target t2 = MakeTarget(st, pre2, nullptr, pre2_blocks[0], "b0", "x");
+    CHECK(t2.groups[1].inherit_name == "Boots" && t2.groups[1].inherit_from == "item" && !t2.groups[1].own);
+    // Another item's entry does not touch this record.
+    ItemSounds other = rec;
+    std::vector<Block> ob = blocks;
+    CHECK(ApplyStagedToItem(inh, "G9", other, ob) == 0 && other.item_values.empty());
+
+    // A rule without rid: previewed through a provisional rid; the real block keeps none.
+    Staged nr;
+    nr.Stage(Ent(StageScope::Item, "G1", "b1", "feet", "feet_Boots"), "");
+    ItemSounds pre3 = rec;
+    std::vector<Block> pre3_blocks = blocks;
+    CHECK(ApplyStagedToItem(nr, "G1", pre3, pre3_blocks) == 1);
+    CHECK(pre3_blocks[1].rid == ProvisionalRid(1) && blocks[1].rid.empty());
+    Target t3 = MakeTarget(st, pre3, nullptr, pre3_blocks[1], "b1", "x");
+    CHECK(t3.groups[1].own && t3.groups[1].value_name == "Boots");
+    CHECK(AppliedItemValue(pre3, pre3_blocks, "b1", "feet") == "feet_Boots" && AppliedItemValue(rec, blocks, "b1", "feet").empty());
+
+    // Project and Character entries go to a store copy / a character record.
+    Staged ks;
+    StagedEntry pe = Ent(StageScope::Project, "", "legs", "feet", "feet_Boots");
+    CHECK(ks.Stage(pe, AppliedKeyValue(st.project, "legs", "feet")));
+    StagedEntry ce = Ent(StageScope::Character, CharacterOwner("sk1", ""), "legs", "loco", "loco_Run");
+    ce.character.skeleton = "sk1";
+    CHECK(ks.Stage(ce, "") && ks.Targets() == 2 && ks.Items() == 0);
+    SoundStore copy = st;
+    CHECK(ApplyStagedToStore(ks, copy) == 2 && copy.characters.size() == 1);
+    CHECK(AppliedKeyValue(copy.project, "legs", "feet") == "feet_Boots" && AppliedKeyValue(st.project, "legs", "feet").empty() &&
+          st.characters.empty());
+    SoundCharacter ch;
+    ch.skeleton = "sk1";
+    CHECK(ApplyStagedToCharacter(ks, ch) == 1 && AppliedKeyValue(ch.assigns, "legs", "loco") == "loco_Run");
+    SoundCharacter other_ch;
+    other_ch.skeleton = "sk2";
+    CHECK(ApplyStagedToCharacter(ks, other_ch) == 0);
+
+    // An entry that becomes equal after an outside change drops out; "Commit changes nothing" = the set is empty.
+    Staged eq;
+    eq.Stage(Ent(StageScope::Item, "G1", "b0", "feet", "feet_Boots"), "");
+    eq.Stage(Ent(StageScope::Item, "G1", "item", "loco", "loco_Run"), "");
+    eq.Stage(Ent(StageScope::Item, "G7", "item", "loco", "loco_Run"), "");  // another item: not judged
+    ItemSounds outside = rec;
+    outside.item_values.push_back({"loco", "loco_Run", {}});
+    RuleSounds orule;
+    orule.rid = "a0";
+    orule.values.push_back({"feet", "feet_Boots", {}});
+    outside.rules.push_back(orule);
+    const int dropped = eq.DropEqual([&](const StagedEntry& e, std::string* applied) {
+        if (e.owner != "G1") return false;
+        *applied = AppliedItemValue(outside, blocks, e.key, e.group);
+        return true;
+    });
+    CHECK(dropped == 2 && eq.Changes() == 1 && eq.Find(StageScope::Item, "G7", "item", "loco"));
+
+    // Cancel: Clear drops all, no entry left.
+    s.Clear();
+    CHECK(s.Empty() && s.Changes() == 0 && s.Items() == 0);
+}
+
 int main()
 {
     TestScopes();
@@ -690,6 +812,7 @@ int main()
     TestTitleAndLadder();
     TestSelection();
     TestValueSounds();
+    TestStaging();
     if (g_fail) {
         std::printf("%d check(s) failed\n", g_fail);
         return 1;

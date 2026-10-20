@@ -113,6 +113,18 @@ SoundReport SetRulesAssignLibrary(MediaItem* item, std::vector<std::string> rids
 SoundReport SetRulesAssignValue(MediaItem* item, std::vector<std::string> rids, std::string group_uid,
                                 std::string value_uid, std::vector<int> blocks = {}, bool* changed = nullptr);
 // (`changed`, when given: false when the edit changed nothing, so no undo point was made.)
+// 13-66: the assignment window's staged Switch values, written together: ONE undo point "RAV: Set sound values" and
+// one re-place pass (each event of the rules the edits reach, once). An edit equal to what is stored changes nothing;
+// when no edit changes anything there is no undo point (`changed` false).
+struct AssignValueEdit {
+    int          scope = 2;  // 0 Project, 1 Character, 2 Item
+    std::string  item_guid;  // Item scope: the animation item (its pool follows)
+    int          block = -1; // Item scope: the rule's block; -1 = the Item values row
+    CharacterRef character;  // Character scope
+    std::string  key;        // Project / Character scope: "legs", "legs.step"
+    std::string  group, value;  // value "" = inherit
+};
+SoundReport CommitAssignValues(const std::vector<AssignValueEdit>& edits, bool* changed = nullptr);
 // The RAV items of the project (the assignment window's item picker).
 std::vector<MediaItem*> ProjectRavItems();
 

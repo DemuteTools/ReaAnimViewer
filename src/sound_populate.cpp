@@ -2185,6 +2185,150 @@ SoundReport SetRulesAssignValue(MediaItem* item, std::vector<std::string> rids, 
     return rep;
 }
 
+// 13-66: the staged Switch values of the assignment window, written in one undo point and re-placed in one pass.
+SoundReport CommitAssignValues(const std::vector<AssignValueEdit>& edits, bool* changed)
+{
+    SoundReport rep;
+    if (changed) *changed = false;
+    try {
+        if (edits.empty()) return rep;
+        struct ItemEdits {
+            MediaItem*                          item = nullptr;
+            std::vector<const AssignValueEdit*> list;
+        };
+        std::vector<ItemEdits>              items;
+        std::vector<const AssignValueEdit*> store_edits;
+        for (const AssignValueEdit& e : edits) {
+            if (e.scope != 2) {
+                store_edits.push_back(&e);
+                continue;
+            }
+            MediaItem* it = FindItemByGuid(e.item_guid);
+            if (!it || !RavTakeOf(it) || e.group.empty()) continue;
+            ItemEdits* slot = nullptr;
+            for (ItemEdits& x : items)
+                if (x.item == it) slot = &x;
+            if (!slot) {
+                items.push_back({it, {}});
+                slot = &items.back();
+            }
+            slot->list.push_back(&e);
+        }
+        const SoundStore before = GetSoundStore(nullptr);
+        auto apply_store = [&](SoundStore& st) {
+            bool c = false;
+            for (const AssignValueEdit* e : store_edits) {
+                if (e->group.empty()) continue;
+                if (e->scope == 0) {
+                    if (SetAssignValueIn(st.project, {e->key}, e->group, e->value)) c = true;
+                } else if (EditCharacter(st, e->character, [&](SoundCharacter& ch) {
+                               return SetAssignValueIn(ch.assigns, {e->key}, e->group, e->value);
+                           })) {
+                    c = true;
+                }
+            }
+            return c;
+        };
+        bool any = false;  // an edit that changes nothing makes no undo point
+        if (!store_edits.empty()) {
+            SoundStore probe = before;
+            if (apply_store(probe)) any = true;
+        }
+        for (const ItemEdits& ie : items) {
+            ItemSounds    probe = ReadItemSounds(ie.item);
+            ItemRulesRead rr;
+            const bool    have = ReadItemRules(ie.item, &rr) && rr.valid;
+            for (const AssignValueEdit* e : ie.list) {
+                if (e->block < 0) {
+                    if (SetValueIn(probe.item_values, e->group, e->value)) any = true;
+                    continue;
+                }
+                if (!have || static_cast<size_t>(e->block) >= rr.rules.blocks.size()) continue;
+                const std::string& rid = rr.rules.blocks[static_cast<size_t>(e->block)].rid;
+                if (rid.empty()) {
+                    if (!e->value.empty()) any = true;
+                } else if (SetRulesValue(probe, {rid}, e->group, e->value)) {
+                    any = true;
+                }
+            }
+        }
+        if (!any) return rep;
+        if (changed) *changed = true;
+        {
+            SoundUndoScope undo(nullptr, "RAV: Set sound values");
+            ItemIndexScope index;
+            std::map<MediaItem*, std::set<std::string>> rid_todo;
+            std::set<MediaItem*>                        whole_todo;
+            for (const ItemEdits& ie : items) {
+                bool needs_rids = false;
+                for (const AssignValueEdit* e : ie.list)
+                    if (e->block >= 0) needs_rids = true;
+                if (needs_rids) EnsureRids(ie.item);
+                struct Resolved {
+                    std::string rid;  // "" = the Item values row
+                    std::string group, value;
+                };
+                std::vector<Resolved> res;
+                for (const AssignValueEdit* e : ie.list) {
+                    if (e->block < 0) {
+                        res.push_back({std::string(), e->group, e->value});
+                        continue;
+                    }
+                    const std::string rid = RidOf(ie.item, e->block);
+                    if (!rid.empty()) res.push_back({rid, e->group, e->value});
+                }
+                if (res.empty()) continue;
+                const std::vector<MediaItem*> members = WithPoolMembers({ie.item});
+                for (MediaItem* m : members) {
+                    ModifyItemSounds(m, nullptr, [&](ItemSounds& s) {
+                        bool c = false;
+                        for (const Resolved& r : res) {
+                            if (r.rid.empty()) c = SetValueIn(s.item_values, r.group, r.value) || c;
+                            else c = SetRulesValue(s, {r.rid}, r.group, r.value) || c;
+                        }
+                        return c;
+                    });
+                    for (const Resolved& r : res) {
+                        if (r.rid.empty()) whole_todo.insert(m);
+                        else rid_todo[m].insert(r.rid);
+                    }
+                }
+            }
+            if (!store_edits.empty()) ModifySoundStore(nullptr, nullptr, apply_store);
+            const SoundStore                        after = GetSoundStore(nullptr);
+            const std::vector<MediaItem*>           all = ByPosition(AllRavItems());
+            std::map<std::string, std::vector<int>> carried;  // avoid-repeat across the items, in time order
+            BusyScope                               busy("Updating sounds");
+            for (size_t k = 0; k < all.size(); ++k) {
+                MediaItem* it = all[k];
+                busy.Item(static_cast<int>(k), static_cast<int>(all.size()));
+                ItemRulesRead rr;
+                if (!ReadItemRules(it, &rr) || !rr.valid) continue;
+                std::set<std::string> rids;
+                if (!store_edits.empty()) {
+                    const ItemRigInfo rig = ItemRig(it);
+                    for (const std::string& r : ChangedRids(before, after, ReadItemSounds(it), rr.rules.blocks, rig.skeleton, rig.model))
+                        rids.insert(r);
+                }
+                const bool whole = whole_todo.count(it) > 0;
+                const auto mine = rid_todo.find(it);
+                if (mine != rid_todo.end()) rids.insert(mine->second.begin(), mine->second.end());
+                if (!whole && rids.empty()) continue;
+                PopOpts o;
+                o.only_populated = true;
+                o.follow_assign = true;  // every event of the rules follows the assignment
+                o.carry = &carried;
+                if (!whole) o.rids.assign(rids.begin(), rids.end());
+                PopulateOne(it, after, o, rep, nullptr);
+            }
+        }
+        UpdateArrange();
+    } catch (...) {
+        AddLine(rep, ReportKind::Blocked, "Internal error: the gesture stopped part way (Ctrl+Z undoes it)", "", "", 0.0);
+    }
+    return rep;
+}
+
 std::vector<MediaItem*> ProjectRavItems()
 {
     return AllRavItems();

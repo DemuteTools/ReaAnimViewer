@@ -114,8 +114,15 @@ struct State {
     std::vector<av::RigIn> rigs;
     std::string   kit_skel, kit_model;  // the kit sheet's character picker (its rig: a key changes when stored)
     std::string   from_library;         // 13-43: opened from the Library on this library: its Overview cells are lit
+    // 13-66: the staged Switch values (memory only), and the "N changes not applied" dialog on a close.
+    av::Staged    staged;
+    bool          confirm_close = false;
+    ReaProject*   staged_proj = nullptr;  // the REAPER project they were staged in
 };
 State g;
+
+float StagedDot(ImDrawList* dl, ImVec2 p, float w, float rh, float pad, bool staged);  // 13-66
+void  RequestClose();                                                                  // 13-66
 
 // ---- Per-frame data ---------------------------------------------------------------------------------
 
@@ -142,6 +149,16 @@ struct Frame {
     std::string            item_name, char_name, pool_text;
     MediaItem*             item_ptr = nullptr;  // the item this frame was built from
     bool                   ok = false;
+    // 13-66: what is applied now, next to the staged preview the targets above are made from.
+    std::string            item_guid;
+    ItemSounds             applied_rec;                    // Item frame: the record as stored
+    std::vector<SoundAssign> applied_list;                 // keyed frame: the scope's assign list as stored
+    SoundStore             preview_store;                  // `store` points here while Project / Character values are staged
+    SoundCharacter         now_ch;                         // keyed Character frame: the record as stored
+    bool                   has_now = false;                // the "now" targets below are built (something is staged here)
+    std::vector<av::Target> now_targets;                   // Item frame: by block index, as stored
+    av::Target             now_item;
+    std::map<std::string, av::Target> now_keys;            // keyed frame: by key, as stored
 };
 
 struct RecCache {
@@ -195,15 +212,64 @@ void RefreshCache(MediaItem* item, RecCache& c = g_cache)
     c.rig = ItemRig(item);
 }
 
+// 13-66: an entry whose value is the applied one by now (an outside change, a Ctrl+Z) is no entry. Item entries are
+// judged for the frame's item only (`rec` / `blocks` null: none).
+void PruneStaged(const SoundStore& real, const std::string& item_guid, const ItemSounds* rec, const std::vector<Block>* blocks)
+{
+    g.staged.DropEqual([&](const av::StagedEntry& e, std::string* applied) {
+        switch (e.scope) {
+        case av::StageScope::Project: *applied = av::AppliedKeyValue(real.project, e.key, e.group); return true;
+        case av::StageScope::Character: {
+            const SoundCharacter* c = FindCharacterExact(real, e.character.skeleton, e.character.model);
+            if (!c && !e.character.uid.empty()) c = FindCharacterByUid(real, e.character.uid);
+            *applied = c ? av::AppliedKeyValue(c->assigns, e.key, e.group) : std::string();
+            return true;
+        }
+        case av::StageScope::Item:
+            if (!rec || !blocks || e.owner != item_guid) return false;
+            if (e.key != av::kItemKey) {  // its rule went away (the blocks changed): the entry goes
+                int b = -1;
+                if (!av::BlockOfKey(e.key, &b) || b < 0 || static_cast<size_t>(b) >= blocks->size()) {
+                    *applied = e.value;
+                    return true;
+                }
+            }
+            *applied = av::AppliedItemValue(*rec, *blocks, e.key, e.group);
+            return true;
+        }
+        return false;
+    });
+}
+
 bool BuildFrame(MediaItem* item, Frame* f)
 {
     if (!item || !ValidatePtr2(nullptr, item, "MediaItem*") || !RavTakeOf(item)) return false;
-    f->store = &GetSoundStore(nullptr);
+    const SoundStore& real = GetSoundStore(nullptr);
+    f->store = &real;
     RefreshCache(item);
     f->rec = g_cache.rec;
     f->blocks = g_cache.blocks;
     f->item_ptr = item;
+    f->item_guid = ItemGuidOf(item);
+    f->applied_rec = f->rec;
     const ItemRigInfo& rig = g_cache.rig;
+    // 13-66: the staged values, previewed as if applied: Project / Character ones on a store copy, this item's on
+    // copies of its record and blocks (a block with no rid gets a provisional one for the preview only).
+    PruneStaged(real, f->item_guid, &f->applied_rec, &f->blocks);
+    std::vector<Block> eff = f->blocks;
+    bool               staged_item = false;
+    for (const av::StagedEntry& e : g.staged.Entries())
+        if (e.scope == av::StageScope::Item && e.owner == f->item_guid) staged_item = true;
+        else if (e.scope != av::StageScope::Item) f->has_now = true;
+    if (f->has_now) {
+        f->preview_store = real;
+        av::ApplyStagedToStore(g.staged, f->preview_store);
+        f->store = &f->preview_store;
+    }
+    if (staged_item) {
+        f->has_now = true;
+        av::ApplyStagedToItem(g.staged, f->item_guid, f->rec, eff);
+    }
     f->ch = CharacterFor(*f->store, rig.skeleton, RigModel(rig));
     f->char_name = f->ch ? f->ch->name : std::string();
     f->item_name = ItemNameOf(item);
@@ -215,8 +281,18 @@ bool BuildFrame(MediaItem* item, Frame* f)
         for (const av::Parent& p : *list)
             for (const av::Leaf& l : p.leaves)
                 f->targets[static_cast<size_t>(l.block)] =
-                    av::MakeTarget(*f->store, f->rec, f->ch, f->blocks[static_cast<size_t>(l.block)], l.key, LeafTitle(p, l));
+                    av::MakeTarget(*f->store, f->rec, f->ch, eff[static_cast<size_t>(l.block)], l.key, LeafTitle(p, l));
     f->item = av::MakeItemTarget(*f->store, f->rec, f->targets);
+    if (f->has_now) {  // the same targets as stored (the Plays line says what Commit changes)
+        const SoundCharacter* real_ch = CharacterFor(real, rig.skeleton, RigModel(rig));
+        f->now_targets.resize(f->blocks.size());
+        for (const std::vector<av::Parent>* list : {&f->tg.rules, &f->tg.autos})
+            for (const av::Parent& p : *list)
+                for (const av::Leaf& l : p.leaves)
+                    f->now_targets[static_cast<size_t>(l.block)] = av::MakeTarget(
+                        real, f->applied_rec, real_ch, f->blocks[static_cast<size_t>(l.block)], l.key, LeafTitle(p, l));
+        f->now_item = av::MakeItemTarget(real, f->applied_rec, f->now_targets);
+    }
     f->ok = true;
     return true;
 }
@@ -264,21 +340,42 @@ int FindCurrentChar(const std::vector<av::CharEntry>& cs)
 // The Project / Character scopes' frame: no item needed.
 void BuildKeyFrame(Frame* f)
 {
-    f->store = &GetSoundStore(nullptr);
+    const SoundStore& real = GetSoundStore(nullptr);
+    f->store = &real;
     f->keyed = true;
     RefreshRigs();
     KeyData& k = f->key;
-    k.chars = av::BuildCharacters(*f->store, g.rigs);
+    k.chars = av::BuildCharacters(real, g.rigs);
     k.cur = FindCurrentChar(k.chars);
     const bool char_scope = g.scope == kScopeCharacter;
     if (char_scope && k.cur >= 0) k.scope_ch = &k.chars[static_cast<size_t>(k.cur)].ch;
+    // 13-66: the staged values, previewed as if applied: the Project ones on a store copy, a character's on its
+    // record (the characters keep their keys: they come from the stored list).
+    PruneStaged(real, std::string(), nullptr, nullptr);
+    f->applied_list = k.scope_ch ? k.scope_ch->assigns : real.project;
+    if (k.scope_ch) f->now_ch = *k.scope_ch;
+    f->has_now = !g.staged.Empty();
+    if (f->has_now) {
+        bool project_staged = false;
+        for (const av::StagedEntry& e : g.staged.Entries())
+            if (e.scope == av::StageScope::Project) project_staged = true;
+        if (project_staged) {
+            f->preview_store = real;
+            av::ApplyStagedToStore(g.staged, f->preview_store, false);
+            f->store = &f->preview_store;
+        }
+        for (av::CharEntry& c : k.chars) av::ApplyStagedToCharacter(g.staged, c.ch);
+    }
     f->ok = !char_scope || k.scope_ch != nullptr;
     f->item_name = char_scope ? (k.scope_ch ? "Character " + k.scope_ch->name : std::string("Character")) : std::string("Project defaults");
     f->char_name = k.scope_ch ? k.scope_ch->name : std::string();
     if (!f->ok) return;
     for (const std::string& key : av::OverrideKeys(k.scope_ch ? k.scope_ch->assigns : f->store->project)) k.own.insert(key);
-    if (!g.overview)
+    if (!g.overview) {
         for (const std::string& key : av::AllKeys()) k.targets[key] = av::MakeKeyTarget(*f->store, k.scope_ch, key);
+        if (f->has_now)
+            for (const std::string& key : av::AllKeys()) f->now_keys[key] = av::MakeKeyTarget(real, k.scope_ch ? &f->now_ch : nullptr, key);
+    }
 }
 
 const av::Target* TargetOf(const Frame& f, const std::string& key)
@@ -401,26 +498,116 @@ void PickKeyLibrary(const Frame& f, const std::vector<const av::Target*>& sel, c
     });
 }
 
-void PickKeyValue(const Frame& f, const std::vector<const av::Target*>& sel, const std::string& group, const std::string& value,
-                  const std::string& what)
+// ---- 13-66: staged Switch values ----------------------------------------------------------------------------
+
+// The staged-set coordinates of a target of the frame (scope, owner), Project / Character / Item.
+void StageAddress(const Frame& f, av::StageScope* scope, std::string* owner, CharacterRef* ref)
 {
-    std::vector<std::string> keys;
-    bool                     differs = false;
-    for (const av::Target* t : sel) {
-        keys.push_back(t->key);
-        const av::GroupState* gs = t->Group(group);
-        if (gs && gs->own_uid != value) differs = true;
+    if (!f.keyed) {
+        *scope = av::StageScope::Item;
+        *owner = f.item_guid;
+    } else if (!f.key.scope_ch) {
+        *scope = av::StageScope::Project;
+        owner->clear();
+    } else {
+        const av::CharEntry& c = f.key.chars[static_cast<size_t>(f.key.cur)];
+        *scope = av::StageScope::Character;
+        *owner = av::CharacterOwner(c.ch.skeleton, c.ch.model);
+        *ref = c.ref;
     }
-    if (!differs || (f.key.scope_ch && f.key.cur < 0)) return;
-    const bool         project = f.key.scope_ch == nullptr;
-    const CharacterRef ref = project ? CharacterRef() : f.key.chars[static_cast<size_t>(f.key.cur)].ref;
-    const std::string  where = project ? std::string("Project") : f.key.scope_ch->name;
-    const int          n = static_cast<int>(sel.size());
-    PickSoundGesture([project, ref, keys, group, value, what, where, n]() {
-        const int         c0 = GetProjectStateChangeCount(nullptr);
-        const SoundReport rep = project ? SetProjectAssignValue(keys, group, value) : SetCharacterAssignValue(ref, keys, group, value);
-        if (GetProjectStateChangeCount(nullptr) != c0)
-            SetLast(project ? "Set project sound value" : "Set character sound value", where, what, n);
+}
+
+// The value applied now (stored) at the target's own layer for the group.
+std::string AppliedOf(const Frame& f, const std::string& key, const std::string& group)
+{
+    return f.keyed ? av::AppliedKeyValue(f.applied_list, key, group) : av::AppliedItemValue(f.applied_rec, f.blocks, key, group);
+}
+
+const av::StagedEntry* StagedOf(const Frame& f, const std::string& key, const std::string& group)
+{
+    if (g.staged.Empty() || (f.keyed && f.key.scope_ch && f.key.cur < 0)) return nullptr;
+    av::StageScope scope;
+    std::string    owner;
+    CharacterRef   ref;
+    StageAddress(f, &scope, &owner, &ref);
+    return g.staged.Find(scope, owner, key, group);
+}
+
+// True when the target has any staged value in this frame's scope (the tree's amber dot).
+bool TargetStaged(const Frame& f, const std::string& key)
+{
+    if (g.staged.Empty() || (f.keyed && f.key.scope_ch && f.key.cur < 0)) return false;
+    av::StageScope scope;
+    std::string    owner;
+    CharacterRef   ref;
+    StageAddress(f, &scope, &owner, &ref);
+    return g.staged.HasTarget(scope, owner, key);
+}
+
+// A click on a Switch value chip stages it for each selected target (an applied value unstages that group).
+void StageValue(const Frame& f, const std::vector<const av::Target*>& sel, const std::string& group, const std::string& value)
+{
+    if (f.keyed && f.key.scope_ch && f.key.cur < 0) return;
+    av::StageScope scope;
+    std::string    owner;
+    CharacterRef   ref;
+    StageAddress(f, &scope, &owner, &ref);
+    if (g.staged.Empty()) g.staged_proj = EnumProjects(-1, nullptr, 0);
+    for (const av::Target* t : sel) {
+        av::StagedEntry e;
+        e.scope = scope;
+        e.owner = owner;
+        e.character = ref;
+        e.key = t->key;
+        e.group = group;
+        e.value = value;
+        g.staged.Stage(e, AppliedOf(f, t->key, group));
+    }
+}
+
+// Cancel: everything staged is dropped; nothing is written, no undo point.
+void CancelStaged()
+{
+    g.staged.Clear();
+    g.confirm_close = false;
+}
+
+// Commit: every staged value written and the events they reach re-placed, in one undo point.
+void CommitStaged()
+{
+    if (g.staged.Empty()) return;
+    std::vector<AssignValueEdit> edits;
+    std::string                  where;
+    std::set<std::string>        owners;
+    for (const av::StagedEntry& e : g.staged.Entries()) {
+        AssignValueEdit a;
+        a.scope = e.scope == av::StageScope::Project ? 0 : e.scope == av::StageScope::Character ? 1 : 2;
+        a.group = e.group;
+        a.value = e.value;
+        a.key = e.key;
+        a.character = e.character;
+        if (e.scope == av::StageScope::Item) {
+            a.item_guid = e.owner;
+            if (e.key == av::kItemKey) a.block = -1;
+            else if (!av::BlockOfKey(e.key, &a.block)) continue;
+            if (owners.insert(e.owner).second && owners.size() == 1)
+                if (MediaItem* it = FindItemByGuid(e.owner)) where = ItemNameOf(it);
+        }
+        edits.push_back(a);
+    }
+    const int changes = g.staged.Changes(), targets = g.staged.Targets();
+    if (owners.size() > 1) where = std::to_string(owners.size()) + " items";
+    else if (owners.empty()) where = "Project and characters";
+    g.staged.Clear();
+    g.confirm_close = false;
+    PickSoundGesture([edits, where, changes, targets]() {
+        bool              changed = false;
+        const SoundReport rep = CommitAssignValues(edits, &changed);
+        if (changed) {
+            g.last = av::CommitChangeText(where, changes, targets);
+            g.has_last = true;
+            g.last_note.clear();
+        }
         return rep;
     });
 }
@@ -448,28 +635,6 @@ void PickLibrary(const Frame& f, const std::vector<const av::Target*>& sel, cons
         bool              changed = false;
         const SoundReport rep = SetRulesAssignLibrary(item, rids, state, uid, blocks, &changed);
         if (changed) SetLast("Set rule library", where, what, n);
-        return rep;
-    });
-}
-
-void PickValue(const Frame& f, const std::vector<const av::Target*>& sel, bool item_row, const std::string& group,
-               const std::string& value, const std::string& what)
-{
-    if (f.keyed) {
-        PickKeyValue(f, sel, group, value, what);
-        return;
-    }
-    MediaItem*               item = f.item_ptr;
-    std::vector<std::string> rids;
-    std::vector<int>         blocks;
-    if (!item_row) RulesOf(f, sel, &rids, &blocks);
-    const std::string where = f.item_name;
-    const int         n = static_cast<int>(sel.size());
-    PickSoundGesture([item, rids, blocks, group, value, what, where, n, item_row]() {
-        bool              changed = true;  // SetSoundValue (the Item row) tells nothing: shown as before
-        const SoundReport rep = item_row ? SetSoundValue(item, SoundValueLevel::Item, -1, 0.0, group, value)
-                                         : SetRulesAssignValue(item, rids, group, value, blocks, &changed);
-        if (changed) SetLast("Set sound value", where, what, n);
         return rep;
     });
 }
@@ -817,7 +982,16 @@ void DrawKeyRow(const Frame& f, const Row& r, const std::vector<std::string>& vi
     ImDrawList*    dl = ImGui::GetWindowDrawList();
     const ImGuiIO& io = ImGui::GetIO();
     const float    pad = ui::Dp(6.0f);
-    const float    right = p.x + w - pad;
+    // 13-66: a body part / type row with staged values gets the amber dot (a part: any of its types too).
+    bool staged_row = false;
+    if (r.t == RowT::PartRow || r.t == RowT::TypeRow) {
+        staged_row = TargetStaged(f, r.key);
+        if (r.t == RowT::PartRow)
+            for (const std::string& k : av::AllKeys())
+                if (k.compare(0, r.key.size() + 1, r.key + ".") == 0) staged_row = staged_row || TargetStaged(f, k);
+    }
+    const float    rdot = StagedDot(dl, p, w, rh, pad, staged_row);
+    const float    right = p.x + w - pad - rdot;
     const bool     sel = g.sel.Has(r.key);
     const bool     current = r.t == RowT::CharRow && r.ce && f.key.cur >= 0 && r.ce == &f.key.chars[static_cast<size_t>(f.key.cur)];
     ImGui::SetNextItemAllowOverlap();
@@ -904,6 +1078,14 @@ void DrawKeyRow(const Frame& f, const Row& r, const std::vector<std::string>& vi
     }
 }
 
+// 13-66: the amber dot at the right edge of a row whose target has staged values; the width it takes.
+float StagedDot(ImDrawList* dl, ImVec2 p, float w, float rh, float pad, bool staged)
+{
+    if (!staged) return 0.0f;
+    dl->AddCircleFilled(ImVec2(p.x + w - pad - ui::Dp(3.5f), p.y + rh * 0.5f), ui::Dp(3.5f), ui::kWarn);
+    return ui::Dp(12.0f);
+}
+
 void DrawTreeRows(const Frame& f, const std::vector<Row>& rows)
 {
     const std::vector<std::string> visible = VisibleKeys(rows);
@@ -939,6 +1121,9 @@ void DrawTreeRows(const Frame& f, const std::vector<Row>& rows)
             const std::vector<std::string> keys = LeafKeysOf(*r.p);
             const int                      state = av::ParentState(g.sel, keys);
             const bool                     multi = r.p->leaves.size() > 1;
+            bool                                 staged_row = false;
+            for (const std::string& lk : keys) staged_row = staged_row || TargetStaged(f, lk);
+            const float                          rdot = StagedDot(dl, p, w, rh, pad, staged_row);
             const std::vector<const av::Target*> tl = TargetsOfParent(f, *r.p);
             const av::Summary                    sum = av::Summarize(*f.store, tl, true);
             ImGui::SetNextItemAllowOverlap();
@@ -968,10 +1153,10 @@ void DrawTreeRows(const Frame& f, const std::vector<Row>& rows)
                 ui::AddTextIn(dl, ui::FontSemibold(), ImVec2(x, ty), ui::kWarn, "!");
                 x += ui::Dp(10.0f);
             }
-            if (x < p.x + w - pad - ui::Dp(20.0f)) {
-                if (PaintSummary(dl, x, ty, p.x + w - pad - x, sum, true)) {
+            if (x < p.x + w - pad - rdot - ui::Dp(20.0f)) {
+                if (PaintSummary(dl, x, ty, p.x + w - pad - rdot - x, sum, true)) {
                     ImGui::SetCursorScreenPos(ImVec2(x, p.y));
-                    ImGui::Dummy(ImVec2(p.x + w - pad - x, rh));
+                    ImGui::Dummy(ImVec2(p.x + w - pad - rdot - x, rh));
                     ui::ItemTipText(sum.Plain().c_str());
                 }
             }
@@ -984,14 +1169,15 @@ void DrawTreeRows(const Frame& f, const std::vector<Row>& rows)
                 g.nav = r.nav;
                 ActivateRow(r, visible, io.KeyShift, io.KeyCtrl);
             }
+            const float rdot = StagedDot(dl, p, w, rh, pad, TargetStaged(f, r.l->key));
             const float x = p.x + ui::Dp(50.0f);
             const float name_w = std::min(ui::Dp(72.0f), std::max(ui::Dp(30.0f), (p.x + w - x) * 0.3f));
             RowName(dl, x, ty, name_w, sel ? ui::kText : ui::kMuted, r.l->name);
             const float sx = x + name_w + ui::Dp(8.0f);
-            if (sx < p.x + w - pad - ui::Dp(20.0f)) {
-                if (PaintSummary(dl, sx, ty, p.x + w - pad - sx, sum, true)) {
+            if (sx < p.x + w - pad - rdot - ui::Dp(20.0f)) {
+                if (PaintSummary(dl, sx, ty, p.x + w - pad - rdot - sx, sum, true)) {
                     ImGui::SetCursorScreenPos(ImVec2(sx, p.y));
-                    ImGui::Dummy(ImVec2(p.x + w - pad - sx, rh));
+                    ImGui::Dummy(ImVec2(p.x + w - pad - rdot - sx, rh));
                     ui::ItemTipText(sum.Plain().c_str());
                 }
             }
@@ -1003,11 +1189,12 @@ void DrawTreeRows(const Frame& f, const std::vector<Row>& rows)
                 ActivateRow(r, visible, io.KeyShift, io.KeyCtrl);
             }
             const av::Summary sum = av::SummarizeItem(*f.store, f.item);
+            const float       rdot = StagedDot(dl, p, w, rh, pad, TargetStaged(f, av::kItemKey));
             float             x = p.x + pad + ui::Dp(4.0f);
             const float       name_w = std::min(ImGui::CalcTextSize("Item values").x + 1.0f, (p.x + w - x) * 0.45f);
             RowName(dl, x, ty, name_w, ui::kText, "Item values");
             x += name_w + ui::Dp(8.0f);
-            if (x < p.x + w - pad - ui::Dp(20.0f)) PaintSummary(dl, x, ty, p.x + w - pad - x, sum, true);
+            if (x < p.x + w - pad - rdot - ui::Dp(20.0f)) PaintSummary(dl, x, ty, p.x + w - pad - rdot - x, sum, true);
         }
         ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + rh));
         ImGui::Dummy(ImVec2(0.0f, 0.0f));
@@ -1154,6 +1341,27 @@ void DrawLibraryRow(const Frame& f, const std::vector<const av::Target*>& sel, c
     }
 }
 
+// 13-66: a thin dotted outline of a pill (the applied value a staged one replaces).
+void DottedPill(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col)
+{
+    const float h = b.y - a.y, r = h * 0.5f, len = std::max(0.0f, (b.x - a.x) - h);
+    const float step = ui::Dp(3.5f), pi = 3.14159265f;
+    const float arc = pi * r, per = 2.0f * len + 2.0f * arc;
+    for (float d = 0.0f; d < per; d += step) {
+        ImVec2 q;
+        if (d < len) q = ImVec2(a.x + r + d, a.y);                                                  // top, left to right
+        else if (d < len + arc) {                                                                   // right cap
+            const float t = (d - len) / r;
+            q = ImVec2(b.x - r + std::sin(t) * r, a.y + r - std::cos(t) * r);
+        } else if (d < 2.0f * len + arc) q = ImVec2(b.x - r - (d - len - arc), b.y);                // bottom, right to left
+        else {                                                                                      // left cap
+            const float t = (d - 2.0f * len - arc) / r;
+            q = ImVec2(a.x + r - std::sin(t) * r, b.y - r + std::cos(t) * r);
+        }
+        dl->AddCircleFilled(q, ui::Dp(0.7f), col, 6);
+    }
+}
+
 // One Switch Group: its step number, name, tags, the chips, the event note.
 void DrawGroupRow(const Frame& f, const std::vector<const av::Target*>& sel, bool item_row, const std::string& group_uid, int step,
                   bool first)
@@ -1188,6 +1396,9 @@ void DrawGroupRow(const Frame& f, const std::vector<const av::Target*>& sel, boo
         if (gs && (gs->inherit_name != g0->inherit_name || gs->inherit_from != g0->inherit_from)) inh_same = false;
     }
     const bool mixed = std::set<std::string>(own.begin(), own.end()).size() > 1;
+    bool       any_staged = false;  // 13-66: a selected target has a staged value for this group
+    for (const av::Target* t : sel)
+        if (StagedOf(f, t->key, group_uid)) any_staged = true;
     auto       count_of = [&](const std::string& v) {
         return static_cast<int>(std::count(own.begin(), own.end(), v));
     };
@@ -1208,6 +1419,10 @@ void DrawGroupRow(const Frame& f, const std::vector<const av::Target*>& sel, boo
         ImGui::SameLine();
         ui::Tag("mixed", ui::TagTone::Warn);
     }
+    if (any_staged) {
+        ImGui::SameLine();
+        ui::Tag("staged", ui::TagTone::Warn);
+    }
     if (unreached > 0) {
         const av::GroupState* un = nullptr;
         for (const av::Target* t : sel) {
@@ -1225,26 +1440,41 @@ void DrawGroupRow(const Frame& f, const std::vector<const av::Target*>& sel, boo
     // Chips.
     ImGui::Indent(ui::Dp(22.0f));
     if (unreached == static_cast<int>(sel.size())) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.45f);
-    auto chip = [&](const std::string& label, const std::string& value, bool on, bool is_first) {
+    auto chip = [&](const std::string& label_in, const std::string& value, bool on, bool is_first) {
+        // 13-66: staged = the new value (amber ring + dot), was = the applied value it replaces (dotted ring).
+        bool staged_v = false, was_v = false;
+        for (const av::Target* t : sel) {
+            const av::StagedEntry* e = StagedOf(f, t->key, group_uid);
+            if (!e) continue;
+            if (e->value == value) staged_v = true;
+            else if (AppliedOf(f, t->key, group_uid) == value) was_v = true;
+        }
+        const std::string label = staged_v ? "    " + label_in : label_in;  // room for the dot
         const float cw = ui::TextWidth(label.c_str()) + ui::Dp(14.0f);
         if (!is_first) ui::SameLineIfFits(cw);
         // 13-65: a value with no sound of its own is greyed (still clickable), its tooltip says what Populate does.
         const av::ValueSoundState vs = av::ChipSound(sel, group_uid, value);
         const bool                grey = vs.state != av::ValueSound::Own;
+        // Only the label and the fill dim: the staged ring below is drawn after the alpha is back.
         if (grey) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.45f);
-        const bool clicked = ui::ChipButton((label + "##" + value).c_str(), ImVec2(0.0f, 0.0f), on);
-        if (grey) {
-            ImGui::PopStyleVar();
-            ui::ItemTipText(av::ChipSoundTip(vs).c_str());
+        const bool clicked = ui::ChipButton((label + "##" + value).c_str(), ImVec2(0.0f, 0.0f), on && !staged_v);
+        if (grey) ImGui::PopStyleVar();
+        const ImVec2 r0 = ImGui::GetItemRectMin(), r1 = ImGui::GetItemRectMax();
+        if (staged_v) {
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            const float rad = (r1.y - r0.y) * 0.5f;
+            dl->AddRectFilled(r0, r1, (ui::kWarn & ~IM_COL32_A_MASK) | (0x1Fu << IM_COL32_A_SHIFT), rad);
+            dl->AddRect(r0, r1, ui::kWarn, rad, 0, ui::Dp(1.5f));
+            dl->AddCircleFilled(ImVec2(r0.x + ui::Dp(10.0f), (r0.y + r1.y) * 0.5f), ui::Dp(3.0f), ui::kWarn);
+        } else if (was_v) {
+            DottedPill(ImGui::GetWindowDrawList(), r0, r1, ui::kAccentLine);
         }
-        if (clicked && !on) {
-            std::string what = g0->group_name + " = " + (value.empty() ? std::string("inherit") : [&] {
-                for (const SwitchValue& v : grp->values)
-                    if (v.uid == value) return v.name;
-                return value;
-            }());
-            PickValue(f, sel, item_row, group_uid, value, what);
+        if (grey || staged_v) {
+            std::string tip = staged_v ? std::string(av::StagedTip()) : std::string();
+            if (grey) tip += (tip.empty() ? "" : "\n") + av::ChipSoundTip(vs);
+            ui::ItemTipText(tip.c_str());
         }
+        if (clicked && !on) StageValue(f, sel, group_uid, value);
     };
     {
         const std::string inh = "inherit \xC2\xB7 " + (inh_same ? g0->inherit_name : std::string("mixed")) + " (" +
@@ -1283,7 +1513,33 @@ void DrawGroupRow(const Frame& f, const std::vector<const av::Target*>& sel, boo
     ImGui::PopID();
 }
 
-void DrawPlays(const std::vector<const av::Target*>& sel, bool for_defaults)
+// 13-66: the selected targets as stored (before Commit); empty when nothing is staged in this frame.
+std::vector<const av::Target*> NowTargets(const Frame& f, const std::vector<const av::Target*>& sel)
+{
+    std::vector<const av::Target*> out;
+    if (!f.has_now) return out;
+    for (const av::Target* t : sel) {
+        if (f.keyed) {
+            const auto it = f.now_keys.find(t->key);
+            if (it != f.now_keys.end()) out.push_back(&it->second);
+        } else if (t->is_item) {
+            out.push_back(&f.now_item);
+        } else {
+            int b = -1;
+            if (av::BlockOfKey(t->key, &b) && b >= 0 && static_cast<size_t>(b) < f.now_targets.size()) out.push_back(&f.now_targets[static_cast<size_t>(b)]);
+        }
+    }
+    return out;
+}
+
+std::string PlaysJoined(const std::vector<const av::Target*>& ts)
+{
+    std::string out;
+    for (const av::PlaysLine& l : av::PlaysLines(ts)) out += (out.empty() ? "" : "; ") + l.text;
+    return out;
+}
+
+void DrawPlays(const Frame& f, const std::vector<const av::Target*>& sel, bool for_defaults)
 {
     const std::vector<av::PlaysLine> lines = av::PlaysLines(sel);
     bool                             blocked = false;
@@ -1309,6 +1565,13 @@ void DrawPlays(const std::vector<const av::Target*>& sel, bool for_defaults)
     }
     if (lines.size() > shown) ui::ToneText("+ " + std::to_string(lines.size() - shown) + " more paths", ui::kFaint);
     if (sel.size() == 1 && sel[0]->Plays()) ui::ToneText(av::WhyText(*sel[0]), ui::kFaint, true);
+    {  // 13-66: what Commit changes: the line above is the staged result.
+        const std::vector<const av::Target*> now = NowTargets(f, sel);
+        if (!now.empty()) {
+            const std::string was = PlaysJoined(now);
+            if (was != PlaysJoined(sel)) ui::ToneText("after Commit \xC2\xB7 now " + was, ui::kWarn, true);
+        }
+    }
     if (blocked) ui::ToneText("Populate reports \"Blocked\" for these events.", ui::kFaint, true);
     if (blocked) ui::EndConfirmBand(band);
     else ui::EndWell(well);
@@ -1717,7 +1980,7 @@ void DrawDetails(const Frame& f)
                    return libs;
                }()).size()) + " different libraries. Pick one library above to edit their Switch values together.",
                nullptr);
-        DrawPlays(sel, f.keyed);
+        DrawPlays(f, sel, f.keyed);
         return;
     }
     const av::Target& first = *sel[0];
@@ -1748,7 +2011,7 @@ void DrawDetails(const Frame& f)
     }
     ui::EndSection(s);
     if (item_row) return;
-    DrawPlays(sel, f.keyed);
+    DrawPlays(f, sel, f.keyed);
     if (sel.size() == 1) DrawLadder(f, first);
     if (f.keyed) return;
     // Where the sounds land in the Library.
@@ -2024,7 +2287,7 @@ void DrawTitleRow(const Frame& f)
         ui::EllipsisTextTip(dl, ImVec2(x, ty), p.x + w - close_w - ui::Dp(8.0f), ui::kMuted, std::string("\xC2\xB7 ") + f.item_name);
     }
     ImGui::SetCursorScreenPos(ImVec2(p.x + w - close_w, p.y + (h - close_w) * 0.5f));
-    if (ui::IconOnlyButton("##assignclose", ToolIcon(kToolCross), "Close (Esc)")) g.open = false;
+    if (ui::IconOnlyButton("##assignclose", ToolIcon(kToolCross), "Close (Esc)")) RequestClose();
     dl->AddLine(ImVec2(p.x - ui::Dp(8.0f), p.y + h), ImVec2(p.x + w + ui::Dp(8.0f), p.y + h), ui::kStroke);
     ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + h + ui::Dp(4.0f)));
     ImGui::Dummy(ImVec2(0.0f, 0.0f));
@@ -2150,6 +2413,87 @@ void PruneKeySel(const Frame& f)
     av::Prune(g.sel, valid);
 }
 
+// 13-66: the Commit / Cancel bar, while any Switch value is staged (any scope, any item).
+float CommitBarHeight()
+{
+    return g.staged.Empty() ? 0.0f : ui::ControlH() + ui::Dp(12.0f);
+}
+
+void DrawCommitBar()
+{
+    if (g.staged.Empty()) return;
+    const float   h = CommitBarHeight();
+    const ImVec2  p = ImGui::GetCursorScreenPos();
+    const float   w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    ImDrawList*   dl = ImGui::GetWindowDrawList();
+    const float   sp = ImGui::GetStyle().ItemSpacing.x;
+    const ImU32   fill = (ui::kWarn & ~IM_COL32_A_MASK) | (0x1Fu << IM_COL32_A_SHIFT);
+    dl->AddRectFilled(ImVec2(p.x - ui::Dp(8.0f), p.y), ImVec2(p.x + w + ui::Dp(8.0f), p.y + h), fill);
+    dl->AddLine(ImVec2(p.x - ui::Dp(8.0f), p.y), ImVec2(p.x + w + ui::Dp(8.0f), p.y), ui::kConfirmLine);
+    const float cw = ui::ButtonWidth("Commit##stagedcommit"), xw = ui::ButtonWidth("Cancel##stagedcancel");
+    const float by = p.y + (h - ui::ControlH()) * 0.5f;
+    ImGui::SetCursorScreenPos(ImVec2(p.x + w - cw, by));
+    if (ui::PrimaryButton("Commit##stagedcommit")) CommitStaged();
+    ui::ItemTipText("Write every staged value and place the events they reach, in one undo step");
+    ImGui::SetCursorScreenPos(ImVec2(p.x + w - cw - sp - xw, by));
+    if (ui::SolidButton("Cancel##stagedcancel")) CancelStaged();
+    ui::ItemTipText("Drop every staged value: nothing is written");
+    if (!g.staged.Empty()) {
+        const av::StagedBar bar = av::StagedBarText(g.staged.Changes(), g.staged.Targets(), g.staged.Items());
+        const float         ty = std::floor(p.y + (h - ImGui::GetTextLineHeight()) * 0.5f);
+        const float         lim = p.x + w - cw - sp - xw - ui::Dp(12.0f);
+        float               x = p.x + ui::Dp(4.0f);
+        ui::AddTextIn(dl, ui::FontSemibold(), ImVec2(x, ty), ui::kText, bar.bold.c_str());
+        x += ui::TextSizeIn(ui::FontSemibold(), bar.bold.c_str()).x + ui::Dp(5.0f);
+        const std::string rest = bar.rest + bar.sub;
+        if (x < lim - ui::Dp(30.0f)) ui::EllipsisTextTip(dl, ImVec2(x, ty), lim, ui::kWarn, rest);
+    }
+    ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + h));
+    ImGui::Dummy(ImVec2(w, 0.0f));
+}
+
+// 13-66: a close with staged values asks first: Commit / Discard / Keep editing.
+void RequestClose()
+{
+    if (g.staged.Empty()) g.open = false;
+    else g.confirm_close = true;
+}
+
+void DrawCloseConfirm()
+{
+    if (!g.confirm_close) return;
+    if (g.staged.Empty()) {  // nothing left to ask about
+        g.confirm_close = false;
+        g.open = false;
+        return;
+    }
+    const char* id = "Switch changes not applied##assignclose";
+    if (!ImGui::IsPopupOpen(id)) ImGui::OpenPopup(id);
+    if (ui::BeginModalCard(id)) {
+        const int n = g.staged.Changes();
+        ImGui::TextUnformatted((std::to_string(n) + " Switch change" + (n == 1 ? "" : "s") + " not applied").c_str());
+        ui::ToneText("Commit places them in one undo step. Discard drops them.", ui::kMuted, true);
+        ImGui::Dummy(ImVec2(0.0f, ui::Dp(4.0f)));
+        if (ui::PrimaryButton("Commit##closecommit")) {
+            CommitStaged();
+            g.open = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ui::SolidButton("Discard##closediscard")) {
+            CancelStaged();
+            g.open = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ui::SolidButton("Keep editing##closekeep")) {
+            g.confirm_close = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ui::EndModalCard();
+    }
+}
+
 void DrawFooter()
 {
     const float  h = ImGui::GetTextLineHeight() + ui::Dp(10.0f);
@@ -2159,7 +2503,8 @@ void DrawFooter()
     ui::FontScope fs(ui::FontRole::Small);
     dl->AddLine(ImVec2(p.x - ui::Dp(8.0f), p.y), ImVec2(p.x + w + ui::Dp(8.0f), p.y), ui::kStroke);
     const float ty = std::floor(p.y + (h - ImGui::GetTextLineHeight()) * 0.5f);
-    const char  right[] = "Each change is one undo step.";
+    const char  right_idle[] = "Each change is one undo step.", right_staged[] = "Switch values wait for Commit.";
+    const char* right = g.staged.Empty() ? right_idle : right_staged;  // 13-66
     const float rw = ImGui::CalcTextSize(right).x;
     const bool  show_right = w > rw + ui::Dp(220.0f);
     if (show_right) dl->AddText(ImVec2(p.x + w - rw - ui::Dp(4.0f), ty), ui::kMuted, right);
@@ -2332,6 +2677,8 @@ void DrawAssignContent()
         // A click outside the Name field ends its typing before the click changes the selection.
         if (g.name_active && ImGui::IsMouseClicked(0) && !ImGui::IsMouseHoveringRect(g.name_min, g.name_max, false))
             CommitName();
+        // 13-66: staged values belong to the REAPER project they were staged in.
+        if (!g.staged.Empty() && g.staged_proj && EnumProjects(-1, nullptr, 0) != g.staged_proj) CancelStaged();
         if (g.request && g.scope != kScopeItem) SwitchScope(kScopeItem);  // the strip's Assign... opens the Item scope
         Frame f;
         bool  ok = false;
@@ -2362,8 +2709,9 @@ void DrawAssignContent()
         }
         if (focused && ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !ImGui::GetIO().WantTextInput) {
             // Esc in an open menu closes the menu only (no keyboard nav here, so ImGui does not do it).
-            if (ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId)) ImGui::ClosePopupToLevel(0, true);
-            else g.open = false;
+            if (g.confirm_close) g.confirm_close = false;  // Esc in the close dialog = Keep editing
+            else if (ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId)) ImGui::ClosePopupToLevel(0, true);
+            else RequestClose();
         }
 
         DrawTitleRow(f);
@@ -2411,7 +2759,8 @@ void DrawAssignContent()
             }
             ui::ItemTipText("Open the Library view (this window stays open)");
         }
-        const float foot_h = ImGui::GetTextLineHeight() + ui::Dp(10.0f) + ImGui::GetStyle().ItemSpacing.y;
+        const float foot_h = ImGui::GetTextLineHeight() + ui::Dp(10.0f) + ImGui::GetStyle().ItemSpacing.y +
+                             (g.staged.Empty() ? 0.0f : CommitBarHeight() + ImGui::GetStyle().ItemSpacing.y);
         const float body_h = std::max(ui::Dp(80.0f), ImGui::GetContentRegionAvail().y - foot_h);
         if (!ok) {
             ui::SubText(g.scope == kScopeItem
@@ -2423,7 +2772,9 @@ void DrawAssignContent()
         } else {
             DrawTreeAndDetails(f, body_h);
         }
+        DrawCommitBar();
         DrawFooter();
+        DrawCloseConfirm();
         if (g.name_active && g.name_frame != frame) CommitName();  // the sheet is gone (scope, selection): kept
     }
 }
@@ -2438,7 +2789,13 @@ void DrawAssignFloat(HWND viewer, HDC viewer_dc, HGLRC rc)
     const bool activate = g.open && g.focus_request;
     g.focus_request = false;
     g_host.Frame(g.open, activate, [] { DrawAssignContent(); });
-    if (g_host.TakeCloseRequest()) g.open = false;
+    if (g_host.TakeCloseRequest()) {  // Alt+F4: with staged values the window comes back to ask
+        if (g.staged.Empty()) g.open = false;
+        else {
+            g.confirm_close = true;
+            g.focus_request = true;
+        }
+    }
     if (!g.open) g.from_library.clear();  // 13-43: the lit library is for that opening only
     // Its gestures run now, in any view (the Tagging view runs the strip's own after its widgets).
     RunPickedSoundGestures();

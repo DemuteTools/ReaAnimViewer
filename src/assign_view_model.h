@@ -11,6 +11,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -315,6 +316,70 @@ struct ChangeText {
     std::string rest;    // " \xC2\xB7 Hero_Run_01 \xC2\xB7 Library = FS Hero \xC2\xB7 2 targets"
 };
 ChangeText LastChange(const std::string& undo_name, const std::string& where, const std::string& what, int targets);
+
+// ---- Staged Switch values (13-66) -----------------------------------------------------------------------
+//
+// A click on a Switch value chip stages it; Commit writes the lot in one undo point, Cancel drops it. The set
+// lives in memory only. An entry equal to the applied value is no entry. The window previews the set by applying
+// it to copies of the item's record / the sound store before it builds its frame (ApplyStaged*), so chips, reach,
+// the 13-65 grey and Plays all read the staged state through the one code path.
+
+enum class StageScope { Project, Character, Item };
+struct StagedEntry {
+    StageScope   scope = StageScope::Item;
+    std::string  owner;      // Item: the item's GUID; Character: CharacterOwner(character); Project: ""
+    CharacterRef character;  // Character scope: what the commit is given
+    std::string  key;        // the target: kItemKey, "b<block>" (Item scope), "legs.step" (Project / Character)
+    std::string  group;
+    std::string  value;      // "" = inherit
+};
+// A character's identity across a store change (a virtual character gets a uid at its first edit): rig + model.
+std::string CharacterOwner(const std::string& skeleton, const std::string& model);
+std::string CharacterOwner(const CharacterRef& ref);
+// The rid a block with no rule id yet gets in the preview.
+std::string ProvisionalRid(int block);
+
+class Staged {
+public:
+    // Stages `e` against the value applied now (`applied`): an equal value removes the group's entry (and
+    // answers false), a different one adds / replaces it (true).
+    bool Stage(const StagedEntry& e, const std::string& applied);
+    const StagedEntry* Find(StageScope scope, const std::string& owner, const std::string& key, const std::string& group) const;
+    bool Drop(StageScope scope, const std::string& owner, const std::string& key, const std::string& group);
+    void Clear() { list_.clear(); }
+    bool Empty() const { return list_.empty(); }
+    const std::vector<StagedEntry>& Entries() const { return list_; }
+    int Changes() const { return static_cast<int>(list_.size()); }
+    int Targets() const;  // distinct (scope, owner, key)
+    int Items() const;    // distinct items among the Item entries
+    // True when the target (scope, owner, key) has any entry.
+    bool HasTarget(StageScope scope, const std::string& owner, const std::string& key) const;
+    // Drops every entry whose applied value `applied` reports and finds equal (it returns false for an entry it
+    // cannot judge: kept); the count dropped.
+    int DropEqual(const std::function<bool(const StagedEntry&, std::string* applied)>& applied);
+private:
+    std::vector<StagedEntry> list_;
+};
+
+// The preview: the staged values of `item_guid` applied to the item's record and blocks (a block with no rid gets
+// ProvisionalRid in `blocks`); the Project and Character ones applied to a store copy; the ones of a character
+// applied to one record (a CharEntry's copy). Each returns how many entries changed something.
+int ApplyStagedToItem(const Staged& s, const std::string& item_guid, ItemSounds& rec, std::vector<Block>& blocks);
+int ApplyStagedToStore(const Staged& s, SoundStore& store, bool characters = true);
+int ApplyStagedToCharacter(const Staged& s, SoundCharacter& ch);
+// The applied (own-layer) value of a target's group: the Item row / a rule of the record, a key of an assign list.
+std::string AppliedItemValue(const ItemSounds& rec, const std::vector<Block>& blocks, const std::string& key, const std::string& group);
+std::string AppliedKeyValue(const std::vector<SoundAssign>& list, const std::string& key, const std::string& group);
+
+// The Commit / Cancel bar: bold "3 Switch changes", rest "on 2 targets, not placed yet", sub "Commit places them in one undo step".
+struct StagedBar {
+    std::string bold, rest, sub;
+};
+StagedBar StagedBarText(int changes, int targets, int items);
+// The footer after a Commit: "Undo point RAV: Set sound values . <item> . 3 changes on 2 targets".
+ChangeText CommitChangeText(const std::string& where, int changes, int targets);
+// The line a staged chip's tooltip adds above its 13-65 sentence.
+const char* StagedTip();
 
 // ---- Selection (tree rows) --------------------------------------------------------------------------------
 

@@ -1117,6 +1117,184 @@ ChangeText LastChange(const std::string& undo_name, const std::string& where, co
     return c;
 }
 
+// ---- Staged Switch values (13-66) -----------------------------------------------------------------------
+
+std::string CharacterOwner(const std::string& skeleton, const std::string& model)
+{
+    return "char:" + skeleton + "|" + model;
+}
+
+std::string CharacterOwner(const CharacterRef& ref)
+{
+    return ref.skeleton.empty() ? "char:uid:" + ref.uid : CharacterOwner(ref.skeleton, ref.model);
+}
+
+std::string ProvisionalRid(int block)
+{
+    return "staged:b" + std::to_string(block);
+}
+
+static bool SameTarget(const StagedEntry& e, StageScope scope, const std::string& owner, const std::string& key)
+{
+    return e.scope == scope && e.owner == owner && e.key == key;
+}
+
+bool Staged::Stage(const StagedEntry& e, const std::string& applied)
+{
+    Drop(e.scope, e.owner, e.key, e.group);
+    if (e.value == applied) return false;
+    list_.push_back(e);
+    return true;
+}
+
+const StagedEntry* Staged::Find(StageScope scope, const std::string& owner, const std::string& key, const std::string& group) const
+{
+    for (const StagedEntry& e : list_)
+        if (SameTarget(e, scope, owner, key) && e.group == group) return &e;
+    return nullptr;
+}
+
+bool Staged::Drop(StageScope scope, const std::string& owner, const std::string& key, const std::string& group)
+{
+    for (size_t i = 0; i < list_.size(); ++i)
+        if (SameTarget(list_[i], scope, owner, key) && list_[i].group == group) {
+            list_.erase(list_.begin() + static_cast<long>(i));
+            return true;
+        }
+    return false;
+}
+
+int Staged::Targets() const
+{
+    std::set<std::string> seen;
+    for (const StagedEntry& e : list_) seen.insert(std::to_string(static_cast<int>(e.scope)) + "\x1f" + e.owner + "\x1f" + e.key);
+    return static_cast<int>(seen.size());
+}
+
+int Staged::Items() const
+{
+    std::set<std::string> seen;
+    for (const StagedEntry& e : list_)
+        if (e.scope == StageScope::Item) seen.insert(e.owner);
+    return static_cast<int>(seen.size());
+}
+
+bool Staged::HasTarget(StageScope scope, const std::string& owner, const std::string& key) const
+{
+    for (const StagedEntry& e : list_)
+        if (SameTarget(e, scope, owner, key)) return true;
+    return false;
+}
+
+int Staged::DropEqual(const std::function<bool(const StagedEntry&, std::string*)>& applied)
+{
+    int n = 0;
+    for (size_t i = 0; i < list_.size();) {
+        std::string now;
+        if (applied(list_[i], &now) && now == list_[i].value) {
+            list_.erase(list_.begin() + static_cast<long>(i));
+            ++n;
+        } else {
+            ++i;
+        }
+    }
+    return n;
+}
+
+int ApplyStagedToItem(const Staged& s, const std::string& item_guid, ItemSounds& rec, std::vector<Block>& blocks)
+{
+    int n = 0;
+    for (const StagedEntry& e : s.Entries()) {
+        if (e.scope != StageScope::Item || e.owner != item_guid) continue;
+        if (e.key == kItemKey) {
+            if (SetValueIn(rec.item_values, e.group, e.value)) ++n;
+            continue;
+        }
+        int b = -1;
+        if (!BlockOfKey(e.key, &b) || b < 0 || static_cast<size_t>(b) >= blocks.size()) continue;
+        Block& blk = blocks[static_cast<size_t>(b)];
+        if (blk.rid.empty()) blk.rid = ProvisionalRid(b);
+        if (SetRulesValue(rec, {blk.rid}, e.group, e.value)) ++n;
+    }
+    return n;
+}
+
+int ApplyStagedToStore(const Staged& s, SoundStore& store, bool characters)
+{
+    int n = 0;
+    for (const StagedEntry& e : s.Entries()) {
+        if (e.scope == StageScope::Project) {
+            if (SetAssignValueIn(store.project, {e.key}, e.group, e.value)) ++n;
+        } else if (characters && e.scope == StageScope::Character) {
+            const size_t    had = store.characters.size();
+            SoundCharacter* c = EnsureCharacter(store, e.character);
+            if (!c) continue;
+            if (SetAssignValueIn(c->assigns, {e.key}, e.group, e.value)) ++n;
+            else if (store.characters.size() > had) store.characters.resize(had);  // a record made for nothing
+        }
+    }
+    return n;
+}
+
+int ApplyStagedToCharacter(const Staged& s, SoundCharacter& ch)
+{
+    int n = 0;
+    for (const StagedEntry& e : s.Entries())
+        if (e.scope == StageScope::Character && e.owner == CharacterOwner(ch.skeleton, ch.model))
+            if (SetAssignValueIn(ch.assigns, {e.key}, e.group, e.value)) ++n;
+    return n;
+}
+
+static std::string ValueIn(const std::vector<ValueSet>& values, const std::string& group)
+{
+    for (const ValueSet& v : values)
+        if (v.group_uid == group) return v.value_uid;
+    return std::string();
+}
+
+std::string AppliedItemValue(const ItemSounds& rec, const std::vector<Block>& blocks, const std::string& key, const std::string& group)
+{
+    if (key == kItemKey) return ValueIn(rec.item_values, group);
+    int b = -1;
+    if (!BlockOfKey(key, &b) || b < 0 || static_cast<size_t>(b) >= blocks.size()) return std::string();
+    const std::string& rid = blocks[static_cast<size_t>(b)].rid;
+    if (rid.empty()) return std::string();
+    const RuleSounds* r = FindRuleSounds(rec, rid);
+    return r ? ValueIn(r->values, group) : std::string();
+}
+
+std::string AppliedKeyValue(const std::vector<SoundAssign>& list, const std::string& key, const std::string& group)
+{
+    const SoundAssign* a = FindAssign(list, key);
+    return a ? ValueIn(a->values, group) : std::string();
+}
+
+StagedBar StagedBarText(int changes, int targets, int items)
+{
+    StagedBar b;
+    b.bold = std::to_string(changes) + " Switch change" + (changes == 1 ? "" : "s");
+    b.rest = "on " + std::to_string(targets) + " target" + (targets == 1 ? "" : "s");
+    if (items > 1) b.rest += std::string(kDot) + std::to_string(items) + " items";
+    b.rest += ", not placed yet";
+    b.sub = std::string(kDot) + "Commit places them in one undo step";
+    return b;
+}
+
+ChangeText CommitChangeText(const std::string& where, int changes, int targets)
+{
+    ChangeText c;
+    c.prefix = "Undo point ";
+    c.bold = "RAV: Set sound values";
+    c.rest = std::string(kDot) + where + kDot + std::to_string(changes) + (changes == 1 ? " change" : " changes") + " on " +
+             std::to_string(targets) + (targets == 1 ? " target" : " targets");
+    return c;
+}
+
+const char* StagedTip()
+{
+    return "Staged: Commit applies it";
+}
+
 // ---- Selection -----------------------------------------------------------------------------------------
 
 bool Selection::Has(const std::string& key) const

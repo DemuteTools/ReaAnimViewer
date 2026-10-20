@@ -589,6 +589,10 @@ int SampleThreadStack(uint32_t tid, uint64_t* pcs, int cap)
     if (!tid) return 0;
     HANDLE th = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, tid);
     if (!th) return 0;
+    if (GetProcessIdOfThread(th) != GetCurrentProcessId()) {  // review L5: a stale id reused by another process
+        CloseHandle(th);
+        return 0;
+    }
     const int n = StackReturns(SuspendAndCopy(th), pcs, cap);
     CloseHandle(th);
     return n;

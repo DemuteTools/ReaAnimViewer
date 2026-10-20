@@ -2980,7 +2980,7 @@ void DrawLibraryFileSection()
 }
 
 // 13-77a: the Tracks section: Lands in, now on every library (the Attached ones keep their sources' tracks).
-void DrawLibraryTracksSection()
+void DrawLibraryNodeTracksSection()
 {
     const SoundStore&   store = GetSoundStore(nullptr);
     const SoundLibrary* lib = FindLibrary(store, SelectedLibraryUid());

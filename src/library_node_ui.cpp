@@ -6588,7 +6588,7 @@ void NodePanelWidgets()
         if (!StoreReplaced() && n->type != SoundNodeType::Switch) DrawPlays(store, *lib, *n);
         // 13-77a review L5 (mockup v3): File, then Tracks, right after Plays / Mix.
         if (!StoreReplaced()) DrawLibraryFileSection();
-        if (!StoreReplaced()) DrawLibraryTracksSection();
+        if (!StoreReplaced()) DrawLibraryNodeTracksSection();
     } else if (!StoreReplaced()) {
         DrawVolume(*lib, *n);
         if (!StoreReplaced()) DrawSyncPendingLine(lib->uid, n->uid);  // 13-35
@@ -6598,7 +6598,7 @@ void NodePanelWidgets()
             ui::FoldScopeBar(fold_scope);
             DrawSoundPanel(*lib, *n);
         }
-        if (!StoreReplaced()) DrawLibraryTracksSection();  // Lands in on a Sound: after its own sections
+        if (!StoreReplaced()) DrawLibraryNodeTracksSection();  // Lands in on a Sound: after its own sections
     }
     ui::EndFoldScope(!StoreReplaced());
     // The whole node panel takes a Media Explorer drop too (after the waveform's own target, so

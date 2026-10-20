@@ -31,7 +31,7 @@ namespace rav {
 // 13-77a: the node panel's File section (where the library's file stands: Save to a file..., the link, the red
 // "file not found" bar) and Tracks section (Lands in, every library but an Attached one).
 void DrawLibraryFileSection();
-void DrawLibraryTracksSection();
+void DrawLibraryNodeTracksSection();
 
 // 13-7a (audit C1.4): user libraries are listed in the Libraries list under USER (library_tree_ui.cpp);
 // this module keeps their folder, files and pickers.

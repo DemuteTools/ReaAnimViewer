@@ -1581,6 +1581,7 @@ struct SyncReq {
     std::string                    lib;
     std::map<std::string, SyncDir> picks;
     uint64_t                       ticket = 0;
+    uint64_t                       sig = 0;  // the diff the picks were made on (0 = unchecked), review 13-77c M3
     std::function<void(SyncApplyOutcome)> done;
 };
 
@@ -1690,6 +1691,16 @@ void FinishApply(ProjSync& ps, const SyncOut& o, SyncApplyOutcome what)
     const std::function<void(SyncApplyOutcome)> done = it->second.done;
     gs.waiting.erase(it);
     if (done) done(what);
+}
+
+// The answer of an Apply will never be handled (its tab is gone): the one waiting for it is told (review 13-77c L1).
+void DropWaiting(uint64_t seq)
+{
+    const auto it = gs.waiting.find(seq);
+    if (it == gs.waiting.end()) return;
+    const std::function<void(SyncApplyOutcome)> done = it->second.done;
+    gs.waiting.erase(it);
+    if (done) done(SyncApplyOutcome::Failed);
 }
 
 void HandleApplyOut(ProjSync& ps, SyncOut& o)
@@ -1851,7 +1862,7 @@ void DrainSyncOuts(const ProjKey& shown)
         auto            pit = gs.projs.find(o.proj);
         const SyncRoute route = RouteSyncAnswer(pit != gs.projs.end(), o.proj == shown);
         if (route == SyncRoute::Drop) {  // that tab is gone
-            if (o.kind == SyncKind::Apply) gs.waiting.erase(o.seq);
+            if (o.kind == SyncKind::Apply) DropWaiting(o.seq);
             continue;
         }
         ProjSync& ps = pit->second;
@@ -1885,6 +1896,11 @@ bool StartSyncApply(const SyncReq& req)
     if (gs.apply_busy || it == ps.slots.end() || !it->second.ready) {
         ShowToastNoUndo(gs.apply_busy ? "Another sync is running: try again in a moment" : "Still reading " + lib->ravlib_path + ": try again in a moment");
         if (req.done) req.done(SyncApplyOutcome::Failed);
+        return false;
+    }
+    if (req.sig != 0 && SyncDiffSignature(it->second.diff) != req.sig) {  // M3: the list moved since the picks were made
+        ShowToastNoUndo("Stopped: the changes moved, check again");
+        if (req.done) req.done(SyncApplyOutcome::Stopped);
         return false;
     }
     SyncJob j;
@@ -1997,10 +2013,23 @@ void SyncTick(ReaProject* proj)
     for (auto it = ps.slots.begin(); it != ps.slots.end();) it = live.count(it->first) ? std::next(it) : ps.slots.erase(it);
 
     // A gesture of the frame (Send mine / Get file's): one at a time.
+    // M3: the other tabs' queued requests are dropped (they would fire, unexpected, when the tab is shown again).
+    for (auto& kv : gs.projs) {
+        if (kv.first == key || kv.second.reqs.empty()) continue;
+        std::vector<SyncReq> stale;
+        stale.swap(kv.second.reqs);
+        for (SyncReq& r : stale)
+            if (r.done) r.done(SyncApplyOutcome::Stopped);
+    }
     if (!ps.reqs.empty() && !gs.apply_busy) {
-        SyncReq r = std::move(ps.reqs.front());
-        ps.reqs.erase(ps.reqs.begin());
-        StartSyncApply(r);
+        // M3: a pending re-read of the list (an edit in progress) is awaited first, so the signature below is the current one
+        const auto sit = ps.slots.find(ps.reqs.front().lib);
+        const bool settling = sit != ps.slots.end() && sit->second.ready && (sit->second.dirty || sit->second.force || sit->second.busy);
+        if (!settling) {
+            SyncReq r = std::move(ps.reqs.front());
+            ps.reqs.erase(ps.reqs.begin());
+            StartSyncApply(r);
+        }
     }
 
     // Ctrl+Z / redo of an Apply (review H2 / M7): only when REAPER's next redo (an undo just happened) or next undo (a
@@ -2714,7 +2743,7 @@ LibrarySyncInfo LibrarySyncInfoOf(const std::string& lib_uid)
 }
 
 void RequestSyncApply(const std::string& lib_uid, const std::map<std::string, SyncDir>& picks,
-                      std::function<void(SyncApplyOutcome)> done)
+                      std::function<void(SyncApplyOutcome)> done, uint64_t diff_sig)
 {
     if (picks.empty()) {
         if (done) done(SyncApplyOutcome::Nothing);
@@ -2723,6 +2752,7 @@ void RequestSyncApply(const std::string& lib_uid, const std::map<std::string, Sy
     SyncReq r;
     r.lib = lib_uid;
     r.picks = picks;
+    r.sig = diff_sig;
     r.done = std::move(done);
     CurSync().reqs.push_back(std::move(r));
 }
@@ -2752,7 +2782,11 @@ void RequestNodeSync(const std::string& lib_uid, const std::string& node_uid, Sy
     std::vector<std::string> keys;
     for (const SyncChange* c : RowChanges(*d, *n)) keys.push_back(c->key);
     for (const std::string& k : SyncKeysForDir(*d, keys, dir)) picks[k] = dir;
-    RequestSyncApply(lib_uid, CloseSelection(*d, picks));
+    if (picks.empty()) {  // M2: nothing of that side (the buttons say so); never a click that does nothing silently
+        ShowToastNoUndo(dir == SyncDir::Up ? "Nothing made here to send" : "Nothing changed in the file to take");
+        return;
+    }
+    RequestSyncApply(lib_uid, CloseSelection(*d, picks), {}, SyncDiffSignature(*d));
 }
 
 namespace {
@@ -2841,13 +2875,21 @@ void DrawOwnSyncBar(const std::string& lib_uid, const std::string& node_uid, con
     }
     if (own.size() > kMaxLines) ui::ToneText("... and " + std::to_string(own.size() - kMaxLines) + " more", ui::kFaint, true);
     const bool up_primary = tone == BarTone::Here, down_primary = tone == BarTone::File;
+    // M2: a side with no change to take is disabled (visible, never moved), the tooltip says why
+    const bool can_up = c.here + c.both > 0, can_down = c.file + c.both > 0;
+    if (!can_up) ImGui::BeginDisabled();
     if (up_primary ? ui::PrimaryButton("\xE2\x86\x91 Send mine") : ui::SolidButton("\xE2\x86\x91 Send mine"))
         RequestNodeSync(lib_uid, node_uid, SyncDir::Up);
-    ui::ItemTipText("Write these changes, as they are here, into the file. What they need goes with them.");
+    if (!can_up) ImGui::EndDisabled();
+    ui::ItemTipText(can_up ? "Write these changes, as they are here, into the file. What they need goes with them."
+                           : "Nothing made here to send. The changes are the file's: Get file's takes them, or Change by change... drops one.");
     ui::SameLineIfFits(ui::ButtonWidth("\xE2\x86\x93 Get file's"));
+    if (!can_down) ImGui::BeginDisabled();
     if (down_primary ? ui::PrimaryButton("\xE2\x86\x93 Get file's") : ui::SolidButton("\xE2\x86\x93 Get file's"))
         RequestNodeSync(lib_uid, node_uid, SyncDir::Down);
-    ui::ItemTipText("Take the file's changes here. What they need goes with them.");
+    if (!can_down) ImGui::EndDisabled();
+    ui::ItemTipText(can_down ? "Take the file's changes here. What they need goes with them."
+                             : "Nothing changed in the file to take. The changes are yours: Send mine writes them, or Change by change... drops one.");
     ui::SameLineIfFits(ui::ButtonWidth("Change by change..."));
     if (ui::SolidButton("Change by change...")) {
         const std::string focus = own.empty() ? node_uid : own[0]->node;

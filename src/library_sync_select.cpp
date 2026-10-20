@@ -187,6 +187,7 @@ void SyncSelection::Put(const SyncDiff&, const SyncChange& c, SyncDir dir, bool 
     t.auto_ = auto_;
     t.by = by;
     t.needs_why = needs_why;
+    t.val = c.text + "\x1f" + c.here_text + "\x1f" + c.file_text;
     ticks_[c.key] = t;
 }
 
@@ -197,8 +198,16 @@ void SyncSelection::Pull(const SyncDiff& d, const SyncChange& c, SyncDir dir, Sy
     for (const std::string& k : ClosureFor(d, c, dir)) {
         const SyncChange* x = d.Find(k);
         if (!x || x->side != c.side) continue;
-        if (IsOn(k)) ticks_[k].dir = dir;
-        else Put(d, *x, dir, true, c.key, ad);
+        if (IsOn(k)) {
+            SyncTick& t = ticks_[k];
+            if (t.dir != dir && t.auto_) {  // turned the other way by this change: it is now this one's (H2)
+                t.by = c.key;
+                t.needs_why = ad;
+            }
+            t.dir = dir;
+        } else {
+            Put(d, *x, dir, true, c.key, ad);
+        }
     }
 }
 
@@ -212,17 +221,24 @@ std::vector<std::string> SyncSelection::Prune(const SyncDiff& d)
             const auto it = ticks_.find(c.key);
             if (it == ticks_.end() || !it->second.on) continue;
             const SyncTick& s = it->second;
-            if (s.auto_ && !IsOn(s.by)) {  // its asker went: another ticked change that needs it keeps it (the mockup lost it)
+            // its asker went, or turned the other way (H2): another ticked change that needs it keeps it (the mockup lost it)
+            auto asker_ok = [&](const SyncTick& t) {
+                const SyncTick* b = Tick(t.by);
+                return b && b->on && b->dir == t.dir;
+            };
+            if (s.auto_ && !asker_ok(s)) {
                 const std::vector<std::string> others = NeededBy(d, c.key);
                 if (!others.empty()) it->second.by = others[0];
             }
-            bool            bad = s.auto_ && !IsOn(s.by);
+            bool            bad = s.auto_ && !asker_ok(s);
             if (!bad && c.side != SyncSide::Both)
-                for (const std::string& k : ClosureFor(d, c, s.dir))
-                    if (d.Find(k) && !IsOn(k)) {
+                for (const std::string& k : ClosureFor(d, c, s.dir)) {
+                    const SyncChange* x = d.Find(k);
+                    if (x && x->side == c.side && !IsOn(k)) {
                         bad = true;
                         break;
                     }
+                }
             if (bad) {
                 it->second.on = false;
                 gone.push_back(c.key);
@@ -253,7 +269,8 @@ static void Finish(const SyncDiff& d, const SyncSelection& s, const std::set<std
                    const std::vector<std::string>& clicked, SyncEffect* fx)
 {
     const std::set<std::string> after = OnSet(s, d);
-    auto                        asked = [&](const std::string& k) { return std::find(clicked.begin(), clicked.end(), k) != clicked.end(); };
+    const std::set<std::string> ask(clicked.begin(), clicked.end());
+    auto                        asked = [&](const std::string& k) { return ask.count(k) != 0; };
     for (const SyncChange& c : d.changes) {
         if (asked(c.key)) continue;
         const bool b = before.count(c.key) != 0, a = after.count(c.key) != 0;
@@ -268,6 +285,7 @@ SyncEffect SyncSelection::Toggle(const SyncDiff& d, const std::string& key)
     const SyncChange* c = d.Find(key);
     if (!c) return fx;
     const std::set<std::string> before = OnSet(*this, d);
+    ++ver_;
     if (IsOn(key)) {
         ticks_[key].on = false;
         Prune(d);
@@ -285,7 +303,9 @@ SyncEffect SyncSelection::Choose(const SyncDiff& d, const std::string& key, Sync
     const SyncChange* c = d.Find(key);
     if (!c) return fx;
     const std::set<std::string> before = OnSet(*this, d);
+    ++ver_;
     SetDir(d, *c, dir, &fx);
+    Prune(d);  // what the old direction had ticked for you goes (H2)
     Finish(d, *this, before, {key}, &fx);
     return fx;
 }
@@ -298,9 +318,17 @@ SyncEffect SyncSelection::ToggleGroup(const SyncDiff& d, const std::vector<std::
         if (d.Find(k)) live.push_back(k);
     if (live.empty()) return fx;
     const std::set<std::string> before = OnSet(*this, d);
-    const bool                  all_on = std::all_of(live.begin(), live.end(), [&](const std::string& k) { return IsOn(k); });
+    ++ver_;
+    // M1: an unsided `both` change cannot be ticked from here, so it does not keep the box from being "all ticked"
+    std::vector<std::string> tickable;
+    for (const std::string& k : live) {
+        const SyncChange& c = *d.Find(k);
+        const SyncTick*   t = Tick(k);
+        if (c.side != SyncSide::Both || (t && t->has_dir)) tickable.push_back(k);
+    }
+    const bool all_on = !tickable.empty() && std::all_of(tickable.begin(), tickable.end(), [&](const std::string& k) { return IsOn(k); });
     if (all_on) {
-        for (const std::string& k : live) ticks_[k].on = false;
+        for (const std::string& k : tickable) ticks_[k].on = false;
         Prune(d);
     } else {
         for (const std::string& k : live) {
@@ -320,7 +348,9 @@ SyncEffect SyncSelection::GroupDir(const SyncDiff& d, const std::vector<std::str
     SyncEffect fx;
     const std::set<std::string> before = OnSet(*this, d);
     const std::vector<std::string> asked = SyncKeysForDir(d, keys, dir);
+    ++ver_;
     for (const std::string& k : asked) SetDir(d, *d.Find(k), dir, &fx);
+    Prune(d);
     Finish(d, *this, before, asked, &fx);
     return fx;
 }
@@ -354,12 +384,36 @@ std::vector<std::string> SyncSelection::NeededBy(const SyncDiff& d, const std::s
     std::vector<std::string> out;
     const SyncTick*          me = Tick(key);
     if (!me || !me->on) return out;
-    for (const SyncChange& x : d.changes) {
-        if (x.key == key || x.side == SyncSide::Both) continue;
+    auto asks = [&](const SyncChange& x) {
+        if (x.key == key || x.side == SyncSide::Both) return false;
         const SyncTick* t = Tick(x.key);
-        if (!t || !t->on || t->dir != me->dir) continue;
+        if (!t || !t->on || t->dir != me->dir) return false;
         const std::vector<std::string> cl = ClosureFor(d, x, t->dir);
-        if (std::find(cl.begin(), cl.end(), key) != cl.end()) out.push_back(x.key);
+        return std::find(cl.begin(), cl.end(), key) != cl.end();
+    };
+    if (d.IndexValid()) {  // only the changes related to `key` can ask for it (H1): both closures, in diff order
+        std::set<size_t> cand;
+        for (const std::string& k : NeedsClosure(d, key))
+            if (const SyncChange* x = d.Find(k)) cand.insert(static_cast<size_t>(x - d.changes.data()));
+        for (const std::string& k : DependentsClosure(d, key))
+            if (const SyncChange* x = d.Find(k)) cand.insert(static_cast<size_t>(x - d.changes.data()));
+        for (size_t i : cand)
+            if (asks(d.changes[i])) out.push_back(d.changes[i].key);
+        return out;
+    }
+    for (const SyncChange& x : d.changes)
+        if (asks(x)) out.push_back(x.key);
+    return out;
+}
+
+std::map<std::string, std::vector<std::string>> SyncSelection::NeededByAll(const SyncDiff& d) const
+{
+    std::map<std::string, std::vector<std::string>> out;
+    for (const SyncChange& c : d.changes) {
+        const SyncTick* t = Tick(c.key);
+        if (!t || !t->on) continue;
+        std::vector<std::string> nb = NeededBy(d, c.key);
+        if (!nb.empty()) out[c.key] = std::move(nb);
     }
     return out;
 }
@@ -378,9 +432,11 @@ void SyncSelection::Rekey(const SyncDiff& now)
 {
     for (auto it = ticks_.begin(); it != ticks_.end();) {
         const SyncChange* c = now.Find(it->first);
-        if (!c || c->side != it->second.side) it = ticks_.erase(it);
+        const std::string val = c ? c->text + "\x1f" + c->here_text + "\x1f" + c->file_text : std::string();
+        if (!c || c->side != it->second.side || val != it->second.val) it = ticks_.erase(it);  // L3: a moved value is not what was ticked
         else ++it;
     }
+    ++ver_;
     Prune(now);
 }
 

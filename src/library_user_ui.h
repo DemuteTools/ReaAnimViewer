@@ -89,9 +89,10 @@ LibrarySyncInfo LibrarySyncInfoOf(const std::string& lib_uid);
 // nothing is written when it moved.
 void RequestNodeSync(const std::string& lib_uid, const std::string& node_uid, SyncDir dir);
 // The same for an exact selection of change keys (13-77c's window); the selection is closed (needs / dependents) by the
-// Apply. `done` (optional) is called once with how it ended, on the UI thread (even when it could not start).
+// Apply. `diff_sig` (optional, SyncDiffSignature of the diff the picks were made on): the Apply stops (Stopped, toast "the
+// changes moved") when the list it meets is another. `done` (optional) is called once with how it ended, on the UI thread (even when it could not start).
 void RequestSyncApply(const std::string& lib_uid, const std::map<std::string, SyncDir>& picks,
-                      std::function<void(SyncApplyOutcome)> done = {});
+                      std::function<void(SyncApplyOutcome)> done = {}, uint64_t diff_sig = 0);
 // The pickers (run by this module's timer, never inside the frame).
 void RequestUserLibraryImport();
 void RequestUserLibraryExport(const std::string& lib_uid);

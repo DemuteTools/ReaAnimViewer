@@ -62,6 +62,11 @@ struct State {
     uint64_t                           sig = 0;
     bool                               have_sig = false;
     bool                               applying = false;
+    double                             applying_until = 0.0;  // L1: an Apply that never answers stops blocking the button
+    uint64_t                           epoch = 0;             // L2: moves each time the window opens fresh / on another library
+    std::map<std::string, std::vector<std::string>> nb_cache;  // H1: "needed by" per key, per selection change
+    uint64_t                           nb_ver = ~0ull, nb_sig = 0;
+    std::map<std::string, std::vector<std::string>> under_memo, at_memo;  // H1: the keys under / at a branch, per diff
     bool                               post_apply = false;  // an Apply ended: when the list changes, ticks go, and it closes if empty
     double                             post_deadline = 0.0;
     std::vector<std::function<void()>> picks;   // gestures that leave this window (run after the frame)
@@ -102,9 +107,22 @@ std::string When(int64_t t)
 
 uint64_t SigOf(const SyncDiff& d)
 {
-    std::string s = d.root;
-    for (const SyncChange& c : d.changes) s += "\n" + c.key + (c.side == SyncSide::Here ? "h" : c.side == SyncSide::File ? "f" : "b");
-    return SyncTextHash(s);
+    return SyncDiffSignature(d);
+}
+
+// The keys under / at a branch, worked out once per diff (a frame asks for every open branch, many times).
+const std::vector<std::string>& KeysUnder(const SyncDiff& d, const std::string& id)
+{
+    auto it = g.under_memo.find(id);
+    if (it == g.under_memo.end()) it = g.under_memo.emplace(id, SyncKeysUnder(d, id)).first;
+    return it->second;
+}
+
+const std::vector<std::string>& KeysAt(const SyncDiff& d, const std::string& id)
+{
+    auto it = g.at_memo.find(id);
+    if (it == g.at_memo.end()) it = g.at_memo.emplace(id, SyncKeysAt(d, id)).first;
+    return it->second;
 }
 
 // ---- what a frame draws from ---------------------------------------------------------------------------------------
@@ -285,7 +303,7 @@ void GroupDirGesture(const std::vector<std::string>& keys, SyncDir dir)
 // Direction buttons of a parent row: right-aligned. Returns their left edge.
 float DrawGroupDirs(const Ctx& c, const std::string& id, bool all, float x_right, float y, float rowh)
 {
-    const std::vector<std::string> keys = SyncKeysUnder(*c.d, all ? "*" : id);
+    const std::vector<std::string>& keys = KeysUnder(*c.d, all ? "*" : id);
     int                            nu = 0, nd = 0;
     SyncDirCounts(*c.d, keys, &nu, &nd);
     const std::string up = std::string(kUpArrow) + " mine " + std::to_string(nu);
@@ -324,7 +342,7 @@ void ToggleGroupGesture(const std::vector<std::string>& keys)
 void DrawAllRow(const Ctx& c)
 {
     const SyncDiff&                d = *c.d;
-    const std::vector<std::string> keys = SyncKeysUnder(d, "*");
+    const std::vector<std::string>& keys = KeysUnder(d, "*");
     const float                    rowh = RowH();
     const ImVec2                   p = ImGui::GetCursorScreenPos();
     const float                    w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
@@ -347,7 +365,7 @@ void DrawAllRow(const Ctx& c)
 void DrawGroupRow(const Ctx& c, const std::string& id, int depth)
 {
     const SyncDiff&                d = *c.d;
-    const std::vector<std::string> keys = SyncKeysUnder(d, id);
+    const std::vector<std::string>& keys = KeysUnder(d, id);
     const float                    rowh = RowH();
     const ImVec2                   p = ImGui::GetCursorScreenPos();
     const float                    w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
@@ -388,7 +406,7 @@ void DrawGroupRow(const Ctx& c, const std::string& id, int depth)
     const float        ty = std::floor(p.y + (rowh - nf->FontSize) * 0.5f);
     const float        gap = ui::Dp(6.0f);
     const SyncChange*  adds = nullptr;
-    for (const std::string& k : SyncKeysAt(d, id)) {
+    for (const std::string& k : KeysAt(d, id)) {
         const SyncChange* ch = d.Find(k);
         if (ch && ch->adds_container && ch->subject == id && ch->side != SyncSide::Both) adds = ch;
     }
@@ -476,6 +494,10 @@ void DrawChangeRow(const Ctx& c, const std::string& key, int depth)
     const ImVec2    p = ImGui::GetCursorScreenPos();
     const float     w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
     ImDrawList*     dl = ImGui::GetWindowDrawList();
+    if (!ImGui::IsRectVisible(p, ImVec2(p.x + w, p.y + rowh))) {  // H1: a row out of view only takes its room
+        ImGui::Dummy(ImVec2(w, rowh));
+        return;
+    }
     if (HoverRect(p, ImVec2(p.x + w, p.y + rowh))) dl->AddRectFilled(p, ImVec2(p.x + w, p.y + rowh), ui::kHover, ui::kRadiusSm);
     ImGui::PushID(key.c_str());
     float x = p.x + static_cast<float>(depth) * Indent() + ui::Dp(18.0f) + ui::Dp(4.0f);
@@ -513,14 +535,16 @@ void DrawChangeRow(const Ctx& c, const std::string& key, int depth)
     }
     // the "needed by" / "goes with" chip
     std::string chip, chip_tip;
-    if (on && tk && tk->auto_ && g.sel.IsOn(tk->by)) {
+    const SyncTick* bt = on && tk && tk->auto_ ? g.sel.Tick(tk->by) : nullptr;
+    if (bt && bt->on && bt->dir == tk->dir) {  // H2: the asker still goes the same way
         const SyncChange* by_c = d.Find(tk->by);
         chip = std::string(tk->needs_why ? "needed by " : "goes with ") + (by_c ? by_c->text : tk->by);
         chip_tip = tk->needs_why ? "Ticked for you: the change on its right needs this one"
                                  : "Ticked for you: it goes away with the change on its right";
     } else if (on) {
-        const std::vector<std::string> nb = g.sel.NeededBy(d, key);
-        if (!nb.empty()) {
+        const auto nbit = g.nb_cache.find(key);  // H1: computed once per selection change, not per row per frame
+        if (nbit != g.nb_cache.end() && !nbit->second.empty()) {
+            const std::vector<std::string>& nb = nbit->second;
             const SyncChange* first = d.Find(nb[0]);
             chip = "needed by " + (first ? first->text : nb[0]) + (nb.size() > 1 ? " +" + std::to_string(nb.size() - 1) : std::string());
             chip_tip = "Another ticked change needs this one";
@@ -565,7 +589,7 @@ void DrawNode(const Ctx& c, const std::string& id, int depth)
 {
     DrawGroupRow(c, id, depth);
     if (!IsOpen(c, id)) return;
-    for (const std::string& k : SyncKeysAt(*c.d, id)) DrawChangeRow(c, k, depth + 1);
+    for (const std::string& k : KeysAt(*c.d, id)) DrawChangeRow(c, k, depth + 1);
     const auto it = c.kids.find(id);
     if (it != c.kids.end())
         for (const std::string& k : it->second) DrawNode(c, k, depth + 1);
@@ -628,13 +652,16 @@ void DrawFooter(const SyncDiff* d, float h)
         const std::map<std::string, SyncDir> picks = g.sel.Picks(*dd);
         if (picks.empty()) return;
         g.applying = true;
-        RequestSyncApply(g.lib, picks, [](SyncApplyOutcome o) {
+        g.applying_until = ClockSeconds() + 20.0;
+        const uint64_t epoch = g.epoch;
+        RequestSyncApply(g.lib, picks, [epoch](SyncApplyOutcome o) {
+            if (epoch != g.epoch) return;  // L2: the window was reopened (or is on another library) since: not its Apply
             g.applying = false;
             if (o == SyncApplyOutcome::Applied || o == SyncApplyOutcome::Partly) {
                 g.post_apply = true;
                 g.post_deadline = ClockSeconds() + 6.0;
             }
-        });
+        }, SigOf(*dd));
     });
     if (!can) ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ui::ShowTip("One undo point for everything ticked");
@@ -690,6 +717,8 @@ void DrawContent()
         if (!g.have_sig || sig != g.sig) {
             g.have_sig = true;
             g.sig = sig;
+            g.under_memo.clear();
+            g.at_memo.clear();
             g.sel.Rekey(*d);
             if (g.post_apply) {
                 g.post_apply = false;
@@ -703,6 +732,12 @@ void DrawContent()
             g.post_apply = false;
             g.sel.Clear();
         }
+    }
+    if (g.applying && ClockSeconds() > g.applying_until) g.applying = false;  // L1: no answer came: the button comes back
+    if (d && (g.nb_ver != g.sel.Version() || g.nb_sig != g.sig)) {
+        g.nb_ver = g.sel.Version();
+        g.nb_sig = g.sig;
+        g.nb_cache = g.sel.NeededByAll(*d);
     }
     DrawTitle(lib);
     const float footer_h = ui::LargeH() + ui::Dp(16.0f);
@@ -750,6 +785,10 @@ void OpenSyncWithFile(const std::string& lib_uid, const std::string& focus_node)
 {
     const bool fresh = !g.open || g.lib != lib_uid;
     if (fresh) {
+        ++g.epoch;
+        g.under_memo.clear();
+        g.at_memo.clear();
+        g.nb_cache.clear();
         g.sel.Clear();
         g.fold.clear();
         g.have_sig = false;

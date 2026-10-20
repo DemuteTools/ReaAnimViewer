@@ -27,6 +27,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -70,6 +71,13 @@ struct SyncDiff {
     std::set<std::string> mine_nodes;   // the node uids the project copy has
     std::string root;                   // the library's root node uid
     std::map<std::string, LibSyncCounts> row_counts;  // row -> counts of its changes (built once per diff, review M8)
+    // Review 13-77c H1: a key -> position index and the reverse "who needs it" lists, built once per diff (DiffLibrary,
+    // or BuildIndex() for a diff assembled by hand). Find / DependentsClosure use them while they match `changes` (same
+    // size), and fall back to a scan otherwise, so a hand-edited diff stays correct.
+    std::unordered_map<std::string, size_t>              index;
+    std::unordered_map<std::string, std::vector<size_t>> needed_by;  // key -> positions of the changes whose needs hold it
+    void BuildIndex();
+    bool IndexValid() const { return !changes.empty() && index.size() == changes.size(); }
     const SyncChange* Find(const std::string& key) const;
 };
 
@@ -154,6 +162,9 @@ std::vector<std::pair<std::string, std::string>> NameMergeMap(const std::vector<
 // ---- the gates around the I/O (pure decisions the UI layer calls) ------------------------------------------
 // FNV-1a 64 of a text: the base's hash, the file's hash.
 uint64_t SyncTextHash(const std::string& text);
+// A fingerprint of what a diff lists: its root and, per change, its key, side and the three texts (review 13-77c M3 / L3).
+// The window ticks against one signature; an Apply carrying it stops when the list it meets is another.
+uint64_t SyncDiffSignature(const SyncDiff& d);
 // What the file looked like when the list was built / what it is now (size -1 = gone).
 struct SyncFileStamp {
     int64_t  size = -1;

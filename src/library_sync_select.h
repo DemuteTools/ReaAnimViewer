@@ -12,6 +12,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <map>
 #include <string>
 #include <vector>
@@ -28,6 +29,7 @@ struct SyncTick {
     bool        auto_ = false;       // ticked for you because another change needs it / goes with it
     std::string by;                  // the change key that asked (auto_)
     bool        needs_why = true;    // auto_: true = "needed by", false = "goes with"
+    std::string val;                 // the change's text and both values when ticked (Rekey drops a tick whose value moved)
 };
 
 // What one gesture did besides the change(s) it was about (for the toasts and the folds).
@@ -88,11 +90,15 @@ public:
     SyncCountsTicked Counts(const SyncDiff& d) const;
     // The keys of the other ticked changes (same direction) that need `key` (adopt) / go with it (drop), transitively.
     std::vector<std::string> NeededBy(const SyncDiff& d, const std::string& key) const;
+    // NeededBy of every ticked key that has some (computed together, for the window to cache per selection change).
+    std::map<std::string, std::vector<std::string>> NeededByAll(const SyncDiff& d) const;
+    // Bumps on every gesture / rebuild that may change a tick (the window's cache key).
+    uint64_t Version() const { return ver_; }
     // For RequestSyncApply: the ticked changes and their directions (consistent: the engine's closure changes nothing).
     std::map<std::string, SyncDir> Picks(const SyncDiff& d) const;
     // The diff was rebuilt: a tick stays when its change is still there with the same side, the others drop; then prune.
     void Rekey(const SyncDiff& now);
-    void Clear() { ticks_.clear(); }
+    void Clear() { ticks_.clear(); ++ver_; }
 
 private:
     void Put(const SyncDiff& d, const SyncChange& c, SyncDir dir, bool auto_, const std::string& by, bool needs_why);
@@ -102,6 +108,7 @@ private:
     bool TickKey(const SyncDiff& d, const SyncChange& c, SyncEffect* fx);
 
     std::map<std::string, SyncTick> ticks_;
+    uint64_t                        ver_ = 0;
 };
 
 // ---- the toasts (mockup wording) and the footer -------------------------------------------------------------------

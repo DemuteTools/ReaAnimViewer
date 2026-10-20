@@ -719,8 +719,23 @@ Opt MakeOpt(const std::string* v)
 
 }  // namespace
 
+void SyncDiff::BuildIndex()
+{
+    index.clear();
+    needed_by.clear();
+    index.reserve(changes.size());
+    for (size_t i = 0; i < changes.size(); ++i) index[changes[i].key] = i;
+    for (size_t i = 0; i < changes.size(); ++i)
+        for (const std::string& n : changes[i].needs) needed_by[n].push_back(i);
+}
+
 const SyncChange* SyncDiff::Find(const std::string& key) const
 {
+    if (IndexValid()) {
+        const auto it = index.find(key);
+        if (it == index.end()) return nullptr;
+        if (it->second < changes.size() && changes[it->second].key == key) return &changes[it->second];
+    }
     for (const SyncChange& c : changes)
         if (c.key == key) return &c;
     return nullptr;
@@ -1234,6 +1249,7 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& file_base_
     out.folds.erase(std::unique(out.folds.begin(), out.folds.end()), out.folds.end());
     std::sort(out.file_folds.begin(), out.file_folds.end());
     out.file_folds.erase(std::unique(out.file_folds.begin(), out.file_folds.end()), out.file_folds.end());
+    out.BuildIndex();
     return out;
 }
 
@@ -1260,6 +1276,13 @@ std::vector<std::string> DependentsClosure(const SyncDiff& d, const std::string&
     while (!todo.empty()) {
         const std::string k = todo.back();
         todo.pop_back();
+        if (d.IndexValid()) {
+            const auto it = d.needed_by.find(k);
+            if (it == d.needed_by.end()) continue;
+            for (size_t i : it->second)
+                if (i < d.changes.size() && seen.insert(d.changes[i].key).second) todo.push_back(d.changes[i].key);
+            continue;
+        }
         for (const SyncChange& c : d.changes)
             if (std::find(c.needs.begin(), c.needs.end(), k) != c.needs.end() && seen.insert(c.key).second) todo.push_back(c.key);
     }
@@ -2112,6 +2135,14 @@ std::vector<std::pair<std::string, std::string>> NameMergeMap(const std::vector<
 }
 
 // ---- gates ------------------------------------------------------------------------------------------------------
+
+uint64_t SyncDiffSignature(const SyncDiff& d)
+{
+    std::string s = d.root;
+    for (const SyncChange& c : d.changes)
+        s += "\n" + c.key + (c.side == SyncSide::Here ? "h" : c.side == SyncSide::File ? "f" : "b") + c.node + "\x1f" + c.text + "\x1f" + c.here_text + "\x1f" + c.file_text;
+    return SyncTextHash(s);
+}
 
 uint64_t SyncTextHash(const std::string& text)
 {

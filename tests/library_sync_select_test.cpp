@@ -6,6 +6,7 @@
 #include "library_sync_select.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <map>
 #include <string>
@@ -263,6 +264,189 @@ static void TestTree()
     CHECK(SyncChangesWord(1) == "1 change" && SyncChangesWord(3) == "3 changes");
 }
 
+// ---- review 13-77c ---------------------------------------------------------------------------------------------
+
+static bool Consistent(const SyncDiff& d, const SyncSelection& s)
+{
+    const auto p = s.Picks(d);
+    if (CloseSelection(d, p) != p) return false;
+    for (const SyncChange& c : d.changes) {  // no auto tick whose asker is off or goes the other way
+        const SyncTick* t = s.Tick(c.key);
+        if (!t || !t->on || !t->auto_) continue;
+        const SyncTick* b = s.Tick(t->by);
+        if (!b || !b->on || b->dir != t->dir) return false;
+    }
+    return true;
+}
+
+static void TestH2Flips()
+{
+    const SyncDiff d = Fixture();
+    {  // the asker turns: what it ticked for you in the old direction goes
+        SyncSelection s;
+        s.Toggle(d, "X|rgs1");
+        CHECK(s.IsOn("X|rg") && s.Tick("X|rg")->dir == SyncDir::Up);
+        s.Choose(d, "X|rgs1", SyncDir::Down);
+        CHECK(!s.IsOn("X|rg"));
+        CHECK(s.IsOn("X|rgs1") && s.Tick("X|rgs1")->dir == SyncDir::Down);
+        CHECK(Consistent(d, s));
+        CHECK(s.Picks(d).size() == 1);
+    }
+    {  // a need turns: the ticks that asked for it turn with it
+        SyncSelection s;
+        s.Toggle(d, "X|rgs1");
+        s.Toggle(d, "X|rgs2");
+        s.Choose(d, "X|rg", SyncDir::Down);
+        CHECK(s.Tick("X|rgs1")->dir == SyncDir::Down && s.Tick("X|rgs2")->dir == SyncDir::Down);
+        CHECK(Consistent(d, s));
+        s.Choose(d, "X|rgs1", SyncDir::Up);  // and back: rg and its other dependents follow, the chip says so
+        CHECK(s.Tick("X|rg")->dir == SyncDir::Up);
+        CHECK(Consistent(d, s));
+        CHECK(s.NeededBy(d, "X|rg").size() == 1 && s.NeededBy(d, "X|rg")[0] == "X|rgs1");
+    }
+    {  // a group's direction on the whole library: the file's changes turn, mine stay (never reverted by the other button)
+        SyncSelection s;
+        s.GroupDir(d, SyncKeysUnder(d, "*"), SyncDir::Up);
+        s.GroupDir(d, SyncKeysUnder(d, "*"), SyncDir::Down);
+        CHECK(Consistent(d, s));
+        CHECK(s.Tick("X|rgs1")->dir == SyncDir::Up && s.Tick("X|wm")->dir == SyncDir::Down);
+    }
+}
+
+static void TestCrossSideIgnored()
+{
+    SyncDiff d;
+    d.root = "R";
+    d.parent = {{"c", "R"}};
+    Add(&d, "H", SyncSide::Here, "c", "h", {"F"});  // a here change that (wrongly) needs a file one
+    Add(&d, "F", SyncSide::File, "c", "f");
+    Add(&d, "B", SyncSide::Both, "c", "b", {"H"});
+    d.BuildIndex();
+    SyncSelection s;
+    s.Toggle(d, "H");
+    CHECK(s.IsOn("H") && !s.IsOn("F"));  // Pull never crosses sides, Prune does not ask for it either
+    s.Choose(d, "H", SyncDir::Up);
+    CHECK(s.IsOn("H"));
+    SyncSelection t;
+    t.Choose(d, "B", SyncDir::Up);  // a both change pulls nothing
+    CHECK(t.IsOn("B") && !t.IsOn("H") && t.Picks(d).size() == 1);
+}
+
+static void TestGroupUntickPrunes()
+{
+    const SyncDiff d = Fixture();
+    SyncSelection  s;
+    s.Toggle(d, "X|rgs1");
+    CHECK(s.IsOn("X|rg"));
+    s.ToggleGroup(d, {"X|rg"});  // all ticked: untick the Random from its group row
+    CHECK(!s.IsOn("X|rg") && !s.IsOn("X|rgs1"));
+}
+
+static void TestRekeyPrunesOrphanAuto()
+{
+    const SyncDiff d = Fixture();
+    SyncSelection  s;
+    s.Toggle(d, "X|rgs1");
+    SyncDiff now = d;  // the Sound is applied elsewhere, its Random is still listed
+    now.changes.erase(std::remove_if(now.changes.begin(), now.changes.end(), [](const SyncChange& c) { return c.key == "X|rgs1"; }),
+                      now.changes.end());
+    s.Rekey(now);
+    CHECK(!s.IsOn("X|rg"));  // ticked for a change that is gone: nobody asks for it any more
+}
+
+static void TestUntickOnUnsidedBoth()
+{
+    const SyncDiff d = Fixture();
+    const auto     ww = SyncKeysUnder(d, "ww");
+    SyncSelection  s;
+    s.ToggleGroup(d, ww);
+    CHECK(s.IsOn("F|ww|avoid") && s.IsOn("F|ww|fades") && !s.IsOn("F|ww|gain"));
+    s.ToggleGroup(d, ww);  // M1: the second click unticks, the unsided both does not hold the box
+    CHECK(!s.IsOn("F|ww|avoid") && !s.IsOn("F|ww|fades"));
+    const auto all = SyncKeysUnder(d, "*");
+    s.ToggleGroup(d, all);
+    CHECK(s.Counts(d).ticked == 11);  // 13 minus the 2 unsided both
+    s.ToggleGroup(d, all);
+    CHECK(s.Counts(d).ticked == 0);
+    // only unsided both under it: the click ticks nothing and says why
+    SyncEffect fx = s.ToggleGroup(d, {"F|wc|gain", "F|ww|gain"});
+    CHECK(fx.skipped_both == 2 && s.Counts(d).ticked == 0);
+}
+
+static void TestValueMovedDropsTick()
+{
+    SyncDiff      d = Fixture();
+    SyncSelection s;
+    s.Toggle(d, "X|wcs4");
+    s.Toggle(d, "F|ww|avoid");
+    const uint64_t sig = SyncDiffSignature(d);
+    for (SyncChange& c : d.changes)
+        if (c.key == "F|ww|avoid") c.file_text = "another value";
+    d.BuildIndex();
+    CHECK(SyncDiffSignature(d) != sig);  // L3: the window sees the list moved
+    s.Rekey(d);
+    CHECK(s.IsOn("X|wcs4") && !s.IsOn("F|ww|avoid"));
+    SyncDiff e = Fixture();
+    SyncDiff f = Fixture();
+    f.changes[0].node = "elsewhere";
+    CHECK(SyncDiffSignature(e) == SyncDiffSignature(Fixture()) && SyncDiffSignature(e) != SyncDiffSignature(f));
+}
+
+static void TestIndexMatchesScan()
+{
+    SyncDiff d = Fixture();
+    const SyncDiff plain = d;  // no index: the scan
+    d.BuildIndex();
+    CHECK(d.IndexValid() && !plain.IndexValid());
+    for (const SyncChange& c : plain.changes) {
+        CHECK(d.Find(c.key) == &d.changes[static_cast<size_t>(d.Find(c.key) - d.changes.data())] && d.Find(c.key)->key == c.key);
+        CHECK(NeedsClosure(d, c.key) == NeedsClosure(plain, c.key));
+        CHECK(DependentsClosure(d, c.key) == DependentsClosure(plain, c.key));
+    }
+    CHECK(d.Find("nope") == nullptr && plain.Find("nope") == nullptr);
+    d.changes.pop_back();  // edited by hand after the index: back to the scan, still right
+    CHECK(!d.IndexValid() && d.Find("C|swWalk|Mud") == nullptr && d.Find("X|wm") != nullptr);
+}
+
+static double Ms(std::chrono::steady_clock::time_point a)
+{
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - a).count();
+}
+
+static void TestBigDiffIsFast()
+{
+    SyncDiff d;
+    d.root = "R";
+    d.mine_nodes = {"R"};
+    const int packs = 250;  // 250 Randoms x 3 Sounds = 1000 changes, all from the file
+    for (int i = 0; i < packs; ++i) {
+        const std::string r = "r" + std::to_string(i);
+        d.parent[r] = "R";
+        Add(&d, "X|" + r, SyncSide::File, r, "Random " + r + " added", {}, true, r, r);
+        for (int k = 0; k < 3; ++k) Add(&d, "X|" + r + "s" + std::to_string(k), SyncSide::File, r, "Sound added", {"X|" + r});
+    }
+    d.BuildIndex();
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto all = SyncKeysUnder(d, "*");
+    SyncSelection s;
+    s.ToggleGroup(d, all);  // Sync all
+    CHECK(s.TriState(d, all) == SyncTri::All && s.Counts(d).ticked == 1000);
+    const auto nb = s.NeededByAll(d);  // what the window computes once per selection change
+    CHECK(nb.size() >= static_cast<size_t>(packs) && nb.at("X|r0").size() == 3);
+    for (int i = 0; i < 20; ++i) CHECK(s.TriState(d, all) == SyncTri::All);  // frames
+    s.Toggle(d, "X|r7");  // untick one Random: its 3 Sounds go with it
+    CHECK(s.Counts(d).ticked == 996 && !s.IsOn("X|r7s2"));
+    s.Toggle(d, "X|r7s1");  // tick a Sound: the Random is ticked for you again
+    CHECK(s.IsOn("X|r7") && s.Counts(d).ticked == 998);
+    s.ToggleGroup(d, all);  // some ticked: ticks the rest
+    CHECK(s.Counts(d).ticked == 1000);
+    s.ToggleGroup(d, all);
+    CHECK(s.Counts(d).ticked == 0);
+    const double ms = Ms(t0);
+    std::printf("big diff (1000 changes): %.0f ms\n", ms);
+    CHECK(ms < 1500.0);  // was ~8 s for the chips of one frame alone (review H1); a loose bound for a slow -O0 host
+}
+
 int main()
 {
     TestTick();
@@ -274,6 +458,14 @@ int main()
     TestSyncAllTriState();
     TestRekeyAfterApply();
     TestTree();
+    TestH2Flips();
+    TestCrossSideIgnored();
+    TestGroupUntickPrunes();
+    TestRekeyPrunesOrphanAuto();
+    TestUntickOnUnsidedBoth();
+    TestValueMovedDropsTick();
+    TestIndexMatchesScan();
+    TestBigDiffIsFast();
     if (g_fail == 0) std::printf("library_sync_select_test: all passed\n");
     return g_fail == 0 ? 0 : 1;
 }

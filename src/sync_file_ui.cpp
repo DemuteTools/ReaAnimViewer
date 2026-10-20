@@ -818,6 +818,11 @@ bool SyncWithFileIsOpen()
     return g.open;
 }
 
+bool SyncWithFileIsOpenFor(const std::string& lib_uid)
+{
+    return g.open && g.lib == lib_uid;
+}
+
 void DrawSyncWithFileFloat(HWND viewer, HDC viewer_dc, HGLRC rc)
 {
     if (!ImGui::GetCurrentContext()) return;

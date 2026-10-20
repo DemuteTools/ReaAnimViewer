@@ -22,6 +22,8 @@ namespace rav {
 // unfolded and scrolled to. Opening for another library replaces the one shown.
 void OpenSyncWithFile(const std::string& lib_uid, const std::string& focus_node = std::string());
 bool SyncWithFileIsOpen();
+// 13-77 feedback: the window is open on that library (the tree draws its change tags only then).
+bool SyncWithFileIsOpenFor(const std::string& lib_uid);
 // The viewer, once per render tick after its own frame (its GL and ImGui contexts current).
 void DrawSyncWithFileFloat(HWND viewer, HDC viewer_dc, HGLRC rc);
 // The viewer's panel is hidden: the window hides with it.

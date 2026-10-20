@@ -111,7 +111,7 @@ static void TestChangedInFile()
     CHECK(d.file == 4 && d.here == 0);
     const SyncChange* cs = Has(d, "C|R|V3");
     CHECK(cs && cs->side == SyncSide::File && cs->node == "R");
-    CHECK(cs && cs->text == "Switch value Mud added (plays Walk_Mud)");
+    CHECK(cs && cs->text == "Mud now plays Walk_Mud (new)");
     CHECK(cs && cs->needs.size() == 2);  // the Random and the value (the Switch is not added)
     const SyncChange* ss = Has(d, "X|SM");
     CHECK(ss && ss->needs.size() == 1 && ss->needs[0] == "X|M" && ss->node == "M");
@@ -193,7 +193,7 @@ static void TestAdoptPullsNeeds()
     std::map<std::string, SyncDir> pick = {{"X|SM", SyncDir::Up}};
     const auto closed = CloseSelection(d, pick);
     CHECK(closed.count("X|M") && closed.at("X|M") == SyncDir::Up);
-    CHECK(closed.size() == 2);
+    CHECK(closed.count("C|R|V3") && closed.size() == 4);
     // adopting the Case pulls the value, the Random (and, through it, nothing else)
     const auto c2 = CloseSelection(d, {{"C|R|V3", SyncDir::Up}});
     CHECK(c2.count("VX|G1|V3") && c2.count("X|M") && c2.size() == 3);
@@ -1214,6 +1214,71 @@ static void TestRouteSyncAnswer()
     CHECK(RouteSyncAnswer(true, false) == SyncRoute::Hold);
 }
 
+// ---- 13-77 feedback: a new node and the case that makes it play are ONE change -------------------------------------
+static std::string WithGritty(const std::string& t) { return Sub(t, "value uid=V2 name=Wood\n", "value uid=V2 name=Wood\nvalue uid=V3 name=ConcreteGritty\n"); }
+static std::string AddGrittySound(const std::string& t)
+{
+    std::string m = Sub(t, "case value=V2 child=B\n", "case value=V2 child=B\ncase value=V3 child=SG\n");
+    m += "node uid=SG type=sound parent=R name=FS_Gritty_01\nsound kind=file\nframe start=0.1 len=0.2\n";
+    return m;
+}
+
+static void TestNewNodeTravelsWithItsCase()
+{
+    const std::string base = WithGritty(Base());
+    const std::string mine = AddGrittySound(base);
+    const SyncDiff    d = DiffLibrary(base, mine, base);
+    const SyncChange* sound = Has(d, "X|SG");
+    const SyncChange* cs = Has(d, "C|R|V3");
+    CHECK(sound && cs);
+    CHECK(cs && cs->text == "ConcreteGritty now plays FS_Gritty_01 (new)");
+    // either one takes the other
+    for (const char* k : {"X|SG", "C|R|V3"}) {
+        const auto closed = CloseSelection(d, {{k, SyncDir::Up}});
+        CHECK(closed.count("X|SG") && closed.count("C|R|V3"));
+    }
+    // Send the Sound alone: the file gets the Sound AND the case, nothing is left pending
+    SyncResult r;
+    CHECK(ApplySync(base, base, mine, base, d, CloseSelection(d, {{"X|SG", SyncDir::Up}}), &r));
+    CHECK(r.file.find("node uid=SG") != std::string::npos && r.file.find("case value=V3 child=SG") != std::string::npos);
+    CHECK(DiffLibrary(r.base, r.file_base, r.mine, r.file).changes.empty());
+    // the reverse: Get from global
+    const SyncDiff d2 = DiffLibrary(base, base, mine);
+    CHECK(Has(d2, "C|R|V3") && Has(d2, "C|R|V3")->side == SyncSide::File);
+    SyncResult r2;
+    CHECK(ApplySync(base, base, base, mine, d2, CloseSelection(d2, {{"X|SG", SyncDir::Down}}), &r2));
+    CHECK(r2.mine.find("node uid=SG") != std::string::npos && r2.mine.find("case value=V3 child=SG") != std::string::npos);
+    CHECK(DiffLibrary(r2.base, r2.file_base, r2.mine, r2.file).changes.empty());
+    // removal is symmetric: a removed node and its case are one change
+    const SyncDiff d3 = DiffLibrary(mine, base, mine);
+    const auto     c3 = CloseSelection(d3, {{"C|R|V3", SyncDir::Up}});
+    CHECK(c3.count("X|SG") && c3.count("C|R|V3"));
+}
+
+static void TestCaseToExistingNodeStaysSeparate()
+{
+    const std::string base = WithGritty(Base());
+    const std::string mine = Sub(base, "case value=V2 child=B\n", "case value=V2 child=B\ncase value=V3 child=A\n");
+    const SyncDiff    d = DiffLibrary(base, mine, base);
+    CHECK(d.changes.size() == 1 && d.changes[0].key == "C|R|V3");
+    CHECK(d.changes[0].text == "ConcreteGritty now plays Walk_Concrete");
+    CHECK(CloseSelection(d, {{"C|R|V3", SyncDir::Up}}).size() == 1);
+}
+
+static void TestOrphanSoundCaseStillSends()
+{
+    // Antho's file: the Sound was already sent alone, the case is still pending
+    const std::string base = WithGritty(Base());
+    const std::string mine = AddGrittySound(base);
+    std::string       file = base + "node uid=SG type=sound parent=R name=FS_Gritty_01\nsound kind=file\nframe start=0.1 len=0.2\n";
+    const SyncDiff    d = DiffLibrary(base, base, mine, file);
+    CHECK(Has(d, "C|R|V3") && !Has(d, "X|SG"));
+    SyncResult r;
+    CHECK(ApplySync(base, base, mine, file, d, CloseSelection(d, {{"C|R|V3", SyncDir::Up}}), &r));
+    CHECK(r.file.find("case value=V3 child=SG") != std::string::npos);
+    CHECK(DiffLibrary(r.base, r.file_base, r.mine, r.file).changes.empty());
+}
+
 int main()
 {
     TestUpToDate();
@@ -1258,6 +1323,9 @@ int main()
     TestRemovalKeepsMovedNode();
     TestEditDuringRoundTrip();
     TestRouteSyncAnswer();
+    TestNewNodeTravelsWithItsCase();
+    TestCaseToExistingNodeStaysSeparate();
+    TestOrphanSoundCaseStillSends();
     if (g_fail == 0) std::printf("library_sync_test: all passed\n");
     return g_fail == 0 ? 0 : 1;
 }

@@ -1062,11 +1062,12 @@ void RunExport(const std::string& lib_uid)
 // is not written yet).
 void RunReveal(const std::string& lib_uid)
 {
-    const SoundLibrary* lib = FindLibrary(GetSoundStore(nullptr), lib_uid);
-    if (!lib || !LibraryLinked(*lib)) return;
+    // 13-77 feedback: an empty uid opens the global libraries folder itself (the header's folder button).
+    const SoundLibrary* lib = lib_uid.empty() ? nullptr : FindLibrary(GetSoundStore(nullptr), lib_uid);
+    if (!lib_uid.empty() && (!lib || !LibraryLinked(*lib))) return;
     std::error_code ec;
     fs::create_directories(UserFolder(), ec);
-    const fs::path file = lib->ravlib_path.empty() ? fs::path() : FileOf(lib->ravlib_path);
+    const fs::path file = !lib || lib->ravlib_path.empty() ? fs::path() : FileOf(lib->ravlib_path);
     const bool     has_file = !file.empty() && fs::exists(file, ec);
     // 13-50 review: explorer.exe by its full path (Windows folder), never searched for on the PATH.
     wchar_t      win[MAX_PATH] = {};
@@ -2626,6 +2627,12 @@ void RequestUserLibraryReveal(const std::string& lib_uid)
     g.pick_lib = lib_uid;
 }
 
+void RequestUserFolderReveal()
+{
+    g.pick = PickKind::Reveal;
+    g.pick_lib.clear();
+}
+
 bool UserLibraryLocating()
 {
     return g_job.running;
@@ -2916,9 +2923,53 @@ void DrawLibraryFileSection()
     const LinkedFileState st = LinkedFileOf(*lib);
     if (st == LinkedFileState::Unlinked && !is_root) return;
     if (st != LinkedFileState::Unlinked && st != LinkedFileState::Ok && !is_root) return;
+    const std::string lib_uid = lib->uid;
+    // 13-77 feedback (Antho 2026-10-20, calm sync): a linked library's section is folded to one line by default, "Same as
+    // global" / "Differs from global" (+ " . update available" when the global library has changes) and a Compare...
+    // button on it; its state is remembered like the other sections'. The other states (not linked, file lost) stay open.
+    std::string summary;
+    bool        can_compare = false;
+    if (st == LinkedFileState::Ok) {
+        const SyncDiff* sd = LibrarySyncDiff(lib_uid);
+        if (!sd) {
+            summary = "\xC2\xB7 Reading...";
+        } else {
+            int own_n = 0, incoming = 0;
+            if (is_root) {
+                const LibSyncCounts c = TotalCounts(*sd);
+                own_n = c.Total();
+                incoming = c.file + c.both;
+            } else {
+                for (const SyncChange* ch : RowChanges(*sd, *n)) {
+                    ++own_n;
+                    if (ch->side != SyncSide::Here) ++incoming;
+                }
+            }
+            summary = std::string("\xC2\xB7 ") + (own_n > 0 ? "Differs from global" : "Same as global") +
+                      (incoming > 0 ? " \xC2\xB7 update available" : "");
+            can_compare = own_n > 0;
+        }
+        ImGui::PushID("Global library");
+        ImGuiStorage* stg = ImGui::GetStateStorage();
+        const ImGuiID oid = ImGui::GetID("##open");
+        if (stg->GetInt(oid, 2) == 2) stg->SetBool(oid, false);  // folded the first time it is seen
+        ImGui::PopID();
+    }
+    ui::SectionOpts sopts;
+    sopts.foldable = st == LinkedFileState::Ok;
+    if (st == LinkedFileState::Ok) {
+        sopts.suffix = summary.c_str();
+        if (can_compare) sopts.right_w = ui::ButtonWidth("Compare...");
+    }
     ui::Section sec;
-    if (ui::BeginSection(sec, "Global library", ImTextureID(), false)) {
-        const std::string lib_uid = lib->uid;
+    const bool  sec_open = ui::BeginSection(sec, "Global library", sopts);
+    if (can_compare) {
+        ui::BeginSectionHeaderRight(sec);
+        if (ui::SolidButton("Compare...")) OpenSyncWithFile(lib_uid, n->uid);
+        ui::ItemTipText("Open Sync with global on this one: see what differs, send or get each change");
+        ui::EndSectionHeaderRight(sec);
+    }
+    if (sec_open) {
         if (st == LinkedFileState::Unlinked) {
             FileStatusLine(0, "Only in this project. Make it global to use it in other projects.");
             if (ui::SolidButton("Make it global...")) RequestSaveLibraryToFile(lib_uid);

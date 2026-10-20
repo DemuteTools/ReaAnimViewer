@@ -1513,7 +1513,8 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
     // 13-77b: a linked library's container that differs from its file: "edited" (here) / "in file" / "both", " . N" when
     // several; a click selects the row (its File section lists the changes). Review L4: right after the marks' column,
     // before the hover tools, so a play button that shows on hover never moves it, and it never moves a clickable mark.
-    if (n && r.kind == TreeRowKind::Node && LibraryLinked(lib)) {
+    // Antho 2026-10-20 (calm sync): drawn only while the Sync with global window is open on this library.
+    if (n && r.kind == TreeRowKind::Node && LibraryLinked(lib) && SyncWithFileIsOpenFor(lib.uid)) {
         if (const SyncDiff* sd = LibrarySyncDiff(lib.uid)) {
             const LibSyncCounts  sc = CountsOf(*sd, n->uid);
             const std::string st = SyncTagText(sc);
@@ -1941,22 +1942,21 @@ void LibraryListRow(const SoundStore& store, const SoundLibrary& lib, std::strin
     const bool            linked = lfs != LinkedFileState::Unlinked;
     const bool            file_bad = linked && lfs != LinkedFileState::Ok;
     if (linked) { tk[nt] = 2; tw[nt++] = ui::Dp(14.0f); }
-    // 13-77b: the row's ↑N ↓N (changes made here / in the file; both-side ones count in each).
+    // 13-77 feedback (Antho 2026-10-20, calm sync): local edits are normal and not signalled; only a small ↓ shows when
+    // the global library has changes this project does not have (file side and both).
     LibSyncCounts sync_c;
     if (linked && !file_bad)
         if (const SyncDiff* sd = LibrarySyncDiff(lib.uid)) sync_c = TotalCounts(*sd);
-    const std::string up_t = SyncRowUpText(sync_c), down_t = SyncRowDownText(sync_c);
+    const int         incoming = sync_c.file + sync_c.both;
+    const std::string down_t = incoming > 0 ? "\xE2\x86\x93" : std::string();
     ImFont*           mark_f = ui::FontSemibold();
-    float             up_w = 0.0f, down_w = 0.0f;
-    if (!up_t.empty()) up_w = ui::TextSizeIn(mark_f, up_t.c_str()).x;
+    float             down_w = 0.0f;
     if (!down_t.empty()) down_w = ui::TextSizeIn(mark_f, down_t.c_str()).x;
-    const float mark_gap = ui::Dp(4.0f);
     // Review 13-77b L4: a linked library keeps the marks' slot at a fixed width whether they show or not, so their
     // coming and going never moves the "!" or the missing count (both clickable) nor wraps them onto another line.
     if (linked && !file_bad) {
-        const float fixed = ui::TextSizeIn(mark_f, "\xE2\x86\x91" "99").x + ui::TextSizeIn(mark_f, "\xE2\x86\x93" "99").x + mark_gap;
         tk[nt] = 3;
-        tw[nt++] = std::max(fixed, up_w + down_w + (up_w > 0.0f && down_w > 0.0f ? mark_gap : 0.0f)) + ui::Dp(8.0f);
+        tw[nt++] = ui::TextSizeIn(mark_f, "\xE2\x86\x93").x + ui::Dp(10.0f);
     }
     // 13-21: a red "!" when blocked, an amber one for gaps; the tooltip lists every reason.
     std::string chk_tip;
@@ -1989,7 +1989,7 @@ void LibraryListRow(const SoundStore& store, const SoundLibrary& lib, std::strin
         const char* t = tk[i] == 0 ? "!" : miss_t.c_str();
         ImGui::SetCursorScreenPos(ImVec2(tp[i].x, y));
         if (tk[i] == 3) {  // 13-77b: ↑N (accent) ↓N (warn): a click opens the library's root (its File section)
-            if (up_w <= 0.0f && down_w <= 0.0f) {  // nothing to show: the slot stays empty
+            if (down_w <= 0.0f) {  // nothing to show: the slot stays empty
                 ImGui::Dummy(ImVec2(tp[i].w, rh));
                 continue;
             }
@@ -2007,12 +2007,11 @@ void LibraryListRow(const SoundStore& store, const SoundLibrary& lib, std::strin
                     ui::AddTextIn(dl, mark_f, ImVec2(x, my), col, t.c_str());
                 }
             };
-            if (up_w > 0.0f) {
-                mark(mx, ui::kAccentInk, up_t);
-                mx += up_w + mark_gap;
-            }
             if (down_w > 0.0f) mark(mx, ui::kWarn, down_t);
-            if (hov) ui::ItemTipText(SyncRowTip(sync_c).c_str());
+            if (hov)
+                ui::ItemTipText(("The global library changed: " + std::to_string(incoming) + (incoming == 1 ? " update" : " updates") +
+                                 ". Click to review.")
+                                    .c_str());
             if (clicked) {
                 const std::string uid = lib.uid;
                 Later([uid] { OpenSyncWithFile(uid); });
@@ -2061,9 +2060,8 @@ void LibraryListRow(const SoundStore& store, const SoundLibrary& lib, std::strin
     ImGui::PopID();
 }
 
-// A .ravlib of the global libraries folder, under GLOBAL LIBRARIES (Antho 2026-10-20: every file shows). Not in this
-// project: dimmed, its dot, an "Add to project" button (or "unreadable"). Already in it: muted with an "in this project"
-// hint, a click selects its project copy, its ↑N ↓N shown when it has changes.
+// A .ravlib of the global libraries folder that is NOT in this project (Antho 2026-10-20: no duplicates with IN THIS
+// PROJECT): dimmed, its dot, an "Add to project" button (or "unreadable").
 void UserFileRow(const UserLibraryFile& f, std::string* add_file)
 {
     ImGui::PushID(f.file.c_str());
@@ -2072,30 +2070,14 @@ void UserFileRow(const UserLibraryFile& f, std::string* add_file)
     const float  w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
     ImDrawList*  dl = ImGui::GetWindowDrawList();
     const float  nx = p.x + ui::Dp(6.0f + 8.0f + 7.0f);
-    const bool   in_project = !f.project_uid.empty();
-    const char*  trail = in_project ? "in this project" : f.readable ? "Add to project" : "unreadable";
-    const bool   add_btn = f.readable && !in_project;
-    // The copy's pending changes (↑N changes made here, ↓N in the global library), as on its own row.
-    std::string up_t, down_t;
-    if (in_project) {
-        const SoundLibrary* pl = FindLibrary(GetSoundStore(nullptr), f.project_uid);
-        if (pl && LinkedFileOf(*pl) == LinkedFileState::Ok)
-            if (const SyncDiff* sd = LibrarySyncDiff(pl->uid)) {
-                const LibSyncCounts c = TotalCounts(*sd);
-                up_t = SyncRowUpText(c);
-                down_t = SyncRowDownText(c);
-            }
-    }
-    const std::string marks = up_t + (up_t.empty() || down_t.empty() ? "" : " ") + down_t;
-    const float       tw = add_btn ? ui::ButtonWidth(trail) : ui::TextWidth(trail);
-    const float       mw = marks.empty() ? 0.0f : ui::TextWidth(marks.c_str()) + ui::Dp(8.0f);
+    const char*  trail = f.readable ? "Add to project" : "unreadable";
+    const bool   add_btn = f.readable;
+    const float  tw = add_btn ? ui::ButtonWidth(trail) : ui::TextWidth(trail);
     ImGui::SetNextItemAllowOverlap();
-    const bool clicked = ui::SelectRow("##ufile", in_project && g.lib == f.project_uid, 0, rh, ImGuiSelectableFlags_AllowOverlap, ui::kRadiusMd);
-    if (in_project) ui::ItemTip("%s\nA copy of it is in this project: click to select it", f.file.c_str());
-    else if (f.readable) ui::ItemTip("%s\nNot in this project: Add to project puts a copy in", f.file.c_str());
+    ui::SelectRow("##ufile", false, 0, rh, ImGuiSelectableFlags_AllowOverlap, ui::kRadiusMd);
+    if (f.readable) ui::ItemTip("%s\nNot in this project: Add to project puts a copy in", f.file.c_str());
     else ui::ItemTip("%s\nThis file cannot be read", f.file.c_str());
-    if (clicked && in_project) PickLibrary(f.project_uid);
-    if (f.readable) dl->AddCircleFilled(ImVec2(p.x + ui::Dp(10.0f), p.y + rh * 0.5f), ui::Dp(4.0f), Faded(LibDot(f.color), !in_project));
+    if (f.readable) dl->AddCircleFilled(ImVec2(p.x + ui::Dp(10.0f), p.y + rh * 0.5f), ui::Dp(4.0f), Faded(LibDot(f.color), true));
     const float tx = std::max(nx, p.x + w - ui::Dp(6.0f) - tw);
     if (add_btn) {
         ImGui::SetCursorScreenPos(ImVec2(tx, std::floor(p.y + (rh - ui::ControlH()) * 0.5f)));
@@ -2103,26 +2085,31 @@ void UserFileRow(const UserLibraryFile& f, std::string* add_file)
     } else {
         dl->AddText(ImVec2(tx, std::floor(p.y + (rh - ImGui::GetTextLineHeight()) * 0.5f)), ui::kFaint, trail);
     }
-    float name_end = tx - ui::Dp(7.0f);
-    if (mw > 0.0f && tx - mw > nx) {
-        const float mx = tx - mw + ui::Dp(4.0f);
-        float       x = mx;
-        if (!up_t.empty()) {
-            ui::AddTextIn(dl, ui::FontSemibold(), ImVec2(x, std::floor(p.y + (rh - ui::FontSemibold()->FontSize) * 0.5f)), ui::kAccentInk, up_t.c_str());
-            x += ui::TextSizeIn(ui::FontSemibold(), up_t.c_str()).x + ui::Dp(4.0f);
-        }
-        if (!down_t.empty())
-            ui::AddTextIn(dl, ui::FontSemibold(), ImVec2(x, std::floor(p.y + (rh - ui::FontSemibold()->FontSize) * 0.5f)), ui::kWarn, down_t.c_str());
-        name_end = tx - mw - ui::Dp(3.0f);
-    }
     {
         ui::FontScope fs(ui::FontTitle());
-        ui::EllipsisTextTip(dl, ImVec2(nx, std::floor(p.y + (rh - ImGui::GetTextLineHeight()) * 0.5f)), name_end,
+        ui::EllipsisTextTip(dl, ImVec2(nx, std::floor(p.y + (rh - ImGui::GetTextLineHeight()) * 0.5f)), tx - ui::Dp(7.0f),
                             f.readable ? ui::kMuted : ui::kFaint, f.name, f.file.c_str());
     }
     ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + rh));
     ImGui::Dummy(ImVec2(0.0f, 0.0f));
     ImGui::PopID();
+}
+
+// The header of the "Global libraries" list: the caption (its tip: the total and the folder) and, at the right, a small
+// folder button that opens the global folder in Explorer.
+void GlobalLibrariesCaption(int total)
+{
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const float  w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    const std::string tip = std::to_string(total) + (total == 1 ? " global library" : " global libraries") +
+                            " in all\nFolder: " + UserLibraryFolderText();
+    ListCaption("Global libraries \xC2\xB7 not in this project", tip.c_str());
+    const ImVec2 after = ImGui::GetCursorScreenPos();
+    const float  side = ui::Dp(20.0f);
+    ImGui::SetCursorScreenPos(ImVec2(p0.x + w - side, p0.y + ui::Dp(1.0f)));
+    if (ui::IconOnlyButton("##globfolder", LibraryIcon(kGlyphGroup), "Open the global libraries folder in Explorer", side))
+        RequestUserFolderReveal();
+    ImGui::SetCursorScreenPos(after);
 }
 
 // 13-7a (audit C1.1 - C1.4): a fixed "Libraries" section, « at its header's right; the project's
@@ -2155,17 +2142,25 @@ void LibrariesSectionWidgets()
         for (int cat = 0; cat < 3 && !StoreReplaced(); ++cat) {
             if (!any[cat]) continue;
             const bool        user = cat == 2;
-            const std::string folder_tip = user ? "Folder: " + UserLibraryFolderText() : std::string();
-            ListCaption(user ? "Global libraries" : cat == 1 ? "Attached" : "In this project",
-                        user ? folder_tip.c_str() : cat == 1 ? "Made from selected sounds, one per marker type" : nullptr);
+            if (user) GlobalLibrariesCaption(static_cast<int>(files.size()));
+            else ListCaption(cat == 1 ? "Attached" : "In this project", cat == 1 ? "Made from selected sounds, one per marker type" : nullptr);
             for (const SoundLibrary& lib : store.libraries) {
                 if (user || category(lib) != cat) continue;
                 LibraryListRow(store, lib, &to_delete);
                 if (StoreReplaced()) break;
             }
             if (user && !StoreReplaced()) {
-                for (const UserLibraryFile& f : files) UserFileRow(f, &add_file);
+                int shown = 0;
+                for (const UserLibraryFile& f : files) {
+                    if (!f.project_uid.empty()) continue;  // already in this project: listed under IN THIS PROJECT
+                    UserFileRow(f, &add_file);
+                    ++shown;
+                }
                 if (files.empty()) ui::SubText("No global library yet: use Make it global... on a library");
+                else if (shown == 0)
+                    ui::SubText((std::string("All ") + std::to_string(files.size()) + " global librar" + (files.size() == 1 ? "y is" : "ies are") +
+                                 " in this project.")
+                                    .c_str());
             }
         }
         ImGui::PopStyleVar();

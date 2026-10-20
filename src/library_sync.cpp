@@ -1106,8 +1106,13 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& file_base_
             const Opt& from = cl == Cls::File ? t.fb : t.b;
             if (cl == Cls::Both) c.text = "Switch value " + vname + ": here " + c.here_text + " · global " + c.file_text;
             else if (!side.has) c.text = "Switch value " + vname + " removed";
-            else if (!from.has) c.text = "Switch value " + vname + " added (plays " + childname(side) + ")";
-            else c.text = "Switch value " + vname + " now plays " + childname(side);
+            else {
+                // 13-77 feedback: it is not the value that is new. A child this side added travels with its case.
+                const std::string kid = TokOr(ParseLine("case " + side.v), "child");
+                const auto        kp = pres.find(kid);
+                const bool        kid_new = kp != pres.end() && (cl == Cls::File ? !kp->second.fb : !kp->second.b);
+                c.text = vname + " now plays " + childname(side) + (kid_new ? " (new)" : "");
+            }
         } else if (kind == "GF") {
             const Shown mh = ShowField(desc, "group", p[2], t.b, t.m), fh = ShowField(desc, "group", p[2], t.fb, t.f);
             c.label = mh.label;
@@ -1195,6 +1200,12 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& file_base_
             const std::string& u = p[1];
             if (const NodeDoc* n = sd->N(u)) {  // added: its parent on that side
                 need(c, KeyOf({"X", n->parent}));
+                // 13-77 feedback: the case that makes it play travels with it (the case needs the node too)
+                for (const auto& kv : trips) {
+                    if (kv.first.compare(0, 2, "C|") != 0) continue;
+                    const Opt& now = here ? kv.second.m : kv.second.f;
+                    if (now.has && TokOr(ParseLine("case " + now.v), "child") == u) need(c, kv.first);
+                }
             } else {  // removal: the cases that played it (in that side's common version) go too
                 for (const auto& kv : trips) {
                     if (kv.first.compare(0, 2, "C|") != 0) continue;
@@ -1206,6 +1217,10 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& file_base_
             const Trip& t = trips[c.key];
             const Opt&  side = here ? t.m : t.f;
             need(c, KeyOf({"X", p[1]}));
+            if (!side.has) {  // a removed case goes with the removal of the node it played (symmetric)
+                const Opt& was = here ? t.b : t.fb;
+                if (was.has) need(c, KeyOf({"X", TokOr(ParseLine("case " + was.v), "child")}));
+            }
             if (side.has) {
                 const std::string child = TokOr(ParseLine("case " + side.v), "child");
                 need(c, KeyOf({"X", child}));

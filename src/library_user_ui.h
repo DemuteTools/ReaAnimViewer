@@ -107,6 +107,8 @@ void RequestLibraryLocateFolder();
 // 13-36: the linked library's .ravlib selected in a File Explorer window (its folder when the file is
 // not written). Run by the timer, like the pickers.
 void RequestUserLibraryReveal(const std::string& lib_uid);
+// 13-77 feedback: the global libraries folder opened in a File Explorer window.
+void RequestUserFolderReveal();
 // 13-50 (13-11): a Locate scan is running; Cancel stops it (its results are dropped, nothing changes).
 bool UserLibraryLocating();
 void CancelUserLibraryLocate();

@@ -153,7 +153,7 @@ struct Frame {
     std::string            item_guid;
     ItemSounds             applied_rec;                    // Item frame: the record as stored
     std::vector<SoundAssign> applied_list;                 // keyed frame: the scope's assign list as stored
-    SoundStore             preview_store;                  // `store` points here while Project / Character values are staged
+    std::string            item_owner;                     // Item frame: the staged-set owner (the item's pool key, else its GUID)
     SoundCharacter         now_ch;                         // keyed Character frame: the record as stored
     bool                   has_now = false;                // the "now" targets below are built (something is staged here)
     std::vector<av::Target> now_targets;                   // Item frame: by block index, as stored
@@ -170,6 +170,7 @@ struct RecCache {
     int                pool = 0;
     ItemRigInfo        rig;
     double             rig_time = 0.0;  // when the rig was last read (ClockSeconds)
+    std::string        pool_key;        // 13-66: "pool:<path>|<id>" ("" = in no pool): the staged-set owner of a pool
 };
 // Review 13-15b: the window and the strip each keep their item's, so neither reads it again every frame
 // when they show different items.
@@ -210,35 +211,87 @@ void RefreshCache(MediaItem* item, RecCache& c = g_cache)
     c.blocks = c.valid ? rr.rules.blocks : std::vector<Block>();
     c.pool = std::max(0, static_cast<int>(PopulateTargets({item}).size()) - 1);
     c.rig = ItemRig(item);
+    std::string pool_path, pool_id;
+    c.pool_key = ItemPoolKey(item, &pool_path, &pool_id) ? "pool:" + pool_path + "|" + pool_id : std::string();
 }
 
-// 13-66: an entry whose value is the applied one by now (an outside change, a Ctrl+Z) is no entry. Item entries are
-// judged for the frame's item only (`rec` / `blocks` null: none).
-void PruneStaged(const SoundStore& real, const std::string& item_guid, const ItemSounds* rec, const std::vector<Block>* blocks)
+// 13-66 review: other items' rules, read again when the project changes (the staged Item entries of the items the
+// window is not showing are judged on them).
+struct PruneItem {
+    bool               found = false;
+    bool               valid = false;
+    ItemSounds         rec;
+    std::vector<Block> blocks;
+};
+std::map<std::string, PruneItem> g_prune_items;  // by item GUID
+int                              g_prune_count = -1;
+
+// 13-66: an entry that is the applied value by now (an outside change, a Ctrl+Z), points at a rule that went away
+// or moved, or names a deleted Switch group / value is no entry (av::PruneStaged). The shown item's entries are
+// judged on `rec` / `blocks` (its owner `owner`), every other item's on its own rules.
+void PruneStaged(const SoundStore& real, const std::string& owner, const ItemSounds* rec, const std::vector<Block>* blocks)
 {
-    g.staged.DropEqual([&](const av::StagedEntry& e, std::string* applied) {
-        switch (e.scope) {
-        case av::StageScope::Project: *applied = av::AppliedKeyValue(real.project, e.key, e.group); return true;
-        case av::StageScope::Character: {
-            const SoundCharacter* c = FindCharacterExact(real, e.character.skeleton, e.character.model);
-            if (!c && !e.character.uid.empty()) c = FindCharacterByUid(real, e.character.uid);
-            *applied = c ? av::AppliedKeyValue(c->assigns, e.key, e.group) : std::string();
+    if (g.staged.Empty()) return;
+    const int count = GetProjectStateChangeCount(nullptr);
+    if (count != g_prune_count) {
+        g_prune_items.clear();
+        g_prune_count = count;
+    }
+    av::PruneStaged(g.staged, real, [&](const av::StagedEntry& e, av::StagedItemView* v) {
+        if (rec && e.owner == owner) {
+            v->rec = rec;
+            v->blocks = blocks;
             return true;
         }
-        case av::StageScope::Item:
-            if (!rec || !blocks || e.owner != item_guid) return false;
-            if (e.key != av::kItemKey) {  // its rule went away (the blocks changed): the entry goes
-                int b = -1;
-                if (!av::BlockOfKey(e.key, &b) || b < 0 || static_cast<size_t>(b) >= blocks->size()) {
-                    *applied = e.value;
-                    return true;
+        auto it = g_prune_items.find(e.item_guid);
+        if (it == g_prune_items.end()) {
+            PruneItem p;
+            if (MediaItem* m = FindItemByGuid(e.item_guid))
+                if (RavTakeOf(m)) {
+                    p.found = true;
+                    p.rec = ReadItemSounds(m);
+                    ItemRulesRead rr;
+                    if (ReadItemRules(m, &rr) && rr.valid) {
+                        p.valid = true;
+                        p.blocks = rr.rules.blocks;
+                    }
                 }
-            }
-            *applied = av::AppliedItemValue(*rec, *blocks, e.key, e.group);
-            return true;
+            it = g_prune_items.emplace(e.item_guid, std::move(p)).first;
         }
-        return false;
+        if (!it->second.found) return false;  // the item is gone: Commit says so
+        v->rec = &it->second.rec;
+        v->blocks = it->second.valid ? &it->second.blocks : nullptr;
+        return true;
     });
+}
+
+// 13-66 review: the preview store (the real one with the staged Project / Character values applied) is kept while
+// nothing it depends on changes: the project state, the staged set, the store. Copying every library and sound
+// each frame was a hitch while values were staged.
+struct PreviewCache {
+    const SoundStore* real = nullptr;
+    int               count = -1;
+    unsigned          rev = 0;
+    double            time = 0.0;
+    bool              valid = false;
+    SoundStore        store;
+};
+PreviewCache g_preview_item, g_preview_key;
+
+const SoundStore* PreviewStore(PreviewCache& c, const SoundStore& real, bool characters)
+{
+    const int    count = GetProjectStateChangeCount(nullptr);
+    const double now = ClockSeconds();
+    if (!c.valid || c.real != &real || c.count != count || c.rev != g.staged.Revision() || now - c.time > 2.0) {
+        c.store = real;
+        av::ApplyStagedToStore(g.staged, c.store, characters);
+        c.real = &real;
+        c.count = count;
+        c.rev = g.staged.Revision();
+        c.time = now;
+        c.valid = true;
+    }
+    return &c.store;
 }
 
 bool BuildFrame(MediaItem* item, Frame* f)
@@ -251,24 +304,23 @@ bool BuildFrame(MediaItem* item, Frame* f)
     f->blocks = g_cache.blocks;
     f->item_ptr = item;
     f->item_guid = ItemGuidOf(item);
+    f->item_owner = g_cache.pool_key.empty() ? f->item_guid : g_cache.pool_key;  // a pool is ONE owner
     f->applied_rec = f->rec;
     const ItemRigInfo& rig = g_cache.rig;
     // 13-66: the staged values, previewed as if applied: Project / Character ones on a store copy, this item's on
     // copies of its record and blocks (a block with no rid gets a provisional one for the preview only).
-    PruneStaged(real, f->item_guid, &f->applied_rec, &f->blocks);
+    PruneStaged(real, f->item_owner, &f->applied_rec, g_cache.valid ? &f->blocks : nullptr);
     std::vector<Block> eff = f->blocks;
     bool               staged_item = false;
     for (const av::StagedEntry& e : g.staged.Entries())
-        if (e.scope == av::StageScope::Item && e.owner == f->item_guid) staged_item = true;
+        if (e.scope == av::StageScope::Item && e.owner == f->item_owner) staged_item = true;
         else if (e.scope != av::StageScope::Item) f->has_now = true;
     if (f->has_now) {
-        f->preview_store = real;
-        av::ApplyStagedToStore(g.staged, f->preview_store);
-        f->store = &f->preview_store;
+        f->store = PreviewStore(g_preview_item, real, true);
     }
     if (staged_item) {
         f->has_now = true;
-        av::ApplyStagedToItem(g.staged, f->item_guid, f->rec, eff);
+        av::ApplyStagedToItem(g.staged, f->item_owner, f->rec, eff);
     }
     f->ch = CharacterFor(*f->store, rig.skeleton, RigModel(rig));
     f->char_name = f->ch ? f->ch->name : std::string();
@@ -351,7 +403,7 @@ void BuildKeyFrame(Frame* f)
     if (char_scope && k.cur >= 0) k.scope_ch = &k.chars[static_cast<size_t>(k.cur)].ch;
     // 13-66: the staged values, previewed as if applied: the Project ones on a store copy, a character's on its
     // record (the characters keep their keys: they come from the stored list).
-    PruneStaged(real, std::string(), nullptr, nullptr);
+    PruneStaged(real, std::string(), nullptr, nullptr);  // Item entries: judged on their own items
     f->applied_list = k.scope_ch ? k.scope_ch->assigns : real.project;
     if (k.scope_ch) f->now_ch = *k.scope_ch;
     f->has_now = !g.staged.Empty();
@@ -360,9 +412,7 @@ void BuildKeyFrame(Frame* f)
         for (const av::StagedEntry& e : g.staged.Entries())
             if (e.scope == av::StageScope::Project) project_staged = true;
         if (project_staged) {
-            f->preview_store = real;
-            av::ApplyStagedToStore(g.staged, f->preview_store, false);
-            f->store = &f->preview_store;
+            f->store = PreviewStore(g_preview_key, real, false);
         }
         for (av::CharEntry& c : k.chars) av::ApplyStagedToCharacter(g.staged, c.ch);
     }
@@ -505,14 +555,14 @@ void StageAddress(const Frame& f, av::StageScope* scope, std::string* owner, Cha
 {
     if (!f.keyed) {
         *scope = av::StageScope::Item;
-        *owner = f.item_guid;
+        *owner = f.item_owner;
     } else if (!f.key.scope_ch) {
         *scope = av::StageScope::Project;
         owner->clear();
     } else {
         const av::CharEntry& c = f.key.chars[static_cast<size_t>(f.key.cur)];
         *scope = av::StageScope::Character;
-        *owner = av::CharacterOwner(c.ch.skeleton, c.ch.model);
+        *owner = av::CharacterOwnerOf(c.ch);
         *ref = c.ref;
     }
 }
@@ -558,6 +608,14 @@ void StageValue(const Frame& f, const std::vector<const av::Target*>& sel, const
         e.scope = scope;
         e.owner = owner;
         e.character = ref;
+        if (scope == av::StageScope::Item) {  // the rule it is staged on, so a later change of the rules is noticed
+            e.item_guid = f.item_guid;
+            int b = -1;
+            if (t->key != av::kItemKey && av::BlockOfKey(t->key, &b) && b >= 0 && static_cast<size_t>(b) < f.blocks.size()) {
+                e.rid = f.blocks[static_cast<size_t>(b)].rid;
+                e.sig = f.tg.signature;
+            }
+        }
         e.key = t->key;
         e.group = group;
         e.value = value;
@@ -576,37 +634,37 @@ void CancelStaged()
 void CommitStaged()
 {
     if (g.staged.Empty()) return;
-    std::vector<AssignValueEdit> edits;
-    std::string                  where;
-    std::set<std::string>        owners;
-    for (const av::StagedEntry& e : g.staged.Entries()) {
-        AssignValueEdit a;
-        a.scope = e.scope == av::StageScope::Project ? 0 : e.scope == av::StageScope::Character ? 1 : 2;
-        a.group = e.group;
-        a.value = e.value;
-        a.key = e.key;
-        a.character = e.character;
+    const std::vector<av::StagedEntry> edits = g.staged.Entries();
+    std::set<std::string>              owners;
+    std::string                        first_item;
+    bool                               has_project = false, has_chars = false;
+    for (const av::StagedEntry& e : edits) {
         if (e.scope == av::StageScope::Item) {
-            a.item_guid = e.owner;
-            if (e.key == av::kItemKey) a.block = -1;
-            else if (!av::BlockOfKey(e.key, &a.block)) continue;
             if (owners.insert(e.owner).second && owners.size() == 1)
-                if (MediaItem* it = FindItemByGuid(e.owner)) where = ItemNameOf(it);
+                if (MediaItem* it = FindItemByGuid(e.item_guid)) first_item = ItemNameOf(it);
+        } else if (e.scope == av::StageScope::Project) {
+            has_project = true;
+        } else {
+            has_chars = true;
         }
-        edits.push_back(a);
     }
-    const int changes = g.staged.Changes(), targets = g.staged.Targets();
-    if (owners.size() > 1) where = std::to_string(owners.size()) + " items";
-    else if (owners.empty()) where = "Project and characters";
+    std::string where = owners.size() > 1 ? std::to_string(owners.size()) + " items" : first_item;
+    if (has_project || has_chars) {
+        const std::string store_part = has_project && has_chars ? "Project and characters" : has_project ? "Project" : "Characters";
+        where = where.empty() ? store_part : where + " + " + store_part;
+    }
     g.staged.Clear();
     g.confirm_close = false;
-    PickSoundGesture([edits, where, changes, targets]() {
+    PickSoundGesture([edits, where]() {
         bool              changed = false;
-        const SoundReport rep = CommitAssignValues(edits, &changed);
+        av::CommitCounts  counts;
+        const SoundReport rep = CommitAssignValues(edits, &changed, &counts);
         if (changed) {
-            g.last = av::CommitChangeText(where, changes, targets);
+            g.last = av::CommitChangeText(where, counts.changes, counts.targets);
             g.has_last = true;
-            g.last_note.clear();
+            g.last_note = counts.skipped > 0 ? av::SkippedText(counts.skipped) : std::string();
+        } else if (counts.skipped > 0) {
+            g.last_note = av::SkippedText(counts.skipped);  // nothing was written: the footer says why
         }
         return rep;
     });
@@ -2445,8 +2503,14 @@ void DrawCommitBar()
         float               x = p.x + ui::Dp(4.0f);
         ui::AddTextIn(dl, ui::FontSemibold(), ImVec2(x, ty), ui::kText, bar.bold.c_str());
         x += ui::TextSizeIn(ui::FontSemibold(), bar.bold.c_str()).x + ui::Dp(5.0f);
-        const std::string rest = bar.rest + bar.sub;
-        if (x < lim - ui::Dp(30.0f)) ui::EllipsisTextTip(dl, ImVec2(x, ty), lim, ui::kWarn, rest);
+        // The mockup: .rest in the amber ink, .sub muted and smaller after it (dropped when there is no room).
+        const float sub_w = ui::TextSizeIn(ui::FontSmall(), bar.sub.c_str()).x;
+        const float rest_w = ImGui::CalcTextSize(bar.rest.c_str()).x;
+        if (x < lim - ui::Dp(30.0f)) {
+            const bool sub_fits = x + rest_w + sub_w <= lim;
+            ui::EllipsisTextTip(dl, ImVec2(x, ty), lim, ui::kWarn, sub_fits ? bar.rest : bar.rest + bar.sub);
+            if (sub_fits) ui::AddTextIn(dl, ui::FontSmall(), ImVec2(x + rest_w, ty + ui::Dp(1.0f)), ui::kMuted, bar.sub.c_str());
+        }
     }
     ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + h));
     ImGui::Dummy(ImVec2(w, 0.0f));
@@ -2709,7 +2773,10 @@ void DrawAssignContent()
         }
         if (focused && ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !ImGui::GetIO().WantTextInput) {
             // Esc in an open menu closes the menu only (no keyboard nav here, so ImGui does not do it).
-            if (g.confirm_close) g.confirm_close = false;  // Esc in the close dialog = Keep editing
+            if (g.confirm_close) {  // Esc in the close dialog = Keep editing
+                g.confirm_close = false;
+                ImGui::ClosePopupToLevel(0, true);
+            }
             else if (ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId)) ImGui::ClosePopupToLevel(0, true);
             else RequestClose();
         }

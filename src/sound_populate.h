@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "assign_view_model.h"  // 13-66 review: the staged entries Commit is given
 #include "populate_progress.h"
 #include "reaper_api.h"
 #include "reaper_item_read.h"
@@ -116,15 +117,10 @@ SoundReport SetRulesAssignValue(MediaItem* item, std::vector<std::string> rids, 
 // 13-66: the assignment window's staged Switch values, written together: ONE undo point "RAV: Set sound values" and
 // one re-place pass (each event of the rules the edits reach, once). An edit equal to what is stored changes nothing;
 // when no edit changes anything there is no undo point (`changed` false).
-struct AssignValueEdit {
-    int          scope = 2;  // 0 Project, 1 Character, 2 Item
-    std::string  item_guid;  // Item scope: the animation item (its pool follows)
-    int          block = -1; // Item scope: the rule's block; -1 = the Item values row
-    CharacterRef character;  // Character scope
-    std::string  key;        // Project / Character scope: "legs", "legs.step"
-    std::string  group, value;  // value "" = inherit
-};
-SoundReport CommitAssignValues(const std::vector<AssignValueEdit>& edits, bool* changed = nullptr);
+// Review: the edits are the window's staged entries (PlanCommit decides which still apply: an Item entry whose item
+// or rule is gone, or whose block no longer carries the rule id it was staged on, is skipped and counted).
+// `counts` (optional) tells what was planned: edits, targets and the skipped ones.
+SoundReport CommitAssignValues(const std::vector<assign::StagedEntry>& edits, bool* changed = nullptr, assign::CommitCounts* counts = nullptr);
 // The RAV items of the project (the assignment window's item picker).
 std::vector<MediaItem*> ProjectRavItems();
 

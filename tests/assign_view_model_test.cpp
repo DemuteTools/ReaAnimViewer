@@ -800,6 +800,190 @@ static void TestStaging()
     CHECK(s.Empty() && s.Changes() == 0 && s.Items() == 0);
 }
 
+// Review 13-66: prune (rule identity, other items, deleted group / value), the commit plan, the gaps of the first run.
+static StagedEntry ItemEnt(const std::string& owner, const std::string& guid, const std::string& key, const std::string& rid,
+                           const std::string& sig, const std::string& group, const std::string& value)
+{
+    StagedEntry e = Ent(StageScope::Item, owner, key, group, value);
+    e.item_guid = guid;
+    e.rid = rid;
+    e.sig = sig;
+    return e;
+}
+
+static void TestPruneAndPlan()
+{
+    SoundStore st = MakeStore();
+    std::vector<Block> blocks = {Auto(AutoKind::Step, 'L', "a0"), Auto(AutoKind::Step, 'R', "")};
+    const std::string sig = BuildTargets(blocks).signature;
+    ItemSounds        rec;
+    auto view = [&](const StagedEntry&, StagedItemView* v) {
+        v->rec = &rec;
+        v->blocks = &blocks;
+        return true;
+    };
+
+    // F1: an entry follows its rule by rid; the rules changed under it (b0 is another rule now) = it goes.
+    Staged s;
+    s.Stage(ItemEnt("P", "G1", "b0", "a0", sig, "feet", "feet_Boots"), "");
+    s.Stage(ItemEnt("P", "G1", "b1", "", sig, "feet", "feet_Boots"), "");  // no rid yet: the signature judges
+    CHECK(PruneStaged(s, st, view) == 0 && s.Changes() == 2);
+    std::vector<Block> moved = blocks;
+    moved[0].rid = "zz";
+    auto view_moved = [&](const StagedEntry&, StagedItemView* v) {
+        v->rec = &rec;
+        v->blocks = &moved;
+        return true;
+    };
+    CHECK(PruneStaged(s, st, view_moved) == 1 && s.Changes() == 1 && !s.Find(StageScope::Item, "P", "b0", "feet"));
+    // Its markers changed (signature differs): the rid-less entry goes; a block out of range goes too.
+    std::vector<Block> fewer = {blocks[0]};
+    auto view_fewer = [&](const StagedEntry&, StagedItemView* v) {
+        v->rec = &rec;
+        v->blocks = &fewer;
+        return true;
+    };
+    CHECK(PruneStaged(s, st, view_fewer) == 1 && s.Empty());
+    // The rules do not read (null blocks) or the item is unknown: cannot judge, the entry stays (an item row too).
+    Staged k;
+    k.Stage(ItemEnt("P", "G1", "b0", "a0", sig, "feet", "feet_Boots"), "");
+    CHECK(PruneStaged(k, st, [&](const StagedEntry&, StagedItemView*) { return false; }) == 0 && k.Changes() == 1);
+    CHECK(PruneStaged(k, st, [&](const StagedEntry&, StagedItemView* v) { v->rec = &rec; return true; }) == 0 && k.Changes() == 1);
+
+    // Each owner is judged on its own item (other items are not skipped any more).
+    Staged two;
+    two.Stage(ItemEnt("A", "GA", "b0", "a0", sig, "feet", "feet_Boots"), "");
+    two.Stage(ItemEnt("B", "GB", "b0", "a0", sig, "feet", "feet_Boots"), "");
+    ItemSounds b_rec;
+    RuleSounds br;
+    br.rid = "a0";
+    br.values.push_back({"feet", "feet_Boots", {}});
+    b_rec.rules.push_back(br);  // B already has it: equal
+    CHECK(PruneStaged(two, st, [&](const StagedEntry& e, StagedItemView* v) {
+              v->rec = e.owner == "B" ? &b_rec : &rec;
+              v->blocks = &blocks;
+              return true;
+          }) == 1 &&
+          two.Find(StageScope::Item, "A", "b0", "feet") && !two.Find(StageScope::Item, "B", "b0", "feet"));
+
+    // F8: a deleted group or value drops the entry (Project, Character, Item); inherit ("") needs the group only.
+    Staged gone;
+    gone.Stage(Ent(StageScope::Project, "", "legs", "feet", "feet_Gone"), "");
+    gone.Stage(Ent(StageScope::Project, "", "legs", "nogroup", "x"), "");
+    gone.Stage(ItemEnt("P", "G1", "item", "", "", "feet", "feet_Gone"), "");
+    gone.Stage(Ent(StageScope::Project, "", "arms", "feet", "feet_Boots"), "");  // fine
+    CHECK(PruneStaged(gone, st, view) == 3 && gone.Changes() == 1 && gone.Find(StageScope::Project, "", "arms", "feet"));
+    // The Character branch: judged on the stored character; equal drops, different stays.
+    SoundCharacter hero;
+    hero.uid = "c1";
+    hero.skeleton = "sk1";
+    SetAssignValueIn(hero.assigns, {"legs"}, "loco", "loco_Run");
+    st.characters.push_back(hero);
+    Staged ch;
+    StagedEntry same = Ent(StageScope::Character, CharacterOwner("sk1", ""), "legs", "loco", "loco_Run");
+    same.character.skeleton = "sk1";
+    StagedEntry diff = Ent(StageScope::Character, CharacterOwner("sk1", ""), "legs", "feet", "feet_Boots");
+    diff.character.skeleton = "sk1";
+    ch.Stage(same, "");
+    ch.Stage(diff, "");
+    CHECK(PruneStaged(ch, st, view) == 1 && ch.Changes() == 1 && ch.Find(StageScope::Character, same.owner, "legs", "feet"));
+    st.characters.clear();
+
+    // F4: an owner is a pool: two stagings on the same pool + rule are ONE entry, whichever copy staged it last.
+    Staged pool;
+    pool.Stage(ItemEnt("pool:a|1", "G1", "b0", "a0", sig, "feet", "feet_Boots"), "");
+    pool.Stage(ItemEnt("pool:a|1", "G2", "b0", "a0", sig, "feet", "feet_Shoes"), "");
+    CHECK(pool.Changes() == 1 && pool.Items() == 1 && pool.Find(StageScope::Item, "pool:a|1", "b0", "feet")->value == "feet_Shoes");
+    const unsigned rev = pool.Revision();
+    pool.Stage(ItemEnt("pool:a|1", "G1", "b0", "a0", sig, "feet", "feet_Shoes"), "");
+    CHECK(pool.Revision() != rev);  // F3: every change of the set is a new revision
+    const unsigned rev2 = pool.Revision();
+    pool.Clear();
+    CHECK(pool.Revision() != rev2);
+
+    // PlanCommit: found / rules read through the callback.
+    auto read = [&](const std::string& guid) {
+        CommitItemRead r;
+        if (guid == "GONE") return r;
+        r.found = true;
+        r.valid = guid != "NORULES";
+        if (r.valid) r.blocks = blocks;
+        return r;
+    };
+    std::vector<StagedEntry> es;
+    es.push_back(ItemEnt("pool:a|1", "G1", "b0", "a0", sig, "feet", "feet_Boots"));
+    es.push_back(ItemEnt("pool:a|1", "G1", "b0", "a0", sig, "loco", "loco_Run"));  // same rule, another group
+    es.push_back(ItemEnt("pool:a|1", "G2", "b1", "", sig, "feet", "feet_Boots"));  // another copy of the pool, a rid-less rule
+    es.push_back(ItemEnt("pool:a|1", "G2", "item", "", "", "loco", "loco_Crouch"));
+    es.push_back(Ent(StageScope::Project, "", "legs", "feet", "feet_Boots"));
+    StagedEntry ce = Ent(StageScope::Character, "char:sk1|", "legs", "feet", "feet_Shoes");
+    ce.character.skeleton = "sk1";
+    es.push_back(ce);
+    CommitPlan plan = PlanCommit(es, read);
+    CHECK(plan.items.size() == 1);  // a pool is one owner: one planned item, however many copies staged
+    CHECK(plan.items[0].edits.size() == 4 && plan.items[0].item_guid == "G1");
+    CHECK(plan.store_edits.size() == 2 && plan.store_edits[0].scope == StageScope::Project && plan.store_edits[1].scope == StageScope::Character);
+    CHECK(plan.counts.changes == 6 && plan.counts.skipped == 0);
+    CHECK(plan.counts.targets == 5);  // b0, b1, item, legs (project), legs (character): b0 counts once for two groups
+    CHECK(plan.items[0].NeedsRids() && plan.items[0].Whole());
+    // Each rid once: b0 twice and a rid-less b1 that gets its id at commit.
+    const std::set<std::string> rids = plan.items[0].Rids([](int b) { return b == 1 ? std::string("new1") : std::string(); });
+    CHECK(rids.size() == 2 && rids.count("a0") && rids.count("new1"));
+    // The same key under the other scope or owner is another target.
+    std::vector<StagedEntry> kk = {Ent(StageScope::Project, "", "legs", "feet", "feet_Boots"), ce};
+    kk[1].key = "legs";
+    CHECK(PlanCommit(kk, read).counts.targets == 2);
+
+    // F2: an item that is gone, rules that do not read, a rule that moved or went away are skipped and counted.
+    std::vector<StagedEntry> bad;
+    bad.push_back(ItemEnt("g", "GONE", "b0", "a0", sig, "feet", "feet_Boots"));
+    bad.push_back(ItemEnt("n", "NORULES", "b0", "a0", sig, "feet", "feet_Boots"));
+    bad.push_back(ItemEnt("n", "NORULES", "item", "", "", "feet", "feet_Boots"));  // the item row needs no rules: kept
+    bad.push_back(ItemEnt("m", "G1", "b0", "other", sig, "feet", "feet_Boots"));   // block b0 has rid a0 now
+    bad.push_back(ItemEnt("m", "G1", "b1", "", "1:x;", "feet", "feet_Boots"));    // markers changed since
+    bad.push_back(ItemEnt("m", "G1", "b7", "a7", sig, "feet", "feet_Boots"));      // out of range
+    StagedEntry nogroup = Ent(StageScope::Project, "", "legs", "", "x");
+    bad.push_back(nogroup);
+    plan = PlanCommit(bad, read);
+    CHECK(plan.counts.skipped == 6 && plan.counts.changes == 1 && plan.items.size() == 1 && plan.items[0].edits[0].block == -1);
+    CHECK(SkippedText(2) == "2 not applied: their item or rule is gone");
+    CHECK(PlanCommit({}, read).counts.changes == 0);
+    CHECK(PlanCommit({bad[0]}, read).items.empty());  // everything skipped: nothing planned (no undo point)
+
+    // Gap 4: characters=false leaves the characters alone; a record made for nothing is not kept; order Project then Character.
+    Staged mix;
+    mix.Stage(Ent(StageScope::Character, CharacterOwner("sk1", ""), "legs", "loco", "loco_Run"), "");
+    mix.Stage(Ent(StageScope::Project, "", "legs", "feet", "feet_Boots"), "");
+    SoundStore c1 = st;
+    CHECK(ApplyStagedToStore(mix, c1, false) == 1 && c1.characters.empty());
+    Staged nothing;
+    StagedEntry inh = Ent(StageScope::Character, CharacterOwner("sk1", ""), "legs", "loco", "");  // inherit of nothing
+    inh.character.skeleton = "sk1";
+    nothing.Stage(inh, "x");
+    SoundStore c2 = st;
+    CHECK(ApplyStagedToStore(nothing, c2) == 0 && c2.characters.empty());
+    // A uid-only character (no rig) has its own owner: it does not take another one's entries.
+    SoundCharacter u1, u2;
+    u1.uid = "u1";
+    u2.uid = "u2";
+    CHECK(CharacterOwnerOf(u1) != CharacterOwnerOf(u2) && CharacterOwnerOf(u1) == CharacterOwner(CharacterRef{"u1", "", "", "", {}}));
+    Staged us;
+    StagedEntry ue = Ent(StageScope::Character, CharacterOwnerOf(u1), "legs", "loco", "loco_Run");
+    ue.character.uid = "u1";
+    us.Stage(ue, "");
+    CHECK(ApplyStagedToCharacter(us, u1) == 1 && ApplyStagedToCharacter(us, u2) == 0);
+
+    // Gap 5: re-staging moves an entry to the end (Commit applies in list order).
+    Staged ord;
+    ord.Stage(Ent(StageScope::Project, "", "legs", "feet", "feet_Boots"), "");
+    ord.Stage(Ent(StageScope::Project, "", "arms", "feet", "feet_Boots"), "");
+    ord.Stage(Ent(StageScope::Project, "", "legs", "feet", "feet_Shoes"), "");
+    CHECK(ord.Entries().size() == 2 && ord.Entries()[1].key == "legs" && ord.Entries()[1].value == "feet_Shoes");
+    // Gap 6: the footer's prefix and bold.
+    const ChangeText ct = CommitChangeText("x", 1, 1);
+    CHECK(ct.prefix == "Undo point " && ct.bold == "RAV: Set sound values" && ct.rest == " \xC2\xB7 x \xC2\xB7 1 change on 1 target");
+}
+
 int main()
 {
     TestScopes();
@@ -813,6 +997,7 @@ int main()
     TestSelection();
     TestValueSounds();
     TestStaging();
+    TestPruneAndPlan();
     if (g_fail) {
         std::printf("%d check(s) failed\n", g_fail);
         return 1;

@@ -51,6 +51,8 @@
 
 namespace rav {
 
+namespace av = assign;  // 13-66: the staged entries Commit is given (assign_view_model.h)
+
 namespace {
 
 using SetMediaItemSelectedFn = void (*)(MediaItem* item, bool selected);
@@ -1543,26 +1545,57 @@ std::vector<MediaItem*> AllRavItems()
     return out;
 }
 
+// 13-66 review: rules to re-place besides the ones a store change reaches (Commit's item edits, pool members
+// included): per item the rids, and the items whose every rule re-places (an Item values edit).
+struct ExtraRids {
+    std::map<MediaItem*, std::set<std::string>> rids;
+    std::set<MediaItem*>                        whole;
+};
+
 // After a store edit (13-15a): the populated events of every RAV item whose effective library or
 // values changed (ChangedRids) are re-placed. Inside the caller's undo scope and item index.
-void ReplaceChangedRules(const SoundStore& before, SoundReport& rep)
+// `extra` (Commit) adds rules to re-place; the items then go in time order and the avoid-repeat draws are carried
+// from item to item of one pool (as a pool's re-place does), never across unrelated items. `store_changed`
+// false: the store was not edited, only `extra` is re-placed.
+void ReplaceChangedRules(const SoundStore& before, SoundReport& rep, const ExtraRids* extra = nullptr, bool store_changed = true)
 {
     const SoundStore after = GetSoundStore(nullptr);
-    const std::vector<MediaItem*> all = AllRavItems();
+    std::vector<MediaItem*> all = AllRavItems();
+    std::map<MediaItem*, int> pool_of;
+    std::map<int, std::map<std::string, std::vector<int>>> carried;  // per pool, in time order
+    if (extra) {
+        all = ByPosition(all);
+        std::vector<int>              group;
+        const std::vector<MediaItem*> grouped = WithPoolMembers(all, nullptr, &group);
+        for (size_t k = 0; k < grouped.size() && k < group.size(); ++k) pool_of[grouped[k]] = group[k];
+    }
     BusyScope busy("Updating sounds");  // 13-59: a library or value change re-placing many items
     for (size_t k = 0; k < all.size(); ++k) {
         MediaItem* it = all[k];
         busy.Item(static_cast<int>(k), static_cast<int>(all.size()));
         ItemRulesRead rr;
         if (!ReadItemRules(it, &rr) || !rr.valid) continue;
-        const ItemRigInfo rig = ItemRig(it);
-        const std::vector<std::string> rids =
-            ChangedRids(before, after, ReadItemSounds(it), rr.rules.blocks, rig.skeleton, rig.model);
-        if (rids.empty()) continue;
+        std::set<std::string> rids;
+        if (store_changed) {
+            const ItemRigInfo rig = ItemRig(it);
+            for (const std::string& r : ChangedRids(before, after, ReadItemSounds(it), rr.rules.blocks, rig.skeleton, rig.model))
+                rids.insert(r);
+        }
+        bool whole = false;
+        if (extra) {
+            whole = extra->whole.count(it) > 0;
+            const auto mine = extra->rids.find(it);
+            if (mine != extra->rids.end()) rids.insert(mine->second.begin(), mine->second.end());
+        }
+        if (!whole && rids.empty()) continue;
         PopOpts o;
         o.only_populated = true;
         o.follow_assign = true;  // Resilience 2026-10-19: every event of the rules follows the assignment
-        o.rids = rids;
+        if (!whole) o.rids.assign(rids.begin(), rids.end());
+        if (extra) {
+            const auto p = pool_of.find(it);
+            if (p != pool_of.end()) o.carry = &carried[p->second];
+        }
         PopulateOne(it, after, o, rep, nullptr);
     }
 }
@@ -2186,43 +2219,37 @@ SoundReport SetRulesAssignValue(MediaItem* item, std::vector<std::string> rids, 
 }
 
 // 13-66: the staged Switch values of the assignment window, written in one undo point and re-placed in one pass.
-SoundReport CommitAssignValues(const std::vector<AssignValueEdit>& edits, bool* changed)
+// PlanCommit decides first which edits still apply (their item and rule must be where they were staged).
+SoundReport CommitAssignValues(const std::vector<av::StagedEntry>& edits, bool* changed, av::CommitCounts* counts)
 {
     SoundReport rep;
     if (changed) *changed = false;
+    if (counts) *counts = av::CommitCounts();
     try {
         if (edits.empty()) return rep;
-        struct ItemEdits {
-            MediaItem*                          item = nullptr;
-            std::vector<const AssignValueEdit*> list;
-        };
-        std::vector<ItemEdits>              items;
-        std::vector<const AssignValueEdit*> store_edits;
-        for (const AssignValueEdit& e : edits) {
-            if (e.scope != 2) {
-                store_edits.push_back(&e);
-                continue;
+        const av::CommitPlan plan = av::PlanCommit(edits, [](const std::string& guid) {
+            av::CommitItemRead r;
+            MediaItem*         it = FindItemByGuid(guid);
+            if (!it || !RavTakeOf(it)) return r;
+            r.found = true;
+            ItemRulesRead rr;
+            if (ReadItemRules(it, &rr) && rr.valid) {
+                r.valid = true;
+                r.blocks = rr.rules.blocks;
             }
-            MediaItem* it = FindItemByGuid(e.item_guid);
-            if (!it || !RavTakeOf(it) || e.group.empty()) continue;
-            ItemEdits* slot = nullptr;
-            for (ItemEdits& x : items)
-                if (x.item == it) slot = &x;
-            if (!slot) {
-                items.push_back({it, {}});
-                slot = &items.back();
-            }
-            slot->list.push_back(&e);
-        }
+            return r;
+        });
+        if (counts) *counts = plan.counts;
+        if (plan.counts.skipped > 0)
+            AddLine(rep, ReportKind::Info, av::SkippedText(plan.counts.skipped), "", "", 0.0);
         const SoundStore before = GetSoundStore(nullptr);
         auto apply_store = [&](SoundStore& st) {
             bool c = false;
-            for (const AssignValueEdit* e : store_edits) {
-                if (e->group.empty()) continue;
-                if (e->scope == 0) {
-                    if (SetAssignValueIn(st.project, {e->key}, e->group, e->value)) c = true;
-                } else if (EditCharacter(st, e->character, [&](SoundCharacter& ch) {
-                               return SetAssignValueIn(ch.assigns, {e->key}, e->group, e->value);
+            for (const av::StagedEntry& e : plan.store_edits) {
+                if (e.scope == av::StageScope::Project) {
+                    if (SetAssignValueIn(st.project, {e.key}, e.group, e.value)) c = true;
+                } else if (EditCharacter(st, e.character, [&](SoundCharacter& ch) {
+                               return SetAssignValueIn(ch.assigns, {e.key}, e.group, e.value);
                            })) {
                     c = true;
                 }
@@ -2230,24 +2257,26 @@ SoundReport CommitAssignValues(const std::vector<AssignValueEdit>& edits, bool* 
             return c;
         };
         bool any = false;  // an edit that changes nothing makes no undo point
-        if (!store_edits.empty()) {
+        if (!plan.store_edits.empty()) {
             SoundStore probe = before;
             if (apply_store(probe)) any = true;
         }
-        for (const ItemEdits& ie : items) {
-            ItemSounds    probe = ReadItemSounds(ie.item);
+        for (const av::PlannedItem& pi : plan.items) {
+            MediaItem* item = FindItemByGuid(pi.item_guid);
+            if (!item) continue;
+            ItemSounds    probe = ReadItemSounds(item);
             ItemRulesRead rr;
-            const bool    have = ReadItemRules(ie.item, &rr) && rr.valid;
-            for (const AssignValueEdit* e : ie.list) {
-                if (e->block < 0) {
-                    if (SetValueIn(probe.item_values, e->group, e->value)) any = true;
+            const bool    have = ReadItemRules(item, &rr) && rr.valid;
+            for (const av::PlannedEdit& e : pi.edits) {
+                if (e.block < 0) {
+                    if (SetValueIn(probe.item_values, e.group, e.value)) any = true;
                     continue;
                 }
-                if (!have || static_cast<size_t>(e->block) >= rr.rules.blocks.size()) continue;
-                const std::string& rid = rr.rules.blocks[static_cast<size_t>(e->block)].rid;
+                if (!have || static_cast<size_t>(e.block) >= rr.rules.blocks.size()) continue;
+                const std::string& rid = e.rid.empty() ? rr.rules.blocks[static_cast<size_t>(e.block)].rid : e.rid;
                 if (rid.empty()) {
-                    if (!e->value.empty()) any = true;
-                } else if (SetRulesValue(probe, {rid}, e->group, e->value)) {
+                    if (!e.value.empty()) any = true;
+                } else if (SetRulesValue(probe, {rid}, e.group, e.value)) {
                     any = true;
                 }
             }
@@ -2257,28 +2286,27 @@ SoundReport CommitAssignValues(const std::vector<AssignValueEdit>& edits, bool* 
         {
             SoundUndoScope undo(nullptr, "RAV: Set sound values");
             ItemIndexScope index;
-            std::map<MediaItem*, std::set<std::string>> rid_todo;
-            std::set<MediaItem*>                        whole_todo;
-            for (const ItemEdits& ie : items) {
-                bool needs_rids = false;
-                for (const AssignValueEdit* e : ie.list)
-                    if (e->block >= 0) needs_rids = true;
-                if (needs_rids) EnsureRids(ie.item);
+            ExtraRids      extra;
+            for (const av::PlannedItem& pi : plan.items) {
+                MediaItem* item = FindItemByGuid(pi.item_guid);
+                if (!item) continue;
+                if (pi.NeedsRids()) EnsureRids(item);
                 struct Resolved {
                     std::string rid;  // "" = the Item values row
                     std::string group, value;
                 };
                 std::vector<Resolved> res;
-                for (const AssignValueEdit* e : ie.list) {
-                    if (e->block < 0) {
-                        res.push_back({std::string(), e->group, e->value});
+                for (const av::PlannedEdit& e : pi.edits) {
+                    if (e.block < 0) {
+                        res.push_back({std::string(), e.group, e.value});
                         continue;
                     }
-                    const std::string rid = RidOf(ie.item, e->block);
-                    if (!rid.empty()) res.push_back({rid, e->group, e->value});
+                    const std::string rid = e.rid.empty() ? RidOf(item, e.block) : e.rid;
+                    if (!rid.empty()) res.push_back({rid, e.group, e.value});
                 }
                 if (res.empty()) continue;
-                const std::vector<MediaItem*> members = WithPoolMembers({ie.item});
+                // A pool is one owner: every copy takes the edits, each rule re-places once.
+                const std::vector<MediaItem*> members = WithPoolMembers({item});
                 for (MediaItem* m : members) {
                     ModifyItemSounds(m, nullptr, [&](ItemSounds& s) {
                         bool c = false;
@@ -2289,38 +2317,13 @@ SoundReport CommitAssignValues(const std::vector<AssignValueEdit>& edits, bool* 
                         return c;
                     });
                     for (const Resolved& r : res) {
-                        if (r.rid.empty()) whole_todo.insert(m);
-                        else rid_todo[m].insert(r.rid);
+                        if (r.rid.empty()) extra.whole.insert(m);
+                        else extra.rids[m].insert(r.rid);
                     }
                 }
             }
-            if (!store_edits.empty()) ModifySoundStore(nullptr, nullptr, apply_store);
-            const SoundStore                        after = GetSoundStore(nullptr);
-            const std::vector<MediaItem*>           all = ByPosition(AllRavItems());
-            std::map<std::string, std::vector<int>> carried;  // avoid-repeat across the items, in time order
-            BusyScope                               busy("Updating sounds");
-            for (size_t k = 0; k < all.size(); ++k) {
-                MediaItem* it = all[k];
-                busy.Item(static_cast<int>(k), static_cast<int>(all.size()));
-                ItemRulesRead rr;
-                if (!ReadItemRules(it, &rr) || !rr.valid) continue;
-                std::set<std::string> rids;
-                if (!store_edits.empty()) {
-                    const ItemRigInfo rig = ItemRig(it);
-                    for (const std::string& r : ChangedRids(before, after, ReadItemSounds(it), rr.rules.blocks, rig.skeleton, rig.model))
-                        rids.insert(r);
-                }
-                const bool whole = whole_todo.count(it) > 0;
-                const auto mine = rid_todo.find(it);
-                if (mine != rid_todo.end()) rids.insert(mine->second.begin(), mine->second.end());
-                if (!whole && rids.empty()) continue;
-                PopOpts o;
-                o.only_populated = true;
-                o.follow_assign = true;  // every event of the rules follows the assignment
-                o.carry = &carried;
-                if (!whole) o.rids.assign(rids.begin(), rids.end());
-                PopulateOne(it, after, o, rep, nullptr);
-            }
+            if (!plan.store_edits.empty()) ModifySoundStore(nullptr, nullptr, apply_store);
+            ReplaceChangedRules(before, rep, &extra, !plan.store_edits.empty());
         }
         UpdateArrange();
     } catch (...) {

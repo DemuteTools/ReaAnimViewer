@@ -1129,6 +1129,11 @@ std::string CharacterOwner(const CharacterRef& ref)
     return ref.skeleton.empty() ? "char:uid:" + ref.uid : CharacterOwner(ref.skeleton, ref.model);
 }
 
+std::string CharacterOwnerOf(const SoundCharacter& ch)
+{
+    return ch.skeleton.empty() ? "char:uid:" + ch.uid : CharacterOwner(ch.skeleton, ch.model);
+}
+
 std::string ProvisionalRid(int block)
 {
     return "staged:b" + std::to_string(block);
@@ -1142,6 +1147,7 @@ static bool SameTarget(const StagedEntry& e, StageScope scope, const std::string
 bool Staged::Stage(const StagedEntry& e, const std::string& applied)
 {
     Drop(e.scope, e.owner, e.key, e.group);
+    ++rev_;
     if (e.value == applied) return false;
     list_.push_back(e);
     return true;
@@ -1159,6 +1165,7 @@ bool Staged::Drop(StageScope scope, const std::string& owner, const std::string&
     for (size_t i = 0; i < list_.size(); ++i)
         if (SameTarget(list_[i], scope, owner, key) && list_[i].group == group) {
             list_.erase(list_.begin() + static_cast<long>(i));
+            ++rev_;
             return true;
         }
     return false;
@@ -1198,14 +1205,15 @@ int Staged::DropEqual(const std::function<bool(const StagedEntry&, std::string*)
             ++i;
         }
     }
+    if (n > 0) ++rev_;
     return n;
 }
 
-int ApplyStagedToItem(const Staged& s, const std::string& item_guid, ItemSounds& rec, std::vector<Block>& blocks)
+int ApplyStagedToItem(const Staged& s, const std::string& owner, ItemSounds& rec, std::vector<Block>& blocks)
 {
     int n = 0;
     for (const StagedEntry& e : s.Entries()) {
-        if (e.scope != StageScope::Item || e.owner != item_guid) continue;
+        if (e.scope != StageScope::Item || e.owner != owner) continue;
         if (e.key == kItemKey) {
             if (SetValueIn(rec.item_values, e.group, e.value)) ++n;
             continue;
@@ -1240,7 +1248,7 @@ int ApplyStagedToCharacter(const Staged& s, SoundCharacter& ch)
 {
     int n = 0;
     for (const StagedEntry& e : s.Entries())
-        if (e.scope == StageScope::Character && e.owner == CharacterOwner(ch.skeleton, ch.model))
+        if (e.scope == StageScope::Character && e.owner == CharacterOwnerOf(ch))
             if (SetAssignValueIn(ch.assigns, {e.key}, e.group, e.value)) ++n;
     return n;
 }
@@ -1267,6 +1275,147 @@ std::string AppliedKeyValue(const std::vector<SoundAssign>& list, const std::str
 {
     const SoundAssign* a = FindAssign(list, key);
     return a ? ValueIn(a->values, group) : std::string();
+}
+
+bool StagedRuleMatches(const StagedEntry& e, const std::vector<Block>& blocks, const std::string& signature)
+{
+    int b = -1;
+    if (!BlockOfKey(e.key, &b) || b < 0 || static_cast<size_t>(b) >= blocks.size()) return false;
+    if (!e.rid.empty()) return blocks[static_cast<size_t>(b)].rid == e.rid;
+    return e.sig == signature;
+}
+
+// A value of a Switch group the store still has ("" = inherit: always fine).
+static bool GroupValueExists(const SoundStore& store, const std::string& group, const std::string& value)
+{
+    for (const SwitchGroup& g : store.groups) {
+        if (g.uid != group) continue;
+        if (value.empty()) return true;
+        for (const SwitchValue& v : g.values)
+            if (v.uid == value) return true;
+        return false;
+    }
+    return false;
+}
+
+int PruneStaged(Staged& s, const SoundStore& real, const std::function<bool(const StagedEntry&, StagedItemView*)>& item_of)
+{
+    std::map<const std::vector<Block>*, std::string> sigs;  // an item's block signature, built once
+    return s.DropEqual([&](const StagedEntry& e, std::string* applied) {
+        if (!GroupValueExists(real, e.group, e.value)) {  // its group or value was deleted while it waited
+            *applied = e.value;
+            return true;
+        }
+        switch (e.scope) {
+        case StageScope::Project: *applied = AppliedKeyValue(real.project, e.key, e.group); return true;
+        case StageScope::Character: {
+            const SoundCharacter* c = FindCharacterExact(real, e.character.skeleton, e.character.model);
+            if (!c && !e.character.uid.empty()) c = FindCharacterByUid(real, e.character.uid);
+            *applied = c ? AppliedKeyValue(c->assigns, e.key, e.group) : std::string();
+            return true;
+        }
+        case StageScope::Item: {
+            StagedItemView v;
+            if (!item_of(e, &v) || !v.rec) return false;
+            if (e.key == kItemKey) {
+                *applied = AppliedItemValue(*v.rec, v.blocks ? *v.blocks : std::vector<Block>(), e.key, e.group);
+                return true;
+            }
+            if (!v.blocks) return false;  // its rules do not read now: cannot judge
+            auto it = sigs.find(v.blocks);
+            if (it == sigs.end()) it = sigs.emplace(v.blocks, BuildTargets(*v.blocks).signature).first;
+            if (!StagedRuleMatches(e, *v.blocks, it->second)) {  // its rule went away or moved: the entry goes
+                *applied = e.value;
+                return true;
+            }
+            *applied = AppliedItemValue(*v.rec, *v.blocks, e.key, e.group);
+            return true;
+        }
+        }
+        return false;
+    });
+}
+
+bool PlannedItem::NeedsRids() const
+{
+    for (const PlannedEdit& e : edits)
+        if (e.block >= 0) return true;
+    return false;
+}
+
+bool PlannedItem::Whole() const
+{
+    for (const PlannedEdit& e : edits)
+        if (e.block < 0) return true;
+    return false;
+}
+
+std::set<std::string> PlannedItem::Rids(const std::function<std::string(int)>& rid_of) const
+{
+    std::set<std::string> out;
+    for (const PlannedEdit& e : edits) {
+        if (e.block < 0) continue;
+        const std::string rid = e.rid.empty() ? rid_of(e.block) : e.rid;
+        if (!rid.empty()) out.insert(rid);
+    }
+    return out;
+}
+
+CommitPlan PlanCommit(const std::vector<StagedEntry>& entries, const std::function<CommitItemRead(const std::string&)>& blocks_of)
+{
+    CommitPlan                        plan;
+    std::set<std::string>             targets;
+    std::map<std::string, CommitItemRead> reads;  // by item guid
+    std::map<std::string, std::string>    sigs;
+    for (const StagedEntry& e : entries) {
+        if (e.group.empty()) {
+            ++plan.counts.skipped;
+            continue;
+        }
+        if (e.scope != StageScope::Item) {
+            plan.store_edits.push_back(e);
+        } else {
+            auto r = reads.find(e.item_guid);
+            if (r == reads.end()) {
+                r = reads.emplace(e.item_guid, blocks_of(e.item_guid)).first;
+                sigs[e.item_guid] = r->second.valid ? BuildTargets(r->second.blocks).signature : std::string();
+            }
+            const CommitItemRead& rd = r->second;
+            PlannedEdit           pe;
+            pe.group = e.group;
+            pe.value = e.value;
+            bool ok = rd.found;
+            if (ok && e.key == kItemKey) {
+                pe.block = -1;
+            } else if (ok) {
+                ok = rd.valid && BlockOfKey(e.key, &pe.block) && StagedRuleMatches(e, rd.blocks, sigs[e.item_guid]);
+                pe.rid = e.rid;
+            }
+            if (!ok) {
+                ++plan.counts.skipped;
+                continue;
+            }
+            PlannedItem* slot = nullptr;
+            for (PlannedItem& p : plan.items)
+                if (p.owner == e.owner) slot = &p;
+            if (!slot) {
+                plan.items.emplace_back();
+                slot = &plan.items.back();
+                slot->owner = e.owner;
+                slot->item_guid = e.item_guid;
+            }
+            slot->edits.push_back(pe);
+        }
+        ++plan.counts.changes;
+        targets.insert(std::to_string(static_cast<int>(e.scope)) + "\x1f" + e.owner + "\x1f" + e.key);
+    }
+    plan.counts.targets = static_cast<int>(targets.size());
+    return plan;
+}
+
+std::string SkippedText(int skipped)
+{
+    return std::to_string(skipped) + " not applied: their item or rule is gone";
 }
 
 StagedBar StagedBarText(int changes, int targets, int items)

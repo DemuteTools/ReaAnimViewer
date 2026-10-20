@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -327,7 +328,12 @@ ChangeText LastChange(const std::string& undo_name, const std::string& where, co
 enum class StageScope { Project, Character, Item };
 struct StagedEntry {
     StageScope   scope = StageScope::Item;
-    std::string  owner;      // Item: the item's GUID; Character: CharacterOwner(character); Project: ""
+    // Item: the item's POOL key ("pool:<path>|<id>"; the item's GUID when it is in no pool), so every copy of a pool
+    // is one owner; Character: CharacterOwner(character); Project: "".
+    std::string  owner;
+    std::string  item_guid;  // Item: the item it was staged from (a pool member; the commit finds the pool from it)
+    std::string  rid;        // Item, a rule: the rule id the block had when staged ("" = it had none yet)
+    std::string  sig;        // Item, a rule with no rid yet: the item's block signature (Targets::signature) then
     CharacterRef character;  // Character scope: what the commit is given
     std::string  key;        // the target: kItemKey, "b<block>" (Item scope), "legs.step" (Project / Character)
     std::string  group;
@@ -336,6 +342,8 @@ struct StagedEntry {
 // A character's identity across a store change (a virtual character gets a uid at its first edit): rig + model.
 std::string CharacterOwner(const std::string& skeleton, const std::string& model);
 std::string CharacterOwner(const CharacterRef& ref);
+// The owner of a stored / virtual character record (a uid-only one, with no rig, is told apart by its uid).
+std::string CharacterOwnerOf(const SoundCharacter& ch);
 // The rid a block with no rule id yet gets in the preview.
 std::string ProvisionalRid(int block);
 
@@ -346,9 +354,11 @@ public:
     bool Stage(const StagedEntry& e, const std::string& applied);
     const StagedEntry* Find(StageScope scope, const std::string& owner, const std::string& key, const std::string& group) const;
     bool Drop(StageScope scope, const std::string& owner, const std::string& key, const std::string& group);
-    void Clear() { list_.clear(); }
+    void Clear() { list_.clear(); ++rev_; }
     bool Empty() const { return list_.empty(); }
     const std::vector<StagedEntry>& Entries() const { return list_; }
+    // Bumped by every change of the set (the window caches its previews on it).
+    unsigned Revision() const { return rev_; }
     int Changes() const { return static_cast<int>(list_.size()); }
     int Targets() const;  // distinct (scope, owner, key)
     int Items() const;    // distinct items among the Item entries
@@ -359,7 +369,21 @@ public:
     int DropEqual(const std::function<bool(const StagedEntry&, std::string* applied)>& applied);
 private:
     std::vector<StagedEntry> list_;
+    unsigned                 rev_ = 0;
 };
+
+// What the window knows of one item's rules (a staged Item entry is judged against it); `found` false = unknown.
+struct StagedItemView {
+    const ItemSounds*         rec = nullptr;
+    const std::vector<Block>* blocks = nullptr;  // null: the item's rules do not read
+};
+// Whether a staged Item entry still points at the rule it was staged on: its rid when it had one, else the
+// block signature of its item; the block must exist.
+bool StagedRuleMatches(const StagedEntry& e, const std::vector<Block>& blocks, const std::string& signature);
+// 13-66 review: drops every entry that is equal to the applied value by now (an outside change, a Ctrl+Z), points
+// at a rule that went away or moved (Item), or names a Switch group / value that is gone. `item_of` gives the
+// item an Item entry belongs to (false = cannot judge: the entry stays). The count dropped.
+int PruneStaged(Staged& s, const SoundStore& real, const std::function<bool(const StagedEntry&, StagedItemView*)>& item_of);
 
 // The preview: the staged values of `item_guid` applied to the item's record and blocks (a block with no rid gets
 // ProvisionalRid in `blocks`); the Project and Character ones applied to a store copy; the ones of a character
@@ -370,6 +394,40 @@ int ApplyStagedToCharacter(const Staged& s, SoundCharacter& ch);
 // The applied (own-layer) value of a target's group: the Item row / a rule of the record, a key of an assign list.
 std::string AppliedItemValue(const ItemSounds& rec, const std::vector<Block>& blocks, const std::string& key, const std::string& group);
 std::string AppliedKeyValue(const std::vector<SoundAssign>& list, const std::string& key, const std::string& group);
+
+// What a Commit will do, decided before anything is written (pure). `blocks_of` reads an item's rules now.
+struct CommitItemRead {
+    bool               found = false;  // the item still exists and is a RAV item
+    bool               valid = false;  // its rules read
+    std::vector<Block> blocks;
+};
+struct PlannedEdit {
+    int         block = -1;   // -1 = the Item values row
+    std::string rid;          // the rule id it was staged on ("" = take the block's after the ids are made)
+    std::string group, value;
+};
+struct PlannedItem {
+    std::string              owner;      // one per pool
+    std::string              item_guid;  // a pool member that exists (its pool follows)
+    std::vector<PlannedEdit> edits;
+    bool                     NeedsRids() const;  // an edit on a rule
+    bool                     Whole() const;      // an Item values edit: every rule of the item re-places
+    // The rules the edits reach, each once; `rid_of` gives a block's rid once the ids are made.
+    std::set<std::string>    Rids(const std::function<std::string(int block)>& rid_of) const;
+};
+struct CommitCounts {
+    int changes = 0;  // edits planned
+    int targets = 0;  // distinct (scope, owner, key) among them
+    int skipped = 0;  // edits left out: their item or rule is gone, or moved
+};
+struct CommitPlan {
+    std::vector<PlannedItem> items;
+    std::vector<StagedEntry> store_edits;  // Project and Character scopes
+    CommitCounts             counts;
+};
+CommitPlan PlanCommit(const std::vector<StagedEntry>& entries, const std::function<CommitItemRead(const std::string&)>& blocks_of);
+// The words after a Commit that left edits out: "2 not applied: their item or rule is gone".
+std::string SkippedText(int skipped);
 
 // The Commit / Cancel bar: bold "3 Switch changes", rest "on 2 targets, not placed yet", sub "Commit places them in one undo step".
 struct StagedBar {

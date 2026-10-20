@@ -867,6 +867,7 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& file_base_
     };
 
     std::vector<std::string> both_added;  // nodes both sides added (the base gets them once they agree, review M2)
+    std::vector<std::string> both_added_f;  // the same seen from the file base (second review H1)
     auto add = [&](SyncChange c, Cls cl) {
         c.side = SideOf(cl);
         out.changes.push_back(std::move(c));
@@ -883,6 +884,8 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& file_base_
             if (pr.m == pr.f) {
                 if (known && pr.m && !pr.b) both_added.push_back(u);
                 else if (known && !pr.m && pr.b) out.folds.push_back(key);  // removed on both sides: the base drops it
+                if (known && pr.f && !pr.fb) both_added_f.push_back(u);  // the file base's twins (second review H1)
+                else if (known && !pr.f && pr.fb) out.file_folds.push_back(key);
                 continue;
             }
             SyncChange c;
@@ -940,6 +943,7 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& file_base_
             if (!known) continue;  // no common version: the Apply copies what a picked change references
             if (t.m == t.f) {
                 if (t.m != t.b) out.folds.push_back(key);
+                if (t.f != t.fb) out.file_folds.push_back(key);
                 continue;
             }
             // decision 5: only an addition is a change (a group / value missing on one side is never removed through sync)
@@ -982,6 +986,7 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& file_base_
         const Cls cl = Classify(t, owner_known(p));
         if (cl == Cls::None) {
             if (known && t.m == t.f && t.m != t.b) out.folds.push_back(key);
+            if (known && t.m == t.f && t.f != t.fb) out.file_folds.push_back(key);
             continue;
         }
         SyncChange c;
@@ -1140,7 +1145,7 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& file_base_
     }
 
     // nodes both sides added: into the base once every key of theirs agrees (until then they read as both)
-    if (!both_added.empty()) {
+    if (!both_added.empty() || !both_added_f.empty()) {
         std::set<std::string> differs;
         for (const auto& kv : trips) {
             const std::vector<std::string> p = Split(kv.first, '|');
@@ -1148,6 +1153,8 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& file_base_
         }
         for (const std::string& u : both_added)
             if (!differs.count(u)) out.folds.push_back(KeyOf({"X", u}));
+        for (const std::string& u : both_added_f)
+            if (!differs.count(u)) out.file_folds.push_back(KeyOf({"X", u}));
     }
 
     // needs (same side, never for Both)
@@ -1225,6 +1232,8 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& file_base_
     out.file_untouched = untouched;
     std::sort(out.folds.begin(), out.folds.end());
     out.folds.erase(std::unique(out.folds.begin(), out.folds.end()), out.folds.end());
+    std::sort(out.file_folds.begin(), out.file_folds.end());
+    out.file_folds.erase(std::unique(out.file_folds.begin(), out.file_folds.end()), out.file_folds.end());
     return out;
 }
 
@@ -1373,6 +1382,20 @@ bool CopyKey(Doc& dst, int dst_role, const Doc& src, int src_role, const std::st
         const std::string& u = p[1];
         const NodeDoc*     sn = src.N(u);
         if (!sn) {
+            // Second review M1: a node of the removed subtree that src still has (moved elsewhere there) is kept, under
+            // src's parent; it goes with the subtree only when that parent is not there to hang it on.
+            const std::set<std::string> sub = SubtreeIn(dst, u);
+            bool                        moved = false;
+            for (NodeDoc& n : dst.nodes) {
+                if (n.uid == u || !sub.count(n.uid)) continue;
+                const NodeDoc* s = src.N(n.uid);
+                if (!s || s->parent.empty() || s->parent == n.parent) continue;
+                if (!sub.count(s->parent) && !dst.N(s->parent)) continue;
+                CopyTok(n.node, s->node, "parent");
+                n.parent = s->parent;
+                moved = true;
+            }
+            if (moved) dst.Reindex();
             RemoveSubtree(dst, u);
             return true;
         }
@@ -1636,6 +1659,31 @@ void EnsureGroups(Doc& d, const std::vector<const Doc*>& from)
     }
 }
 
+// A group / value of `dst` made present or absent as in `src` (the file base following the file, second review H1).
+void MatchPresence(Doc& dst, const Doc& src, const std::string& key)
+{
+    const std::vector<std::string> p = Split(key, '|');
+    const GroupDoc*                sg = src.G(p[1]);
+    GroupDoc*                      dg = dst.G(p[1]);
+    if (p[0] == "GX") {
+        if (!sg) dst.groups.erase(std::remove_if(dst.groups.begin(), dst.groups.end(), [&](const GroupDoc& x) { return x.uid == p[1]; }), dst.groups.end());
+        else if (!dg) dst.groups.push_back(*sg);
+        return;
+    }
+    const Line* sv = sg ? ValueLine(*sg, p[2]) : nullptr;
+    if (!sv) {
+        if (dg) dg->values.erase(std::remove_if(dg->values.begin(), dg->values.end(), [&](const Line& l) { return TokOr(l, "uid") == p[2]; }), dg->values.end());
+        return;
+    }
+    if (!dg) {
+        GroupDoc g = *sg;
+        g.values.clear();
+        dst.groups.push_back(g);
+        dg = &dst.groups.back();
+    }
+    if (!ValueLine(*dg, p[2])) dg->values.push_back(*sv);
+}
+
 // Review H1 / L3: a node `orig` had whose parent this Apply changed, when that parent is not there or the change makes a
 // loop, keeps its old parent; its move key is reported (it stays open).
 void KeepOldParents(Doc& dst, const Doc& orig, std::set<std::string>* reverted)
@@ -1734,6 +1782,7 @@ bool ApplySync(const std::string& base_text, const std::string& file_base_text, 
         note_var(c.key);
     }
     for (const std::string& k : diff.folds) note_var(k);
+    for (const std::string& k : diff.file_folds) note_var(k);
     // order: groups / values first, additions parents first, the rest, removals children first
     struct Op {
         std::string key;
@@ -1772,7 +1821,6 @@ bool ApplySync(const std::string& base_text, const std::string& file_base_text, 
             if (!has) {  // chosen absent: never removed from the project; dropped from the file when unused there
                 op.lone_absent = true;
                 op.applied = true;
-                if (up) DropUnusedFromFile(f1, op.key);
                 continue;
             }
         }
@@ -1793,9 +1841,14 @@ bool ApplySync(const std::string& base_text, const std::string& file_base_text, 
         (op.dir == SyncDir::Up ? sent : taken)++;
     }
     EnsureGroups(m1, {&f0, &m0, &b0});
-    EnsureGroups(f1, {&m1, &m0, &f0, &b0});
     Sanitize(m1);
     Sanitize(f1);
+    // L3: a value / group Send mine drops from the file goes once every other change is in, so a case of the file that
+    // this Apply removes no longer keeps it there; one the file still uses stays (in its place)
+    for (const Op& op : ops)
+        if (op.lone_absent && op.dir == SyncDir::Up) DropUnusedFromFile(f1, op.key);
+    EnsureGroups(f1, {&m1, &m0, &f0, &b0});
+    Doc fb1 = fb0;
     if (known) {  // the base takes each applied change's chosen value, and every key equal on both sides
         for (const Op& op : ops) {
             if (!op.applied) continue;
@@ -1806,6 +1859,27 @@ bool ApplySync(const std::string& base_text, const std::string& file_base_text, 
             }
             CopyKey(b1, kB, up ? m0 : f0, up ? kM : kF, op.key, cx);
         }
+        // second review H1: the file base, key by key: the applied changes and the keys where the file already equals
+        // the project; every other key keeps the file base it had (an unpicked change of the file stays listed)
+        for (const Op& op : ops) {
+            if (!op.applied) continue;
+            const bool up = op.dir == SyncDir::Up;
+            if (op.lone_absent) MatchPresence(fb1, f1, op.key);
+            else CopyKey(fb1, kFB, up ? m0 : f0, up ? kM : kF, op.key, cx);
+        }
+        std::vector<std::string> ffolds = diff.file_folds;
+        std::stable_sort(ffolds.begin(), ffolds.end(), [&](const std::string& a, const std::string& b) {
+            const bool xa = a.compare(0, 2, "X|") == 0, xb = b.compare(0, 2, "X|") == 0;
+            if (xa != xb) return xa;
+            return xa && DepthOf(diff.parent, a.substr(2)) < DepthOf(diff.parent, b.substr(2));
+        });
+        for (const std::string& k : ffolds) {
+            if (k.compare(0, 2, "X|") == 0 && f0.N(k.substr(2))) FoldNodeOnly(fb1, f0, k.substr(2));
+            else CopyKey(fb1, kFB, f0, kF, k, cx);
+        }
+        EnsureGroups(fb1, {&f1, &f0, &m1, &m0});
+        KeepOldParents(fb1, fb0, nullptr);
+        Sanitize(fb1);
         std::vector<std::string> folds = diff.folds;
         std::stable_sort(folds.begin(), folds.end(), [&](const std::string& a, const std::string& b) {
             const bool xa = a.compare(0, 2, "X|") == 0, xb = b.compare(0, 2, "X|") == 0;
@@ -1830,7 +1904,7 @@ bool ApplySync(const std::string& base_text, const std::string& file_base_text, 
     r.file_changed = r.file != WriteDoc(f0);
     if (known) {
         r.base = WriteDoc(b1);
-        r.file_base = r.file;
+        r.file_base = WriteDoc(fb1);
     } else {
         bool all = open.empty();
         for (const SyncChange& c : diff.changes) all = all && picks.count(c.key) > 0;
@@ -1841,6 +1915,25 @@ bool ApplySync(const std::string& base_text, const std::string& file_base_text, 
     }
     *out = std::move(r);
     return true;
+}
+
+bool CarryChanges(const std::string& old_text, const std::string& new_text, const std::string& onto, std::string* out)
+{
+    if (old_text.empty() || new_text.empty() || onto.empty()) return false;
+    const SyncDiff                 d = DiffLibrary(old_text, old_text, new_text, onto);
+    std::map<std::string, SyncDir> picks;
+    for (const SyncChange& c : d.changes)
+        if (c.side != SyncSide::File) picks[c.key] = SyncDir::Up;
+    SyncResult r;
+    if (!ApplySync(old_text, old_text, new_text, onto, d, CloseSelection(d, picks), &r)) return false;
+    *out = r.file;
+    return true;
+}
+
+SyncRoute RouteSyncAnswer(bool tab_open, bool tab_shown)
+{
+    if (!tab_open) return SyncRoute::Drop;
+    return tab_shown ? SyncRoute::Handle : SyncRoute::Hold;
 }
 
 // ---- uid translation --------------------------------------------------------------------------------------------

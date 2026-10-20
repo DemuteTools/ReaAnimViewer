@@ -873,6 +873,13 @@ static void TestValueNameMerge()
     SyncResult ru;
     CHECK(ApplySync(Base(), Base(), f, DiffLibrary(Base(), Base(), f), {{"VX|G1|V3", SyncDir::Up}, {"C|R|V3", SyncDir::Up}}, &ru));
     CHECK(DiffLibrary(ru.base, ru.file_base, ru.mine, ru.file).changes.empty());
+    CHECK(!In(ru.file, "V3"));  // second review L3: its case goes in the same Apply, so nothing keeps it there
+    // ... but a case still there keeps it, in its place (the drop runs after every other change)
+    std::string fk = Sub(Base(), "value uid=V1 name=Concrete\n", "value uid=V1 name=Concrete\nvalue uid=V3 name=Mud\n");
+    fk = Sub(fk, "case value=V2 child=B\n", "case value=V2 child=B\ncase value=V3 child=B\n");
+    SyncResult rk;
+    CHECK(ApplySync(Base(), Base(), fk, DiffLibrary(Base(), Base(), fk), {{"VX|G1|V3", SyncDir::Up}}, &rk));
+    CHECK(In(rk.file, "uid=V3") && rk.file.find("uid=V3") < rk.file.find("uid=V2"));
     // the store: a value added to a project group keeps only the roles no value there holds; a group this library did
     // not use keeps its name and default
     SoundStore st = MkFileStore();
@@ -992,6 +999,9 @@ static void TestJournalChain()
     // a gap between the two Applies (someone wrote between them): no chained restore over it
     const std::vector<SyncJournal> gap = {Jr("f0", "f1", 10, 11), Jr("g1", "f2", 11, 12)};
     CHECK(DecideJournalChain(gap, none, 10, true, false, true, SyncTextHash("f2")).step == JournalStep::FileWrittenSince);
+    // second review L3: nor a chained redo over it (the file holds the first Apply's "before")
+    const JournalPlan pg = DecideJournalChain(gap, {true, true}, 12, false, true, true, SyncTextHash("f0"));
+    CHECK(pg.step == JournalStep::None && pg.undone == std::vector<bool>({true, true}));
     // link state: every Apply moves it, even with the same texts
     LinkBase b;
     b.text = "t";
@@ -1036,6 +1046,174 @@ static void TestFileBaseStored()
     CHECK(e.link_bases.size() == 1 && !e.link_bases[0].text.empty() && e.link_bases[0].file_base == ft && e.link_bases[0].syncs == 2);
 }
 
+static std::map<std::string, SyncDir> RowPicks(const SyncDiff& d, const std::string& row, SyncDir dir)
+{
+    std::map<std::string, SyncDir> p;
+    for (const std::string& k : ContainerChangeKeys(d, row)) p[k] = dir;
+    return CloseSelection(d, p);
+}
+
+// Second review H1 / probe p1: a partial Apply leaves every other change listed, on the side it was.
+static void TestPartialApplyKeepsOtherChanges()
+{
+    const std::string b = Base();
+    // the file changed Walk_Concrete's gain and Walk_Wood's; Get file's on Walk_Concrete only
+    const std::string f = Sub(Sub(b, "name=Walk_Concrete vol=-4", "name=Walk_Concrete vol=-9"), "name=Walk_Wood\n", "name=Walk_Wood vol=-7\n");
+    const SyncDiff    d = DiffLibrary(b, b, b, f);
+    CHECK(d.file == 2);
+    SyncResult r;
+    CHECK(ApplySync(b, b, b, f, d, RowPicks(d, "A", SyncDir::Down), &r));
+    CHECK(r.taken == 1 && !r.file_changed);
+    const SyncDiff d2 = DiffLibrary(r.base, r.file_base, r.mine, r.file);
+    CHECK(d2.changes.size() == 1 && Has(d2, "F|B|node|vol") && Has(d2, "F|B|node|vol")->side == SyncSide::File);
+    // Walk_Concrete changed on both sides (here -5, file -9), Walk_Wood here; Send mine on Walk_Wood: still both
+    const std::string m = Sub(Sub(b, "name=Walk_Concrete vol=-4", "name=Walk_Concrete vol=-5"), "name=Walk_Wood\n", "name=Walk_Wood vol=-3\n");
+    const std::string f2 = Sub(b, "name=Walk_Concrete vol=-4", "name=Walk_Concrete vol=-9");
+    const SyncDiff    d3 = DiffLibrary(b, b, m, f2);
+    CHECK(d3.both == 1 && d3.here == 1);
+    SyncResult r3;
+    CHECK(ApplySync(b, b, m, f2, d3, RowPicks(d3, "B", SyncDir::Up), &r3));
+    CHECK(r3.sent == 1 && In(r3.file, "vol=-9") && In(r3.file, "name=Walk_Wood vol=-3"));
+    const SyncDiff d4 = DiffLibrary(r3.base, r3.file_base, r3.mine, r3.file);
+    CHECK(d4.changes.size() == 1 && Has(d4, "F|A|node|vol") && Has(d4, "F|A|node|vol")->side == SyncSide::Both);
+    // the file moved to what the project holds (no change listed): the file base takes it at the next Apply
+    const std::string m5 = Sub(Sub(b, "name=Walk_Concrete vol=-4", "name=Walk_Concrete vol=-5"), "name=Walk_Wood\n", "name=Walk_Wood vol=-3\n");
+    const std::string f5 = Sub(b, "name=Walk_Concrete vol=-4", "name=Walk_Concrete vol=-5");
+    const SyncDiff    d5 = DiffLibrary(b, b, m5, f5);
+    CHECK(d5.changes.size() == 1 && d5.file_folds.size() == 1 && d5.file_folds[0] == "F|A|node|vol");
+    SyncResult r5;
+    CHECK(ApplySync(b, b, m5, f5, d5, RowPicks(d5, "B", SyncDir::Up), &r5));
+    CHECK(In(r5.file_base, "name=Walk_Concrete vol=-5") && In(r5.base, "name=Walk_Concrete vol=-5"));
+    CHECK(DiffLibrary(r5.base, r5.file_base, r5.mine, r5.file).changes.empty());
+    // the text really written is carried onto the file base, never the file's unpicked changes
+    std::string fbw;
+    CHECK(CarryChanges(r.file, r.file, r.file_base, &fbw));
+    CHECK(DiffLibrary(r.base, fbw, r.mine, r.file).file == 1);
+}
+
+// Second review H2 / probe p2: what the store merge adapts during an Apply goes into the base only.
+static void AbsorbCheck(SoundStore store, const SoundStore& file_store, const char* what)
+{
+    const std::string b = SerializeRavlib(RavlibOf(store, "L1", nullptr));
+    const std::string f = SerializeRavlib(RavlibOf(file_store, "L1", nullptr));
+    const SyncDiff    d = DiffLibrary(b, b, b, f);
+    SyncResult        r;
+    CHECK(!d.changes.empty() && ApplySync(b, b, b, f, d, All(d, SyncDir::Down), &r));
+    SoundStore merged, before;
+    CHECK(ParseRavlib(r.mine, &merged) && ParseRavlib(b, &before));
+    CHECK(ReplaceLibraryFromMerge(store, "L1", merged, &before));
+    const std::string fin = SerializeRavlib(RavlibOf(store, "L1", nullptr));
+    CHECK(!DiffLibrary(r.base, r.file_base, fin, r.file).changes.empty());  // the adaptation, not absorbed: listed
+    std::string base2;
+    CHECK(CarryChanges(r.mine, fin, r.base, &base2));
+    const SyncDiff after = DiffLibrary(base2, r.file_base, fin, r.file);
+    if (!after.changes.empty()) std::printf("  absorb case: %s (%s)\n", what, after.changes[0].text.c_str());
+    CHECK(after.changes.empty());
+}
+
+static void TestStoreAdaptationsAbsorbed()
+{
+    // roles 13-23 filtered: the file adds Mud with roles=heel, which Concrete already holds here
+    {
+        SoundStore st = MkFileStore();
+        st.groups[0].values[0].roles = {"heel"};
+        SoundStore fs = st;
+        fs.groups[0].values.push_back(SwitchValue{"V3", "Mud", {}, {"heel"}});
+        fs.libraries[0].nodes[0].cases.push_back(SwitchCase{"V3", "B", {}});
+        AbsorbCheck(st, fs, "roles");
+    }
+    // a group this library did not use keeps the project's name and default
+    {
+        SoundStore  st = MkFileStore();
+        SwitchGroup g2;
+        g2.uid = "G2";
+        g2.name = "Weather";
+        g2.values = {SwitchValue{"W1", "Dry", {}, {}}, SwitchValue{"W2", "Wet", {}, {}}};
+        g2.default_value = "W1";
+        st.groups.push_back(g2);
+        SoundStore fs = st;
+        fs.groups[1].name = "Wetness";
+        fs.groups[1].default_value = "W2";
+        SoundNode w = MkNode("W", "A", SoundNodeType::Switch, "Rain");
+        w.group_uid = "G2";
+        fs.libraries[0].nodes.push_back(w);
+        AbsorbCheck(st, fs, "group name / default");
+    }
+    // the file renames the library to a name another library of this project holds
+    {
+        SoundStore   st = MkFileStore();
+        SoundLibrary other;
+        other.uid = "L2";
+        other.name = "Feet 2";
+        other.root = "Z";
+        st.libraries.push_back(other);
+        SoundStore fs = st;
+        fs.libraries[0].name = "Feet 2";
+        AbsorbCheck(st, fs, "library name");
+    }
+}
+
+// Second review M1 / probe p4: a removal never takes a node the other side still has elsewhere.
+static void TestRemovalKeepsMovedNode()
+{
+    const std::string b =
+        "RAVLIB 2\n"
+        "library uid=L1 name=Foot root=R\n"
+        "node uid=R type=random name=Root\n"
+        "node uid=A type=random parent=R name=Walk\n"
+        "node uid=S type=sound parent=A name=FS1\n"
+        "sound kind=file\n"
+        "node uid=B type=random parent=R name=Run\n";
+    // here S moved into Run, the file removed Run: Get file's keeps S, under Walk as in the file
+    const std::string m = Sub(b, "uid=S type=sound parent=A", "uid=S type=sound parent=B");
+    const std::string f = Sub(b, "node uid=B type=random parent=R name=Run\n", "");
+    const SyncDiff    d = DiffLibrary(b, b, m, f);
+    CHECK(Has(d, "X|B") && Has(d, "X|B")->side == SyncSide::Both);
+    SyncResult r;
+    CHECK(ApplySync(b, b, m, f, d, CloseSelection(d, All(d, SyncDir::Down)), &r));
+    CHECK(In(r.mine, "node uid=S type=sound parent=A") && !In(r.mine, "uid=B "));
+    CHECK(DiffLibrary(r.base, r.file_base, r.mine, r.file).changes.empty());
+    // the other way: the file moved S into Run, Run removed here: Send mine keeps S in the file, under Walk
+    const SyncDiff du = DiffLibrary(b, b, f, m);
+    CHECK(Has(du, "X|B") && Has(du, "X|B")->side == SyncSide::Both);
+    SyncResult ru;
+    CHECK(ApplySync(b, b, f, m, du, CloseSelection(du, All(du, SyncDir::Up)), &ru));
+    CHECK(In(ru.file, "node uid=S type=sound parent=A") && !In(ru.file, "uid=B "));
+    CHECK(DiffLibrary(ru.base, ru.file_base, ru.mine, ru.file).changes.empty());
+}
+
+// Second review M2 / probe p3: an edit made during the round trip goes onto the worker's result, whose common versions
+// stay those of the text really written.
+static void TestEditDuringRoundTrip()
+{
+    const std::string b =
+        "RAVLIB 2\n"
+        "library uid=L1 name=Foot root=R\n"
+        "node uid=R type=random name=Root\n"
+        "node uid=A type=random parent=R name=Walk vol=-4\n"
+        "node uid=B type=random parent=R name=Run vol=-2\n";
+    const std::string m = Sub(b, "vol=-4", "vol=-5");
+    const SyncDiff    d = DiffLibrary(b, b, m, b);
+    SyncResult        r;  // the worker: writes Walk -5
+    CHECK(ApplySync(b, b, m, b, d, CloseSelection(d, All(d, SyncDir::Up)), &r));
+    // meanwhile Walk went back to -4 and Run to -3
+    const std::string now = Sub(b, "vol=-2", "vol=-3");
+    std::string       carried;
+    CHECK(CarryChanges(m, now, r.mine, &carried));
+    CHECK(In(carried, "name=Walk vol=-4") && In(carried, "name=Run vol=-3"));
+    const SyncDiff d2 = DiffLibrary(r.base, r.file_base, carried, r.file);
+    CHECK(d2.changes.size() == 2 && d2.here == 2);
+    CHECK(Has(d2, "F|A|node|vol") && Has(d2, "F|A|node|vol")->text == "Gain -5 \xE2\x86\x92 -4 dB");
+}
+
+// Second review H3: an answer acts only on the tab shown now.
+static void TestRouteSyncAnswer()
+{
+    CHECK(RouteSyncAnswer(false, false) == SyncRoute::Drop);
+    CHECK(RouteSyncAnswer(true, true) == SyncRoute::Handle);
+    CHECK(RouteSyncAnswer(true, false) == SyncRoute::Hold);
+}
+
 int main()
 {
     TestUpToDate();
@@ -1075,6 +1253,11 @@ int main()
     TestMutantsKilled();
     TestJournalChain();
     TestFileBaseStored();
+    TestPartialApplyKeepsOtherChanges();
+    TestStoreAdaptationsAbsorbed();
+    TestRemovalKeepsMovedNode();
+    TestEditDuringRoundTrip();
+    TestRouteSyncAnswer();
     if (g_fail == 0) std::printf("library_sync_test: all passed\n");
     return g_fail == 0 ? 0 : 1;
 }

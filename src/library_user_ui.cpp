@@ -1280,9 +1280,9 @@ struct SyncOut {
     UidMap        uid_map;  // the link's map grown by the name merge
     // Apply
     std::map<std::string, SyncDir> picks;  // closed
-    std::string mine_job, base_job, fb_job;
+    std::string mine_job;                           // the project copy the job worked on (M2: edits made since are carried)
     SyncResult  result;
-    std::string file_proj_before, file_proj_after;  // the file as read / as written, project uids
+    std::string file_proj_after;                    // the file as written, project uids
     std::string before_text, after_text;            // as read / as written, file uids
     bool        file_written = false;
     // Journal
@@ -1443,6 +1443,14 @@ void SyncRunJob(const SyncJob& job, std::map<std::string, SyncCached>& cache, st
         seen.erase(SeenKey(job));
         return;
     }
+    // Second review L1: a name match found just now (file V3 = project V7) also translates the two common versions,
+    // which may still hold the file's uid
+    std::string base = job.base, file_base = job.file_base;
+    if (out->uid_map.size() > job.uid_map.size()) {
+        const UidMap fresh(out->uid_map.begin() + static_cast<long>(job.uid_map.size()), out->uid_map.end());
+        base = TranslateUidsText(base, fresh, true);
+        file_base = TranslateUidsText(file_base, fresh, true);
+    }
     if (!apply) {
         SyncSeen  now{SyncTextHash(mine), SyncTextHash(job.base), SyncTextHash(job.file_base), MapHash(out->uid_map), out->stamp};
         SyncSeen& was = seen[SeenKey(job)];
@@ -1451,14 +1459,11 @@ void SyncRunJob(const SyncJob& job, std::map<std::string, SyncCached>& cache, st
             return;
         }
         was = now;
-        out->diff = DiffLibrary(job.base, job.file_base, mine, proj_text);
+        out->diff = DiffLibrary(base, file_base, mine, proj_text);
         return;
     }
-    out->diff = DiffLibrary(job.base, job.file_base, mine, proj_text);
+    out->diff = DiffLibrary(base, file_base, mine, proj_text);
     out->mine_job = mine;
-    out->base_job = job.base;
-    out->fb_job = job.file_base;
-    out->file_proj_before = proj_text;
     out->file_proj_after = proj_text;
     out->before_text = file_text;
     if (DecideApplyGate(job.listed, out->stamp) != ApplyGate::Go) {  // the file moved since the list was built
@@ -1466,11 +1471,10 @@ void SyncRunJob(const SyncJob& job, std::map<std::string, SyncCached>& cache, st
         return;
     }
     out->picks = CloseSelection(out->diff, job.picks);
-    if (!ApplySync(job.base, job.file_base, mine, proj_text, out->diff, out->picks, &out->result)) {
+    if (!ApplySync(base, file_base, mine, proj_text, out->diff, out->picks, &out->result)) {
         out->st = SyncSt::Failed;
         return;
     }
-    if (!out->result.file_base.empty()) out->result.file_base = proj_text;  // the file's exact text (H3)
     if (!out->result.file_changed) return;
     const std::string back = TranslateUidsText(out->result.file, out->uid_map, false);
     SoundStore        s2;
@@ -1496,7 +1500,11 @@ void SyncRunJob(const SyncJob& job, std::map<std::string, SyncCached>& cache, st
     }
     out->after_text = text;
     out->file_proj_after = TranslateUidsText(text, out->uid_map, true);
-    if (!out->result.file_base.empty()) out->result.file_base = out->file_proj_after;
+    // second review H1: the file base stays built key by key; only what writing the text changed in it (nothing, or a
+    // normalisation) is carried onto it, never the file's unpicked changes
+    std::string fb_written;
+    if (!out->result.file_base.empty() && CarryChanges(out->result.file, out->file_proj_after, out->result.file_base, &fb_written))
+        out->result.file_base = fb_written;
     out->file_written = true;
     out->by = job.by;  // review H4: the header this Apply wrote
     out->at = job.now;
@@ -1609,6 +1617,14 @@ ProjSync& CurSync()
     return gs.projs[gs.cur];
 }
 
+// The tab shown now (second review H3).
+ProjKey ShownProjKey()
+{
+    char        fn[4096] = {};
+    ReaProject* p = EnumProjects(-1, fn, sizeof fn);
+    return ProjKey(p, fn);
+}
+
 double MonoS()
 {
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -1676,6 +1692,10 @@ void FinishApply(ProjSync& ps, const SyncOut& o, SyncApplyOutcome what)
 
 void HandleApplyOut(ProjSync& ps, SyncOut& o)
 {
+    if (RouteSyncAnswer(true, o.proj == ShownProjKey()) == SyncRoute::Hold) {  // second review H3
+        ps.held.push_back(std::move(o));
+        return;
+    }
     auto it = ps.slots.find(o.lib_uid);
     if (o.st == SyncSt::FileChanged) {
         if (it != ps.slots.end()) {
@@ -1696,34 +1716,29 @@ void HandleApplyOut(ProjSync& ps, SyncOut& o)
         return;
     }
     const std::string   uid = o.lib_uid;
-    const SoundStore&   store = GetSoundStore(nullptr);
+    ReaProject* const   proj = o.proj.first;  // second review H3: the project that asked, never "the current one"
+    const SoundStore&   store = GetSoundStore(proj);
     const SoundLibrary* lib = FindLibrary(store, uid);
     if (!lib || !LibraryLinked(*lib) || lib->ravlib_path != o.file) {
         if (o.file_written) ShowToastNoUndo(o.file + " was written, but this library is no longer linked to it here");
         FinishApply(ps, o, SyncApplyOutcome::Failed);
         return;
     }
-    // Review M3: the library (or its link) moved during the round trip: the same picks again, here, against the project
-    // copy as it is now and the file as it was read; the written file stays the truth of the file base.
+    // Second review M2: the library was edited during the round trip. The worker's two common versions describe what
+    // was really written and stay; only the edits made meanwhile (the project copy the job took -> as it is now) are
+    // carried onto the worker's merged copy.
     SyncResult        r = o.result;
     const std::string mine_now = MineTextOf(store, uid);
-    const LinkBase*   lb = FindLinkBase(store, uid);
-    const std::string base_now = lb ? lb->text : std::string(), fb_now = lb ? lb->file_base : std::string();
-    if (mine_now != o.mine_job || base_now != o.base_job || fb_now != o.fb_job) {
-        const SyncDiff                 d2 = DiffLibrary(base_now, fb_now, mine_now, o.file_proj_before);
-        std::map<std::string, SyncDir> picks2;
-        for (const auto& pk : o.picks)
-            if (d2.Find(pk.first)) picks2[pk.first] = pk.second;
-        SyncResult r2;
-        if (!ApplySync(base_now, fb_now, mine_now, o.file_proj_before, d2, CloseSelection(d2, picks2), &r2)) {
+    if (mine_now != o.mine_job) {
+        std::string carried;
+        if (!CarryChanges(o.mine_job, mine_now, r.mine, &carried)) {
             ShowToastNoUndo(o.file_written ? o.file + " was written, but this project's copy could not be updated: check the changes again"
                                            : "This library changed while syncing: check the changes again");
             FinishApply(ps, o, SyncApplyOutcome::Failed);
             return;
         }
-        if (!r2.file_base.empty()) r2.file_base = o.file_proj_after;
-        r2.sent = o.result.sent;  // what the file holds is what the worker wrote
-        r = r2;
+        r.mine = carried;
+        r.mine_changed = r.mine != mine_now;
     }
     const int  sent_shown = o.file_written ? r.sent : 0;
     const bool anything = o.file_written || r.mine_changed || r.sent > 0 || r.taken > 0;
@@ -1742,11 +1757,16 @@ void HandleApplyOut(ProjSync& ps, SyncOut& o)
     const bool        has_before = ParseRavlib(mine_now, &before);
     uint64_t          state_before = 0, state_after = 0;
     const int64_t     now = NowS();
-    const bool        ok = ModifySoundStore(nullptr, kSyncUndo, [&](SoundStore& s) {
+    const bool        ok = ModifySoundStore(proj, kSyncUndo, [&](SoundStore& s) {
         const LinkBase* ob = FindLinkBase(s, uid);
         state_before = LinkStateHash(ob ? *ob : LinkBase());
         if (!ReplaceLibraryFromMerge(s, uid, merged, has_before ? &before : nullptr)) return false;
-        const LinkBase nb = NextLinkBase(ob, uid, r, o.uid_map, now, o.by, o.at);
+        // Second review H2: what the merge adapted (a role 13-23 filtered, the project's group name / default, a
+        // library name made unique) goes into the base only: never listed as "edited here", never sent to the file
+        SyncResult rs = r;
+        std::string absorbed;
+        if (!rs.base.empty() && CarryChanges(rs.mine, MineTextOf(s, uid), rs.base, &absorbed)) rs.base = absorbed;
+        const LinkBase nb = NextLinkBase(ob, uid, rs, o.uid_map, now, o.by, o.at);
         state_after = LinkStateHash(nb);
         SetLinkBase(s, nb);
         return true;
@@ -1782,6 +1802,7 @@ void HandleApplyOut(ProjSync& ps, SyncOut& o)
 void HandleJournalOut(ProjSync& ps, SyncOut& o)
 {
     ps.journal_busy.erase(o.lib_uid);
+    ps.checked_gen = 0;  // second review M3: a Ctrl+Z made while this job ran is checked at the next tick
     ForceSync(ps, o.lib_uid);
     auto it = ps.journals.find(o.lib_uid);
     if (it == ps.journals.end()) return;
@@ -1815,7 +1836,8 @@ void HandleOut(ProjSync& ps, SyncOut& o)
     else if (o.kind == SyncKind::Journal) HandleJournalOut(ps, o);
 }
 
-void DrainSyncOuts()
+// Second review H3: `shown` is the tab shown now, taken before any answer is handled.
+void DrainSyncOuts(const ProjKey& shown)
 {
     std::deque<SyncOut> outs;
     {
@@ -1824,8 +1846,9 @@ void DrainSyncOuts()
     }
     for (SyncOut& o : outs) {
         if (o.kind == SyncKind::Apply) gs.apply_busy = false;
-        auto pit = gs.projs.find(o.proj);
-        if (pit == gs.projs.end()) {  // that tab is gone
+        auto            pit = gs.projs.find(o.proj);
+        const SyncRoute route = RouteSyncAnswer(pit != gs.projs.end(), o.proj == shown);
+        if (route == SyncRoute::Drop) {  // that tab is gone
             if (o.kind == SyncKind::Apply) gs.waiting.erase(o.seq);
             continue;
         }
@@ -1835,10 +1858,13 @@ void DrainSyncOuts()
             if (it == ps.slots.end() || it->second.seq != o.seq || it->second.file_name != o.file) continue;
             it->second.busy = false;
             SlotFromOut(it->second, o);
-        } else if (o.proj == gs.cur) {
+        } else if (route == SyncRoute::Handle) {
             HandleOut(ps, o);
         } else {
-            if (o.kind == SyncKind::Journal) ps.journal_busy.erase(o.lib_uid);
+            if (o.kind == SyncKind::Journal) {
+                ps.journal_busy.erase(o.lib_uid);
+                ps.checked_gen = 0;  // M3
+            }
             ps.held.push_back(std::move(o));  // review M5: taken when its project is shown again
         }
     }
@@ -1894,11 +1920,11 @@ void PruneSyncProjects()
 
 void SyncTick(ReaProject* proj)
 {
-    DrainSyncOuts();
-    if (ResourcePath().empty() || !g.listed) return;
     char fn[4096] = {};
     EnumProjects(-1, fn, sizeof fn);
     const ProjKey key(proj, fn);
+    DrainSyncOuts(key);  // second review H3: answers are routed against the tab shown now, not last tick's
+    if (ResourcePath().empty() || !g.listed) return;
     const bool    switched = key != gs.cur;
     gs.cur = key;
     ProjSync& ps = gs.projs[key];

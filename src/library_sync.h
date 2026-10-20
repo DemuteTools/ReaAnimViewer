@@ -65,6 +65,7 @@ struct SyncDiff {
     bool had_base = false;              // both common versions known (else every difference is a Both change)
     bool file_untouched = false;        // the file holds what this project last read / wrote (no key moved in it)
     std::vector<std::string> folds;     // keys equal on both sides but not in the base: the base takes them at Apply
+    std::vector<std::string> file_folds;  // keys equal on both sides but not in the file base: the file base takes them
     std::map<std::string, std::string> parent;  // every container / Sound uid of the texts -> its parent uid (mine first)
     std::set<std::string> mine_nodes;   // the node uids the project copy has
     std::string root;                   // the library's root node uid
@@ -99,7 +100,10 @@ LibSyncCounts TotalCounts(const SyncDiff& d);
 
 struct SyncResult {
     std::string mine, file;        // new .ravlib texts (project uid space)
-    std::string base, file_base;   // the new common versions; "" = still none (a partial Apply with no common version)
+    std::string base, file_base;   // the new common versions; "" = still none (a partial Apply with no common version).
+                                   // Built key by key (second review H1): each takes the chosen value of every applied
+                                   // change and every key equal on both sides; an unpicked change keeps its old value
+                                   // in both, so it is still listed, on the same side, after a partial Apply.
     int         sent = 0;          // changes applied Up (only those that really changed the file / the base)
     int         taken = 0;         // changes applied Down
     bool        mine_changed = false, file_changed = false;
@@ -114,6 +118,17 @@ bool ApplySync(const std::string& base_text, const std::string& file_base_text, 
                SyncResult* out);
 bool ApplySync(const std::string& base_text, const std::string& mine_text, const std::string& file_text,
                const SyncDiff& diff, const std::map<std::string, SyncDir>& picks, SyncResult* out);
+
+// The changes from `old_text` to `new_text`, carried onto `onto` (a three-way rebase: on a key all three differ,
+// new_text's value wins). False when a text is not a ravlib. Second review: the file base follows the text really
+// written (H1), the base absorbs what the store merge adapted (H2), and the edits made during an Apply's round trip go
+// onto its result (M2).
+bool CarryChanges(const std::string& old_text, const std::string& new_text, const std::string& onto, std::string* out);
+
+// Second review H3: where an answer of the worker (an Apply, a Ctrl+Z journal) goes. It acts only on the project shown
+// now (the store calls work on the shown project); another open tab's answer waits until that tab is shown again.
+enum class SyncRoute { Drop, Handle, Hold };
+SyncRoute RouteSyncAnswer(bool tab_open, bool tab_shown);
 
 // Puts a merged project copy (the `mine` text of an Apply, parsed: one library and its groups) into the store: the
 // library's nodes replaced, its project-local fields kept (ravlib_path, kit_offered, File sources' item_guid by node

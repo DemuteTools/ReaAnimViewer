@@ -48,6 +48,10 @@ const SoundStore& GetSoundStore(ReaProject* proj);
 // Moves each time a store is replaced (an edit, a project load or close): a reference taken from
 // GetSoundStore is stale once it has moved.
 uint64_t SoundStoreGeneration();
+// Freeze audit #3: a replaced store is retired, not freed, so a reference taken from GetSoundStore stays valid memory
+// until the stack unwinds. This frees the retired ones; called at the start of a viewer frame and of a REAPER timer
+// tick, and it does nothing while any RAV scope is open on the main thread (a nested tick, a modal dialog).
+void SweepRetiredSoundStores();
 // Edits the store: `edit` returns false to change nothing. A changed store marks the project
 // dirty and, with a non-null `undo_desc`, records one undo point; null = no undo point (inside a
 // caller's SoundUndoScope). False when nothing changed.

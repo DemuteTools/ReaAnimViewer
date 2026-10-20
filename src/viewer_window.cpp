@@ -48,6 +48,7 @@
 #include "renderer.h"
 #include "shortcuts.h"         // spec 11-fb-3: the viewer's keys, rebindable
 #include "shortcuts_ui.h"      // spec 11-fb-3: the keyboard icon + Shortcuts popup
+#include "sound_project.h"      // freeze audit #3: SweepRetiredSoundStores
 #include "view_nav.h"          // 13-45: the timelines' wheel / zoom keys, the Shortcuts rows' recording
 #include "skeleton_view.h"     // spec 10-3c: the Model / Skeleton switch and its overlay
 #include "clip_list_ui.h"      // story 6-5-10: the animation clip list (left of every view)
@@ -720,6 +721,7 @@ void RenderTick()
     struct LeaveTick {
         ~LeaveTick() { s_in_tick = false; }
     } leave_tick;
+    SweepRetiredSoundStores();  // freeze audit #3: a store replaced meanwhile is freed here, at the top of a frame
     RAV_QUIET_SCOPE("RenderTick", nullptr);  // freeze audit
 
     // Re-assert OUR context every frame. This is Reaper's main thread, shared with other

@@ -93,6 +93,8 @@ struct VideoScope {
     VideoScope& operator=(const VideoScope&) = delete;
 };
 
+// How many RAV scopes are open on the main thread right now (0 = no RAV code is further up the stack). Main thread.
+int MainDepth();
 // The main thread is alive (a REAPER timer tick, a viewer frame).
 void MainBeat();
 // A worker thread's slot (`name` a literal, `index` for several of one kind); -1 when all are taken.

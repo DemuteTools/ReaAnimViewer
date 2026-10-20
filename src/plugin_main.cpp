@@ -165,6 +165,7 @@ bool OnHookCommand(int command, int /*flag*/)
 void WatchdogTimer()
 {
     wd::MainBeat();
+    SweepRetiredSoundStores();  // freeze audit #3: only when no RAV scope is open (not nested in a gesture or a dialog)
     static int ticks = 0;
     if (ticks < 1000) ++ticks;
     if (ticks == 90 && wd::TakeFreezeToast())

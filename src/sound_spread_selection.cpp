@@ -1821,6 +1821,10 @@ std::string ClickedMarkersKey()
 
 void AttachWatchTick()
 {
+    // Freeze audit #3: a REAPER timer also runs inside a modal loop (a file dialog, a message box) of a frame or gesture
+    // further up the stack; writing the store there pulls it from under that code. Skipped (the next tick reads what
+    // changed) while any RAV scope is open.
+    if (wd::MainDepth() > 0) return;
     try {
         WatchTick();
     } catch (...) {

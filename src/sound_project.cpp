@@ -10,12 +10,14 @@
 #include <cstring>
 #include <exception>
 #include <map>
+#include <memory>
 #include <vector>
 
 #include "console_log.h"
 #include "item_rules.h"  // RavTakeOf
 #include "populate_progress.h"  // 13-19: LiveSet
 #include "sound_record.h"
+#include "store_graveyard.h"
 
 namespace rav {
 namespace {
@@ -30,7 +32,23 @@ GetItemProjectContextFn       f_item_project = nullptr;
 int (*g_register)(const char*, void*) = nullptr;
 bool (*g_store_edit_hook)(ReaProject*) = nullptr;  // 13-17 (SetSoundStoreEditHook)
 
-std::map<ReaProject*, SoundStore> g_stores;
+// Freeze audit #3: the stores are heap objects, and a replaced one is retired (Graveyard), not freed: a reference taken
+// from GetSoundStore stays valid memory (stale data, never freed) until SweepRetiredSoundStores runs at a top-level point.
+std::map<ReaProject*, std::unique_ptr<SoundStore>> g_stores;
+Graveyard<SoundStore>                              g_graveyard;
+void PutStore(ReaProject* proj, SoundStore&& s)
+{
+    std::unique_ptr<SoundStore>& slot = g_stores[proj];
+    g_graveyard.Retire(std::move(slot));
+    slot = std::make_unique<SoundStore>(std::move(s));
+}
+void DropStore(ReaProject* proj)
+{
+    const auto it = g_stores.find(proj);
+    if (it == g_stores.end()) return;
+    g_graveyard.Retire(std::move(it->second));
+    g_stores.erase(it);
+}
 uint64_t                          g_store_gen = 0;  // SoundStoreGeneration
 // Fix 2026-10-19 (Sound Edit writes slow): each project's store as written by its last ModifySoundStore (SerializeSoundStore
 // of g_stores[proj], exactly); absent = not known (a load, a project closed). A write compares with it instead of
@@ -91,7 +109,7 @@ bool ProcessExtensionLine(const char* line, ProjectStateContext* ctx, bool, proj
             s = SoundStore{};
             g_unreadable[proj] = text;
         }
-        g_stores[proj] = std::move(s);
+        PutStore(proj, std::move(s));
         g_texts.erase(proj);
         ++g_store_gen;
         return true;
@@ -109,7 +127,7 @@ void SaveExtensionConfig(ProjectStateContext* ctx, bool, project_config_extensio
         const auto        known = g_texts.find(proj);
         std::string       text = it == g_stores.end() ? std::string()
                                  : known != g_texts.end() ? known->second
-                                                          : SerializeSoundStore(it->second);
+                                                          : SerializeSoundStore(*it->second);
         const auto        raw = g_unreadable.find(proj);
         if (text.empty() && raw != g_unreadable.end()) text = raw->second;
         if (text.empty()) return;  // an empty store writes no chunk (D1)
@@ -131,7 +149,7 @@ void BeginLoadProjectState(bool, project_config_extension_t*)
 {
     try {
         ReaProject* proj = LoadSaveProject();
-        g_stores.erase(proj);
+        DropStore(proj);
         g_texts.erase(proj);
         ++g_store_gen;
         g_unreadable.erase(proj);
@@ -224,6 +242,7 @@ void QuitSoundProject()
     if (g_register && g_pcreg_on) g_register("-projectconfig", &g_pcreg);
     g_pcreg_on = false;
     g_stores.clear();
+    g_graveyard.Sweep(true);  // unload: nothing of RAV runs any more
     g_texts.clear();
     ++g_store_gen;
     g_unreadable.clear();
@@ -255,7 +274,13 @@ const SoundStore& GetSoundStore(ReaProject* proj)
 {
     static const SoundStore kEmpty;
     const auto it = g_stores.find(ProjectOrCurrent(proj));
-    return it == g_stores.end() ? kEmpty : it->second;
+    return it == g_stores.end() || !it->second ? kEmpty : *it->second;
+}
+
+void SweepRetiredSoundStores()
+{
+    if (wd::MainDepth() > 0) return;  // inside a RAV scope (a frame, a gesture, a dialog): its references must stay valid
+    g_graveyard.Sweep(true);
 }
 
 void SetSoundStoreEditHook(bool (*hook)(ReaProject* proj))
@@ -275,7 +300,7 @@ bool ModifySoundStore(ReaProject* proj, const char* undo_desc, const std::functi
         if (!edit(copy)) return false;
         std::string after = SerializeSoundStore(copy);
         if (after == before) return false;
-        g_stores[proj] = std::move(copy);
+        PutStore(proj, std::move(copy));
         g_texts[proj] = std::move(after);  // fix 2026-10-19: the undo point below writes it as is
         ++g_store_gen;
         MarkProjectDirty(proj);

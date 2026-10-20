@@ -57,6 +57,10 @@ target_include_directories(watchdog_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../
 target_compile_definitions(watchdog_test PRIVATE RAV_WATCHDOG_HOST)
 target_link_libraries(watchdog_test PRIVATE Threads::Threads)
 add_test(NAME watchdog COMMAND watchdog_test)
+# Freeze audit #3 -- a replaced store is retired, freed only at a top-level point (src/store_graveyard.h).
+add_executable(store_graveyard_test store_graveyard_test.cpp)
+target_include_directories(store_graveyard_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME store_graveyard COMMAND store_graveyard_test)
 # Freeze audit #1 -- dashes and hatches walk only their visible marks, capped (src/dash_plan.h).
 add_executable(dash_plan_test dash_plan_test.cpp)
 target_include_directories(dash_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)

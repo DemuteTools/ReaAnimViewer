@@ -182,6 +182,8 @@ Scope::~Scope()
     if (pushed_) g_depth.store(std::max(0, g_depth.load(std::memory_order_relaxed) - 1), std::memory_order_release);
 }
 
+int MainDepth() { return g_depth.load(std::memory_order_acquire); }
+
 void MainBeat()
 {
     g_main_beat.store(NowMs(), std::memory_order_relaxed);

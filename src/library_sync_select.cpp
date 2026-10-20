@@ -463,6 +463,244 @@ void SyncSelection::Rekey(const SyncDiff& now)
     Prune(now);
 }
 
+// ---- v5: one tick per side ---------------------------------------------------------------------------------------
+
+bool SyncIsAddition(const SyncChange& c, SyncSide* adder)
+{
+    if (c.side == SyncSide::Here && c.file_text == "absent" && c.here_text != "absent") {
+        if (adder) *adder = SyncSide::Here;
+        return true;
+    }
+    if (c.side == SyncSide::File && c.here_text == "absent" && c.file_text != "absent") {
+        if (adder) *adder = SyncSide::File;
+        return true;
+    }
+    return false;
+}
+
+bool SyncSideAvailable(const SyncChange& c, SyncDir dir)
+{
+    SyncSide adder;
+    if (!SyncIsAddition(c, &adder)) return true;
+    return dir == (adder == SyncSide::Here ? SyncDir::Up : SyncDir::Down);
+}
+
+void SyncSelection::Off(const SyncDiff& d, const SyncChange& c)
+{
+    if (!ticks_.count(c.key)) {
+        SyncDir dir = SyncDir::Up;
+        SyncDefaultDir(c, &dir);
+        Put(d, c, dir, false, std::string(), true);
+    }
+    ticks_[c.key].on = false;
+}
+
+SyncEffect SyncSelection::ToggleSide(const SyncDiff& d, const std::string& key, SyncDir dir)
+{
+    const SyncChange* c = d.Find(key);
+    if (!c || !SyncSideAvailable(*c, dir)) return SyncEffect();
+    const SyncTick* t = Tick(key);
+    if (t && t->on && t->dir == dir) return Toggle(d, key);
+    return Choose(d, key, dir);
+}
+
+void SyncSelection::PreTick(const SyncDiff& d)
+{
+    std::vector<const SyncChange*> fresh;
+    for (const SyncChange& c : d.changes)
+        if (c.side != SyncSide::Both && !ticks_.count(c.key)) fresh.push_back(&c);
+    if (fresh.empty()) return;
+    ++ver_;
+    SyncEffect fx;
+    for (const SyncChange* c : fresh) {
+        SyncDir dir;
+        if (SyncDefaultDir(*c, &dir)) SetDir(d, *c, dir, &fx);
+    }
+}
+
+SyncEffect SyncSelection::KeepAll(const SyncDiff& d, const std::vector<std::string>& keys, SyncDir dir)
+{
+    SyncEffect                     fx;
+    const std::set<std::string>    before = OnSet(*this, d);
+    std::vector<std::string>       asked;
+    ++ver_;
+    for (const std::string& k : keys) {
+        const SyncChange* c = d.Find(k);
+        if (!c) continue;
+        asked.push_back(k);
+        if (SyncSideAvailable(*c, dir)) SetDir(d, *c, dir, &fx);
+        else Off(d, *c);
+    }
+    Prune(d);
+    Finish(d, *this, before, asked, &fx);
+    return fx;
+}
+
+SyncTri SyncSelection::KeepTri(const SyncDiff& d, const std::vector<std::string>& keys, SyncDir dir) const
+{
+    int n = 0, on = 0;
+    for (const std::string& k : keys) {
+        const SyncChange* c = d.Find(k);
+        if (!c) continue;
+        ++n;
+        const SyncTick* t = Tick(k);
+        if (SyncSideAvailable(*c, dir)) {
+            if (t && t->on && t->dir == dir) ++on;
+        } else if (!t || !t->on) {
+            ++on;  // an addition of the other side, left unticked: it stays there
+        }
+    }
+    return n == 0 ? SyncTri::Disabled : on == 0 ? SyncTri::None : on == n ? SyncTri::All : SyncTri::Some;
+}
+
+SyncEffect SyncSelection::KeepClear(const SyncDiff& d, const std::vector<std::string>& keys, SyncDir dir)
+{
+    SyncEffect                  fx;
+    const std::set<std::string> before = OnSet(*this, d);
+    std::vector<std::string>    asked;
+    ++ver_;
+    for (const std::string& k : keys) {
+        const SyncChange* c = d.Find(k);
+        if (!c) continue;
+        asked.push_back(k);
+        if (SyncSideAvailable(*c, dir)) {
+            const SyncTick* t = Tick(k);
+            if (t && t->on && t->dir == dir) ticks_[k].on = false;
+        } else {
+            SyncDir def;
+            if (SyncDefaultDir(*c, &def)) SetDir(d, *c, def, &fx);
+        }
+    }
+    Prune(d);
+    Finish(d, *this, before, asked, &fx);
+    return fx;
+}
+
+std::string SyncFooterNoun(const SyncChange& c)
+{
+    return c.text.empty() ? c.key : c.text;
+}
+
+SyncFooter SyncSelection::Footer(const SyncDiff& d) const
+{
+    SyncFooter f;
+    for (const SyncChange& c : d.changes) {
+        const SyncTick* t = Tick(c.key);
+        if (!t || !t->on || !t->has_dir) continue;
+        ++f.changes;
+        const bool          up = t->dir == SyncDir::Up;
+        SyncFooterSide&     target = up ? f.global : f.project;  // the side that is not kept takes the kept version
+        const std::string&  kept = up ? c.here_text : c.file_text;
+        const bool          changed = c.side == SyncSide::Both || (up ? c.side == SyncSide::Here : c.side == SyncSide::File);
+        const std::string   noun = SyncFooterNoun(c);
+        if (kept == "absent" || kept == "removed") target.drops.push_back(noun);
+        else if (changed) target.gets.push_back(noun);
+        else if (kept == "present") target.gets.push_back(noun + " restored");
+        else target.gets.push_back((c.label.empty() ? noun : c.label) + " back to " + kept);
+    }
+    return f;
+}
+
+std::string SyncFooterSummary(const SyncFooter& f, std::string* full)
+{
+    if (f.changes <= 0) return std::string();
+    auto dedupe = [](const std::vector<std::string>& l) {
+        std::vector<std::string> out;
+        for (const std::string& s : l)
+            if (std::find(out.begin(), out.end(), s) == out.end()) out.push_back(s);
+        return out;
+    };
+    auto list = [&](const std::vector<std::string>& l0, bool cut) {
+        const std::vector<std::string> l = dedupe(l0);
+        std::string                    s;
+        const size_t                   n = cut ? std::min<size_t>(3, l.size()) : l.size();
+        for (size_t i = 0; i < n; ++i) s += (i ? ", " : "") + l[i];
+        if (cut && l.size() > 3) s += " +" + std::to_string(l.size() - 3) + " more";
+        return s;
+    };
+    auto part = [&](const char* who, const SyncFooterSide& side, bool cut) {
+        std::string a;
+        if (!side.gets.empty()) a += "gets " + list(side.gets, cut);
+        if (!side.drops.empty()) a += std::string(a.empty() ? "" : ", ") + "drops " + list(side.drops, cut);
+        return a.empty() ? std::string() : std::string(who) + " " + a;
+    };
+    auto build = [&](bool cut) {
+        std::string s = "Apply: " + SyncChangesWord(f.changes);
+        const std::string g = part("the global", f.global, cut), p = part("this project", f.project, cut);
+        if (!g.empty()) s += kDot + g;
+        if (!p.empty()) s += kDot + p;
+        return s;
+    };
+    if (full) *full = build(false);
+    return build(true);
+}
+
+SyncNameTrim SyncCommonTrim(const std::vector<std::string>& names)
+{
+    SyncNameTrim t;
+    if (names.size() < 2) return t;
+    std::string p = names[0], e = names[0];
+    for (const std::string& s : names) {
+        while (!p.empty() && s.compare(0, p.size(), p) != 0) p.pop_back();
+        while (!e.empty() && (s.size() < e.size() || s.compare(s.size() - e.size(), e.size(), e) != 0)) e.erase(0, 1);
+    }
+    const size_t cut = p.find_last_of(" _");
+    if (cut != std::string::npos) t.pfx = p.substr(0, cut + 1);
+    const size_t k = e.find('_');
+    if (k != std::string::npos) t.sfx = e.substr(k);
+    for (const std::string& s : names)  // a name is never cut to nothing
+        if (s.size() <= t.pfx.size() + t.sfx.size()) {
+            t.sfx.clear();
+            if (s.size() <= t.pfx.size()) t.pfx.clear();
+        }
+    return t;
+}
+
+std::string SyncTrimName(const SyncNameTrim& t, const std::string& name)
+{
+    size_t a = 0, b = name.size();
+    if (!t.pfx.empty() && name.compare(0, t.pfx.size(), t.pfx) == 0) a = t.pfx.size();
+    if (!t.sfx.empty() && b - a > t.sfx.size() && name.compare(b - t.sfx.size(), t.sfx.size(), t.sfx) == 0) b -= t.sfx.size();
+    return b > a ? name.substr(a, b - a) : name;
+}
+
+namespace {
+std::vector<std::string> SplitTokens(const std::string& s)  // split before a space or '_'
+{
+    std::vector<std::string> out;
+    size_t                   from = 0;
+    for (size_t i = 1; i < s.size(); ++i)
+        if (s[i] == ' ' || s[i] == '_') {
+            out.push_back(s.substr(from, i - from));
+            from = i;
+        }
+    if (!s.empty()) out.push_back(s.substr(from));
+    return out;
+}
+size_t JoinedLen(const std::vector<std::string>& t, size_t from, size_t to)
+{
+    size_t n = 0;
+    for (size_t i = from; i < to; ++i) n += t[i].size();
+    return n;
+}
+}  // namespace
+
+void SyncDiffRange(const std::string& a, const std::string& b, size_t* a0, size_t* a1, size_t* b0, size_t* b1)
+{
+    *a0 = *a1 = *b0 = *b1 = 0;
+    if (a == b) return;
+    const std::vector<std::string> ta = SplitTokens(a), tb = SplitTokens(b);
+    size_t                         i = 0;
+    while (i < ta.size() && i < tb.size() && ta[i] == tb[i]) ++i;
+    size_t j = 0;
+    while (j < ta.size() - i && j < tb.size() - i && ta[ta.size() - 1 - j] == tb[tb.size() - 1 - j]) ++j;
+    auto lead = [](const std::string& s, size_t k) { return k < s.size() && (s[k] == ' ' || s[k] == '_') ? k + 1 : k; };
+    *a0 = lead(a, JoinedLen(ta, 0, i));
+    *a1 = std::max(*a0, a.size() - JoinedLen(ta, ta.size() - j, ta.size()));
+    *b0 = lead(b, JoinedLen(tb, 0, i));
+    *b1 = std::max(*b0, b.size() - JoinedLen(tb, tb.size() - j, tb.size()));
+}
+
 // ---- texts ------------------------------------------------------------------------------------------------------
 
 std::string SyncEffectToast(const SyncDiff& d, const SyncEffect& fx)

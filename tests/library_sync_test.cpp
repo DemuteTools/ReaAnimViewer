@@ -302,6 +302,28 @@ static void TestChildOrder()
     CHECK(!Has(d2, "O|R"));
 }
 
+static void TestRandomOrderIsNoChange()
+{
+    // v5: two Sounds in a Random swapped in the file: nothing to sync (a Random picks at random); in a Blend it is a change
+    auto build = [](const char* type, bool swapped) {
+        std::string t = std::string(kBase);
+        const std::string s1 = "node uid=S1 type=sound parent=A name=FS_C_01 offset_ms=12\nsound kind=file fin=0.001 fout=0.005\nframe start=0.5 len=0.3\nframe start=1.5 len=0.3\n";
+        const std::string s3 = "node uid=S3 type=sound parent=A name=FS_C_02\nsound kind=file\nframe start=0.1 len=0.1\n";
+        const size_t      a = t.find(s1);
+        if (a == std::string::npos) return std::string();
+        t.replace(a, s1.size(), swapped ? s3 + s1 : s1 + s3);
+        const std::string from = "node uid=A type=random";
+        const size_t      b = t.find(from);
+        t.replace(b, from.size(), std::string("node uid=A type=") + type);
+        return t;
+    };
+    const SyncDiff dr = DiffLibrary(build("random", false), build("random", false), build("random", true));
+    CHECK(!Has(dr, "O|A"));
+    CHECK(dr.changes.empty());
+    const SyncDiff db = DiffLibrary(build("blend", false), build("blend", false), build("blend", true));
+    CHECK(Has(db, "O|A") && Has(db, "O|A")->side == SyncSide::File);
+}
+
 static void TestVariationsByStartTime()
 {
     // the file's variation starts 0.8 ms later: the same variation; edited length: a change; a 1.5 s one: new
@@ -1294,6 +1316,7 @@ int main()
     TestGetFiles();
     TestGroupValueNeverRemoved();
     TestChildOrder();
+    TestRandomOrderIsNoChange();
     TestVariationsByStartTime();
     TestAddedContainerUnderContainer();
     TestApplyThroughSwitchValues();

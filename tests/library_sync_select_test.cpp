@@ -484,6 +484,253 @@ static void TestBigDiffIsFast()
     CHECK(ms < 1500.0);  // was ~8 s for the chips of one frame alone (review H1); a loose bound for a slow -O0 host
 }
 
+// ---- v5: one tick per side (Fork-style window) -------------------------------------------------------------------------
+
+static void Chg(SyncDiff* d, const std::string& key, SyncSide side, const std::string& node, const std::string& label,
+                const std::string& here, const std::string& file, std::vector<std::string> needs = {}, bool adds = false,
+                const std::string& text = "")
+{
+    SyncChange c;
+    c.key = key;
+    c.side = side;
+    c.node = node;
+    c.subject = node;
+    c.label = label;
+    c.here_text = here;
+    c.file_text = file;
+    c.text = text.empty() ? label : text;
+    c.needs = std::move(needs);
+    c.adds_container = adds;
+    d->changes.push_back(c);
+}
+
+// under R: a (Gain here), b (Gain in the file), c (Gain on both sides), rg (a Random added here, with a Sound), old (a Random
+// removed here), nw (a Random added in the file).
+static SyncDiff V5()
+{
+    SyncDiff d;
+    d.root = "R";
+    d.mine_nodes = {"R", "a", "b", "c", "rg", "old"};
+    d.parent = {{"a", "R"}, {"b", "R"}, {"c", "R"}, {"rg", "R"}, {"old", "R"}, {"nw", "R"}};
+    Chg(&d, "F|a|gain", SyncSide::Here, "a", "Gain", "-3 dB", "0 dB", {}, false, "Gain 0 -> -3 dB");
+    Chg(&d, "F|b|gain", SyncSide::File, "b", "Gain", "0 dB", "-6 dB", {}, false, "Gain 0 -> -6 dB");
+    Chg(&d, "F|c|gain", SyncSide::Both, "c", "Gain", "-3 dB", "-6 dB", {}, false, "Gain: here -3 - global -6");
+    Chg(&d, "X|rg", SyncSide::Here, "rg", "Run_Gravel", "present", "absent", {}, true, "Random Run_Gravel added");
+    Chg(&d, "X|rgs", SyncSide::Here, "rg", "FS_Run_Gravel_01", "present", "absent", {"X|rg"}, false, "Sound FS_Run_Gravel_01 added");
+    Chg(&d, "X|old", SyncSide::Here, "old", "Walk_Old", "removed", "present", {}, false, "Random Walk_Old removed");
+    Chg(&d, "X|nw", SyncSide::File, "nw", "Walk_New", "absent", "present", {}, true, "Random Walk_New added");
+    d.BuildIndex();
+    return d;
+}
+
+static void TestV5PreTick()
+{
+    const SyncDiff d = V5();
+    SyncSelection  s;
+    s.PreTick(d);
+    CHECK(s.IsOn("F|a|gain") && s.Tick("F|a|gain")->dir == SyncDir::Up);   // changed here: keep mine
+    CHECK(s.IsOn("F|b|gain") && s.Tick("F|b|gain")->dir == SyncDir::Down); // changed in the global: keep global
+    CHECK(!s.IsOn("F|c|gain"));                                            // a conflict is never pre-ticked
+    CHECK(s.IsOn("X|rg") && s.IsOn("X|rgs") && !s.Tick("X|rg")->auto_);    // each addition is ticked on its own
+    CHECK(s.IsOn("X|old") && s.Tick("X|old")->dir == SyncDir::Up);
+    CHECK(s.IsOn("X|nw") && s.Tick("X|nw")->dir == SyncDir::Down);
+    CHECK(s.Counts(d).ticked == 6);
+    // the engine's picks: keep mine = up, keep global = down; the engine's closure changes nothing
+    const auto p = s.Picks(d);
+    CHECK(p.at("F|a|gain") == SyncDir::Up && p.at("F|b|gain") == SyncDir::Down && p.at("X|nw") == SyncDir::Down);
+    CHECK(CloseSelection(d, p) == p);
+    // a user's untick survives a rebuilt diff; a new change is pre-ticked
+    s.ToggleSide(d, "F|a|gain", SyncDir::Up);
+    CHECK(!s.IsOn("F|a|gain"));
+    SyncDiff d2 = V5();
+    Chg(&d2, "F|e|gain", SyncSide::File, "b", "Gain", "0 dB", "-1 dB");
+    d2.BuildIndex();
+    s.Rekey(d2);
+    s.PreTick(d2);
+    CHECK(!s.IsOn("F|a|gain") && s.IsOn("F|e|gain") && s.Tick("F|e|gain")->dir == SyncDir::Down);
+}
+
+static void TestV5ConflictPick()
+{
+    const SyncDiff d = V5();
+    SyncSelection  s;
+    s.PreTick(d);
+    s.ToggleSide(d, "F|c|gain", SyncDir::Up);  // keep mine
+    CHECK(s.IsOn("F|c|gain") && s.Tick("F|c|gain")->dir == SyncDir::Up);
+    s.ToggleSide(d, "F|c|gain", SyncDir::Down);  // the other side: switches
+    CHECK(s.IsOn("F|c|gain") && s.Tick("F|c|gain")->dir == SyncDir::Down);
+    s.ToggleSide(d, "F|c|gain", SyncDir::Down);  // the same box again: off, the row is left aside
+    CHECK(!s.IsOn("F|c|gain"));
+    CHECK(s.Picks(d).count("F|c|gain") == 0);
+}
+
+static void TestV5RevertByTickingTheUnchangedSide()
+{
+    const SyncDiff d = V5();
+    SyncSelection  s;
+    s.PreTick(d);
+    s.ToggleSide(d, "F|a|gain", SyncDir::Down);  // a modification made here: tick the global's box = revert it
+    CHECK(s.IsOn("F|a|gain") && s.Tick("F|a|gain")->dir == SyncDir::Down);
+    CHECK(s.Picks(d).at("F|a|gain") == SyncDir::Down);
+    const SyncFooter f = s.Footer(d);
+    bool             back = false;
+    for (const std::string& g : f.project.gets) back |= g == "Gain back to 0 dB";
+    CHECK(back);  // this project takes the global's value back
+    s.ToggleSide(d, "F|b|gain", SyncDir::Up);  // and the reverse: refuse the global's change
+    CHECK(s.Tick("F|b|gain")->dir == SyncDir::Up);
+}
+
+static void TestV5AdditionSingleBox()
+{
+    const SyncDiff d = V5();
+    SyncSelection  s;
+    s.PreTick(d);
+    CHECK(SyncSideAvailable(*d.Find("X|rg"), SyncDir::Up) && !SyncSideAvailable(*d.Find("X|rg"), SyncDir::Down));
+    CHECK(!SyncSideAvailable(*d.Find("X|nw"), SyncDir::Up) && SyncSideAvailable(*d.Find("X|nw"), SyncDir::Down));
+    CHECK(SyncSideAvailable(*d.Find("X|old"), SyncDir::Up) && SyncSideAvailable(*d.Find("X|old"), SyncDir::Down));  // removals: two boxes
+    CHECK(SyncSideAvailable(*d.Find("F|c|gain"), SyncDir::Up) && SyncSideAvailable(*d.Find("F|c|gain"), SyncDir::Down));
+    const uint64_t v = s.Version();
+    s.ToggleSide(d, "X|rg", SyncDir::Down);  // no box there: nothing happens, never a deletion of the addition
+    CHECK(s.IsOn("X|rg") && s.Tick("X|rg")->dir == SyncDir::Up && s.Version() == v);
+    // unticking the Random: its Sound goes with it (it needs it); both stay only here
+    s.ToggleSide(d, "X|rg", SyncDir::Up);
+    CHECK(!s.IsOn("X|rg") && !s.IsOn("X|rgs"));
+    CHECK(s.Picks(d).count("X|rg") == 0);
+    // ticking the Sound ticks the Random for you
+    s.ToggleSide(d, "X|rgs", SyncDir::Up);
+    CHECK(s.IsOn("X|rg") && s.Tick("X|rg")->auto_ && s.Tick("X|rg")->by == "X|rgs");
+}
+
+static void TestV5RemovalKeep()
+{
+    const SyncDiff d = V5();
+    SyncSelection  s;
+    s.PreTick(d);
+    CHECK(s.Footer(d).global.drops.size() == 1);  // removed here, pre-ticked: the global drops it
+    s.ToggleSide(d, "X|old", SyncDir::Down);      // the global's box keeps the element
+    CHECK(s.Picks(d).at("X|old") == SyncDir::Down);
+    const SyncFooter f = s.Footer(d);
+    CHECK(f.global.drops.empty());
+    bool restored = false;
+    for (const std::string& g : f.project.gets) restored |= g == "Random Walk_Old removed restored";
+    CHECK(restored);
+}
+
+static void TestV5KeepAllSettlesConflicts()
+{
+    const SyncDiff d = V5();
+    SyncSelection  s;
+    s.PreTick(d);
+    std::vector<std::string> all;
+    for (const SyncChange& c : d.changes) all.push_back(c.key);
+    CHECK(s.KeepTri(d, all, SyncDir::Up) == SyncTri::Some && s.KeepTri(d, all, SyncDir::Down) == SyncTri::Some);
+    s.KeepAll(d, all, SyncDir::Down);  // keep all global
+    CHECK(s.Tick("F|c|gain")->on && s.Tick("F|c|gain")->dir == SyncDir::Down);  // the conflict is settled
+    CHECK(s.Tick("F|a|gain")->dir == SyncDir::Down);                           // mine reverted
+    CHECK(!s.IsOn("X|rg") && !s.IsOn("X|rgs"));                                // an addition made here stays only here
+    CHECK(s.IsOn("X|nw") && s.Tick("X|nw")->dir == SyncDir::Down);
+    CHECK(s.IsOn("X|old") && s.Tick("X|old")->dir == SyncDir::Down);           // removal refused
+    CHECK(s.KeepTri(d, all, SyncDir::Down) == SyncTri::All);
+    CHECK(s.KeepTri(d, all, SyncDir::Up) == SyncTri::None);
+    // clicking the full box clears it (an addition of the other side goes back to ticked)
+    s.KeepClear(d, all, SyncDir::Down);
+    CHECK(!s.IsOn("F|c|gain") && !s.IsOn("F|a|gain") && s.IsOn("X|rg"));
+    s.KeepAll(d, all, SyncDir::Up);  // keep all mine
+    CHECK(s.Tick("F|c|gain")->dir == SyncDir::Up && s.Tick("F|b|gain")->dir == SyncDir::Up);
+    CHECK(s.IsOn("X|rg") && !s.IsOn("X|nw"));
+    CHECK(s.KeepTri(d, all, SyncDir::Up) == SyncTri::All);
+    CHECK(s.KeepTri(d, {}, SyncDir::Up) == SyncTri::Disabled);
+    const auto p = s.Picks(d);
+    CHECK(CloseSelection(d, p) == p);
+}
+
+static void TestV5Dependencies()
+{
+    SyncDiff d;
+    d.root = "R";
+    d.parent = {{"sw", "R"}, {"wm", "sw"}};
+    Chg(&d, "X|wm", SyncSide::File, "sw", "Walk_Mud", "absent", "present", {}, true, "Random Walk_Mud added");
+    Chg(&d, "C|sw|Mud", SyncSide::File, "sw", "Switch value Mud", "absent", "plays Walk_Mud", {"X|wm"}, false, "Mud now plays Walk_Mud");
+    d.BuildIndex();
+    SyncSelection s;
+    s.PreTick(d);
+    CHECK(s.IsOn("X|wm") && s.IsOn("C|sw|Mud"));
+    CHECK(s.NeededBy(d, "X|wm").size() == 1 && s.NeededBy(d, "X|wm")[0] == "C|sw|Mud");
+    s.ToggleSide(d, "X|wm", SyncDir::Down);  // untick the needed Random: the case goes with it
+    CHECK(!s.IsOn("X|wm") && !s.IsOn("C|sw|Mud"));
+    s.ToggleSide(d, "C|sw|Mud", SyncDir::Down);  // tick the case: the Random is ticked for you
+    CHECK(s.IsOn("X|wm") && s.Tick("X|wm")->auto_ && s.Tick("X|wm")->by == "C|sw|Mud");
+    // an auto tick needs a user tick behind it: unticking the case lets the Random go again
+    s.ToggleSide(d, "C|sw|Mud", SyncDir::Down);
+    CHECK(!s.IsOn("X|wm") && !s.IsOn("C|sw|Mud"));
+}
+
+static void TestV5FooterAndNames()
+{
+    const SyncDiff d = V5();
+    SyncSelection  s;
+    s.PreTick(d);
+    const SyncFooter f = s.Footer(d);
+    CHECK(f.changes == 6);
+    CHECK(f.global.gets.size() == 3 && f.global.drops.size() == 1);  // Gain a, Random Run_Gravel, its Sound; Walk_Old dropped
+    CHECK(f.project.gets.size() == 2);                                // Gain b, Walk_New
+    std::string       full;
+    const std::string sum = SyncFooterSummary(f, &full);
+    CHECK(sum.find("Apply: 6 changes") == 0);
+    CHECK(sum.find("the global gets ") != std::string::npos && sum.find(" more") == std::string::npos);
+    CHECK(sum.find("drops Random Walk_Old removed") != std::string::npos);
+    CHECK(sum.find("this project gets ") != std::string::npos);
+    CHECK(full.find("+1 more") == std::string::npos && full.find("Sound FS_Run_Gravel_01 added") != std::string::npos);
+    CHECK(SyncFooterSummary(SyncFooter(), nullptr).empty());
+    SyncFooter many;
+    many.changes = 5;
+    many.global.gets = {"a", "b", "c", "d", "e"};
+    std::string many_full;
+    const std::string many_sum = SyncFooterSummary(many, &many_full);
+    CHECK(many_sum == "Apply: 5 changes \xC2\xB7 the global gets a, b, c +2 more" && many_full.find("d, e") != std::string::npos);
+
+    // names: common start (up to a space or '_') and common end (from a '_') hidden, the differing middle kept
+    const std::vector<std::string> n = {"FEETHmn_Boots Concrete Walk 01_B00M_ONE.wav", "FEETHmn_Boots Wood Walk 02_B00M_ONE.wav",
+                                        "FEETHmn_Boots Metal Plate 01_B00M_ONE.wav"};
+    const SyncNameTrim t = SyncCommonTrim(n);
+    CHECK(t.pfx == "FEETHmn_Boots " && t.sfx == "_B00M_ONE.wav");
+    CHECK(SyncTrimName(t, n[1]) == "Wood Walk 02");
+    CHECK(SyncCommonTrim({"only one"}).pfx.empty());
+    size_t a0, a1, b0, b1;
+    SyncDiffRange("Gravel Light Walk 01", "Gravel Light Jog 01", &a0, &a1, &b0, &b1);
+    CHECK(std::string("Gravel Light Walk 01").substr(a0, a1 - a0) == "Walk" && std::string("Gravel Light Jog 01").substr(b0, b1 - b0) == "Jog");
+    SyncDiffRange("same", "same", &a0, &a1, &b0, &b1);
+    CHECK(a0 == a1 && b0 == b1);
+}
+
+static void TestV5BigDiffIsFast()
+{
+    SyncDiff d;
+    d.root = "R";
+    const int packs = 250;
+    for (int i = 0; i < packs; ++i) {
+        const std::string r = "r" + std::to_string(i);
+        d.parent[r] = "R";
+        Chg(&d, "X|" + r, SyncSide::File, r, "R" + std::to_string(i), "absent", "present", {}, true, "Random " + r + " added");
+        for (int k = 0; k < 3; ++k)
+            Chg(&d, "X|" + r + "s" + std::to_string(k), SyncSide::File, r, "S", "absent", "present", {"X|" + r}, false, "Sound added");
+    }
+    d.BuildIndex();
+    const auto    t0 = std::chrono::steady_clock::now();
+    SyncSelection s;
+    s.PreTick(d);
+    std::vector<std::string> all;
+    for (const SyncChange& c : d.changes) all.push_back(c.key);
+    s.KeepAll(d, all, SyncDir::Up);
+    s.KeepAll(d, all, SyncDir::Down);
+    const SyncFooter f = s.Footer(d);
+    (void)SyncFooterSummary(f, nullptr);
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    CHECK(s.Counts(d).ticked == 1000 && f.changes == 1000);
+    CHECK(ms < 3000.0);
+    std::printf("v5 big diff (1000 changes): %.0f ms\n", ms);
+}
+
 int main()
 {
     TestTick();
@@ -504,6 +751,15 @@ int main()
     TestValueMovedDropsTick();
     TestIndexMatchesScan();
     TestBigDiffIsFast();
+    TestV5PreTick();
+    TestV5ConflictPick();
+    TestV5RevertByTickingTheUnchangedSide();
+    TestV5AdditionSingleBox();
+    TestV5RemovalKeep();
+    TestV5KeepAllSettlesConflicts();
+    TestV5Dependencies();
+    TestV5FooterAndNames();
+    TestV5BigDiffIsFast();
     if (g_fail == 0) std::printf("library_sync_select_test: all passed\n");
     return g_fail == 0 ? 0 : 1;
 }

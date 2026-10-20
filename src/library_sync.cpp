@@ -841,7 +841,8 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& file_base_
                 if (cp.m && cp.f && (!known || (cp.b && cp.fb))) kids[di].push_back(c);
             }
         }
-        if (kids[kM].size() >= 2 && pp.second.m && pp.second.f) {
+        // v5: the order of a Random container means nothing (it picks at random): never a change; a Blend keeps its order
+        if (kids[kM].size() >= 2 && pp.second.m && pp.second.f && desc.Type(u) != "random") {
             Trip& t = trips[KeyOf({"O", u})];
             for (int di = 0; di < 4; ++di)
                 if (ds.at(di) && ds.at(di)->N(u)) Slot(t, di) = Opt{true, Join(kids[di], ",")};

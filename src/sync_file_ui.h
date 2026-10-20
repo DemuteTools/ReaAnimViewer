@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT
 //
-// The "Sync with file" window (story 13-77c; mockup ux-designs/epic-13-sound-library/maquette-user-library-v3.html,
-// the "Sync with file" window): the changes between a linked library and its .ravlib (library_sync.h) as the library's
-// tree pruned to changed branches, with a tri-state checkbox at every level (Sync all, branch, container, one change)
-// and a direction (Send mine / Get file's) per level; dependencies are ticked for you. The selection logic is
-// library_sync_select.h (pure); this window only draws it and calls RequestSyncApply (one undo point). A window of its
-// own (FloatUiWindow), one at a time. After Apply the applied changes disappear; it closes when none remain. Main
-// thread only.
+// The "Sync with global" window (story 13-77c, redesign v5; mockup ux-designs/epic-13-sound-library/maquette-sync-fork-v5.html):
+// a Fork-style diff. One 24 px row per change under collapsible container groups; columns CHANGE | GLOBAL value | state
+// glyph | THIS PROJECT value, a box on each side: tick the version you keep (the kept side tinted, the replaced one struck
+// through). A change made on one side only is pre-ticked on that side; a conflict needs a pick; an addition has ONE box,
+// on the side that added it. "Keep all global / mine" on the header and per group (tri-state) settle everything. The
+// selection logic is library_sync_select.h (pure); this window only draws it and calls RequestSyncApply (one undo point).
+// A window of its own (FloatUiWindow), one at a time. After Apply the applied rows disappear; it closes when none remain.
+// Main thread only.
 
 #pragma once
 

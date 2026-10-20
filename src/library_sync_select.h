@@ -72,8 +72,57 @@ std::vector<std::string> SyncKeysForDir(const SyncDiff& d, const std::vector<std
 // "↑ mine N" / "↓ file's N" counts of a set of keys: Up = changes made here + both, Down = file + both.
 void SyncDirCounts(const SyncDiff& d, const std::vector<std::string>& keys, int* up, int* down);
 
+// ---- v5 (Fork-style window): one tick per side ------------------------------------------------------------------
+// A tick on the project's side (R) = keep mine = the engine's Up; on the global's side (L) = keep global = Down.
+// An ADDED element (a Sound / container / value / variation / case one side has and the other lacks) has ONE box, on
+// the side that added it ("add it to the other side too"); unticked it stays only where it is. Removals and
+// modifications have two boxes; ticking the unchanged side reverts the other side's change.
+// The side that added the change (Here: the project, File: the global), false when it is not an addition.
+bool SyncIsAddition(const SyncChange& c, SyncSide* adder);
+// Is there a box on that side (Up = project / R, Down = global / L)? False only for the missing side of an addition.
+bool SyncSideAvailable(const SyncChange& c, SyncDir dir);
+// What a ticked change gives each side, for the footer: the side that ends up with `noun` or drops it.
+struct SyncFooterSide {
+    std::vector<std::string> gets, drops;
+};
+struct SyncFooter {
+    int            changes = 0;
+    SyncFooterSide global, project;
+};
+// A name shown for a change in the footer (its text).
+std::string SyncFooterNoun(const SyncChange& c);
+// "Apply: N changes · the global gets a, b, c +2 more, drops x · this project gets ..." ("" when nothing ticked); `full`
+// (when not null) gets the same with no cut (the tooltip).
+std::string SyncFooterSummary(const SyncFooter& f, std::string* full);
+
+// Names: the common start / end of a set of sound names is hidden (the start up to a space or '_', the end from a '_').
+struct SyncNameTrim {
+    std::string pfx, sfx;
+};
+SyncNameTrim SyncCommonTrim(const std::vector<std::string>& names);
+std::string  SyncTrimName(const SyncNameTrim& t, const std::string& name);
+// The differing part of two names, token-wise (split before a space or '_'): [a0, a1) in a, [b0, b1) in b.
+void SyncDiffRange(const std::string& a, const std::string& b, size_t* a0, size_t* a1, size_t* b0, size_t* b1);
+
 class SyncSelection {
 public:
+    // v5: the box of one side of one change. Ticked there: off (+ prune). Else that side kept (the other side's tick
+    // goes), with its closure. A side an addition does not have: nothing.
+    SyncEffect ToggleSide(const SyncDiff& d, const std::string& key, SyncDir dir);
+    // v5: every change that has no tick yet (a rebuilt diff shows new ones) and was made on one side only is ticked on
+    // the side that made it (a conflict is never pre-ticked). Call after Rekey.
+    void PreTick(const SyncDiff& d);
+    // v5: "Keep all mine" (Up) / "Keep all global" (Down) on `keys`: that side kept everywhere, conflicts settled. An
+    // addition made on the other side is unticked (it stays only where it is). Closure ticked for you.
+    SyncEffect KeepAll(const SyncDiff& d, const std::vector<std::string>& keys, SyncDir dir);
+    // v5: the box of Keep all: Disabled when empty, All when every change keeps that side (an addition of the other
+    // side: unticked), Some, None.
+    SyncTri KeepTri(const SyncDiff& d, const std::vector<std::string>& keys, SyncDir dir) const;
+    // v5: the ticked changes of `keys` off (+ prune); an addition of the other side goes back to ticked (its default).
+    SyncEffect KeepClear(const SyncDiff& d, const std::vector<std::string>& keys, SyncDir dir);
+    // v5: what each side gets from the ticks (the footer).
+    SyncFooter Footer(const SyncDiff& d) const;
+
     bool IsOn(const std::string& key) const;
     const SyncTick* Tick(const std::string& key) const;
 
@@ -104,6 +153,7 @@ private:
     void Put(const SyncDiff& d, const SyncChange& c, SyncDir dir, bool auto_, const std::string& by, bool needs_why);
     void Pull(const SyncDiff& d, const SyncChange& c, SyncDir dir, SyncEffect* fx);
     std::vector<std::string> Prune(const SyncDiff& d);
+    void Off(const SyncDiff& d, const SyncChange& c);
     bool SetDir(const SyncDiff& d, const SyncChange& c, SyncDir dir, SyncEffect* fx);
     bool TickKey(const SyncDiff& d, const SyncChange& c, SyncEffect* fx);
 

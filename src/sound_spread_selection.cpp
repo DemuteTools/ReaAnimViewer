@@ -209,6 +209,28 @@ std::vector<std::string> TypeRids(MediaItem* anim, const std::string& type, char
     return out;
 }
 
+// Every RAV item's rule writing `type` whose library is not in the store any more is re-pointed to `lib_uid`.
+void RepointStaleKindRules(ReaProject* proj, const std::string& type, const std::string& lib_uid)
+{
+    const SoundStore store = GetSoundStore(proj);
+    for (MediaItem* it : ProjectRavItems()) {
+        ItemRulesRead rr;
+        if (!ReadItemRules(it, &rr) || !rr.valid) continue;
+        const std::vector<char> on = BlocksOfType(rr.rules, type);
+        std::vector<std::string> rids;
+        for (size_t b = 0; b < on.size(); ++b)
+            if (on[b] && !rr.rules.blocks[b].rid.empty()) rids.push_back(rr.rules.blocks[b].rid);
+        if (rids.empty()) continue;
+        ModifyItemSounds(it, nullptr, [&](ItemSounds& r) {
+            bool changed = false;
+            for (const RuleSounds& rs : r.rules)
+                if (!rs.library.empty() && !FindLibrary(store, rs.library) && std::find(rids.begin(), rids.end(), rs.rid) != rids.end())
+                    changed = SetRulesLibrary(r, {rs.rid}, LibState::Library, lib_uid) || changed;
+            return changed;
+        });
+    }
+}
+
 // 13-68e: the rids of the kind's rules of `side` on these items and their linked copies (read, never written).
 std::set<std::string> SideRids(const std::vector<MediaItem*>& items, const std::string& type, char side)
 {
@@ -954,6 +976,9 @@ std::string RunAttach(am::Scope scope, const SpreadMarker* given)
         for (MediaItem* m : WithPoolMembers({anims[i]}))
             ModifyItemSounds(m, nullptr, [&](ItemSounds& r) { return SetRulesLibrary(r, of_type, LibState::Library, lib_uid); });
     }
+    // 2026-10-21: the library was made again (the old one deleted): every other item's rule of the kind that still points to
+    // a library the project no longer has follows it, whichever item it is on (it used to be left pointing to nothing).
+    if (!counts.reused) RepointStaleKindRules(proj, kind.key, lib_uid);
     ApplyEdit(proj, scope == am::Scope::Anim ? mk.item : nullptr, lib_uid, kind.key, edit);
     ApplySideValues(proj, lib_uid);  // each rule plays its side's content
     LeaveOldPlaces(proj, sel);

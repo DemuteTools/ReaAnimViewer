@@ -112,6 +112,10 @@ struct EffectiveAssign {
     bool        kit = false;           // the assignment that gave the library was adopted from a kit
     std::string from;                  // the library's source text: "this rule", "Hero \xC2\xB7 Legs \xC2\xB7 Step",
                                        // "Project \xC2\xB7 Legs", "nothing set"
+    // A rule / Character / Project pointer to a library the project no longer has: skipped (read as inherit),
+    // its uid and where it was set kept here so the windows can say so. Only the first one met is told.
+    std::string stale_library;
+    std::string stale_from;
     ValueLayers layers;                // item (merged over the inherited ones) and rule; event left empty
     // The source text of each Switch Group that some layer sets: "event", "this rule" / "this type",
     // "item", "<Character> \xC2\xB7 Legs [\xC2\xB7 Step]", "Project \xC2\xB7 Legs [\xC2\xB7 Step]". A group in
@@ -136,6 +140,11 @@ EffectiveAssign ResolveAssignFor(const SoundStore& store, const ItemSounds& item
                                  const std::string& rid, const std::string& part, const std::string& type, double t);
 // The same for a block (its part and type read from it).
 EffectiveAssign ResolveBlock(const SoundStore& store, const ItemSounds& item, const SoundCharacter* ch, const Block& b);
+
+// A rule whose library the store no longer has goes back to inherit (2026-10-21: a deleted Attached library left the
+// item rules pointing to it). Returns how many rules / Project / Character keys changed.
+int ResetStaleRuleLibraries(ItemSounds& item, const SoundStore& store);
+int ResetStaleAssignLibraries(SoundStore& store);
 
 // The character of a rig: the split of that model (same skeleton and model signature),
 // else the rig's whole-rig character (model ""), else null (the Project's settings apply).

@@ -623,6 +623,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
     std::map<long long, PopulateDrawState>   pass_states;
     std::set<std::string> blocked_rules;
     std::set<std::string> gone_rules;
+    std::set<std::string> stale_rules;  // rules that pointed to a deleted library (read as inherit)
     std::map<std::string, bool>            file_missing;  // File Sound uid -> its file is gone
     std::map<std::string, FileSoundTarget> file_targets;  // File Sound uid -> where it is placed from
     std::map<std::string, std::string>     file_why;      // File Sound uid -> why it cannot be placed
@@ -730,6 +731,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
         const EffectiveAssign ea = po == part_of.end()
                                        ? EffectiveAssign()
                                        : ResolveAssignFor(store, rec, ch, rid, po->second.first, po->second.second, e.t);
+        if (!ea.stale_library.empty()) stale_rules.insert(rid);
         const SoundLibrary*   lib = !ea.library.empty() ? FindLibrary(store, ea.library) : nullptr;
         if (!lib && (o.fill_passes || o.sync)) continue;  // 13-56 review: a fill never removes (13-35: nor a Sync)
         if (!lib) {  // P8: library None (or nothing set) removes the populated sounds
@@ -1432,6 +1434,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
         ev->placed = placed;
     }
 
+    if (!stale_rules.empty()) AddLine(rep, ReportKind::Info, StaleRulesText(static_cast<int>(stale_rules.size())), "", guid, 0.0);
     bool too_large = false;
     ModifyItemSounds(
         item, nullptr,
@@ -2336,6 +2339,26 @@ SoundReport CommitAssignValues(const std::vector<av::StagedEntry>& edits, bool* 
 std::vector<MediaItem*> ProjectRavItems()
 {
     return AllRavItems();
+}
+
+int ResetStaleRules(const char* undo_desc)
+{
+    int            n = 0;
+    std::unique_ptr<SoundUndoScope> undo;
+    if (undo_desc) undo = std::make_unique<SoundUndoScope>(nullptr, undo_desc);
+    const SoundStore store = GetSoundStore(nullptr);
+    for (MediaItem* it : AllRavItems())
+        ModifyItemSounds(it, nullptr, [&](ItemSounds& s) {
+            const int k = ResetStaleRuleLibraries(s, store);
+            n += k;
+            return k > 0;
+        });
+    ModifySoundStore(nullptr, nullptr, [&](SoundStore& s) {
+        const int k = ResetStaleAssignLibraries(s);
+        n += k;
+        return k > 0;
+    });
+    return n;
 }
 
 // ---- 13-15a: Project and Character assignments ---------------------------------------------------

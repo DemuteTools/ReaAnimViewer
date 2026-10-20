@@ -1335,7 +1335,7 @@ std::string LibraryLabel(const SoundStore& store, const std::string& arg)
     if (arg.empty()) return "inherit";
     if (arg == kLibNoneWord) return "None";
     const SoundLibrary* l = FindLibrary(store, arg);
-    return l ? l->name : std::string("(gone)");
+    return l ? l->name : std::string("(deleted: inherits)");
 }
 
 // "inherit . FS Hero (Project . Legs)" for the targets (their inherited assignment); "Not set (nothing placed)".
@@ -1359,6 +1359,7 @@ void DrawLibraryRow(const Frame& f, const std::vector<const av::Target*>& sel, c
     if (own_mixed) preview = "mixed (" + std::to_string(mix.own_settings) + " settings)";
     else if (own.empty()) preview = InheritLabel(store, sel);
     else if (own == kLibNoneWord) preview = "None (place nothing)";
+    else if (!FindLibrary(store, own)) preview = "deleted library: " + InheritLabel(store, sel);  // it plays the inherited one
     else preview = LibraryLabel(store, own);
     if (ui::BeginComboStyled("##assignlib", preview.c_str(), w, 0, own_mixed ? ui::TagTone::Warn : ui::TagTone::Neutral)) {
         if (own_mixed) {
@@ -1386,6 +1387,25 @@ void DrawLibraryRow(const Frame& f, const std::vector<const av::Target*>& sel, c
             if (ImGui::Selectable((label + "##" + L.uid).c_str(), cur) && !cur) PickLibrary(f, sel, L.uid, "Library = " + L.name);
         }
         ui::EndComboStyled();
+    }
+    // 2026-10-21: a rule pointing to a deleted library plays the inherited one: said, with a one-click reset (every
+    // item and pool copy of the project, one undo point).
+    {
+        int n_stale = 0;
+        for (const av::Target* t : sel)
+            if (!t->ea.stale_library.empty()) ++n_stale;
+        if (n_stale > 0) {
+            ui::ToneText("The library it played was deleted: using the inherited one (" + InheritLabel(store, sel) + ")", ui::kWarn, true);
+            if (ui::SolidButton("Reset stale rules##resetstale")) {
+                PickSoundGesture([]() {
+                    SoundReport rep;
+                    const int   n = ResetStaleRules("RAV: Reset stale rules");
+                    if (n > 0) SetLast("Reset stale rules", "project", std::to_string(n) + (n == 1 ? " rule" : " rules") + " back to inherit", n);
+                    return rep;
+                });
+            }
+            ui::ItemTipText("Every rule, Project and Character setting pointing to a deleted library goes back to inherit");
+        }
     }
     // Where the setting is: set here, from a kit, inherited.
     if (sel.size() == 1 && !mix.lib) {
@@ -1671,7 +1691,7 @@ void DrawLadder(const Frame& f, const av::Target& t)
                 std::string name = "None";
                 if (!r.none) {
                     const SoundLibrary* l = FindLibrary(*f.store, r.library);
-                    name = l ? l->name : std::string("(gone)");
+                    name = l ? l->name : std::string("(deleted: inherits)");
                     if (l) dl->AddCircleFilled(ImVec2(x + ui::Dp(4.0f), y + ImGui::GetTextLineHeight() * 0.5f), ui::Dp(4.0f), ui::LibDot(l->color));
                 }
                 const float nx = x + (r.none ? 0.0f : ui::Dp(14.0f));
@@ -1918,7 +1938,7 @@ void DrawCharDetails(const Frame& f)
                 if (a->state == LibState::None) bits = "None";
                 else if (a->state == LibState::Library) {
                     const SoundLibrary* l = FindLibrary(store, a->library);
-                    bits = l ? l->name : std::string("(gone)");
+                    bits = l ? l->name : std::string("(deleted: inherits)");
                 }
                 for (const ValueSet& v : a->values) {
                     if (v.value_uid.empty()) continue;
@@ -2212,7 +2232,7 @@ void DrawWhoOverview(const Frame& f, float height)
                     dl->AddCircleFilled(ImVec2(x + ui::Dp(4.0f), ty + ImGui::GetTextLineHeight() * 0.5f), ui::Dp(4.0f), ui::LibDot(l->color));
                     x += ui::Dp(14.0f);
                 }
-                std::string text = l ? l->name : cell.unset ? std::string("\xE2\x80\x94") : cell.none ? std::string("None") : std::string("(gone)");
+                std::string text = l ? l->name : cell.unset ? std::string("\xE2\x80\x94") : cell.none ? std::string("None") : std::string("(deleted: inherits)");
                 const float kit_w = cell.kit ? ui::SmallTagWidth("kit") + ui::Dp(6.0f) : 0.0f;
                 if (!cell.own && !cell.unset) text += "  " + cell.from;
                 ui::EllipsisTextTip(dl, ImVec2(x, ty), lim - kit_w, cell.own ? ui::kText : cell.unset ? ui::kFaint : ui::kMuted, text);

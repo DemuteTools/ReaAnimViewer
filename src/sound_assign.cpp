@@ -425,14 +425,26 @@ EffectiveAssign ResolveAssignAt(const SoundStore& store, const ItemSounds& item,
         r.none = true;
         r.level = AssignLevel::Rule;
         r.from = rule_text;
-    } else if (rs && !rs->library.empty()) {
+    } else if (rs && !rs->library.empty() && FindLibrary(store, rs->library)) {
         r.library = rs->library;
         r.level = AssignLevel::Rule;
         r.from = rule_text;
     } else {
+        // A rule pointing to a deleted library reads as inherit (the data stays; "Reset" clears it).
+        if (rs && !rs->library.empty()) {
+            r.stale_library = rs->library;
+            r.stale_from = rule_text;
+        }
         for (const Source& s : chain) {
             const SoundAssign* a = FindAssign(*s.list, s.key);
             if (!a || a->state == LibState::Inherit) continue;
+            if (a->state == LibState::Library && !FindLibrary(store, a->library)) {  // same fall-back one level up
+                if (r.stale_library.empty()) {
+                    r.stale_library = a->library;
+                    r.stale_from = SourceText(s.owner, part, type, s.typed);
+                }
+                continue;
+            }
             r.level = s.level;
             r.type_specific = s.typed;
             r.kit = a->kit;
@@ -715,6 +727,34 @@ int SplitCharacterIn(SoundStore& store, const std::string& uid, const std::vecto
         ++made;
     }
     return made;
+}
+
+int ResetStaleRuleLibraries(ItemSounds& item, const SoundStore& store)
+{
+    int n = 0;
+    for (RuleSounds& r : item.rules)
+        if (!r.library.empty() && !FindLibrary(store, r.library)) {
+            r.library.clear();
+            ++n;
+        }
+    return n;
+}
+
+int ResetStaleAssignLibraries(SoundStore& store)
+{
+    int  n = 0;
+    auto fix = [&](std::vector<SoundAssign>& list) {
+        for (SoundAssign& a : list)
+            if (a.state == LibState::Library && !FindLibrary(store, a.library)) {
+                a.state = LibState::Inherit;
+                a.library.clear();
+                a.kit = false;
+                ++n;
+            }
+    };
+    fix(store.project);
+    for (SoundCharacter& c : store.characters) fix(c.assigns);
+    return n;
 }
 
 }  // namespace rav

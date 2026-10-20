@@ -120,6 +120,11 @@ std::string RuleGoneText(const std::string& library_name)
     return "Rule gone: library \"" + library_name + "\" unassigned";
 }
 
+std::string StaleRulesText(int n)
+{
+    return std::to_string(n) + (n == 1 ? " rule pointed" : " rules pointed") + " to a deleted library: used the inherited one";
+}
+
 ValueLayers LayersFor(const ItemSounds& item, const std::string& rid, double t)
 {
     ValueLayers l;

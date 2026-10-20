@@ -28,6 +28,7 @@
 #include "picked_gestures.h"
 #include "reaper_api.h"
 #include "item_rules.h"  // RulesResourceRoot, GetCustomRoles (13-23 role maps)
+#include "sound_populate.h"  // ResetStaleRules
 #include "sound_assign.h"
 #include "sound_peaks.h"  // ItemGainDb
 #include "sound_place.h"
@@ -2165,7 +2166,10 @@ void LibrariesSectionWidgets()
         }
         ImGui::PopStyleVar();
         if (!to_delete.empty())
-            Later([to_delete] { Gesture("Delete library", [&](SoundStore& s) { return DeleteLibrary(s, to_delete); }); });
+            Later([to_delete] {
+            // 2026-10-21: the item rules that played it go back to inherit too (they were left pointing to nothing).
+            if (Gesture("Delete library", [&](SoundStore& s) { return DeleteLibrary(s, to_delete); })) ResetStaleRules(nullptr);
+        });
         if (!add_file.empty()) Later([add_file] { AddUserLibraryFile(add_file); });
         if (!any_project) ui::SubText("No library in this project yet");
         ImGui::Dummy(ImVec2(0.0f, 0.0f));
@@ -2738,7 +2742,10 @@ void TreeHeader(const SoundLibrary& lib)
     ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + hh));
     ImGui::Dummy(ImVec2(0.0f, 0.0f));
     if (!to_delete.empty())
-        Later([to_delete] { Gesture("Delete library", [&](SoundStore& s) { return DeleteLibrary(s, to_delete); }); });
+        Later([to_delete] {
+            // 2026-10-21: the item rules that played it go back to inherit too (they were left pointing to nothing).
+            if (Gesture("Delete library", [&](SoundStore& s) { return DeleteLibrary(s, to_delete); })) ResetStaleRules(nullptr);
+        });
 }
 
 void LibraryTreeWidgets()

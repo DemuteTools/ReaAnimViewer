@@ -93,6 +93,12 @@ static void TestRulesAndShown()
     CHECK(!FindRuleSounds(item, "a2")->none);
 
     SoundStore store;
+    for (const char* u : {"LIB1", "STORE"}) {  // a rule's library must exist (2026-10-21: a deleted one reads as inherit)
+        SoundLibrary l;
+        l.uid = u;
+        l.name = u;
+        store.libraries.push_back(l);
+    }
     SetAssignLibraryIn(store.project, {"legs.step", "legs.lift", "arms.grab"}, LibState::Library, "STORE");
     // On the item: its rule (the same as the Sound card).
     AutoSoundShown sh = AutoSoundFor(store, item, nullptr, blocks, "step:L");

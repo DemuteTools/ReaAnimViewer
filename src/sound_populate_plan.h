@@ -33,6 +33,8 @@ struct OrphanPrune {
 OrphanPrune PruneOrphanRules(ItemSounds& item, const std::set<std::string>& live_rids);
 // The report text of a removed assignment: `Rule gone: library "<name>" unassigned`.
 std::string RuleGoneText(const std::string& library_name);
+// "3 rules pointed to a deleted library: used the inherited one"
+std::string StaleRulesText(int n);
 
 // ---- Values ----------------------------------------------------------------------------------
 

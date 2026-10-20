@@ -198,6 +198,7 @@ static SoundCharacter Hero()
 static void TestLibraryChain()
 {
     SoundStore st;
+    for (const char* u : {"PP", "PT", "CP", "CT", "RL"}) AddLib(st, u);  // a deleted library reads as inherit (2026-10-21)
     ItemSounds item;
     SoundCharacter hero = Hero();
     const std::string P = "legs", T = "step";
@@ -380,6 +381,8 @@ static void TestChangedRids()
     RuleSounds own;
     own.rid = "a2";
     own.library = "MINE";
+    AddLib(before, "MINE");
+    AddLib(after, "MINE");
     item.rules.push_back(own);
     CHECK((ChangedRids(before, after, item, blocks, "sk", "m.fbx") == std::vector<std::string>{"a1", "a3", "r1"}));
     item.rules.clear();
@@ -697,6 +700,7 @@ static void TestMigration()
     ItemSounds item;
     CHECK(ParseItemSounds("RAVITEMSND 1\nrule rid=a lib=OLD\n", &item) && item.rules[0].library == "OLD" && !item.rules[0].none);
     // After the migration the old per-type sound plays through the Project layer.
+    if (s.libraries.empty()) AddLib(s, "LL");  // the migrated key names a library; it must exist to play
     EffectiveAssign e = ResolveAssign(s, ItemSounds{}, nullptr, "x", "legs", "step");
     CHECK(e.library == "LL");
 }
@@ -719,6 +723,40 @@ static void TestRoleMenuKeys()
     }
 }
 
+static void TestStaleLibrary()
+{
+    // 2026-10-21 (Antho's project): a rule pointing to a deleted Attached library read "(gone)" and Populate placed nothing.
+    SoundStore st;
+    AddLib(st, "FS");
+    AddLib(st, "PL");
+    SoundCharacter hero = Hero();
+    SetAssignLibraryIn(st.project, {"legs"}, LibState::Library, "PL");
+    ItemSounds item;
+    SetRulesLibrary(item, {"r1"}, LibState::Library, "c24457ff005942d6");  // deleted
+    SetRulesLibrary(item, {"r2"}, LibState::Library, "FS");
+    EffectiveAssign e = ResolveAssign(st, item, nullptr, "r1", "legs", "step");
+    CHECK(e.library == "PL" && e.level == AssignLevel::Project);  // the inherited one plays
+    CHECK(e.stale_library == "c24457ff005942d6" && e.stale_from == "this type");
+    e = ResolveAssign(st, item, nullptr, "r2", "legs", "step");
+    CHECK(e.library == "FS" && e.stale_library.empty());
+    // A deleted Project / Character library falls through to the next level (or to unset).
+    SetAssignLibraryIn(hero.assigns, {"legs"}, LibState::Library, "GONE");
+    e = ResolveAssign(st, ItemSounds(), &hero, "r9", "legs", "step");
+    CHECK(e.library == "PL" && e.stale_library == "GONE");
+    SoundStore empty;
+    SetAssignLibraryIn(empty.project, {"legs"}, LibState::Library, "GONE");
+    e = ResolveAssign(empty, ItemSounds(), nullptr, "r9", "legs", "step");
+    CHECK(e.library.empty() && e.level == AssignLevel::Unset && e.stale_library == "GONE");
+    // The reset: only the stale ones, and the rest untouched.
+    CHECK(ResetStaleRuleLibraries(item, st) == 1);
+    CHECK(FindRuleSounds(item, "r1")->library.empty() && FindRuleSounds(item, "r2")->library == "FS");
+    CHECK(ResetStaleRuleLibraries(item, st) == 0);
+    st.characters.push_back(hero);
+    CHECK(ResetStaleAssignLibraries(st) == 1);
+    CHECK(st.characters[0].assigns.empty() || st.characters[0].assigns[0].state == LibState::Inherit);
+    CHECK(FindAssign(st.project, "legs")->library == "PL");
+}
+
 int main()
 {
     TestTable();
@@ -726,6 +764,7 @@ int main()
     TestEventRoleKey();
     TestRoleMenuKeys();
     TestLibraryChain();
+    TestStaleLibrary();
     TestValueChain();
     TestCharacterFor();
     TestChangedRids();

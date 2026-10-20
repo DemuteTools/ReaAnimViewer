@@ -920,6 +920,7 @@ Target MakeKeyTarget(const SoundStore& store, const SoundCharacter* ch, const st
     // What inherit gives: the same read with this key's own entry removed (its library and its values).
     SoundStore below_store;
     below_store.project = store.project;
+    below_store.libraries = store.libraries;  // a library the store lacks reads as deleted (inherit)
     SoundCharacter below_ch;
     if (ch) below_ch = *ch;
     std::vector<SoundAssign>& list = ch ? below_ch.assigns : below_store.project;

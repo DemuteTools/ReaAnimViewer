@@ -123,6 +123,10 @@ SoundReport SetRulesAssignValue(MediaItem* item, std::vector<std::string> rids, 
 SoundReport CommitAssignValues(const std::vector<assign::StagedEntry>& edits, bool* changed = nullptr, assign::CommitCounts* counts = nullptr);
 // The RAV items of the project (the assignment window's item picker).
 std::vector<MediaItem*> ProjectRavItems();
+// 2026-10-21: every rule (and Project / Character key) pointing to a library the project no longer has goes back to
+// inherit, on every RAV item (pool copies included); one undo point named `undo_desc` (null: none, inside a caller's
+// scope). Returns how many were reset.
+int ResetStaleRules(const char* undo_desc);
 
 // 13-8 fix: these take their uids by value: a caller's reference into the sound store
 // would dangle once the gesture replaces the store (ModifySoundStore).

@@ -1315,6 +1315,15 @@ float TopRowMid()
     return ui::Dp(8.0f) + (toggle_h > 0.0f ? toggle_h : ui::ControlH()) * 0.5f;
 }
 
+// Where what lies under the top row starts (the Library panes, the clip list): the bottom the menu
+// button had on its former line, 14 px + the padding + half a text line down. Antho 2026-10-20: the
+// icons move up onto the switch's middle, the band under them keeps its height.
+float TopBandBottom()
+{
+    const float old_mid = ui::Dp(14.0f) + ImGui::GetStyle().WindowPadding.y + ImGui::GetTextLineHeight() * 0.5f;
+    return cliplist::MenuButtonAt(old_mid, ui::UiScale()).bottom;
+}
+
 // Builds + renders the Dear ImGui tool UI for this frame, on top of the 3D scene (called
 // between RenderFrame and SwapBuffers). A FRAMELESS hamburger menu (Antho's icons) that
 // shows / hides the options panel: REAPER-style vertical tabs (Global, RAV view, Tagging
@@ -1743,7 +1752,7 @@ void DrawToolUi()
     // before the readouts and overlays (which stay on top of it). Story 6-5-9: under the corner
     // icons too when they went under the switch.
     if (library_view) {
-        const float lib_top = std::max(burger.bottom, corner_below ? text_mid + ui::Dp(12.0f + 6.0f) : 0.0f);
+        const float lib_top = std::max(TopBandBottom(), corner_below ? text_mid + ui::Dp(12.0f + 6.0f) : 0.0f);
         DrawLibraryView(ui::Dp(8.0f), lib_top, std::max(1.0f, static_cast<float>(g_client_w) - ui::Dp(16.0f)),
                         std::max(1.0f, static_cast<float>(g_client_h) - lib_top - ui::Dp(8.0f)));
     }
@@ -1861,7 +1870,7 @@ void DrawToolUi()
         const float switch_top = switch_bottom - ui::ControlH() - ui::Dp(4.0f);
         const bool  switch_shown = !video_view && !library_view;
         const char* view_name = library_view ? "Library" : video_view ? "Video" : tagging_view ? "Tagging" : "Main";
-        if (DrawClipList(area_right, burger.bottom, switch_shown ? switch_top : icon_top, ViewBottom(),
+        if (DrawClipList(area_right, TopBandBottom(), switch_shown ? switch_top : icon_top, ViewBottom(),
                          ShortcutKeyLabel(kShortcutClipList), view_name))
             g_menu_open = false;
     }

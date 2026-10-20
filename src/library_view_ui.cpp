@@ -66,6 +66,7 @@ struct Toast {
     std::function<void()> local_undo;  // 13-28: an Undo that is not REAPER's (the user's presets)
 };
 Toast g_toast;
+uint64_t g_toast_serial = 0;  // spec missing-sounds-window: each toast shown, so a tool window repeats it
 
 void LoadPrefs()
 {
@@ -355,6 +356,7 @@ void DrawKitOffer(float top)
 void ShowLibraryToast(const std::string& text, bool undo, const std::string& undo_desc)
 {
     g_toast.text = text;
+    ++g_toast_serial;
     g_toast.undo = undo;
     g_toast.undo_desc.clear();
     g_toast.local_undo = nullptr;
@@ -375,6 +377,9 @@ void ShowLibraryToastLocal(const std::string& text, std::function<void()> undo)
 }
 
 bool LibraryViewFocused() { return g_view.focused; }
+
+uint64_t LibraryToastSerial() { return g_toast_serial; }
+const std::string& LibraryToastText() { return g_toast.text; }
 
 bool LibraryViewTakesKey(unsigned vk, bool ctrl, bool shift, bool alt)
 {

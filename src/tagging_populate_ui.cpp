@@ -588,7 +588,7 @@ void DrawSoundReportLine(const TaggingSoundContext& ctx)
                 for (const SoundLibrary& lib : GetSoundStore(nullptr).libraries) {
                     const SoundNode* n = FindNode(lib, l.node);
                     if (!n) continue;
-                    if (FileSoundMissing(*n)) {
+                    if (SoundNodeMissing(*n)) {  // spec missing-sounds-window: the one rule (item Sounds too)
                         ImGui::SameLine();
                         if (ui::LinkButton("Locate...")) RequestUserLibraryLocate(lib.uid, n->uid, true);
                         ui::ItemTipText("Pick this file where it is now. RAV also looks in its folder for\n"

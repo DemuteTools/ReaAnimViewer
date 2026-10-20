@@ -823,9 +823,8 @@ int MissingChildren(const SoundLibrary& lib, const SoundNode& n)
     const LibraryTreeHooks& h = GetLibraryTreeHooks();
     for (const SoundNode* c : ChildNodes(lib, n)) {
         if (c->type != SoundNodeType::Sound) continue;
-        const SoundSource& s = c->sound.source;
-        if (s.kind == SoundSourceKind::Item) count += (s.item_guid.empty() || !FindItemByGuid(s.item_guid)) ? 1 : 0;
-        else if (h.is_missing && h.is_missing(*c)) ++count;
+        // Spec missing-sounds-window: the one rule (an item Sound whose item is gone but whose file is on disk plays it).
+        if (h.is_missing ? h.is_missing(*c) : SoundNodeMissing(*c)) ++count;
     }
     return count;
 }
@@ -2612,7 +2611,8 @@ void DrawSoundWaves(const char* id, const SoundLibrary& lib, const SoundNode& n,
 }
 
 // Replace / Set from selected item: the first selected non-folder item (decision 12).
-void ReplaceFromSelected(const std::string& lib_uid, const std::string& uid, const char* gesture)
+// Spec missing-sounds-window: `toast` (non-empty) replaces "Replaced audio" (the Missing sounds window's own wording).
+void ReplaceFromSelected(const std::string& lib_uid, const std::string& uid, const char* gesture, const std::string& toast_text = {})
 {
     const int  n = CountSelectedMediaItems(nullptr);
     MediaItem* pick = nullptr;
@@ -2642,17 +2642,24 @@ void ReplaceFromSelected(const std::string& lib_uid, const std::string& uid, con
         if (node) sp = node->sound.silence;
     }
     frames = DetectFrames(m.facts, mode, sp, ready ? &pk : nullptr);
-    std::string toast = "Replaced audio";
-    if (n > 1) toast += " (the first of " + std::to_string(n) + " selected items)";
+    std::string toast = toast_text.empty() ? std::string("Replaced audio") : toast_text;
+    if (n > 1) {
+        const std::string first = " (the first of " + std::to_string(n) + " selected items)";
+        const size_t      tail = toast.rfind(". Ctrl+Z undoes.");
+        if (tail != std::string::npos && tail + 16 == toast.size()) toast.insert(tail, first);
+        else toast += first;
+    }
     const std::string path = m.path;
+    const AssetIdentity asset = ItemFileAsset(pick);  // spec missing-sounds-window: remembered, played once the item is gone
     const double      item_db = m.facts.item_db;
     const MonoMode    item_mono = MonoForChanMode(m.chan_mode);  // 13-49 review: a take that plays mono
     EditNode(
         gesture, lib_uid, uid,
-        [guid, mode, frames, path, item_db, item_mono](SoundNode& x) {
+        [guid, mode, frames, path, item_db, item_mono, asset](SoundNode& x) {
             x.sound.source = SoundSource{};
             x.sound.source.kind = SoundSourceKind::Item;
             x.sound.source.item_guid = guid;
+            x.sound.source.asset = asset;
             x.sound.source.item_db = item_db;
             x.sound.mode = mode;
             x.sound.frames = frames;
@@ -6204,8 +6211,13 @@ void DrawSourceLine(const SoundLibrary& lib, const SoundNode& n, const SoundMedi
     const float        sp = ui::Dp(8.0f);
     if (!m.ok) {
         const bool        item = src.kind == SoundSourceKind::Item;
-        const std::string msg = item ? std::string("Its item is no longer on the tracks.")
-                                     : (src.asset.last_path.empty() ? std::string("Its file") : src.asset.last_path) + " not found on this PC.";
+        // Spec missing-sounds-window: an item Sound whose item is gone and whose remembered file is not found either.
+        const bool        item_file = item && (!src.asset.name.empty() || !src.asset.last_path.empty()) && ItemSoundGone(n);
+        const std::string msg = item_file ? "Its item is not in the project, its file " +
+                                                (src.asset.name.empty() ? FileName(src.asset.last_path) : src.asset.name) +
+                                                " not found either."
+                                : item ? std::string("Its item is no longer on the tracks.")
+                                       : (src.asset.last_path.empty() ? std::string("Its file") : src.asset.last_path) + " not found on this PC.";
         if (!item) {  // 13-50: the User Library's Locate pair (name, size and length re-read; the others too)
             FitText(msg, ui::kMissName, ImGui::GetContentRegionAvail().x);
             DrawLocateButtons(lib_uid, uid);
@@ -6217,7 +6229,21 @@ void DrawSourceLine(const SoundLibrary& lib, const SoundNode& n, const SoundMedi
         const float room = flow::StretchBeside(ImGui::GetContentRegionAvail().x, ui::Dp(60.0f), bw, sp, &beside);
         FitText(msg, ui::kMissName, room);
         if (beside) ImGui::SameLine(0.0f, sp);
-        if (ui::SolidButton(btn)) ReplaceFromSelected(lib_uid, uid, "Set from selected item");
+        if (ui::SolidButton(btn)) {
+            ReplaceFromSelected(lib_uid, uid, "Set from selected item");
+            return;
+        }
+        if (item_file) {  // Locate its file too (StartLocate takes it), beside when it fits, else below
+            ui::SameLineIfFits(ui::ButtonWidth("Locate file..."));
+            DrawLocateButtons(lib_uid, uid);
+        }
+        return;
+    }
+    if (src.kind == SoundSourceKind::Item && ItemSoundGone(n)) {
+        // Spec missing-sounds-window: its item is gone, it plays the file it remembers (without the item's trim, pitch
+        // and take FX).
+        FitText("Item not in the project \xC2\xB7 plays " + FileName(m.path.empty() ? src.asset.last_path : m.path), ui::kMuted);
+        ui::ItemTipText((m.path.empty() ? src.asset.last_path : m.path).c_str());
         return;
     }
     if (src.kind == SoundSourceKind::Item) {
@@ -6594,6 +6620,19 @@ void DrawNodePanel()
         P.wave_press_id = 0;
     NodePanelWidgets();
     g_picks.Run();  // the gestures picked above, the panel and the Edit overlay drawn
+}
+
+void UseSelectedItemForSound(const std::string& lib_uid, const std::string& node_uid)
+{
+    std::string name = "Sound";
+    {
+        const SoundLibrary* lib = FindLibrary(GetSoundStore(nullptr), lib_uid);
+        const SoundNode*    n = lib ? FindNode(*lib, node_uid) : nullptr;
+        if (!n) return;
+        if (!n->name.empty()) name = n->name;
+    }
+    const std::string gesture = "Use selected item for " + name;
+    ReplaceFromSelected(lib_uid, node_uid, gesture.c_str(), "\"" + name + "\" now plays the selected item. Ctrl+Z undoes.");
 }
 
 void SettleNodePanelFaders()

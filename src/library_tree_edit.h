@@ -216,21 +216,46 @@ std::string UniqueName(const std::string& base, const std::vector<std::string>& 
 bool NewLibrary(SoundStore& store, std::string* uid);
 bool RenameLibrary(SoundStore& store, const std::string& lib_uid, const std::string& name);
 bool DeleteLibrary(SoundStore& store, const std::string& lib_uid);
-// Why a Sound is missing: its REAPER item is not in the project (a folder cannot bring it back),
-// or its file is not found (Locate can).
-enum class MissingWhy { ItemGone, FileNotFound };
+// Why a Sound is missing (spec missing-sounds-window, the one rule): a File Sound whose file is not
+// found; an item Sound whose REAPER item is not in the project AND whose remembered file (its
+// SoundSource::asset) is not found either, or was never remembered (an older Sound: file unknown).
+// An item Sound whose item is gone but whose file is still on disk plays that file: not missing.
+enum class MissingWhy { FileNotFound, ItemGoneFileKnown, ItemGoneFileUnknown };
 struct MissingSound {
     std::string uid;
     std::string name;
     MissingWhy  why = MissingWhy::FileNotFound;
+    std::string lib_uid;
+    std::string path;  // the recorded path (asset.last_path), "" = unknown
+    std::string file;  // the recorded file name (asset.name, else last_path's), "" = unknown
 };
-// The library's missing Sounds, in its order: an item Sound whose item `item_gone` says is gone, else
-// a Sound `file_missing` says is missing. The one list the row's count, its tooltip and Locate read.
+// The one rule for one Sound: `item_gone` = its item is not in the project (asked of item Sounds
+// only), `file_missing` = its file (a File Sound's, an item Sound's remembered one) is not found.
+// True when missing, `why` (optional) set.
+bool SoundIsMissing(const SoundNode& s, const std::function<bool(const SoundNode&)>& item_gone,
+                    const std::function<bool(const SoundNode&)>& file_missing, MissingWhy* why = nullptr);
+// The library's missing Sounds, in its order (SoundIsMissing). The one list the red count, its
+// tooltip and the Missing sounds window read.
 std::vector<MissingSound> ListMissing(const SoundLibrary& lib, const std::function<bool(const SoundNode&)>& item_gone,
                                       const std::function<bool(const SoundNode&)>& file_missing);
 // Each missing Sound with its reason (at most `max_lines`, then "and N more").
 std::string MissingTip(const std::vector<MissingSound>& missing, size_t max_lines = 12);
-// "Locate missing files in a folder..."'s tooltip from the missing files and gone items of every library.
-std::string LocateFolderTip(int files_missing, int items_gone);
+// The Missing sounds window's status line of a still-missing Sound (the mockup's strings):
+// "File not found · was <path>", "Item not in the project · file not found either: <file>",
+// "Item not in the project · file unknown".
+std::string MissingStatus(const MissingSound& m);
+// A fixed row's status: "Fixed · <what it plays>", or found by its name only:
+// "Found by name: check it · <path>".
+std::string FixedStatus(const std::string& plays, bool by_name);
+// A file whose stem (its name less the last extension) is `name`, ignoring ASCII case.
+bool StemMatches(const std::string& path, const std::string& name);
+// The first of `paths` (path order, ignoring ASCII case) whose stem is `name`; "" = none.
+std::string FirstByStem(const std::vector<std::string>& paths, const std::string& name);
+// Search a folder's toast: "Found N in <folder> (k by name: check them), M still missing. Ctrl+Z undoes."
+// (each part only when it applies; nothing found: "Nothing found in <folder>, M still missing"). `ambiguous` (the sounds
+// with several equally good candidates, never relinked): ", K with several candidates: Locate them one by one".
+std::string SearchToastText(int found, int by_name, const std::string& folder, int still_missing, int ambiguous = 0);
+// That ambiguous part alone ("" when none), for the other Locate toasts.
+std::string AmbiguousText(int ambiguous);
 
 }  // namespace rav

@@ -119,6 +119,10 @@ void RequestLibraryEditKey(int shortcut_id);
 // 13-74: the Edit waveform was under the mouse last frame and this wheel (Ctrl / Shift / Alt) is a gain row's
 // (Shortcuts: Ctrl+Shift+wheel by default): the accelerator hook keeps it from REAPER.
 bool LibraryEditClaimsWheel(bool horizontal, bool ctrl, bool shift, bool alt);
+// Spec missing-sounds-window: "Use selected item": the Sound becomes an item Sound of the first selected REAPER item
+// (folder items skipped; its file remembered, its variations detected again), one undo point
+// "RAV: Use selected item for <name>". Says so when no item is selected. Call outside a frame's drawing loops.
+void UseSelectedItemForSound(const std::string& lib_uid, const std::string& node_uid);
 
 }  // namespace rav
 

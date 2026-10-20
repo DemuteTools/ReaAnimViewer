@@ -289,13 +289,23 @@ bool SameAssetIdentity(const AssetIdentity& a, const AssetIdentity& b)
     return true;
 }
 
+namespace {
+// A Sound Locate may relink: a File Sound, or an item Sound `item_ok` lets through.
+bool Relocatable(const SoundNode& n, const std::function<bool(const SoundNode&)>& item_ok)
+{
+    if (n.type != SoundNodeType::Sound) return false;
+    if (n.sound.source.kind == SoundSourceKind::File) return true;
+    return item_ok && item_ok(n);
+}
+}  // namespace
+
 int ApplyLocated(SoundStore& store, const std::vector<std::pair<AssetIdentity, std::string>>& found,
-                 const AssetIdentity* picked)
+                 const AssetIdentity* picked, const std::function<bool(const SoundNode&)>& item_ok)
 {
     int changed = 0;
     for (SoundLibrary& lib : store.libraries)
         for (SoundNode& n : lib.nodes) {
-            if (n.type != SoundNodeType::Sound || n.sound.source.kind != SoundSourceKind::File) continue;
+            if (!Relocatable(n, item_ok)) continue;
             AssetIdentity& a = n.sound.source.asset;
             for (const auto& f : found) {
                 if (f.second.empty() || !SameAssetIdentity(a, f.first)) continue;
@@ -330,13 +340,13 @@ int ApplyLocated(SoundStore& store, const std::vector<std::pair<AssetIdentity, s
 }
 
 int ApplyRelinked(SoundStore& store, const std::string& lib_uid, const std::string& node_uid,
-                  const AssetIdentity& old_id, const AssetIdentity& now)
+                  const AssetIdentity& old_id, const AssetIdentity& now, const std::function<bool(const SoundNode&)>& item_ok)
 {
     if (now.last_path.empty()) return 0;
     int changed = 0;
     for (SoundLibrary& lib : store.libraries)
         for (SoundNode& n : lib.nodes) {
-            if (n.type != SoundNodeType::Sound || n.sound.source.kind != SoundSourceKind::File) continue;
+            if (!Relocatable(n, item_ok)) continue;
             AssetIdentity& a = n.sound.source.asset;
             const bool self = lib.uid == lib_uid && n.uid == node_uid;
             const bool shares = !old_id.last_path.empty() && LowerAscii(a.last_path) == LowerAscii(old_id.last_path) &&
@@ -350,6 +360,26 @@ int ApplyRelinked(SoundStore& store, const std::string& lib_uid, const std::stri
             a.length = now.length;
             ++changed;
         }
+    return changed;
+}
+
+int ApplyFoundByName(SoundStore& store, const std::vector<FoundByName>& found)
+{
+    int changed = 0;
+    for (const FoundByName& f : found) {
+        if (f.found.last_path.empty()) continue;
+        SoundLibrary* lib = FindLibrary(store, f.lib_uid);
+        SoundNode*    n = lib ? FindNode(*lib, f.node_uid) : nullptr;
+        if (!n || n->type != SoundNodeType::Sound) continue;
+        AssetIdentity& a = n->sound.source.asset;
+        if (!a.name.empty() || !a.last_path.empty()) continue;
+        a = f.found;
+        if (a.name.empty()) {
+            const size_t cut = a.last_path.find_last_of("/\\");
+            a.name = cut == std::string::npos ? a.last_path : a.last_path.substr(cut + 1);
+        }
+        ++changed;
+    }
     return changed;
 }
 

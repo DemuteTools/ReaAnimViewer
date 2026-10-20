@@ -1310,7 +1310,10 @@ bool ReadSoundMedia(const SoundSource& source, SoundMedia* out)
     *out = SoundMedia{};
     if (source.kind == SoundSourceKind::Item) {
         MediaItem* item = source.item_guid.empty() ? nullptr : FindItemByGuid(source.item_guid);
-        return item ? ReadItemMedia(item, out) : false;
+        if (item) return ReadItemMedia(item, out);
+        // Spec missing-sounds-window: its item is gone: the file it remembers (found like a File Sound's), without
+        // the item's trim, pitch and take FX. An older Sound that never remembered one has none.
+        if (source.asset.name.empty() && source.asset.last_path.empty()) return false;
     }
     std::string path = source.asset.last_path;
     double      len = SourceFileLength(path);

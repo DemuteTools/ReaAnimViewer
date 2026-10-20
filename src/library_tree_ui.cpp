@@ -23,6 +23,7 @@
 
 #include "library_tree_nav.h"  // 13-48: folds kept, Collapse / Expand all
 #include "library_user_ui.h"
+#include "missing_sounds_ui.h"  // spec missing-sounds-window: the red count and "Fix missing sounds..." open it
 #include "library_view_ui.h"
 #include "picked_gestures.h"
 #include "reaper_api.h"
@@ -91,9 +92,6 @@ struct TreeState {
     LibraryRow               menu_row;
     std::vector<LibraryRow>  menu_rows;
     LibraryTreeHooks         hooks;
-    // Missing items: the project's item GUIDs (upper case), rebuilt on a project change.
-    int                      guid_scc = -1;
-    ReaProject*              guid_proj = nullptr;
     // Column 2 (toolbar + tree) had the keyboard focus last frame: the tree keys act only then.
     bool                     tree_focused = false;
     // Antho 2026-10-12: the Switch Groups row clicked last (a value when sg_vid is set): F2 and its right-click
@@ -102,7 +100,6 @@ struct TreeState {
     bool                     sg_menu = false;
     // 13-18: the group default awaiting the confirm band (Switches on the group have their own default).
     std::string              sgd_gid, sgd_vid;
-    std::set<std::string>    item_guids;
     // 13-7a (audit C2.3): each open group's dashed "+ value" field (by group uid); the group whose
     // field takes the keyboard again after a value was added (to type the next one).
     std::map<std::string, std::array<char, 128>> add_value;
@@ -134,44 +131,15 @@ PickedGestures g_picks;
 
 void Later(std::function<void()> f) { g_picks.Pick(std::move(f)); }
 
-std::string Upper(std::string s)
-{
-    for (char& c : s) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    return s;
-}
-
-void RefreshItemGuids()
-{
-    const int scc = GetProjectStateChangeCount(nullptr);
-    ReaProject* proj = EnumProjects(-1, nullptr, 0);  // a project tab switch rebuilds too
-    if (scc == g.guid_scc && proj == g.guid_proj) return;
-    g.guid_scc = scc;
-    g.guid_proj = proj;
-    g.item_guids.clear();
-    const int n = CountMediaItems(nullptr);
-    for (int i = 0; i < n; ++i) {
-        char buf[64] = {};
-        MediaItem* it = GetMediaItem(nullptr, i);
-        if (it && GetSetMediaItemInfo_String(it, "GUID", buf, false)) g.item_guids.insert(Upper(buf));
-    }
-}
-
-// An item Sound whose item is no longer in the project.
-bool ItemGone(const SoundNode& n)
-{
-    return n.sound.source.kind == SoundSourceKind::Item &&
-           (n.sound.source.item_guid.empty() || !g.item_guids.count(Upper(n.sound.source.item_guid)));
-}
-
+// Spec missing-sounds-window: the one rule (library_user_ui.h SoundNodeMissing): a File Sound whose file is not
+// found, an item Sound whose item is gone and whose remembered file is not found (or unknown).
 bool SoundMissing(const SoundNode& n)
 {
-    if (n.type != SoundNodeType::Sound) return false;
-    if (ItemGone(n)) return true;
-    return g.hooks.is_missing ? g.hooks.is_missing(n) : false;
+    return n.type == SoundNodeType::Sound && SoundNodeMissing(n);
 }
 
-// The library's missing Sounds with their reason: the row's count and tooltip, and Locate's menu.
-std::vector<MissingSound> MissingOf(const SoundLibrary& lib) { return ListMissing(lib, ItemGone, g.hooks.is_missing); }
+// The library's missing Sounds with their reason: the row's count and tooltip, and the Missing sounds window.
+std::vector<MissingSound> MissingOf(const SoundLibrary& lib) { return ListMissingSounds(lib); }
 
 const char* TypeWord(SoundNodeType t)
 {
@@ -431,6 +399,7 @@ std::vector<NewNodeSpec> SelectedItemSounds()
         char buf[64] = {};
         if (GetSetMediaItemInfo_String(item, "GUID", buf, false)) sp.sound.source.item_guid = buf;
         sp.sound.source.kind = SoundSourceKind::Item;
+        sp.sound.source.asset = ItemFileAsset(item);  // spec missing-sounds-window: it plays that file once the item is gone
         sp.sound.mode = DetectMode::Whole;
         sp.sound.source.item_db = ItemGainDb(item);  // kept with the source (it outlives a conversion to a file)
         if (MediaItem_Take* take = GetActiveTake(item)) {
@@ -1828,40 +1797,21 @@ void ListCaption(const char* text, const char* tip = nullptr)
 void LibraryMenuItems(const SoundLibrary& lib, std::string* to_delete, bool rename_item)
 {
     if (rename_item && ImGui::MenuItem("Rename")) StartLibraryRename(lib);
-    // 13-38: offered in every library's menu (Project Libraries included); it looks for the missing
-    // File Sounds of every library, so it is enabled when any library has one.
-    // Counted from the list the row's missing count reads, so the menu never contradicts it.
-    std::string first;
-    int         miss = 0, gone = 0, miss_all = 0, gone_all = 0;
-    for (const SoundLibrary& l : GetSoundStore(nullptr).libraries)
-        for (const MissingSound& m : MissingOf(l)) {
-            const bool item = m.why == MissingWhy::ItemGone;
-            (item ? gone_all : miss_all) += 1;
-            if (l.uid != lib.uid) continue;
-            if (item) ++gone;
-            else if (miss++ == 0) first = m.uid;
-        }
-    const bool  locating = UserLibraryLocating();  // 13-50: one scan at a time, Cancel in its place
-    if (locating) {
-        if (ImGui::MenuItem("Cancel locating")) CancelUserLibraryLocate();
-        ui::ItemTipText("Stop looking for the missing sounds: nothing is changed");
-    } else {
-        if (ImGui::MenuItem("Locate missing files in a folder...", nullptr, false, miss_all > 0))
-            RequestLibraryLocateFolder();
-        ui::ItemTipText(LocateFolderTip(miss_all, gone_all).c_str());
-    }
+    // Spec missing-sounds-window: every missing sound of every library is fixed in one window (it replaces the
+    // Locate items), opened on this library. Counted from the list the row's missing count reads.
+    int miss_all = 0;
+    for (const SoundLibrary& l : GetSoundStore(nullptr).libraries) miss_all += static_cast<int>(MissingOf(l).size());
+    if (ImGui::MenuItem("Fix missing sounds...")) OpenMissingSounds(lib.uid);
+    ui::ItemTipText(miss_all > 0 ? (std::to_string(miss_all) + (miss_all == 1 ? " missing sound" : " missing sounds") +
+                                    " in this project: search a folder, locate a file or use a REAPER item")
+                                       .c_str()
+                                 : "No missing sound in any library");
     if (lib.user) {
         if (ImGui::MenuItem("Export .ravlib...")) RequestUserLibraryExport(lib.uid);
         ui::ItemTipText("Save a copy of this library's file anywhere, to share it");
         // 13-36: the file itself, selected in File Explorer (to copy, send or back it up).
         if (ImGui::MenuItem("Show in Explorer")) RequestUserLibraryReveal(lib.uid);
         ui::ItemTipText("Open the User Library folder in File Explorer, this library's .ravlib selected");
-        if (!locating) {
-            if (ImGui::MenuItem("Locate a missing file...", nullptr, false, miss > 0)) RequestUserLibraryLocate(lib.uid, first);
-            ui::ItemTipText(miss > 0    ? "Pick the file of its first missing sound: the others are looked for near it"
-                            : gone > 0 ? "No missing file: its missing sounds play an item that is not in the project"
-                                       : "No missing sound");
-        }
         if (ImGui::MenuItem("Refresh the User Library folder")) RefreshUserLibraries();
     } else {
         // 13-24: reusable in other projects; its item Sounds become File Sounds of their files.
@@ -1965,20 +1915,12 @@ void LibraryListRow(const SoundStore& store, const SoundLibrary& lib, std::strin
         if (tk[i] == 0) {
             ui::ItemTipText(chk_tip.c_str());
         } else {
-            // Which sounds and why; each click shows the next one in the tree (its containers opened).
+            // Which sounds and why; a click opens the Missing sounds window on this library (spec missing-sounds-window).
             if (ImGui::IsItemHovered()) {
                 ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-                ui::ItemTipText((MissingTip(missing) + "\nClick to show them one by one").c_str());
+                ui::ItemTipText((MissingTip(missing) + "\nClick to fix them").c_str());
             }
-            if (shown) {
-                size_t next = 0;
-                if (g.lib == lib.uid) {
-                    const std::string cur = LibraryRowNode();
-                    for (size_t k = 0; k < missing.size(); ++k)
-                        if (missing[k].uid == cur) next = (k + 1) % missing.size();
-                }
-                SelectLibraryRow(lib.uid, RowOfNode(lib, missing[next].uid));
-            }
+            if (shown) OpenMissingSounds(lib.uid);
         }
     }
     {
@@ -2035,7 +1977,6 @@ void UserFileRow(const UserLibraryFile& f, std::string* add_file)
 void LibrariesSectionWidgets()
 {
     g.gen = SoundStoreGeneration();
-    RefreshItemGuids();
     PrepareUserLibraries();
     const SoundStore& store = GetSoundStore(nullptr);
     CurrentLib();
@@ -2658,7 +2599,6 @@ void LibraryTreeWidgets()
         g.sg_gid.clear();
         g.sg_vid.clear();
     }
-    RefreshItemGuids();
     const SoundLibrary* lib = CurrentLib();
     if (!lib) {
         ui::SubText("No library yet");

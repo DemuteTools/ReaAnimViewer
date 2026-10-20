@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 
+#include "library_tree_edit.h"  // MissingSound
 #include "reaper_api.h"
 #include "sound_model.h"
 
@@ -94,6 +95,33 @@ bool PrepareFileSound(ReaProject* proj, const std::string& lib_uid, const std::s
                       FileSoundTarget* out, std::string* why, bool make_track = true);
 // A File Sound whose file cannot be found and that has no older imported item left (decision 10).
 bool FileSoundMissing(const SoundNode& n);
+
+// ---- Spec missing-sounds-window: the one missing rule ---------------------------------------------
+// An item Sound whose REAPER item is not in the current project.
+bool ItemSoundGone(const SoundNode& n);
+// Where a Sound's file is on disk ("" = not found): a File Sound's file, an item Sound's remembered
+// file (its asset; "" when it never remembered one). An item Sound whose item is still there plays the item.
+std::string SoundNodeFilePath(const SoundNode& n);
+// The one rule (library_tree_edit.h SoundIsMissing): a File Sound whose file is not found; an item Sound
+// whose item is gone and whose remembered file is not found (or unknown). What the red count, its
+// tooltip, the tree's "missing" tag, the container counts, Populate and the Missing sounds window read.
+bool SoundNodeMissing(const SoundNode& n, MissingWhy* why = nullptr);
+std::vector<MissingSound> ListMissingSounds(const SoundLibrary& lib);
+// Every library's, in the store's order.
+std::vector<MissingSound> ListAllMissingSounds();
+// What the item's active take plays as a remembered file (name, size, length, last path); empty when
+// it plays no file (a folder item, an empty or MIDI take).
+AssetIdentity ItemFileAsset(MediaItem* item);
+// "Search a folder..." of the Missing sounds window: picks a folder (timer), then every missing sound of
+// every library is looked for under it and its subfolders (by identity; an older item Sound with no
+// remembered file by its name); one undo point; the toast says how many were found.
+void RequestMissingSearchFolder();
+// The folder searched last this session ("" = none).
+const std::string& MissingLastSearchedFolder();
+// The Sounds whose file was found by their name only (since ForgetFoundByName): the window marks them
+// "Found by name: check it".
+bool SoundFoundByName(const std::string& lib_uid, const std::string& node_uid);
+void ForgetFoundByName();
 
 }  // namespace rav
 

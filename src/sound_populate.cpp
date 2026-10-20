@@ -428,6 +428,20 @@ std::string DivideValueName(const SoundStore& store, const SoundData& data, cons
     return "(deleted value)";
 }
 
+// Spec missing-sounds-window: an item Sound whose item is gone, the one predicate of a gesture: the gesture's item map
+// first (cheap, the common case: its item is there), then ItemSoundGone, which PrepareFileSound and the missing rule
+// read, so they never disagree on a Sound this says is gone.
+bool ItemGoneHere(const SoundNode& n)
+{
+    return n.sound.source.kind == SoundSourceKind::Item && !FindItemByGuid(n.sound.source.item_guid) && ItemSoundGone(n);
+}
+
+// A File Sound, or an item Sound whose item is gone (it plays the file it remembers).
+bool PlaysFromFile(const SoundNode& n)
+{
+    return n.sound.source.kind == SoundSourceKind::File || ItemGoneHere(n);
+}
+
 // The request for one resolved sound (P11). `file` = a File Sound's target (PrepareFileSound). 13-20 /
 // 13-23 / 13-25: `data` = the Sound's data to place (its syncs measured, PlacedDataFor; null = its
 // own): a sliced, Whole-item or File variation is placed as the pieces of its part (PieceApplyFor). 13-62h:
@@ -446,8 +460,10 @@ PlaceRequest RequestFor(MediaItem* owner, const std::string& rid, double event_t
     req.own = Ownership::Populated;
     req.source = n.sound.source;
     const int v = rs.variation;
-    if (n.sound.source.kind == SoundSourceKind::File && file && !file->path.empty()) {
-        // Antho 2026-10-12 (13-11): straight from the file, on its Lands-in layer track.
+    if (file && !file->path.empty()) {
+        // Antho 2026-10-12 (13-11): straight from the file, on its Lands-in layer track. Spec missing-sounds-window:
+        // an item Sound whose item is gone too, from the file it remembers.
+        req.source.kind = SoundSourceKind::File;
         req.file_path = file->path;
         req.track = file->track;
         req.slice = FileSliceFor(sd, v);
@@ -751,12 +767,11 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
         if (const auto so = side_of.find(rid); so != side_of.end()) ed.side = so->second;  // 13-73
         const std::string lib_uid = lib->uid;
         auto is_missing = [&file_missing](const SoundNode& n) {
-            if (n.sound.source.kind == SoundSourceKind::File) {  // 13-11: its file (no side effect here)
-                auto it = file_missing.find(n.uid);
-                if (it == file_missing.end()) it = file_missing.emplace(n.uid, FileSoundMissing(n)).first;
-                return it->second;
-            }
-            return !FindItemByGuid(n.sound.source.item_guid);
+            // Spec missing-sounds-window: the one rule (an item Sound whose item is gone plays the file it remembers).
+            if (n.sound.source.kind == SoundSourceKind::Item && !ItemGoneHere(n)) return false;
+            auto it = file_missing.find(n.uid);  // 13-11: its file (no side effect here)
+            if (it == file_missing.end()) it = file_missing.emplace(n.uid, SoundNodeMissing(n)).first;
+            return it->second;
         };
         ValueLayers layers = ea.layers;
         if (const auto ro = role_of.find(rid); ro != role_of.end()) layers.role = ro->second;  // 13-23: picks the part
@@ -851,7 +866,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                             lib_uid, *n, s.variation, [n, &s]() { return PlacedSourcePath(*n, s.variation); }, measured_here);
                         const PeakData* zpk = ZoneSnapPeaks(
                             *n, s.variation, s.part_value, [n, &s]() { return PlacedSourcePath(*n, s.variation); }, measured_here);  // the file the syncs above read
-                        pa = PieceApplyFor(sd, s.variation, s.part_value, n->sound.source.kind == SoundSourceKind::File, zpk);
+                        pa = PieceApplyFor(sd, s.variation, s.part_value, PlaysFromFile(*n), zpk);
                         pieces = static_cast<int>(pa.size());
                         if (!(rate > 0.0) || !std::isfinite(rate)) rate = 1.0;
                         for (const PieceApply& a : pa)
@@ -979,7 +994,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
             const ResolvedSound& s = *desired_rs[static_cast<size_t>(step.desired)];
             const SoundNode*     n = FindNode(*lib, kd.node);
             if (!n || kd.pass < 0 || static_cast<size_t>(kd.pass) >= passes.size()) return;
-            const bool             file_kind = n->sound.source.kind == SoundSourceKind::File;
+            const bool             file_kind = PlaysFromFile(*n);
             const int              v = s.variation;
             std::vector<PieceApply> pa;
             SliceApply              slice;
@@ -1162,7 +1177,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
             MediaTrack*                   switch_track = nullptr;
             MediaTrack*                   pile_layer = nullptr;  // 13-16 B5: an NVK pile's layer track
             const FileSoundTarget*        file = nullptr;
-            if (n->sound.source.kind == SoundSourceKind::File) {  // readied once per gesture, when first placed
+            if (PlaysFromFile(*n)) {  // readied once per gesture, when first placed
                 auto ft = file_targets.find(n->uid);
                 if (ft == file_targets.end()) {
                     FileSoundTarget t;

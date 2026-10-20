@@ -11,6 +11,7 @@
 
 #ifdef _WIN32
 
+#include <cstdint>
 #include <functional>
 #include <string>
 
@@ -27,6 +28,10 @@ void ShowLibraryToast(const std::string& text, bool undo = true, const std::stri
 // 13-28: the same toast with an Undo that runs `undo` (a change that is not the project's, such as the
 // user's normalize presets); null = no Undo. The next toast retires it.
 void ShowLibraryToastLocal(const std::string& text, std::function<void()> undo);
+// Spec missing-sounds-window: a number that changes with each toast shown, and its text (read it when the number
+// changes: the view clears it once shown), so a tool window of its own repeats the toast of its gestures.
+uint64_t           LibraryToastSerial();
+const std::string& LibraryToastText();
 
 // Decision 7 (13-7a): whether a key down goes to the viewer while the Library view's window
 // has the focus (Delete, F2, Space, Esc, Ctrl+B / D / X / V). Ctrl+Z stays REAPER's undo.

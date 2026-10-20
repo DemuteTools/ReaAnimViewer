@@ -72,14 +72,26 @@ bool SameAssetIdentity(const AssetIdentity& a, const AssetIdentity& b);
 // Sets last_path = found path on every File Sound (every library) whose identity matches a found
 // one; unknown size / length are filled from it. `picked` (optional) = the file the user picked
 // (last_path = its path, size / length read from it): a Sound set to that path takes its known size /
-// length, so a re-rendered file of another size is found again. How many Sounds changed.
+// length, so a re-rendered file of another size is found again. Spec missing-sounds-window: an item
+// Sound too when `item_ok` says so (its item gone: its remembered file is relocated, its kind kept);
+// null = File Sounds only. How many Sounds changed.
 int ApplyLocated(SoundStore& store, const std::vector<std::pair<AssetIdentity, std::string>>& found,
-                 const AssetIdentity* picked = nullptr);
+                 const AssetIdentity* picked = nullptr, const std::function<bool(const SoundNode&)>& item_ok = nullptr);
 // 13-50 review: a File Sound's file was renamed and the user picked it under its new name. The Sound
 // (`lib_uid` / `node_uid`) and every File Sound sharing its old file (`old_id`, same last_path ignoring
-// case) take `now` whole: name, last_path, size and length. How many Sounds changed.
+// case) take `now` whole: name, last_path, size and length. Item Sounds (the picked one included) only
+// when `item_ok` says so. How many Sounds changed.
 int ApplyRelinked(SoundStore& store, const std::string& lib_uid, const std::string& node_uid,
-                  const AssetIdentity& old_id, const AssetIdentity& now);
+                  const AssetIdentity& old_id, const AssetIdentity& now,
+                  const std::function<bool(const SoundNode&)>& item_ok = nullptr);
+// Spec missing-sounds-window: a file found by the Sound's name (an older item Sound that never remembered its
+// file): `found.last_path` (with its name, size, length) becomes the Sound's remembered file, its kind kept.
+struct FoundByName {
+    std::string   lib_uid, node_uid;
+    AssetIdentity found;
+};
+// How many Sounds changed (a Sound that remembers a file now is left as it is).
+int ApplyFoundByName(SoundStore& store, const std::vector<FoundByName>& found);
 
 // Folder track layout (decision 12), `depths` = every track's I_FOLDERDEPTH in project order and
 // `fi` a folder track (depth >= 1): fills its direct children (indices) and its last descendant

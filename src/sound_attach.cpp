@@ -16,6 +16,7 @@
 #include <set>
 
 #include "item_rules.h"
+#include "library_user_ui.h"  // ItemFileAsset (spec missing-sounds-window)
 #include "reaper_item_read.h"
 #include "rule_record.h"
 #include "sound_draw.h"
@@ -271,6 +272,7 @@ SoundData PromotedSoundData(MediaItem* item)
     SoundData d;
     d.source.kind = SoundSourceKind::Item;
     d.source.item_guid = ItemGuidOf(item);
+    d.source.asset = ItemFileAsset(item);  // spec missing-sounds-window: it plays that file once the item is gone
     SoundMedia m;
     ReadItemMedia(item, &m);  // false for a take with no file: its facts still hold the item's length and gain
     const EntryFacts& f = m.facts;

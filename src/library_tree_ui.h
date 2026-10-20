@@ -56,8 +56,8 @@ struct LibraryTreeHooks {
     std::function<void(const std::string& lib, const std::string& node)> play;  // ▶ / Space
     std::function<void()>                                               stop;  // Esc / ▶ again
     std::function<bool(const std::string& node)>                        is_lit;  // sounding now
-    // A Sound whose media is missing (13-11 / 13-7c: File sources). Item sources are checked
-    // here (GUID not in the project) before this hook is asked.
+    // A Sound whose media is missing: the one rule (spec missing-sounds-window, library_user_ui.h SoundNodeMissing),
+    // File and item Sounds alike (an item Sound whose item is gone but whose remembered file is found is not).
     std::function<bool(const SoundNode& sound)> is_missing;
     // A drag payload type the tree accepts (13-7c: Media Explorer files), and what a drop does.
     std::string                                                                          media_payload_type;

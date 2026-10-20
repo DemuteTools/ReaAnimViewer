@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -111,6 +112,18 @@ struct LocateJob {
     bool          relink = false;
     std::string   relink_lib, relink_node;
     AssetIdentity relink_old, relink_now;
+    // Spec missing-sounds-window (UI thread): a folder search (its root, for the toast), the picked Sound's name
+    // and file (a Locate's toast), and what was found by the Sound's name only (under mu).
+    bool                     search = false;
+    std::string              root;
+    std::string              self_name, self_file;
+    std::string              self_lib, self_node, self_was;  // the picked Sound and its file's path before
+    std::vector<FoundByName> by_name;  // under mu
+};
+
+// Spec missing-sounds-window: an older item Sound that never remembered its file, looked for by its name.
+struct ByNameTarget {
+    std::string lib_uid, node_uid, name;
 };
 
 struct State {
@@ -137,6 +150,9 @@ struct State {
     // again when the project changes.
     std::unordered_map<std::string, std::string> from_items;
     ReaProject*                                  live_proj = nullptr;
+    // Spec missing-sounds-window: the folder searched last; the Sounds found by their name only (lib + "\n" + node).
+    std::string           last_searched;
+    std::set<std::string> by_name_found;
     // Lands in "New folder..." field.
     bool        new_folder = false;
     std::string new_folder_node;
@@ -369,7 +385,7 @@ void ApplyHooks()
     const LibraryTreeHooks& h = GetLibraryTreeHooks();
     if (h.is_missing) return;
     LibraryTreeHooks n = h;
-    n.is_missing = [](const SoundNode& s) { return FileSoundMissing(s); };
+    n.is_missing = [](const SoundNode& s) { return SoundNodeMissing(s); };  // spec missing-sounds-window: the one rule
     SetLibraryTreeHooks(n);
 }
 
@@ -475,14 +491,39 @@ void JoinLocate()
     g_job.running = false;
 }
 
+// The identities of every missing sound whose file is known (a File Sound's, an item Sound's remembered one).
 std::vector<AssetIdentity> MissingIdentities()
 {
     std::vector<AssetIdentity> out;
     RefreshCaches();
     for (const SoundLibrary& lib : GetSoundStore(nullptr).libraries)
-        for (const SoundNode& n : lib.nodes)
-            if (n.type == SoundNodeType::Sound && FileSoundMissing(n)) out.push_back(n.sound.source.asset);
+        for (const SoundNode& n : lib.nodes) {
+            MissingWhy why = MissingWhy::FileNotFound;
+            if (SoundNodeMissing(n, &why) && why != MissingWhy::ItemGoneFileUnknown) out.push_back(n.sound.source.asset);
+        }
     return out;
+}
+
+// Spec missing-sounds-window: the missing item Sounds that never remembered their file (looked for by name).
+std::vector<ByNameTarget> MissingByName(const std::string& skip_lib = {}, const std::string& skip_node = {})
+{
+    std::vector<ByNameTarget> out;
+    RefreshCaches();
+    for (const SoundLibrary& lib : GetSoundStore(nullptr).libraries)
+        for (const SoundNode& n : lib.nodes) {
+            MissingWhy why = MissingWhy::FileNotFound;
+            if (lib.uid == skip_lib && n.uid == skip_node) continue;
+            if (!SoundNodeMissing(n, &why) || why != MissingWhy::ItemGoneFileUnknown || n.name.empty()) continue;
+            out.push_back({lib.uid, n.uid, n.name});
+        }
+    return out;
+}
+
+// The folder a path is in ("" = none).
+std::string FolderOf(const std::string& path)
+{
+    const size_t cut = path.find_last_of("/\\");
+    return cut == std::string::npos ? std::string() : path.substr(0, cut);
 }
 
 // One search of the Locate worker: one result per missing identity, through the folder lister;
@@ -495,8 +536,11 @@ using LocateSearch = std::function<std::vector<LookupResult>(const std::vector<A
 // 13-50 (13-38 review): the one Locate worker, for the single-file Locate and "Locate in a folder".
 // `picked` = the file the user picked (ApplyLocated gets it; empty last_path = none); `self` = the
 // picked Sound, put first in the found pairs (null = a folder locate). False when nothing started.
+// Spec missing-sounds-window: `by_name` (older item Sounds with no remembered file) are looked for under
+// `by_name_dir` (and its subfolders) by their name; each folder is listed once per run.
 bool StartLocateJob(const std::vector<AssetIdentity>& missing, const AssetIdentity& picked,
-                    const AssetIdentity* self, const LocateSearch& search)
+                    const AssetIdentity* self, const LocateSearch& search,
+                    const std::vector<ByNameTarget>& by_name = {}, const std::string& by_name_dir = {})
 {
     if (g_job.running) {
         ShowToastNoUndo("Already locating...");
@@ -507,6 +551,13 @@ bool StartLocateJob(const std::vector<AssetIdentity>& missing, const AssetIdenti
     g_job.picked = picked;
     g_job.proj = EnumProjects(-1, nullptr, 0);
     g_job.relink = false;  // set by StartLocate once started
+    g_job.search = false;  // set by StartLocateFolder once started
+    g_job.root.clear();
+    g_job.self_name.clear();
+    g_job.self_file.clear();
+    g_job.self_lib.clear();
+    g_job.self_node.clear();
+    g_job.self_was.clear();
     g_job.done = false;
     g_job.cancel = false;
     g_job.running = true;
@@ -514,28 +565,59 @@ bool StartLocateJob(const std::vector<AssetIdentity>& missing, const AssetIdenti
         std::lock_guard<std::mutex> lk(g_job.mu);
         g_job.found.clear();
         g_job.ambiguous = 0;
+        g_job.by_name.clear();
     }
     const std::string   resource = ResourcePath();
     const bool          has_self = self != nullptr;
     const AssetIdentity self_id = self ? *self : AssetIdentity{};
     const std::string   self_path = picked.last_path;
     try {
-        g_job.worker = std::thread([missing, has_self, self_id, self_path, search, resource]() {
+        g_job.worker = std::thread([missing, has_self, self_id, self_path, search, resource, by_name, by_name_dir]() {
             const int slot = RAV_WORKER_SLOT("Locate", 0);  // freeze audit
             (void)slot;
             RAV_WORKER_BUSY(slot, "searching", self_path);
-            LocateOutcome out;
+            LocateOutcome            out;
+            std::vector<FoundByName> named;
             if (has_self) out.found.push_back({self_id, self_path});
             try {
-                const std::vector<LookupResult> res =
-                    search(missing, MakeCachedFolderLister(resource, nullptr, &g_job.cancel), &g_job.cancel);
+                // Each folder listed once in this run (the identity search and the by-name one share a root).
+                const FolderLister base = MakeCachedFolderLister(resource, nullptr, &g_job.cancel);
+                std::map<std::string, std::vector<DbFile>> listed;
+                const FolderLister lister = [&base, &listed](const std::string& folder) {
+                    const auto it = listed.find(folder);
+                    if (it != listed.end()) return it->second;
+                    return listed[folder] = base(folder);
+                };
+                const std::vector<LookupResult> res = search(missing, lister, &g_job.cancel);
                 out = ClassifyLocate(missing, res, has_self ? &self_id : nullptr, self_path);
+                if (!by_name.empty() && !by_name_dir.empty() && !g_job.cancel) {
+                    const std::vector<DbFile> files = lister(by_name_dir);
+                    std::vector<std::string>  paths;
+                    for (const DbFile& f : files) paths.push_back(f.path);
+                    for (const ByNameTarget& t : by_name) {
+                        const std::string p = FirstByStem(paths, t.name);
+                        if (p.empty()) continue;
+                        FoundByName fb;
+                        fb.lib_uid = t.lib_uid;
+                        fb.node_uid = t.node_uid;
+                        fb.found.last_path = p;
+                        fb.found.name = BaseNameOf(p);
+                        for (const DbFile& f : files)
+                            if (f.path == p) {
+                                fb.found.size = f.size;
+                                fb.found.length = f.length;
+                                break;
+                            }
+                        named.push_back(std::move(fb));
+                    }
+                }
             } catch (...) {
             }
             {
                 std::lock_guard<std::mutex> lk(g_job.mu);
                 g_job.found = std::move(out.found);
                 g_job.ambiguous = out.ambiguous;
+                g_job.by_name = std::move(named);
             }
             RAV_WORKER_IDLE(slot);
             g_job.done = true;
@@ -548,6 +630,27 @@ bool StartLocateJob(const std::vector<AssetIdentity>& missing, const AssetIdenti
     return true;
 }
 
+// Spec missing-sounds-window ("Locate...: one file, then its folder for the others"): the results RelocateFolder did
+// not find are looked for under the picked file's folder (and its subfolders).
+std::vector<LookupResult> NearPicked(std::vector<LookupResult> res, const std::string& dir,
+                                     const std::vector<AssetIdentity>& missing, const FolderLister& lister,
+                                     const std::atomic<bool>* cancel)
+{
+    if (dir.empty()) return res;
+    std::vector<AssetIdentity> rest;
+    std::vector<size_t>        at;
+    for (size_t i = 0; i < missing.size() && i < res.size(); ++i)
+        if (res[i].status != LookupStatus::Found) {
+            rest.push_back(missing[i]);
+            at.push_back(i);
+        }
+    if (rest.empty()) return res;
+    const std::vector<LookupResult> more = LocateUnderRoot(dir, rest, lister, cancel);
+    for (size_t k = 0; k < more.size() && k < at.size(); ++k)
+        if (more[k].status == LookupStatus::Found) res[at[k]] = more[k];
+    return res;
+}
+
 // `allow_rename` (the Sound's own Locate, 13-50 review): a file of another name is that Sound's file
 // renamed: the Sound takes it whole (name, path, size, length) in the same undo point as the others
 // found through its old folder. Otherwise (the library menu's "first missing sound") it is refused.
@@ -555,11 +658,19 @@ void StartLocate(const std::string& lib_uid, const std::string& node_uid, const 
 {
     const SoundLibrary* lib = FindLibrary(GetSoundStore(nullptr), lib_uid);
     const SoundNode*    n = lib ? FindNode(*lib, node_uid) : nullptr;
-    if (!n || n->sound.source.kind != SoundSourceKind::File) return;
+    if (!n || n->type != SoundNodeType::Sound) return;
+    // Spec missing-sounds-window: an item Sound whose item is gone takes the picked file as its remembered one
+    // (its kind kept); one whose item is there plays the item.
+    if (n->sound.source.kind == SoundSourceKind::Item && !ItemSoundGone(*n)) {
+        ShowToastNoUndo("Its item is in the project: it plays the item");
+        return;
+    }
+    const std::string   self_name = n->name.empty() ? std::string("Sound") : n->name;
     const AssetIdentity stored = n->sound.source.asset;
-    const bool renamed = LowerAscii(BaseNameOf(picked)) != LowerAscii(BaseNameOf(stored.name));
+    const bool unknown = stored.name.empty() && stored.last_path.empty();  // an older item Sound
+    const bool renamed = unknown || LowerAscii(BaseNameOf(picked)) != LowerAscii(BaseNameOf(stored.name));
     if (renamed && !allow_rename) {
-        ShowToastNoUndo("That is not " + stored.name);
+        ShowToastNoUndo("That is not " + (stored.name.empty() ? self_name : stored.name));
         return;
     }
     if (g_job.running) {  // before the PCM_source below
@@ -586,11 +697,17 @@ void StartLocate(const std::string& lib_uid, const std::string& node_uid, const 
             if (!(LowerAscii(id.last_path) == LowerAscii(stored.last_path) && SameAssetIdentity(id, stored)))
                 others.push_back(id);
         const AssetIdentity key = RenamedLocateKey(stored.last_path, located);
-        const LocateSearch  search = [key, picked](const std::vector<AssetIdentity>& missing,
-                                                  const FolderLister& lister, const std::atomic<bool>*) {
-            return RelocateFolder(key, picked, missing, lister);
+        const std::string   dir = FolderOf(picked);
+        const LocateSearch  search = [key, picked, dir](const std::vector<AssetIdentity>& missing,
+                                                       const FolderLister& lister, const std::atomic<bool>* cancel) {
+            return NearPicked(RelocateFolder(key, picked, missing, lister), dir, missing, lister, cancel);
         };
-        if (!StartLocateJob(others, located, nullptr, search)) return;
+        if (!StartLocateJob(others, located, nullptr, search, MissingByName(lib_uid, node_uid), dir)) return;
+        g_job.self_name = self_name;
+        g_job.self_file = located.name;
+        g_job.self_lib = lib_uid;
+        g_job.self_node = node_uid;
+        g_job.self_was = stored.last_path;
         g_job.relink = true;
         g_job.relink_lib = lib_uid;
         g_job.relink_node = node_uid;
@@ -608,11 +725,20 @@ void StartLocate(const std::string& lib_uid, const std::string& node_uid, const 
     // the Sound's size and length from it, so a file of another size no longer stays red, 13-7b).
     AssetIdentity old_id = located;
     old_id.last_path = stored.last_path;
-    const LocateSearch search = [old_id, picked](const std::vector<AssetIdentity>& missing,
-                                                 const FolderLister& lister, const std::atomic<bool>*) {
-        return RelocateFolder(old_id, picked, missing, lister);  // the lister stops on cancel
+    const std::string  dir = FolderOf(picked);
+    const LocateSearch search = [old_id, picked, dir](const std::vector<AssetIdentity>& missing,
+                                                      const FolderLister& lister, const std::atomic<bool>* cancel) {
+        // the lister stops on cancel; spec missing-sounds-window: the others not found so are looked for in its folder
+        return NearPicked(RelocateFolder(old_id, picked, missing, lister), dir, missing, lister, cancel);
     };
-    if (StartLocateJob(MissingIdentities(), located, &self, search)) ShowToastNoUndo("Locating...");
+    if (StartLocateJob(MissingIdentities(), located, &self, search, MissingByName(lib_uid, node_uid), dir)) {
+        g_job.self_name = self_name;
+        g_job.self_file = located.name;
+        g_job.self_lib = lib_uid;
+        g_job.self_node = node_uid;
+        g_job.self_was = stored.last_path;
+        ShowToastNoUndo("Locating...");
+    }
 }
 
 // 13-38: "Locate in a folder": every missing File Sound (all libraries) is looked for under `root`
@@ -624,8 +750,10 @@ void StartLocateFolder(const std::string& root)
         ShowToastNoUndo("Already locating...");
         return;
     }
+    g.last_searched = root;
     const std::vector<AssetIdentity> missing = MissingIdentities();
-    if (missing.empty()) {
+    const std::vector<ByNameTarget>  by_name = MissingByName();
+    if (missing.empty() && by_name.empty()) {
         ShowToastNoUndo("No missing sound");
         return;
     }
@@ -633,7 +761,11 @@ void StartLocateFolder(const std::string& root)
                                        const std::atomic<bool>* cancel) {
         return LocateUnderRoot(root, m, lister, cancel);
     };
-    if (StartLocateJob(missing, AssetIdentity{}, nullptr, search)) ShowToastNoUndo("Locating in " + root + "...");
+    if (StartLocateJob(missing, AssetIdentity{}, nullptr, search, by_name, root)) {
+        g_job.search = true;
+        g_job.root = root;
+        ShowToastNoUndo("Searching " + root + "...");
+    }
 }
 
 void ApplyLocateResult()
@@ -641,10 +773,12 @@ void ApplyLocateResult()
     if (!g_job.running || !g_job.done) return;
     JoinLocate();
     std::vector<std::pair<AssetIdentity, std::string>> found;
+    std::vector<FoundByName>                           named;
     int ambiguous = 0;
     {
         std::lock_guard<std::mutex> lk(g_job.mu);
         found.swap(g_job.found);
+        named.swap(g_job.by_name);
         ambiguous = g_job.ambiguous;
     }
     if (g_job.cancel) {  // 13-50 (13-11): Cancel keeps nothing, not even what was found before it
@@ -657,18 +791,53 @@ void ApplyLocateResult()
         ShowToastNoUndo("Locate dropped: the project changed while it ran (nothing changed)");
         return;
     }
-    int changed = 0, relinked = 0;
+    int changed = 0, relinked = 0, by_name = 0;
     const AssetIdentity* picked = g_job.picked.last_path.empty() ? nullptr : &g_job.picked;
-    ModifySoundStore(nullptr, "RAV: Locate sounds", [&](SoundStore& s) {
-        if (g_job.relink) relinked = ApplyRelinked(s, g_job.relink_lib, g_job.relink_node, g_job.relink_old, g_job.relink_now);
-        changed = ApplyLocated(s, found, picked);
-        return changed + relinked > 0;
+    // Spec missing-sounds-window: an item Sound whose item is gone has its remembered file relinked (kind kept).
+    const std::function<bool(const SoundNode&)> item_ok = [](const SoundNode& n) { return ItemSoundGone(n); };
+    const char* desc = g_job.search ? "RAV: Search a folder for missing sounds" : "RAV: Locate sounds";
+    RefreshCaches();
+    ModifySoundStore(nullptr, desc, [&](SoundStore& s) {
+        if (g_job.relink)
+            relinked = ApplyRelinked(s, g_job.relink_lib, g_job.relink_node, g_job.relink_old, g_job.relink_now, item_ok);
+        changed = ApplyLocated(s, found, picked, item_ok);
+        by_name = ApplyFoundByName(s, named);
+        return changed + relinked + by_name > 0;
     });
     g.resolved.clear();
-    const std::string msg = relinked > 0 ? RelinkToastText(g_job.relink_old.name, g_job.relink_now.name, changed,
-                                                           g_job.missing, ambiguous)
-                                         : LocateToastText(changed, g_job.missing, ambiguous);
-    ShowLibraryToast(msg, changed + relinked > 0, "RAV: Locate sounds");
+    g.from_items.clear();
+    // Only the Sounds that now play the file found by their name (one that already remembered a file, or was
+    // deleted, was left as it was).
+    bool self_now = false;
+    {
+        const SoundStore& now = GetSoundStore(nullptr);
+        auto asset_of = [&now](const std::string& lib_uid, const std::string& node_uid) -> const AssetIdentity* {
+            const SoundLibrary* l = FindLibrary(now, lib_uid);
+            const SoundNode*    n = l ? FindNode(*l, node_uid) : nullptr;
+            return n ? &n->sound.source.asset : nullptr;
+        };
+        for (const FoundByName& f : named)
+            if (const AssetIdentity* a = asset_of(f.lib_uid, f.node_uid))
+                if (a->last_path == f.found.last_path) g.by_name_found.insert(f.lib_uid + "\n" + f.node_uid);
+        if (!g_job.self_node.empty() && !g_job.picked.last_path.empty())
+            if (const AssetIdentity* a = asset_of(g_job.self_lib, g_job.self_node))
+                self_now = a->last_path == g_job.picked.last_path && g_job.self_was != g_job.picked.last_path;
+    }
+    const bool any = changed + relinked + by_name > 0;
+    std::string msg;
+    if (g_job.search) {
+        msg = SearchToastText(changed + by_name, by_name, g_job.root, static_cast<int>(ListAllMissingSounds().size()), ambiguous);
+    } else if (self_now) {
+        // The mockup's Locate toast: the picked Sound, then what was found next to it.
+        const int others = changed + relinked + by_name - 1;
+        msg = "\"" + g_job.self_name + "\" now plays " + g_job.self_file + ". The other missing sounds were looked for in its folder";
+        if (others > 0) msg += " (" + std::to_string(others) + " found" + (by_name > 0 ? ", " + std::to_string(by_name) + " by name: check them" : std::string()) + ")";
+        msg += AmbiguousText(ambiguous) + ". Ctrl+Z undoes.";
+    } else {
+        msg = relinked > 0 ? RelinkToastText(g_job.relink_old.name, g_job.relink_now.name, changed, g_job.missing, ambiguous)
+                           : LocateToastText(changed, g_job.missing, ambiguous);
+    }
+    ShowLibraryToast(msg, any, desc);
 }
 
 // ---- Pickers (run by the timer) -----------------------------------------------------------------
@@ -779,6 +948,7 @@ void RunLocatePick(const std::string& lib_uid, const std::string& node_uid, bool
         const SoundNode*    n = lib ? FindNode(*lib, node_uid) : nullptr;
         if (!n) return;
         name = n->sound.source.asset.name.empty() ? BaseNameOf(n->sound.source.asset.last_path) : n->sound.source.asset.name;
+        if (name.empty()) name = n->name;  // spec missing-sounds-window: an older item Sound (file unknown): its name
         try {
             folder = fs::u8path(n->sound.source.asset.last_path).parent_path().u8string();
         } catch (...) {
@@ -799,6 +969,64 @@ void RunLocateFolderPick()
     std::string root;
     if (!PickFolder(Owner(), root)) return;  // cancelled
     StartLocateFolder(root);
+}
+
+// Spec missing-sounds-window: every item Sound whose item is in the project remembers the file its active take plays
+// (name, size, length, last path), so it still plays that file once the item is gone. Written silently (no undo
+// point), only when it differs; run from the timer (never inside a frame: the store is replaced).
+void RefreshItemAssets(ReaProject* proj)
+{
+    struct Update {
+        std::string   lib, node;
+        AssetIdentity asset;
+    };
+    std::vector<Update> updates;
+    {
+        std::unordered_map<std::string, MediaItem*> items;  // lower GUID -> item (one pass over the project)
+        const int ni = CountMediaItems(proj);
+        for (int i = 0; i < ni; ++i)
+            if (MediaItem* it = GetMediaItem(proj, i)) items[LowerAscii(ItemGuidOf(it))] = it;
+        const SoundStore& store = GetSoundStore(proj);
+        for (const SoundLibrary& lib : store.libraries)
+            for (const SoundNode& n : lib.nodes) {
+                const SoundSource& src = n.sound.source;
+                if (n.type != SoundNodeType::Sound || src.kind != SoundSourceKind::Item || src.item_guid.empty()) continue;
+                const auto hit = items.find(LowerAscii(src.item_guid));
+                MediaItem* item = hit == items.end() ? nullptr : hit->second;
+                if (!item || IsFolderItem(item)) continue;
+                MediaItem_Take* t = GetActiveTake(item);
+                PCM_source*     pcm = t ? GetMediaItemTake_Source(t) : nullptr;
+                const char*     fn = pcm ? pcm->GetFileName() : nullptr;
+                if (!fn || !fn[0]) continue;
+                const std::string path = AbsoluteMediaPath(fn, ProjectFolder());
+                const double      len = pcm->GetLength();
+                const AssetIdentity& a = src.asset;
+                const bool same_len = !(len > 0.0) ? a.length < 0.0 : std::fabs(a.length - len) < 1e-6;
+                if (a.last_path == path && a.name == BaseNameOf(path) && same_len && a.size >= 0) continue;  // cheap: no disk
+                AssetIdentity now = a;
+                now.name = BaseNameOf(path);
+                now.last_path = path;
+                now.length = len > 0.0 ? len : -1.0;
+                now.size = FileSize(path);
+                if (now.name == a.name && now.last_path == a.last_path && now.size == a.size && now.length == a.length) continue;
+                updates.push_back({lib.uid, n.uid, now});
+            }
+    }
+    if (updates.empty()) return;
+    ModifySoundStore(proj, nullptr, [&](SoundStore& s) {
+        bool any = false;
+        for (const Update& u : updates) {
+            SoundLibrary* l = FindLibrary(s, u.lib);
+            SoundNode*    x = l ? FindNode(*l, u.node) : nullptr;
+            if (!x || x->sound.source.kind != SoundSourceKind::Item) continue;
+            AssetIdentity& a = x->sound.source.asset;
+            if (a.name == u.asset.name && a.last_path == u.asset.last_path && a.size == u.asset.size && a.length == u.asset.length)
+                continue;
+            a = u.asset;
+            any = true;
+        }
+        return any;
+    });
 }
 
 void OnTimer()
@@ -824,6 +1052,7 @@ void OnTimer()
         if (st != g.last_state || proj != g.last_proj) {
             g.last_state = st;
             g.last_proj = proj;
+            RefreshItemAssets(proj);  // spec missing-sounds-window: item Sounds remember their item's file
             Autosave(proj);
         }
     } catch (...) {
@@ -962,6 +1191,81 @@ bool FileSoundMissing(const SoundNode& n)
     return SoundFilePath(n.sound.source).empty();
 }
 
+bool ItemSoundGone(const SoundNode& n)
+{
+    if (n.type != SoundNodeType::Sound || n.sound.source.kind != SoundSourceKind::Item) return false;
+    if (n.sound.source.item_guid.empty()) return true;
+    RefreshCaches();
+    return !g.live_files.count(LowerAscii(n.sound.source.item_guid));
+}
+
+std::string SoundNodeFilePath(const SoundNode& n)
+{
+    if (n.type != SoundNodeType::Sound) return {};
+    const AssetIdentity& a = n.sound.source.asset;
+    if (n.sound.source.kind == SoundSourceKind::Item && a.name.empty() && a.last_path.empty()) return {};
+    return SoundFilePath(n.sound.source);
+}
+
+bool SoundNodeMissing(const SoundNode& n, MissingWhy* why)
+{
+    return SoundIsMissing(
+        n, [](const SoundNode& x) { return ItemSoundGone(x); }, [](const SoundNode& x) { return SoundNodeFilePath(x).empty(); },
+        why);
+}
+
+std::vector<MissingSound> ListMissingSounds(const SoundLibrary& lib)
+{
+    return ListMissing(
+        lib, [](const SoundNode& x) { return ItemSoundGone(x); }, [](const SoundNode& x) { return SoundNodeFilePath(x).empty(); });
+}
+
+std::vector<MissingSound> ListAllMissingSounds()
+{
+    std::vector<MissingSound> out;
+    for (const SoundLibrary& lib : GetSoundStore(nullptr).libraries) {
+        std::vector<MissingSound> m = ListMissingSounds(lib);
+        out.insert(out.end(), m.begin(), m.end());
+    }
+    return out;
+}
+
+AssetIdentity ItemFileAsset(MediaItem* item)
+{
+    AssetIdentity a;
+    if (!item || IsFolderItem(item)) return a;
+    MediaItem_Take* t = GetActiveTake(item);
+    PCM_source*     src = t ? GetMediaItemTake_Source(t) : nullptr;
+    const char*     fn = src ? src->GetFileName() : nullptr;
+    if (!fn || !fn[0]) return a;
+    a.last_path = AbsoluteMediaPath(fn, ProjectFolder());
+    a.name = BaseNameOf(a.last_path);
+    a.size = FileSize(a.last_path);
+    const double len = src->GetLength();
+    a.length = len > 0.0 ? len : -1.0;
+    return a;
+}
+
+void RequestMissingSearchFolder()
+{
+    RequestLibraryLocateFolder();
+}
+
+const std::string& MissingLastSearchedFolder()
+{
+    return g.last_searched;
+}
+
+bool SoundFoundByName(const std::string& lib_uid, const std::string& node_uid)
+{
+    return g.by_name_found.count(lib_uid + "\n" + node_uid) > 0;
+}
+
+void ForgetFoundByName()
+{
+    g.by_name_found.clear();
+}
+
 bool PrepareFileSound(ReaProject* proj, const std::string& lib_uid, const std::string& node_uid,
                       FileSoundTarget* out, std::string* why, bool make_track)
 {
@@ -970,14 +1274,17 @@ bool PrepareFileSound(ReaProject* proj, const std::string& lib_uid, const std::s
     const SoundStore    store = GetSoundStore(proj);
     const SoundLibrary* lib = FindLibrary(store, lib_uid);
     const SoundNode*    n = lib ? FindNode(*lib, node_uid) : nullptr;
-    if (!n || n->type != SoundNodeType::Sound || n->sound.source.kind != SoundSourceKind::File) {
+    // Spec missing-sounds-window: an item Sound whose item is gone is placed from the file it remembers.
+    const bool gone_item = n && n->type == SoundNodeType::Sound && n->sound.source.kind == SoundSourceKind::Item &&
+                           ItemSoundGone(*n);
+    if (!n || n->type != SoundNodeType::Sound || (n->sound.source.kind != SoundSourceKind::File && !gone_item)) {
         if (why) *why = "Not a file sound";
         return false;
     }
     // 13-24 (C3): a Sound converted from a Project Library is still placed from its own project item,
     // as before the conversion (an older build's imported library item keeps the file-first rule).
     // An offline own item gives way to the file once Locate has found it again.
-    if (!n->sound.source.item_guid.empty()) {
+    if (!gone_item && !n->sound.source.item_guid.empty()) {
         MediaItem* own = FindItemByGuid(n->sound.source.item_guid);
         RefreshCaches();
         const auto f = g.live_files.find(LowerAscii(n->sound.source.item_guid));
@@ -992,7 +1299,7 @@ bool PrepareFileSound(ReaProject* proj, const std::string& lib_uid, const std::s
     const std::string path = ResolvedPath(n->sound.source.asset);
     if (path.empty()) {
         // An older build imported the file as a muted source item: still placed from it.
-        if (!n->sound.source.item_guid.empty() && FindItemByGuid(n->sound.source.item_guid)) {
+        if (!gone_item && !n->sound.source.item_guid.empty() && FindItemByGuid(n->sound.source.item_guid)) {
             out->item_guid = n->sound.source.item_guid;
             return true;
         }

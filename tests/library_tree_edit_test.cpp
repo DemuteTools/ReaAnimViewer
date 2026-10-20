@@ -386,37 +386,80 @@ static void TestLibrariesAndMisc()
     std::string grp;
     CHECK(GroupRows(t, "L", {{"gr", "g1"}, {"gr", "g2"}}, SoundNodeType::Random, "", &grp));
     CHECK(N(t, "L", "g1")->parent == grp && N(t, "L", "g2")->parent == grp && N(t, "L", grp)->parent == "gr");
-    // The missing list (on a copy): an item Sound whose item is gone, else a file not found; its name and reason.
+    // The missing list (on a copy), the one rule (spec missing-sounds-window): a File Sound whose file is not found;
+    // an item Sound whose item is gone and whose remembered file is not found (file known) or was never remembered
+    // (file unknown); an item Sound whose item is gone but whose file is on disk is not missing.
     {
         SoundLibrary L = *FindLibrary(t, "L");
         for (SoundNode& x : L.nodes) {
             if (x.uid == "g2") x.sound.source.kind = SoundSourceKind::File;
+            if (x.uid == "g2") x.sound.source.asset.last_path = "E:/Old/Step.wav";
             if (x.uid == "g1") x.sound.source.kind = SoundSourceKind::Item;
             if (x.uid == "g2") x.name.clear();
         }
+        bool g1_file_found = false;
         auto gone = [](const SoundNode& x) { return x.uid == "g1"; };
-        auto file = [](const SoundNode& x) { return x.sound.source.kind == SoundSourceKind::File && x.uid == "g2"; };
+        auto file = [&g1_file_found](const SoundNode& x) {
+            if (x.uid == "g1") return !g1_file_found;
+            return x.sound.source.kind == SoundSourceKind::File && x.uid == "g2";
+        };
+        // Old item Sound (asset empty, item gone): file unknown.
         std::vector<MissingSound> m = ListMissing(L, gone, file);
-        CHECK(m.size() == 2 && m[0].uid == "g1" && m[0].why == MissingWhy::ItemGone);
+        CHECK(m.size() == 2 && m[0].uid == "g1" && m[0].why == MissingWhy::ItemGoneFileUnknown && m[0].lib_uid == "L");
+        CHECK(MissingStatus(m[0]) == "Item not in the project \xC2\xB7 file unknown");
         CHECK(m[1].uid == "g2" && m[1].why == MissingWhy::FileNotFound && m[1].name == "Sound");  // unnamed
+        // File moved: "File not found · was <path>".
+        CHECK(m[1].path == "E:/Old/Step.wav" && MissingStatus(m[1]) == "File not found \xC2\xB7 was E:/Old/Step.wav");
+        // Item deleted, file moved (asset known, not on disk): listed with its file's name.
+        for (SoundNode& x : L.nodes)
+            if (x.uid == "g1") {
+                x.sound.source.asset.name = "FEETHmn_Wood Walk 01.wav";
+                x.sound.source.asset.last_path = "C:/Proj/Media Files/FEETHmn_Wood Walk 01.wav";
+            }
+        m = ListMissing(L, gone, file);
+        CHECK(m.size() == 2 && m[0].why == MissingWhy::ItemGoneFileKnown && m[0].file == "FEETHmn_Wood Walk 01.wav");
+        CHECK(MissingStatus(m[0]) == "Item not in the project \xC2\xB7 file not found either: FEETHmn_Wood Walk 01.wav");
+        MissingWhy why = MissingWhy::FileNotFound;
+        CHECK(SoundIsMissing(*FindNode(L, "g1"), gone, file, &why) && why == MissingWhy::ItemGoneFileKnown);
+        // Item deleted, file on disk: plays the file, not missing.
+        g1_file_found = true;
+        m = ListMissing(L, gone, file);
+        CHECK(m.size() == 1 && m[0].uid == "g2");
+        CHECK(!SoundIsMissing(*FindNode(L, "g1"), gone, file));
+        // Its item still there: never missing, whatever its remembered file.
+        g1_file_found = false;
+        CHECK(!SoundIsMissing(*FindNode(L, "g1"), [](const SoundNode&) { return false; }, file));
         // A File Sound is never "item gone", even when the item test would say so.
         for (SoundNode& x : L.nodes)
             if (x.uid == "g1") x.sound.source.kind = SoundSourceKind::File;
         m = ListMissing(L, gone, file);
-        CHECK(m.size() == 1 && m[0].uid == "g2");
+        CHECK(m.size() == 2 && m[0].uid == "g1" && m[0].why == MissingWhy::FileNotFound);
         CHECK(ListMissing(L, nullptr, nullptr).empty());
-        const std::string tip = MissingTip({{"a", "Hit", MissingWhy::ItemGone}, {"b", "Step", MissingWhy::FileNotFound}});
-        CHECK(tip.find("2 missing sounds") == 0 && tip.find("Hit (its item is not in the project)") != std::string::npos &&
+        // A fixed row's status.
+        CHECK(FixedStatus("E:/Boom/Walk 03.wav", false) == "Fixed \xC2\xB7 E:/Boom/Walk 03.wav");
+        CHECK(FixedStatus("E:/Boom/Handle.wav", true) == "Found by name: check it \xC2\xB7 E:/Boom/Handle.wav");
+        // By name: the stem, ignoring case; several matches: the first by path order.
+        CHECK(StemMatches("E:\\Boom\\METLHndl_Shoehorn Handle 02_B00M_ONE.wav", "metlhndl_shoehorn handle 02_b00m_one"));
+        CHECK(!StemMatches("E:/Boom/Ladder Grip 2.wav", "Ladder Grip") && !StemMatches("E:/a.wav", ""));
+        CHECK(StemMatches("E:/x/Grip.v2.wav", "Grip.v2") && StemMatches("Grip", "grip"));
+        CHECK(FirstByStem({"E:/z/Grip.wav", "E:/A/grip.flac", "E:/b/Other.wav"}, "Grip") == "E:/A/grip.flac");
+        CHECK(FirstByStem({"E:/b/Other.wav"}, "Grip").empty());
+        // Search a folder's toast.
+        CHECK(SearchToastText(5, 2, "E:\\Boom", 3) == "Found 5 in E:\\Boom (2 by name: check them), 3 still missing. Ctrl+Z undoes.");
+        CHECK(SearchToastText(4, 0, "E:\\Boom", 0) == "Found 4 in E:\\Boom. Ctrl+Z undoes.");
+        CHECK(SearchToastText(0, 0, "E:\\Boom", 2) == "Nothing found in E:\\Boom, 2 still missing");
+        // A sound with several candidates stays missing: said so.
+        CHECK(SearchToastText(3, 0, "E:\\Boom", 2, 2) ==
+              "Found 3 in E:\\Boom, 2 still missing, 2 with several candidates: Locate them one by one. Ctrl+Z undoes.");
+        CHECK(SearchToastText(0, 0, "E:\\Boom", 1, 1) == "Nothing found in E:\\Boom, 1 still missing, 1 with several candidates: Locate it");
+        CHECK(AmbiguousText(0).empty());
+        const std::string tip = MissingTip({{"a", "Hit", MissingWhy::ItemGoneFileKnown}, {"b", "Step", MissingWhy::FileNotFound}});
+        CHECK(tip.find("2 missing sounds") == 0 && tip.find("Hit (its item is not in the project, its file not found either)") != std::string::npos &&
               tip.find("Step (file not found)") != std::string::npos);
-        CHECK(MissingTip({{"a", "A", MissingWhy::ItemGone}, {"b", "B", MissingWhy::ItemGone}}, 1).find("and 1 more") !=
+        CHECK(MissingTip({{"a", "A", MissingWhy::ItemGoneFileUnknown}, {"b", "B", MissingWhy::ItemGoneFileUnknown}}, 1).find("and 1 more") !=
               std::string::npos);
-        CHECK(MissingTip({{"a", "A", MissingWhy::ItemGone}}, 1) == "1 missing sound:\n- A (its item is not in the project)");
+        CHECK(MissingTip({{"a", "A", MissingWhy::ItemGoneFileUnknown}}, 1) == "1 missing sound:\n- A (its item is not in the project, file unknown)");
         CHECK(MissingTip({}).empty());
-        // Locate never says "no missing sound" while items are gone.
-        CHECK(LocateFolderTip(0, 0) == "No missing sound in any library");
-        CHECK(LocateFolderTip(0, 3).find("No missing file") == 0 && LocateFolderTip(0, 3).find("3 sounds play an item") != std::string::npos);
-        CHECK(LocateFolderTip(2, 0).find("Pick the folder") == 0 && LocateFolderTip(2, 0).find("deleted") == std::string::npos);
-        CHECK(LocateFolderTip(2, 1).find("1 sound plays an item") != std::string::npos);
     }
     std::string gid, vid;
     CHECK(AddGroup(t, "Material", &gid) && FindGroup(t, gid)->name == "Material 2");

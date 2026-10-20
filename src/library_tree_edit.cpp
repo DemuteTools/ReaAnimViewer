@@ -1663,17 +1663,54 @@ bool DeleteLibrary(SoundStore& store, const std::string& lib_uid)
     return true;
 }
 
+bool SoundIsMissing(const SoundNode& s, const std::function<bool(const SoundNode&)>& item_gone,
+                    const std::function<bool(const SoundNode&)>& file_missing, MissingWhy* why)
+{
+    if (s.type != SoundNodeType::Sound) return false;
+    const SoundSource& src = s.sound.source;
+    if (src.kind == SoundSourceKind::Item) {
+        if (!item_gone || !item_gone(s)) return false;  // its item plays it
+        const bool known = !src.asset.name.empty() || !src.asset.last_path.empty();
+        if (known && !(file_missing && file_missing(s))) return false;  // its remembered file plays it
+        if (why) *why = known ? MissingWhy::ItemGoneFileKnown : MissingWhy::ItemGoneFileUnknown;
+        return true;
+    }
+    if (!file_missing || !file_missing(s)) return false;
+    if (why) *why = MissingWhy::FileNotFound;
+    return true;
+}
+
+namespace {
+std::string LastComponent(const std::string& path)
+{
+    const size_t cut = path.find_last_of("/\\");
+    return cut == std::string::npos ? path : path.substr(cut + 1);
+}
+
+std::string LowerAsciiCopy(std::string s)
+{
+    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+const char kMidDot[] = " \xC2\xB7 ";
+}  // namespace
+
 std::vector<MissingSound> ListMissing(const SoundLibrary& lib, const std::function<bool(const SoundNode&)>& item_gone,
                                       const std::function<bool(const SoundNode&)>& file_missing)
 {
     std::vector<MissingSound> out;
     for (const SoundNode& s : lib.nodes) {
-        if (s.type != SoundNodeType::Sound) continue;
-        MissingWhy why;
-        if (s.sound.source.kind == SoundSourceKind::Item && item_gone && item_gone(s)) why = MissingWhy::ItemGone;
-        else if (file_missing && file_missing(s)) why = MissingWhy::FileNotFound;
-        else continue;
-        out.push_back({s.uid, s.name.empty() ? std::string("Sound") : s.name, why});
+        MissingWhy why = MissingWhy::FileNotFound;
+        if (!SoundIsMissing(s, item_gone, file_missing, &why)) continue;
+        MissingSound m;
+        m.uid = s.uid;
+        m.name = s.name.empty() ? std::string("Sound") : s.name;
+        m.why = why;
+        m.lib_uid = lib.uid;
+        m.path = s.sound.source.asset.last_path;
+        m.file = s.sound.source.asset.name.empty() ? LastComponent(m.path) : s.sound.source.asset.name;
+        out.push_back(std::move(m));
     }
     return out;
 }
@@ -1682,29 +1719,73 @@ std::string MissingTip(const std::vector<MissingSound>& missing, size_t max_line
 {
     if (missing.empty()) return {};
     std::string t = std::to_string(missing.size()) + (missing.size() == 1 ? " missing sound:" : " missing sounds:");
-    for (size_t i = 0; i < missing.size() && i < max_lines; ++i)
-        t += "\n- " + missing[i].name +
-             (missing[i].why == MissingWhy::ItemGone ? " (its item is not in the project)" : " (file not found)");
+    for (size_t i = 0; i < missing.size() && i < max_lines; ++i) {
+        const char* why = missing[i].why == MissingWhy::ItemGoneFileKnown   ? " (its item is not in the project, its file not found either)"
+                          : missing[i].why == MissingWhy::ItemGoneFileUnknown ? " (its item is not in the project, file unknown)"
+                                                                              : " (file not found)";
+        t += "\n- " + missing[i].name + why;
+    }
     if (missing.size() > max_lines) t += "\nand " + std::to_string(missing.size() - max_lines) + " more";
     return t;
 }
 
-std::string LocateFolderTip(int files_missing, int items_gone)
+std::string MissingStatus(const MissingSound& m)
 {
-    std::string t;
-    if (files_missing > 0)
-        t = "Pick the folder that holds the sounds (for example the soundbank's parent): RAV searches it and its "
-            "subfolders for the missing files of every library";
-    else if (items_gone > 0)
-        t = "No missing file to look for";
-    else
-        return "No missing sound in any library";
-    if (items_gone > 0)
-        t += "\n" + std::to_string(items_gone) +
-             (items_gone == 1 ? " sound plays an item" : " sounds play an item") +
-             " that is not in the project, which no folder can bring back: undo its delete, or replace the sound's "
-             "audio (drop a file on its waveform, or right-click it > Replace with selected items)";
-    return t;
+    switch (m.why) {
+    case MissingWhy::FileNotFound:
+        return m.path.empty() ? std::string("File not found") : "File not found" + std::string(kMidDot) + "was " + m.path;
+    case MissingWhy::ItemGoneFileKnown:
+        return "Item not in the project" + std::string(kMidDot) + "file not found either: " +
+               (m.file.empty() ? LastComponent(m.path) : m.file);
+    default:
+        return "Item not in the project" + std::string(kMidDot) + "file unknown";
+    }
+}
+
+std::string FixedStatus(const std::string& plays, bool by_name)
+{
+    return std::string(by_name ? "Found by name: check it" : "Fixed") + kMidDot + plays;
+}
+
+bool StemMatches(const std::string& path, const std::string& name)
+{
+    if (name.empty()) return false;
+    std::string file = LastComponent(path);
+    const size_t dot = file.find_last_of('.');
+    if (dot != std::string::npos && dot > 0) file.resize(dot);
+    return LowerAsciiCopy(file) == LowerAsciiCopy(name);
+}
+
+std::string FirstByStem(const std::vector<std::string>& paths, const std::string& name)
+{
+    const std::string* best = nullptr;
+    std::string        best_key;
+    for (const std::string& p : paths) {
+        if (!StemMatches(p, name)) continue;
+        std::string key = LowerAsciiCopy(p);
+        if (!best || key < best_key) {
+            best = &p;
+            best_key = std::move(key);
+        }
+    }
+    return best ? *best : std::string();
+}
+
+std::string AmbiguousText(int ambiguous)
+{
+    if (ambiguous <= 0) return {};
+    return ", " + std::to_string(ambiguous) + " with several candidates: Locate " + (ambiguous == 1 ? "it" : "them one by one");
+}
+
+std::string SearchToastText(int found, int by_name, const std::string& folder, int still_missing, int ambiguous)
+{
+    if (found <= 0)
+        return "Nothing found in " + folder + (still_missing > 0 ? ", " + std::to_string(still_missing) + " still missing" : std::string()) +
+               AmbiguousText(ambiguous);
+    std::string t = "Found " + std::to_string(found) + " in " + folder;
+    if (by_name > 0) t += " (" + std::to_string(by_name) + " by name: check them)";
+    if (still_missing > 0) t += ", " + std::to_string(still_missing) + " still missing";
+    return t + AmbiguousText(ambiguous) + ". Ctrl+Z undoes.";
 }
 
 }  // namespace rav

@@ -470,6 +470,36 @@ static void TestApplyLocated()
     CHECK(r == 2);
     CHECK(ApplyRelinked(q, q.libraries[0].uid, "n000000000000004", old_id, renamed) == 0);
     CHECK(ApplyRelinked(q, "nolib", "nonode", AssetIdentity{}, renamed) == 0);
+
+    // Spec missing-sounds-window: an item Sound whose item is gone remembers its file; Locate relinks that file
+    // (its kind kept) only when the caller says the item is gone.
+    SoundStore it = RichStore();
+    SoundNode* is = FindNode(it.libraries[0], "n000000000000004");
+    is->sound.source.kind = SoundSourceKind::Item;
+    is->sound.source.item_guid = "{GONE}";
+    const AssetIdentity was = is->sound.source.asset;
+    CHECK(ApplyLocated(it, {{was, "F:/found/wood1.wav"}}) == 0);  // not by default
+    CHECK(is->sound.source.asset.last_path == was.last_path);
+    auto gone = [](const SoundNode& x) { return x.sound.source.item_guid == "{GONE}"; };
+    CHECK(ApplyLocated(it, {{was, "F:/found/wood1.wav"}}, nullptr, gone) == 1);
+    CHECK(is->sound.source.asset.last_path == "F:/found/wood1.wav" && is->sound.source.kind == SoundSourceKind::Item &&
+          is->sound.source.item_guid == "{GONE}");
+    CHECK(ApplyRelinked(it, it.libraries[0].uid, "n000000000000004", was, renamed) == 0);
+    CHECK(ApplyRelinked(it, it.libraries[0].uid, "n000000000000004", was, renamed, gone) == 1);
+    CHECK(is->sound.source.asset.name == "wood1_v2.wav" && is->sound.source.kind == SoundSourceKind::Item);
+    // Found by name: an older item Sound with no remembered file takes it; one that remembers a file is left alone.
+    is->sound.source.asset = AssetIdentity{};
+    FoundByName fb;
+    fb.lib_uid = it.libraries[0].uid;
+    fb.node_uid = "n000000000000004";
+    fb.found.last_path = "E:\\Boom\\Metal\\Handle 02.wav";
+    fb.found.size = 42;
+    CHECK(ApplyFoundByName(it, {fb}) == 1);
+    CHECK(is->sound.source.asset.name == "Handle 02.wav" && is->sound.source.asset.size == 42 &&
+          is->sound.source.kind == SoundSourceKind::Item);
+    CHECK(ApplyFoundByName(it, {fb}) == 0);
+    fb.node_uid = "nonode";
+    CHECK(ApplyFoundByName(it, {fb}) == 0);
 }
 
 static void TestFolderChildren()

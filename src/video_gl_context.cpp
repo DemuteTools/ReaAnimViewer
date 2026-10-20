@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "console_log.h"
+#include "gl_switch.h"  // freeze 2026-10-21: GlMakeCurrent
 
 #ifndef APIENTRY
 #define APIENTRY __stdcall
@@ -98,8 +99,8 @@ bool LoadProc(T& out, const char* name)
 
 void RestoreContext(HDC dc, HGLRC rc)
 {
-    if (rc) wglMakeCurrent(dc, rc);
-    else wglMakeCurrent(nullptr, nullptr);
+    if (rc) GlMakeCurrent(dc, rc);
+    else GlMakeCurrent(nullptr, nullptr);
 }
 
 void LogFailureOnce(ThreadGl& g, const char* what, DWORD err)
@@ -170,7 +171,7 @@ bool CreateThreadContext(ThreadGl& g, bool message_only, GlFailure* fail)
 
     HGLRC prev_rc = wglGetCurrentContext();
     HDC   prev_dc = wglGetCurrentDC();
-    if (!wglMakeCurrent(g.hdc, g.rc)) {
+    if (!GlMakeCurrent(g.hdc, g.rc)) {
         *fail = {"wglMakeCurrent", GetLastError()};
         RestoreContext(prev_dc, prev_rc);  // a failed MakeCurrent un-currents the old one
         return false;
@@ -249,7 +250,8 @@ VideoGlFrame::~VideoGlFrame()
     if (!active_) return;
     ThreadGl& g = t_gl;
     if (g.BindFramebuffer) g.BindFramebuffer(kFramebuffer, 0);
-    RestoreContext(static_cast<HDC>(prev_dc_), static_cast<HGLRC>(prev_rc_));
+    // Ours stays current when nothing else was (freeze 2026-10-21): the next frame switches nothing.
+    if (prev_rc_) RestoreContext(static_cast<HDC>(prev_dc_), static_cast<HGLRC>(prev_rc_));
 }
 
 bool VideoGlFrame::Begin(int width, int height)
@@ -284,15 +286,19 @@ bool VideoGlFrame::Begin(int width, int height)
     MSG msg;
     while (PeekMessageW(&msg, g.hwnd, 0, 0, PM_REMOVE)) DispatchMessageW(&msg);
 
+    // Freeze 2026-10-21 (the AMD driver hung with this thread and the UI thread both in wglMakeCurrent):
+    // our context is left current after a frame when nothing else was, so a frame normally switches nothing.
     HGLRC prev_rc = wglGetCurrentContext();
     HDC   prev_dc = wglGetCurrentDC();
-    if (!wglMakeCurrent(g.hdc, g.rc)) {
-        LogFailureOnce(g, "wglMakeCurrent per frame", GetLastError());
+    const bool ours = prev_rc == g.rc && prev_dc == g.hdc;
+    if (!ours && !GlMakeCurrent(g.hdc, g.rc)) {
+        const DWORD err = GetLastError();
+        if (err != WAIT_TIMEOUT) LogFailureOnce(g, "wglMakeCurrent per frame", err);  // a timeout: this frame only
         RestoreContext(prev_dc, prev_rc);
         return false;
     }
-    prev_dc_ = prev_dc;
-    prev_rc_ = prev_rc;
+    prev_dc_ = ours ? nullptr : prev_dc;  // restored at the end only when it was another context
+    prev_rc_ = ours ? nullptr : prev_rc;
     active_  = true;  // from here on the destructor restores the previous context
     width_   = width;
     height_  = height;

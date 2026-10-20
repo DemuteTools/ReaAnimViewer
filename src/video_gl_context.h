@@ -22,7 +22,8 @@ namespace rav {
 //
 // Begin creates this thread's context on first use, makes it current (saving the
 // context that was current before), and binds a w x h target FBO. The destructor
-// unbinds the FBO and restores the previous context, whatever happened.
+// unbinds the FBO and restores the previous context, whatever happened -- except none:
+// ours then stays current, so the next frame switches nothing (freeze 2026-10-21).
 class VideoGlFrame {
 public:
     VideoGlFrame() = default;

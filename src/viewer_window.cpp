@@ -41,6 +41,7 @@
 #include "console_log.h"
 #include "video_fx_track.h"   // RefreshVideoFxPictures after a display change
 #include "display_settings.h" // Story 11-2: the video FX draws with the viewer's settings
+#include "gl_switch.h"   // freeze 2026-10-21: GlMakeCurrent, one switch at a time across threads
 #include "gl_loader.h"   // LoadGlFunctions + modern-GL pointers; pulls in <gl/GL.h>
 #include "overlay_icons.h"    // kIcon_menu/light/color — Antho's SVGs rasterized to RGBA (Story 6.5.3 rev)
 #include "pcm_source_anim.h"  // GetCurrentAnimItem — the transport→current-item query (Story 4.3)
@@ -500,7 +501,7 @@ void RunLocateTextures()
 void DestroyGLContext()
 {
     if (g_hglrc) {
-        wglMakeCurrent(nullptr, nullptr);
+        GlMakeCurrent(nullptr, nullptr);
         wglDeleteContext(g_hglrc);
         g_hglrc = nullptr;
     }
@@ -733,11 +734,12 @@ void RenderTick()
     // wglGetCurrentContext is a cheap TLS read; the switch only happens when stolen.
     const HGLRC prev_rc = wglGetCurrentContext();
     const HDC   prev_dc = wglGetCurrentDC();
-    const bool  switched = (prev_rc != g_hglrc);
-    if (switched && !wglMakeCurrent(g_hdc, g_hglrc)) return;
+    // Its DC too: a floating window whose switch back timed out leaves our context on ITS DC.
+    const bool  switched = (prev_rc != g_hglrc || prev_dc != g_hdc);
+    if (switched && !GlMakeCurrent(g_hdc, g_hglrc)) return;
     struct RestoreContext {
         bool active; HDC dc; HGLRC rc;
-        ~RestoreContext() { if (active) wglMakeCurrent(dc, rc); }
+        ~RestoreContext() { if (active) GlMakeCurrent(dc, rc); }
     } restore{switched, prev_dc, prev_rc};
 
     // Story 4.3 — poll the transport for the RAV item under the playhead, SYNCHRONOUSLY
@@ -979,7 +981,7 @@ void CALLBACK FrameTimerProc(HWND, UINT, UINT_PTR, DWORD)
             (AttachManagerIsOpen() || AttachManagerFloatHwnd())) {  // open, or shown and to hide
             wd::MainBeat();
             ImGui::SetCurrentContext(g_main_imgui_ctx);
-            if (wglMakeCurrent(g_hdc, g_hglrc)) DrawAttachManagerFloat(g_hwnd, g_hdc, g_hglrc);
+            if (GlMakeCurrent(g_hdc, g_hglrc)) DrawAttachManagerFloat(g_hwnd, g_hdc, g_hglrc);
             if (AttachManagerHasPending() && !g_attach_mgr_post_pending && g_hwnd)
                 g_attach_mgr_post_pending = PostMessageW(g_hwnd, kMsgRunAttachManager, 0, 0) != FALSE;
         }
@@ -2056,7 +2058,7 @@ bool StartRendering(HWND hwnd)
                  "OpenGL or no display is available; the viewer did not open (Reaper is unaffected)");
         return false;
     }
-    if (!wglMakeCurrent(g_hdc, g_hglrc)) {
+    if (!GlMakeCurrent(g_hdc, g_hglrc)) {
         LogError("failed to activate the OpenGL context (wglMakeCurrent); the viewer "
                  "did not open (Reaper is unaffected)");
         return false;
@@ -2212,7 +2214,7 @@ void StopRendering()
         g_timer_id = 0;
     }
     if (g_hglrc) {
-        wglMakeCurrent(g_hdc, g_hglrc);
+        GlMakeCurrent(g_hdc, g_hglrc);
         // ImGui's GL objects (and our icon textures) must be freed while the context is
         // current, before the renderer's and before the context itself is dropped.
         if (g_icon_menu)   { glDeleteTextures(1, &g_icon_menu);   g_icon_menu   = 0; }
@@ -2305,7 +2307,7 @@ bool PaintBusyCard(const BusyFrame& f)
         const HGLRC prev_rc = wglGetCurrentContext();
         const HDC   prev_dc = wglGetCurrentDC();
         const bool  switched = prev_rc != g_hglrc || prev_dc != g_hdc;
-        if (!switched || wglMakeCurrent(g_hdc, g_hglrc)) {
+        if (!switched || GlMakeCurrent(g_hdc, g_hglrc)) {
             ImGuiContext* prev_ctx = ImGui::GetCurrentContext();
             ImGui::SetCurrentContext(g_main_imgui_ctx);
             ImGuiIO& io = ImGui::GetIO();
@@ -2373,7 +2375,7 @@ bool PaintBusyCard(const BusyFrame& f)
                 if (prev_scissor) glEnable(GL_SCISSOR_TEST);
             }
             ImGui::SetCurrentContext(prev_ctx);
-            if (switched) wglMakeCurrent(prev_dc, prev_rc);
+            if (switched) GlMakeCurrent(prev_dc, prev_rc);
         }
     }
     MSG peek;

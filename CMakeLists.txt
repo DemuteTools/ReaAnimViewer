@@ -172,6 +172,7 @@ if(WIN32)
             src/video_preview_lag.cpp
             src/video_fx_track.cpp
             src/video_gl_context.cpp
+            src/gl_switch.cpp
             src/video_test_pattern.cpp
             src/video_camera.cpp
             src/video_shots.cpp

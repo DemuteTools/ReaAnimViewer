@@ -16,6 +16,7 @@
 #include <backends/imgui_impl_win32.h>
 
 #include "gl_loader.h"
+#include "gl_switch.h"  // freeze 2026-10-21: GlMakeCurrent
 #include "shortcuts.h"  // LoadPrefFloat / SavePrefFloat
 #include "ui_theme.h"
 
@@ -150,8 +151,8 @@ bool FloatUiWindow::Create()
     ImGui::GetStyle() = style;
     bool ok = ImGui_ImplWin32_Init(hwnd_);
     if (ok) {
-        ok = wglMakeCurrent(dc_, rc_) && ImGui_ImplOpenGL3_Init("#version 130");
-        wglMakeCurrent(viewer_dc_, rc_);
+        ok = GlMakeCurrent(dc_, rc_) && ImGui_ImplOpenGL3_Init("#version 130");
+        GlMakeCurrent(viewer_dc_, rc_);
         if (!ok) ImGui_ImplWin32_Shutdown();
     }
     if (!ok) {
@@ -206,8 +207,8 @@ void FloatUiWindow::Frame(bool show, bool activate, const std::function<void()>&
     }
 
     ContextScope scope(ctx_);
-    if (!wglMakeCurrent(dc_, rc_)) {
-        wglMakeCurrent(viewer_dc_, rc_);
+    if (!GlMakeCurrent(dc_, rc_)) {
+        GlMakeCurrent(viewer_dc_, rc_);
         return;
     }
     if (!IsWindowVisible(hwnd_)) {
@@ -238,7 +239,7 @@ void FloatUiWindow::Frame(bool show, bool activate, const std::function<void()>&
     glClear(GL_COLOR_BUFFER_BIT);
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     SwapBuffers(dc_);
-    wglMakeCurrent(viewer_dc_, rc_);
+    GlMakeCurrent(viewer_dc_, rc_);
     if (rect_dirty_ && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) == 0) SaveRect();
 }
 
@@ -294,8 +295,8 @@ void FloatUiWindow::Destroy()
         ContextScope scope(ctx_);
         // Its GL objects belong to the shared context, not to a DC: the viewer's DC does when its own is gone.
         const bool own_dc = hwnd_ && dc_ && IsWindow(hwnd_);
-        if (rc_ && ((own_dc && wglMakeCurrent(dc_, rc_)) || wglMakeCurrent(viewer_dc_, rc_))) ImGui_ImplOpenGL3_Shutdown();
-        if (rc_) wglMakeCurrent(viewer_dc_, rc_);
+        if (rc_ && ((own_dc && GlMakeCurrent(dc_, rc_)) || GlMakeCurrent(viewer_dc_, rc_))) ImGui_ImplOpenGL3_Shutdown();
+        if (rc_) GlMakeCurrent(viewer_dc_, rc_);
         ImGui_ImplWin32_Shutdown();
         if (atlas_) atlas_->SetTexID(main_tex_);  // its backend cleared the shared atlas's texture: the viewer's again
     }

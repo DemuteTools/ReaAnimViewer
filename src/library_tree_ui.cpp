@@ -1923,7 +1923,7 @@ void LibraryListRow(const SoundStore& store, const SoundLibrary& lib, std::strin
             const float gs = ui::Dp(14.0f);
             DrawLinkGlyph(dl, ImVec2(tp[i].x, std::floor(y + (rh - gs) * 0.5f)), gs, file_bad ? ui::kBad : ui::kMuted);
             ImGui::Dummy(ImVec2(tp[i].w, rh));
-            ui::ItemTipText(file_bad ? (lib.ravlib_path + " not found in the User Library folder: click the library, then Locate...").c_str()
+            ui::ItemTipText(file_bad ? LinkedFileWordsOf(lfs, lib.ravlib_path).row_tip.c_str()
                                      : ("Linked to " + lib.ravlib_path + " (User Library folder)").c_str());
             continue;
         }

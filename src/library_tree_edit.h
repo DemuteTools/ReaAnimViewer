@@ -232,6 +232,9 @@ bool UnlinkLibraryFromFile(SoundStore& store, const std::string& lib_uid);
 // Points a linked library at another file name (Locate...); the common version stays. False when not linked or
 // already that name.
 bool RelinkLibraryFile(SoundStore& store, const std::string& lib_uid, const std::string& file);
+// Review 13-77a H1: links an unlinked, non-Attached library to a file that already holds it, with NO common version
+// (13-77b then reads every difference as changed on both sides). False when it is not unlinked or `file` is empty.
+bool LinkLibraryWithoutBase(SoundStore& store, const std::string& lib_uid, const std::string& file);
 // Replaces (or sets) the common version of a linked library. False when it is not linked.
 bool SetLinkBase(SoundStore& store, const LinkBase& base);
 // Why a Sound is missing (spec missing-sounds-window, the one rule): a File Sound whose file is not

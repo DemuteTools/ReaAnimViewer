@@ -80,6 +80,72 @@ enum class LinkedFileState { Unlinked, Ok, Missing, OtherLibrary, Unreadable };
 // Where a library's file is: Unlinked (and Attached ones); Ok (the file is in the folder, holding this library);
 // Missing (no such file); OtherLibrary (the file holds another uid); Unreadable. File names compare ignoring case.
 LinkedFileState LinkedFileStateOf(const SoundLibrary& lib, const std::vector<FolderRavlib>& folder);
+// File names compare the way the file system does: ignoring case, accented letters included ("\xC9t\xE9" and
+// "\xE9t\xE9" are one file on NTFS). The host uses a built-in fold (ASCII, Latin-1 / Latin Extended-A, Greek,
+// Cyrillic); the DLL installs the Win32 one (SetFileNameFold) so both agree with the disk.
+using FileNameFoldFn = std::string (*)(const std::string& utf8);
+void        SetFileNameFold(FileNameFoldFn fn);  // nullptr = the built-in fold
+std::string BuiltinFoldFileName(const std::string& utf8);
+std::string FoldFileName(const std::string& utf8);  // the active fold
+bool        SameFileName(const std::string& a, const std::string& b);
+
+// Review 13-77a L2: what a bad state says (Missing / OtherLibrary / Unreadable; empty strings for the other states):
+// the library row's tooltip, the File section's red title and detail line, and "Save it again"'s tooltip.
+struct LinkedFileWords {
+    std::string row_tip, title, detail, save_again_tip;
+};
+LinkedFileWords LinkedFileWordsOf(LinkedFileState st, const std::string& file);
+
+// Review 13-77a H1: "Save to a file..." on an unlinked library never overwrites a file of the folder that already
+// holds this library's uid (another project may use it). WriteNew = the file name is a free one (FreeFileName) and the
+// file is written; LinkExisting = nothing is written, the library is linked to `file` WITHOUT a common version
+// (13-77b then shows every difference as changed on both sides); Refuse = linked or Attached already.
+enum class SaveFileAction { WriteNew, LinkExisting, Refuse };
+struct SaveFileDecision {
+    SaveFileAction action = SaveFileAction::Refuse;
+    std::string    file;  // LinkExisting: the folder's file
+};
+SaveFileDecision DecideSaveToFile(const SoundLibrary& lib, const std::vector<FolderRavlib>& folder);
+// The toast of LinkExisting.
+std::string LinkedExistingToastText(const std::string& file);
+
+// Review 13-77a M1: "Save it again" (the file is gone, or the name holds another library). `target_exists_on_disk` =
+// the library's own file name exists on disk right now (checked just before writing). Nothing = the file is fine again
+// (a stale click); LinkExisting = the folder already holds this uid under another name (renamed in Explorer): link to
+// it, write nothing; WriteSame = the name is free, write the copy there; WriteNew = write under a free name and link.
+enum class RewriteAction { Nothing, WriteSame, WriteNew, LinkExisting };
+struct RewriteDecision {
+    RewriteAction action = RewriteAction::Nothing;
+    std::string   file;  // LinkExisting: the folder's file
+};
+RewriteDecision DecideSaveAgain(const SoundLibrary& lib, const std::vector<FolderRavlib>& folder, bool target_exists_on_disk);
+// "Locate..." picked a .ravlib that holds this library: LinkPicked (it is in the folder), LinkExisting (it is elsewhere
+// but the folder already holds this uid: link to that one, copy nothing), CopyIn (elsewhere, not in the folder yet).
+enum class RelinkAction { LinkPicked, LinkExisting, CopyIn };
+struct RelinkDecision {
+    RelinkAction action = RelinkAction::CopyIn;
+    std::string  file;  // LinkPicked: the picked name; LinkExisting: the folder's file
+};
+RelinkDecision DecideRelink(const std::vector<FolderRavlib>& folder, const std::string& lib_uid, bool picked_in_folder,
+                            const std::string& picked_name);
+// "Import .ravlib...": the picked file's library is already in the project, or its file is in the folder (refused:
+// Add it from the list), or it is copied in.
+enum class ImportAction { AlreadyInProject, Refuse, Copy };
+struct ImportDecision {
+    ImportAction action = ImportAction::Copy;
+    std::string  file;  // Refuse: the folder's file
+};
+ImportDecision DecideImport(const SoundStore& store, const std::vector<FolderRavlib>& folder, const std::string& file_uid);
+std::string    ImportRefusedToastText(const std::string& file);
+// Decision 2, first sight: of the linked libraries with no common version, those not seen yet (`first_time(uid)`
+// is called once for each candidate) whose file is in `files` (name matched like the disk): (library uid, file text).
+struct FolderRavlibText {
+    std::string file, uid, text;
+};
+std::vector<std::pair<std::string, std::string>> FirstSightTargets(const SoundStore& store,
+                                                                    const std::vector<FolderRavlibText>& files,
+                                                                    const std::function<bool(const std::string&)>& first_time);
+
 // The common version of library `lib_uid` as it is now in `store` (plain header, project uids) with the file's
 // by / at / time. An unknown uid gives an empty text.
 LinkBase MakeLinkBase(const SoundStore& store, const std::string& lib_uid, const std::string& by, int64_t at,

@@ -986,6 +986,37 @@ int main()
         CHECK(!SoundStoreEmpty(only));
     }
 
+    // Review 13-77a L3: a uid map past the 64 KB reader buffer is split on `linkmap` lines and reads back whole.
+    {
+        SoundStore s = BigStore();
+        s.libraries[1].ravlib_path = "mine.ravlib";
+        LinkBase b;
+        b.lib_uid = s.libraries[1].uid;
+        b.text = "RAVLIB 2\nlibrary uid=b000000000000002 name=Mine root=d1\n";
+        for (int i = 0; i < 4000; ++i) {  // about 136 KB of map
+            char a[40], c[40];
+            std::snprintf(a, sizeof a, "n%015d", i);
+            std::snprintf(c, sizeof c, "n%015d", 100000 + i);
+            b.uid_map.push_back({a, c});
+        }
+        s.link_bases = {b};
+        const std::string text = SerializeSoundStore(s);
+        size_t longest = 0, pos = 0;
+        while (pos < text.size()) {
+            size_t nl = text.find('\n', pos);
+            if (nl == std::string::npos) nl = text.size();
+            longest = std::max(longest, nl - pos);
+            pos = nl + 1;
+        }
+        CHECK(longest < 40000);
+        CHECK(text.find("\nlinkmap m=") != std::string::npos);
+        SoundStore p;
+        CHECK(ParseSoundStore(text, &p) && p.link_bases.size() == 1);
+        if (p.link_bases.size() == 1) CHECK(p.link_bases[0].uid_map == b.uid_map && p.link_bases[0].text == b.text);
+        SoundStore p2;
+        CHECK(ParseSoundStore(SerializeSoundStore(p), &p2) && SerializeSoundStore(p2) == SerializeSoundStore(p));
+    }
+
     if (g_fails) {
         std::printf("sound_record_test: %d failure(s)\n", g_fails);
         return 1;

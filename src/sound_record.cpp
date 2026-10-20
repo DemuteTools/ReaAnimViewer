@@ -1160,12 +1160,44 @@ Fields LinkBaseFields(const LinkBase& b)
     if (b.synced_at != 0) f.push_back({"synced", FmtInt(b.synced_at)});
     if (!b.file_by.empty()) f.push_back({"by", Enc(b.file_by)});
     if (b.file_at != 0) f.push_back({"at", FmtInt(b.file_at)});
-    if (!b.uid_map.empty()) {
-        std::string m;
-        for (const auto& kv : b.uid_map) m += (m.empty() ? "" : ",") + EncMapItem(kv.first) + ":" + EncMapItem(kv.second);
-        f.push_back({"map", m});
-    }
     return f;
+}
+
+// The uid map as comma lists of at most kBlineChunk bytes each (whole items): the first goes on the linkbase line, the
+// rest on "linkmap" lines (review 13-77a L3: the 64 KB reader buffer is never reached, however many uids were renewed).
+std::vector<std::string> LinkMapChunks(const LinkBase& b)
+{
+    std::vector<std::string> out;
+    std::string              cur;
+    for (const auto& kv : b.uid_map) {
+        const std::string item = EncMapItem(kv.first) + ":" + EncMapItem(kv.second);
+        if (!cur.empty() && cur.size() + 1 + item.size() > kBlineChunk) {
+            out.push_back(cur);
+            cur.clear();
+        }
+        cur += (cur.empty() ? "" : ",") + item;
+    }
+    if (!cur.empty()) out.push_back(cur);
+    return out;
+}
+
+// Appends the items of one map list to b.uid_map; Bad (map untouched) on a malformed item.
+Got AppendLinkMap(LinkBase& b, const std::string& v)
+{
+    std::vector<std::pair<std::string, std::string>> out;
+    size_t                                           pos = 0;
+    while (pos <= v.size() && !v.empty()) {
+        size_t comma = v.find(',', pos);
+        if (comma == std::string::npos) comma = v.size();
+        const std::string item = v.substr(pos, comma - pos);
+        const size_t      colon = item.find(':');
+        std::string       a, c;
+        if (colon == std::string::npos || !Dec(item.substr(0, colon), &a) || !Dec(item.substr(colon + 1), &c)) return Got::Bad;
+        out.push_back({a, c});
+        pos = comma + 1;
+    }
+    b.uid_map.insert(b.uid_map.end(), out.begin(), out.end());
+    return Got::Ok;
 }
 
 Got SetLinkBase(LinkBase& b, const std::string& k, const std::string& v)
@@ -1175,28 +1207,19 @@ Got SetLinkBase(LinkBase& b, const std::string& k, const std::string& v)
     if (k == "by") return G(ReadStr(v, &b.file_by));
     if (k == "at") return G(ReadInt(v, &b.file_at));
     if (k == "map") {
-        std::vector<std::pair<std::string, std::string>> out;
-        size_t pos = 0;
-        while (pos <= v.size() && !v.empty()) {
-            size_t comma = v.find(',', pos);
-            if (comma == std::string::npos) comma = v.size();
-            const std::string item = v.substr(pos, comma - pos);
-            const size_t      colon = item.find(':');
-            std::string       a, c;
-            if (colon == std::string::npos || !Dec(item.substr(0, colon), &a) || !Dec(item.substr(colon + 1), &c))
-                return Got::Bad;
-            out.push_back({a, c});
-            pos = comma + 1;
-        }
-        b.uid_map = out;
-        return Got::Ok;
+        b.uid_map.clear();
+        return AppendLinkMap(b, v);
     }
     return Got::Unknown;
 }
 
 void WriteLinkBase(std::string& out, const LinkBase& b)
 {
-    WriteLine(out, "linkbase", LinkBaseFields(b), b.kept);
+    Fields                         lf = LinkBaseFields(b);
+    const std::vector<std::string> maps = LinkMapChunks(b);
+    if (!maps.empty()) lf.push_back({"map", maps[0]});
+    WriteLine(out, "linkbase", lf, b.kept);
+    for (size_t i = 1; i < maps.size(); ++i) out += "linkmap m=" + maps[i] + '\n';
     size_t pos = 0;
     while (pos < b.text.size()) {
         size_t nl = b.text.find('\n', pos);
@@ -1272,6 +1295,11 @@ bool ParseStoreCore(const std::string& text, SoundStore& s)
             node = nullptr;
             ReadFields(t, 1, lb->kept, [&](const std::string& k, const std::string& v) { return SetLinkBase(*lb, k, v); });
             unknown_to = &lb->kept_lines;
+        } else if (kind == "linkmap" && lb) {
+            Kept ignored;
+            ReadFields(t, 1, ignored, [&](const std::string& k, const std::string& v) {
+                return k == "m" ? AppendLinkMap(*lb, v) : Got::Unknown;
+            });
         } else if (kind == "bline" && lb) {
             std::string chunk;
             bool        more = false;

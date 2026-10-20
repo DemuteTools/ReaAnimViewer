@@ -1701,6 +1701,17 @@ bool UnlinkLibraryFromFile(SoundStore& store, const std::string& lib_uid)
     return true;
 }
 
+bool LinkLibraryWithoutBase(SoundStore& store, const std::string& lib_uid, const std::string& file)
+{
+    SoundLibrary* l = FindLibrary(store, lib_uid);
+    if (!l || l->attached || !l->ravlib_path.empty() || file.empty()) return false;
+    l->ravlib_path = file;
+    store.link_bases.erase(std::remove_if(store.link_bases.begin(), store.link_bases.end(),
+                                          [&](const LinkBase& b) { return b.lib_uid == lib_uid; }),
+                           store.link_bases.end());
+    return true;
+}
+
 bool RelinkLibraryFile(SoundStore& store, const std::string& lib_uid, const std::string& file)
 {
     SoundLibrary* l = FindLibrary(store, lib_uid);

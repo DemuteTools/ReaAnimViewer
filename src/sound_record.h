@@ -68,6 +68,7 @@
 //                                                       linked library (the .ravlib text last read / written,
 //                                                       project uid space), its file's header by / at, and the
 //                                                       uids the merge renewed; written only for a linked library
+//   linkmap m=<file uid>:<project uid>,...           -- more of that map when it exceeds 32 KB (review 13-77a L3)
 //   bline t=<s> [more=1]                             -- one line of that text, percent-encoded; a line whose
 //                                                       encoded form exceeds 32 KB continues on the next bline
 // The auto / assign / character lines come first (a version without them keeps them as the header's

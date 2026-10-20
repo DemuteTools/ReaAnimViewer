@@ -1049,6 +1049,158 @@ static void TestOldProjectConversion()
     CHECK(!AdoptFileAsBase(c, "L2", mine, 9) && !AdoptFileAsBase(c, "L3", mine, 9));
 }
 
+// Review 13-77a L4 (mutants F, G): an unlinked library, or an Attached one with a stale ravlib_path, adopts nothing
+// even when the file's text is exactly its own; an Attached library is not linked.
+static void TestAdoptNeedsLink()
+{
+    SoundStore s = RichStore();
+    s.libraries[0].ravlib_path.clear();
+    const std::string own = SerializeRavlib(RavlibOf(s, s.libraries[0].uid, nullptr), "P.rpp", 1);
+    CHECK(!AdoptFileAsBase(s, s.libraries[0].uid, own, 9) && s.link_bases.empty());
+    s.libraries[0].ravlib_path = "Steps.ravlib";
+    s.libraries[0].attached = true;
+    CHECK(!LibraryLinked(s.libraries[0]));
+    CHECK(!AdoptFileAsBase(s, s.libraries[0].uid, own, 9) && s.link_bases.empty());
+    s.libraries[0].attached = false;
+    CHECK(LibraryLinked(s.libraries[0]) && AdoptFileAsBase(s, s.libraries[0].uid, own, 9));
+}
+
+// Review 13-77a L4 (mutant A): the uid map holds the groups and values the merge put under the project's own uids,
+// not only the renewed ones: 13-77b writes the merged groups back under the file's uids with it.
+static void TestAddMapHoldsMerged()
+{
+    SoundStore file = RavlibOf(RichStore(), "l000000000000001", nullptr);
+    SoundStore proj;
+    SwitchGroup pg;
+    pg.uid = "p000000000000001";
+    pg.name = "Foot Material";
+    pg.values = {{"p000000000000002", "wood", {}}};
+    proj.groups.push_back(pg);
+    std::string                                      uid, why;
+    std::vector<std::pair<std::string, std::string>> map;
+    LinkBase                                         base;
+    CHECK(AddRavlibLibrary(proj, file, "Steps.ravlib", &uid, &why, &map, &base));
+    auto has = [&](const std::string& a, const std::string& b) {
+        for (const auto& kv : map)
+            if (kv.first == a && kv.second == b) return true;
+        return false;
+    };
+    CHECK(has("g000000000000001", "p000000000000001"));  // the merged group
+    CHECK(has("v000000000000001", "p000000000000002"));  // Wood merged into the project's wood
+    CHECK(proj.groups[0].values.size() == 2 && proj.groups[0].values[1].name == "Metal");  // Metal: a new value
+    CHECK(base.uid_map == map);
+}
+
+// Review 13-77a H1: the file work of every gesture is decided by pure functions.
+static void TestFileDecisions()
+{
+    SoundLibrary lib;
+    lib.uid = "L1";
+    lib.name = "Foot";
+    const std::vector<FolderRavlib> none = {{"Other.ravlib", "L2"}, {"Bad.ravlib", ""}};
+    // Save to a file: free -> write; the folder holds this uid -> link to it, never write; linked / Attached -> refuse.
+    CHECK(DecideSaveToFile(lib, none).action == SaveFileAction::WriteNew);
+    const std::vector<FolderRavlib> held = {{"Other.ravlib", "L2"}, {"Foot shared.ravlib", "L1"}};
+    SaveFileDecision                d = DecideSaveToFile(lib, held);
+    CHECK(d.action == SaveFileAction::LinkExisting && d.file == "Foot shared.ravlib");
+    CHECK(LinkedExistingToastText(d.file) ==
+          "Foot shared.ravlib already holds this library: linked to it, nothing written. Sync with file will show the differences.");
+    SoundLibrary linked = lib;
+    linked.ravlib_path = "X.ravlib";
+    CHECK(DecideSaveToFile(linked, none).action == SaveFileAction::Refuse);
+    SoundLibrary att = lib;
+    att.attached = true;
+    CHECK(DecideSaveToFile(att, none).action == SaveFileAction::Refuse);
+    // The link without a common version: nothing else changes.
+    SoundStore s;
+    s.libraries.push_back(lib);
+    LinkBase b;
+    b.lib_uid = "L1";
+    s.link_bases.push_back(b);  // a stale base is dropped
+    CHECK(LinkLibraryWithoutBase(s, "L1", "Foot shared.ravlib") && s.libraries[0].ravlib_path == "Foot shared.ravlib" &&
+          s.link_bases.empty());
+    CHECK(!LinkLibraryWithoutBase(s, "L1", "Again.ravlib"));  // already linked
+
+    // Save it again.
+    SoundLibrary gone = lib;
+    gone.ravlib_path = "Foot.ravlib";
+    CHECK(DecideSaveAgain(gone, {{"Foot.ravlib", "L1"}}, true).action == RewriteAction::Nothing);   // Ok again (stale click)
+    CHECK(DecideSaveAgain(gone, none, false).action == RewriteAction::WriteSame);                   // really gone
+    CHECK(DecideSaveAgain(gone, none, true).action == RewriteAction::WriteNew);                     // the name exists on disk
+    RewriteDecision r = DecideSaveAgain(gone, {{"Renamed.ravlib", "L1"}}, false);                    // renamed in Explorer
+    CHECK(r.action == RewriteAction::LinkExisting && r.file == "Renamed.ravlib");
+    CHECK(DecideSaveAgain(gone, {{"foot.ravlib", "L2"}}, true).action == RewriteAction::WriteNew);  // another library's
+    CHECK(DecideSaveAgain(gone, {{"Foot.ravlib", ""}}, true).action == RewriteAction::WriteNew);     // unreadable
+    CHECK(DecideSaveAgain(lib, none, false).action == RewriteAction::Nothing);                       // unlinked
+    // Windows folds accented capitals: "\xC3\x89t\xC3\xA9.ravlib" and "\xC3\xA9t\xC3\xA9.ravlib" are one file.
+    SoundLibrary acc = lib;
+    acc.ravlib_path = "\xC3\x89t\xC3\xA9.ravlib";
+    CHECK(SameFileName("\xC3\x89t\xC3\xA9.ravlib", "\xC3\xA9t\xC3\xA9.RAVLIB"));
+    CHECK(!SameFileName("Ete.ravlib", "\xC3\xA9te.ravlib") && SameFileName("A\xC3\x80.ravlib", "a\xC3\xA0.ravlib"));
+    CHECK(SameFileName("\xCE\x91.ravlib", "\xCE\xB1.ravlib") && SameFileName("\xD0\x96.ravlib", "\xD0\xB6.ravlib"));
+    CHECK(!SameFileName("\xC3\x97.ravlib", "\xC3\xB7.ravlib"));  // the multiplication sign has no lower case
+    CHECK(LinkedFileStateOf(acc, {{"\xC3\xA9t\xC3\xA9.ravlib", "L2"}}) == LinkedFileState::OtherLibrary);
+    CHECK(DecideSaveAgain(acc, {{"\xC3\xA9t\xC3\xA9.ravlib", "L2"}}, true).action == RewriteAction::WriteNew);
+    CHECK(RavlibFileName("\xC3\x89t\xC3\xA9", {"\xC3\xA9t\xC3\xA9.ravlib"}) == "\xC3\x89t\xC3\xA9 2.ravlib");
+    // The DLL installs the Win32 fold; the decisions follow it.
+    SetFileNameFold([](const std::string& s) { return std::string(s.size(), 'x'); });
+    CHECK(SameFileName("a", "b"));
+    SetFileNameFold(nullptr);
+    CHECK(!SameFileName("a", "b"));
+
+    // L2: each bad state has its own words.
+    CHECK(LinkedFileWordsOf(LinkedFileState::Missing, "F.ravlib").title == "F.ravlib is not in the User Library folder");
+    CHECK(LinkedFileWordsOf(LinkedFileState::OtherLibrary, "F.ravlib").title == "F.ravlib holds another library");
+    CHECK(LinkedFileWordsOf(LinkedFileState::Unreadable, "F.ravlib").title == "F.ravlib cannot be read");
+    CHECK(LinkedFileWordsOf(LinkedFileState::Unreadable, "F.ravlib").row_tip.find("cannot be read") != std::string::npos);
+    CHECK(LinkedFileWordsOf(LinkedFileState::OtherLibrary, "F.ravlib").row_tip.find("not found") == std::string::npos);
+    CHECK(LinkedFileWordsOf(LinkedFileState::Ok, "F.ravlib").title.empty());
+
+    // Locate.
+    RelinkDecision l = DecideRelink(none, "L1", true, "Picked.ravlib");
+    CHECK(l.action == RelinkAction::LinkPicked && l.file == "Picked.ravlib");
+    CHECK(DecideRelink(none, "L1", false, "Out.ravlib").action == RelinkAction::CopyIn);
+    l = DecideRelink(held, "L1", false, "Out.ravlib");  // the folder holds this uid: no second copy
+    CHECK(l.action == RelinkAction::LinkExisting && l.file == "Foot shared.ravlib");
+
+    // Import.
+    SoundStore proj;
+    proj.libraries.push_back(lib);
+    CHECK(DecideImport(proj, none, "L1").action == ImportAction::AlreadyInProject);
+    CHECK(DecideImport(proj, none, "L9").action == ImportAction::Copy);
+    ImportDecision im = DecideImport(proj, held, "L2");
+    CHECK(im.action == ImportAction::Refuse && im.file == "Other.ravlib");
+    CHECK(ImportRefusedToastText(im.file) == "Other.ravlib in the User Library folder is that library: Add it from the list");
+    CHECK(DecideImport(proj, held, "L1").action == ImportAction::AlreadyInProject);  // the project wins over the folder
+}
+
+// Decision 2: first sight picks the linked libraries without a common version whose file is in the folder, once each.
+static void TestFirstSightTargets()
+{
+    SoundStore s;
+    for (const char* u : {"L1", "L2", "L3", "L4"}) {
+        SoundLibrary l;
+        l.uid = u;
+        l.ravlib_path = std::string(u) + ".ravlib";
+        s.libraries.push_back(l);
+    }
+    s.libraries[3].ravlib_path.clear();  // unlinked
+    LinkBase b;
+    b.lib_uid = "L2";
+    s.link_bases.push_back(b);  // has a base already
+    const std::vector<FolderRavlibText> files = {{"l1.RAVLIB", "L1", "t1"}, {"L2.ravlib", "L2", "t2"},
+                                                 {"L3.ravlib", "L9", "t3"}, {"L4.ravlib", "L4", "t4"}};
+    std::vector<std::string> asked;
+    auto                     once = [&](const std::string& u) {
+        asked.push_back(u);
+        return true;
+    };
+    const auto t = FirstSightTargets(s, files, once);
+    CHECK(t.size() == 1 && t[0].first == "L1" && t[0].second == "t1");  // L2 has a base, L3's file holds another uid, L4 unlinked
+    CHECK((asked == std::vector<std::string>{"L1", "L3"}));
+    CHECK(FirstSightTargets(s, files, [](const std::string&) { return false; }).empty());  // seen already
+}
+
 static void TestLinkUnlink()
 {
     SoundStore s;
@@ -1168,6 +1320,10 @@ int main()
     TestLinkedFileState();
     TestImportRefusal();
     TestAddLinkedBase();
+    TestAdoptNeedsLink();
+    TestAddMapHoldsMerged();
+    TestFileDecisions();
+    TestFirstSightTargets();
     TestDividedTravels();
     TestPartsTravel();  // 13-62
     TestFileSourceFromItem();

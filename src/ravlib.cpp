@@ -341,13 +341,165 @@ std::string FolderFileOfUid(const std::vector<FolderRavlib>& folder, const std::
 LinkedFileState LinkedFileStateOf(const SoundLibrary& lib, const std::vector<FolderRavlib>& folder)
 {
     if (lib.ravlib_path.empty() || lib.attached) return LinkedFileState::Unlinked;
-    const std::string want = LowerAscii(lib.ravlib_path);
     for (const FolderRavlib& f : folder) {
-        if (LowerAscii(f.file) != want) continue;
+        if (!SameFileName(f.file, lib.ravlib_path)) continue;
         if (f.uid.empty()) return LinkedFileState::Unreadable;
         return f.uid == lib.uid ? LinkedFileState::Ok : LinkedFileState::OtherLibrary;
     }
     return LinkedFileState::Missing;
+}
+
+namespace {
+FileNameFoldFn g_fold = nullptr;
+
+// One code point of two-byte UTF-8 (U+0080..U+07FF), folded to lower case (Latin-1, Latin Extended-A, Greek, Cyrillic).
+unsigned FoldCp(unsigned cp)
+{
+    if (cp >= 0xC0 && cp <= 0xDE && cp != 0xD7) return cp + 0x20;
+    if (cp >= 0x100 && cp <= 0x137) return (cp & 1) ? cp : cp + 1;
+    if (cp >= 0x139 && cp <= 0x148) return (cp & 1) ? cp + 1 : cp;
+    if (cp >= 0x14A && cp <= 0x177) return (cp & 1) ? cp : cp + 1;
+    if (cp >= 0x391 && cp <= 0x3A9 && cp != 0x3A2) return cp + 0x20;
+    if (cp >= 0x410 && cp <= 0x42F) return cp + 0x20;
+    if (cp >= 0x400 && cp <= 0x40F) return cp + 0x50;
+    return cp;
+}
+}  // namespace
+
+void SetFileNameFold(FileNameFoldFn fn)
+{
+    g_fold = fn;
+}
+
+std::string BuiltinFoldFileName(const std::string& s)
+{
+    std::string out;
+    for (size_t i = 0; i < s.size(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        if (c < 0x80) {
+            out += static_cast<char>(std::tolower(c));
+        } else if (c >= 0xC2 && c <= 0xDF && i + 1 < s.size() && (static_cast<unsigned char>(s[i + 1]) & 0xC0) == 0x80) {
+            const unsigned cp = FoldCp(((c & 0x1Fu) << 6) | (static_cast<unsigned char>(s[i + 1]) & 0x3Fu));
+            out += static_cast<char>(0xC0 | (cp >> 6));
+            out += static_cast<char>(0x80 | (cp & 0x3F));
+            ++i;
+        } else {
+            out += static_cast<char>(c);
+        }
+    }
+    return out;
+}
+
+std::string FoldFileName(const std::string& s)
+{
+    return g_fold ? g_fold(s) : BuiltinFoldFileName(s);
+}
+
+bool SameFileName(const std::string& a, const std::string& b)
+{
+    return FoldFileName(a) == FoldFileName(b);
+}
+
+LinkedFileWords LinkedFileWordsOf(LinkedFileState st, const std::string& file)
+{
+    LinkedFileWords w;
+    const std::string intact = " This project's copy is intact.";
+    const std::string again_new = "Write this project's copy as a new file (the file now there is not touched)";
+    if (st == LinkedFileState::Missing) {
+        w.row_tip = file + " not found in the User Library folder: click the library, then Locate...";
+        w.title = file + " is not in the User Library folder";
+        w.detail = "Moved, renamed or deleted." + intact;
+        w.save_again_tip = "Write this project's copy as the file again";
+    } else if (st == LinkedFileState::OtherLibrary) {
+        w.row_tip = file + " now holds another library: click the library, then Locate... or Save it again";
+        w.title = file + " holds another library";
+        w.detail = "The file was replaced by another library." + intact;
+        w.save_again_tip = again_new;
+    } else if (st == LinkedFileState::Unreadable) {
+        w.row_tip = file + " cannot be read: click the library, then Locate... or Save it again";
+        w.title = file + " cannot be read";
+        w.detail = "It is damaged or is not a RAV library file." + intact;
+        w.save_again_tip = again_new;
+    }
+    return w;
+}
+
+SaveFileDecision DecideSaveToFile(const SoundLibrary& lib, const std::vector<FolderRavlib>& folder)
+{
+    SaveFileDecision d;
+    if (lib.attached || !lib.ravlib_path.empty()) return d;  // Refuse
+    d.file = FolderFileOfUid(folder, lib.uid);
+    d.action = d.file.empty() ? SaveFileAction::WriteNew : SaveFileAction::LinkExisting;
+    return d;
+}
+
+std::string LinkedExistingToastText(const std::string& file)
+{
+    return file + " already holds this library: linked to it, nothing written. Sync with file will show the differences.";
+}
+
+RewriteDecision DecideSaveAgain(const SoundLibrary& lib, const std::vector<FolderRavlib>& folder, bool target_exists_on_disk)
+{
+    RewriteDecision d;  // Nothing
+    if (lib.attached || lib.ravlib_path.empty()) return d;
+    const LinkedFileState st = LinkedFileStateOf(lib, folder);
+    if (st == LinkedFileState::Ok || st == LinkedFileState::Unlinked) return d;
+    d.file = FolderFileOfUid(folder, lib.uid);
+    if (!d.file.empty()) {
+        d.action = RewriteAction::LinkExisting;
+        return d;
+    }
+    d.file.clear();
+    d.action = st == LinkedFileState::Missing && !target_exists_on_disk ? RewriteAction::WriteSame : RewriteAction::WriteNew;
+    return d;
+}
+
+RelinkDecision DecideRelink(const std::vector<FolderRavlib>& folder, const std::string& lib_uid, bool picked_in_folder,
+                            const std::string& picked_name)
+{
+    RelinkDecision d;
+    if (picked_in_folder) {
+        d.action = RelinkAction::LinkPicked;
+        d.file = picked_name;
+        return d;
+    }
+    d.file = FolderFileOfUid(folder, lib_uid);
+    d.action = d.file.empty() ? RelinkAction::CopyIn : RelinkAction::LinkExisting;
+    return d;
+}
+
+ImportDecision DecideImport(const SoundStore& store, const std::vector<FolderRavlib>& folder, const std::string& file_uid)
+{
+    ImportDecision d;
+    if (FindLibrary(store, file_uid)) {
+        d.action = ImportAction::AlreadyInProject;
+        return d;
+    }
+    d.file = FolderFileOfUid(folder, file_uid);
+    d.action = d.file.empty() ? ImportAction::Copy : ImportAction::Refuse;
+    return d;
+}
+
+std::string ImportRefusedToastText(const std::string& file)
+{
+    return file + " in the User Library folder is that library: Add it from the list";
+}
+
+std::vector<std::pair<std::string, std::string>> FirstSightTargets(const SoundStore& store,
+                                                                    const std::vector<FolderRavlibText>& files,
+                                                                    const std::function<bool(const std::string&)>& first_time)
+{
+    std::vector<std::pair<std::string, std::string>> out;
+    for (const SoundLibrary& lib : store.libraries) {
+        if (!LibraryLinked(lib) || FindLinkBase(store, lib.uid)) continue;
+        if (first_time && !first_time(lib.uid)) continue;
+        for (const FolderRavlibText& f : files)
+            if (!f.uid.empty() && f.uid == lib.uid && SameFileName(f.file, lib.ravlib_path)) {
+                out.push_back({lib.uid, f.text});
+                break;
+            }
+    }
+    return out;
 }
 
 LinkBase MakeLinkBase(const SoundStore& store, const std::string& lib_uid, const std::string& by, int64_t at,
@@ -552,7 +704,7 @@ std::string RavlibFileName(const std::string& lib_name, const std::vector<std::s
     if (base.empty()) base = "Library";
     auto used = [&](const std::string& n) {
         for (const std::string& t : taken)
-            if (LowerAscii(t) == LowerAscii(n)) return true;
+            if (SameFileName(t, n)) return true;
         return false;
     };
     std::string name = base + kRavlibExt;

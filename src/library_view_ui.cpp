@@ -159,8 +159,7 @@ void DrawColumn(int i)
             DrawLibraryBatchPanel();
         } else {
             DrawNodePanel();
-            DrawLibraryFileSection();    // 13-77a: where the library's file stands
-            DrawLibraryTracksSection();  // 13-77a: Lands in, on every library
+            // 13-77a: the File and Tracks sections are drawn by the node panel (mockup order, review L5).
             DrawLibraryRolesSection();
         }
         break;

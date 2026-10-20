@@ -59,7 +59,7 @@ public:
                 if (sr_ < 1.0) sr_ = x.src->GetSampleRate();
             }
         if (nch_ < 1) nch_ = 1;
-        if (!loop_.empty() && loop_s > 0.0) {
+        if (!loop_.empty() && loop_s > 0.0 && std::isfinite(loop_s) && std::isfinite(head_s)) {  // freeze audit #6
             head_s_ = std::max(head_s, 0.0);
             loop_s_ = loop_s;
         }
@@ -111,6 +111,7 @@ public:
             for (int done = 0; done < n;) {  // the head, then the loop pass from its start each time it ends
                 const LoopSeg g = LoopSegAt(block->time_s + done / sr, n - done, sr, head_s_, loop_s_);
                 Mix(g.body ? loop_ : voices_, g.t, g.n, sr, nch, block->samples + static_cast<size_t>(done) * static_cast<size_t>(nch));
+                if (g.n <= 0) break;  // freeze audit #6: no progress would hold the audio thread (and the preview's lock) for ever
                 done += g.n;
             }
         }

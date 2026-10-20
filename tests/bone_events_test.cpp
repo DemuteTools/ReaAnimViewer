@@ -1388,6 +1388,15 @@ int main()
         CHECK(EditsOf(MatchEvents({}, {}, 0.15, 0.0, 10.0)).total() == 0);
     }
 
+    {  // freeze audit #9: the angle unwrap always ends
+        CHECK(std::fabs(UnwrapNear(350.0, 10.0) - (-10.0)) < 1e-9);
+        CHECK(std::fabs(UnwrapNear(-350.0, 10.0) - 10.0) < 1e-9);
+        CHECK(std::fabs(UnwrapNear(30.0, 20.0) - 30.0) < 1e-9);
+        CHECK(std::fabs(UnwrapNear(1e15 + 5.0, 0.0)) <= 180.0);  // a huge value is reduced at once
+        CHECK(std::isinf(UnwrapNear(INFINITY, 0.0)));            // an infinity is returned as it is (no endless loop)
+        CHECK(std::isnan(UnwrapNear(NAN, 0.0)));
+        CHECK(std::isinf(UnwrapNear(5.0, INFINITY)) || std::fabs(UnwrapNear(5.0, INFINITY) - 5.0) < 1e-9);
+    }
     if (g_fails == 0) std::printf("bone_events: all tests passed\n");
     return g_fails == 0 ? 0 : 1;
 }

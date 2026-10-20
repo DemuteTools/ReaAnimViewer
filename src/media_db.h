@@ -163,7 +163,9 @@ std::function<std::vector<DbFile>(const std::string&)> MakeCachedFolderLister(
 // The background load of every database (one at a time; a later call restarts it).
 void MediaDbStartLoad(const std::string& resource_path);
 // Cancels and joins the load (for an unload hook).
-void MediaDbStop();
+// Cancels the load and waits for it up to `wait_s` (an unload must not hang on a stalled share): false when it did not end
+// (then the thread is abandoned and the DLL pinned).
+bool MediaDbStop(double wait_s = 3.0);
 // True once the index of the latest load is published.
 bool MediaDbReady();
 // The loaded index (never null; the previous one, or empty, until ready).

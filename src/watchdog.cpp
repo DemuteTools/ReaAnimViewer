@@ -800,6 +800,13 @@ void StartWatchdog(const char* resource_path, const char* version)
     g_thread = CreateThread(nullptr, 0, &WatchLoop, nullptr, 0, nullptr);
 }
 
+void PinModule()
+{
+    HMODULE self = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                       reinterpret_cast<LPCWSTR>(&PinModule), &self);
+}
+
 void StopWatchdog()
 {
     if (g_thread) {
@@ -807,9 +814,7 @@ void StopWatchdog()
         if (WaitForSingleObject(g_thread, 5000) != WAIT_OBJECT_0) {
             // Stuck (a report on a dead network folder): it must never run in an unmapped DLL nor on closed
             // handles, so the DLL stays loaded for the rest of the process and its handles stay open.
-            HMODULE self = nullptr;
-            GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-                               reinterpret_cast<LPCWSTR>(&StopWatchdog), &self);
+            PinModule();
             g_thread = nullptr;
             g_stop = nullptr;
             g_main = nullptr;
@@ -837,6 +842,7 @@ bool TakeFreezeToast()
 #else  // not Windows (host builds)
 
 void StartWatchdog(const char*, const char*) { SetMainThread(); }
+void PinModule() {}
 void StopWatchdog() {}
 const std::string& FreezeReportFromLastSession()
 {

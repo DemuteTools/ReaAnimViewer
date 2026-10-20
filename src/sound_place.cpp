@@ -25,6 +25,8 @@
 #include "reaper_item_read.h"
 #include "sound_entries.h"  // DetectFrames (13-68: a pile member's variations)
 #include "watchdog.h"  // freeze audit: breadcrumbs and scopes
+#include "busy_progress_ui.h"  // BusyStep: the wait moves the card and the watchdog heartbeat
+#include "console_log.h"
 #include "sound_peaks.h"  // ReadItemMedia (13-68 v2: a pile member's slices)
 #include "sound_project.h"
 #include "sound_record.h"
@@ -125,6 +127,13 @@ MediaItem* FindItem(ReaProject* proj, const std::string& guid)
             if ((proj ? ValidatePtr2(proj, hit, "MediaItem*") : IsLiveItem(hit)) && SameGuid(ItemGuidOf(hit), guid))
                 return hit;
     return ScanItemByGuid(proj, guid);
+}
+
+// Freeze audit #5: the peak waits of a pile placement share one budget per gesture.
+WaitBudget& PileWait()
+{
+    static WaitBudget b;
+    return b;
 }
 
 // True when both files hold the same bytes (read in 64 KB blocks; false on any read error).
@@ -679,11 +688,28 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
             SoundMedia sm;
             if (req.pile_slice >= 0 && req.pile_silence && ReadItemMedia(m.src, &sm)) {
                 PeakData   pk;
-                const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(3);
                 PeakState  st = RequestPeaks(sm.path, &pk);
-                while (st == PeakState::Building && std::chrono::steady_clock::now() < until) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));  // read on the reader thread
-                    st = RequestPeaks(sm.path, &pk);
+                if (st == PeakState::Building) {
+                    // Freeze audit #5: the whole gesture shares one budget (WaitBudget), the watchdog sees the wait move
+                    // and the busy card shows it; once it is spent the member is placed without its silence slices.
+                    using Clock = std::chrono::steady_clock;
+                    auto  now_s = []() { return std::chrono::duration<double>(Clock::now().time_since_epoch()).count(); };
+                    const double t0 = now_s();
+                    const double allow = PileWait().Grant(t0, 3.0);
+                    RAV_SCOPE("pile peaks wait", wd::PathTail(sm.path));
+                    double last_paint = t0;
+                    while (st == PeakState::Building && now_s() - t0 < allow) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));  // read on the reader thread
+                        st = RequestPeaks(sm.path, &pk);
+                        if (now_s() - last_paint > 0.1) {
+                            last_paint = now_s();
+                            BusyStep(static_cast<int>(i), static_cast<int>(members.size()), "member");  // also a heartbeat
+                        }
+                    }
+                    PileWait().Spent(now_s(), now_s() - t0);
+                    if (st == PeakState::Building)
+                        LogWarn("place: the peaks of %s were not ready in time (%.0f s budget for this gesture); its silence slices are skipped",
+                                sm.path.c_str(), WaitBudget::kBudgetS);
                 }
                 const std::vector<SoundFrame> fr =
                     st == PeakState::Ready ? DetectFrames(sm.facts, DetectMode::Silence, SilenceParams{}, &pk) : std::vector<SoundFrame>();

@@ -9,6 +9,16 @@
 #include <utility>
 
 namespace rav {
+
+double UnwrapNear(double v, double ref)
+{
+    if (!std::isfinite(v) || !std::isfinite(ref)) return v;
+    if (std::fabs(v - ref) > 3600.0) v = ref + std::remainder(v - ref, 360.0);  // a far value: no step-by-step walk
+    while (v - ref > 180.0) v -= 360.0;
+    while (v - ref < -180.0) v += 360.0;
+    return v;
+}
+
 namespace {
 
 bool TracksFit(const std::vector<BoneTrack>& tracks)
@@ -347,10 +357,7 @@ std::vector<double> AngleSeries(const SignalSpec& spec, const std::vector<BoneTr
             const double dx = b.x - a.x, dz = b.z - a.z;
             if (std::sqrt(dx * dx + dz * dz) > 1e-12) {
                 v = std::atan2(dx, dz) * kDeg;
-                if (i > 0) {  // unwrap: the nearest turn to the previous value
-                    while (v - prev > 180.0) v -= 360.0;
-                    while (v - prev < -180.0) v += 360.0;
-                }
+                if (i > 0) v = UnwrapNear(v, prev);  // unwrap: the nearest turn to the previous value
             }
         }
         q[i] = v;
@@ -453,11 +460,7 @@ std::vector<double> RotationSignal(const SignalSpec& spec, const std::vector<Bon
         // y alone stays within +-90. Per sample, each component of both is unwrapped to the
         // nearest turn of the previous sample's, and the triple closest to the previous one
         // is kept, so a turn past 90 about Y stays continuous instead of folding back.
-        auto near_turn = [](double v, double ref) {
-            while (v - ref > 180.0) v -= 360.0;
-            while (v - ref < -180.0) v += 360.0;
-            return v;
-        };
+        auto near_turn = [](double v, double ref) { return UnwrapNear(v, ref); };
         std::vector<double> q(n, 0.0);
         Vec3d prev;
         for (size_t i = 0; i < n; ++i) {

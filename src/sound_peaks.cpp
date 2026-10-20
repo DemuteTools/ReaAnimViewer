@@ -43,6 +43,7 @@
 #include "reaper_item_read.h"
 #include "sound_peaks_plan.h"
 #include "sound_populate.h"
+#include "timed_join.h"  // freeze audit #8
 #include "wave_tiles_plan.h"
 
 namespace rav {
@@ -440,7 +441,10 @@ public:
         {
             std::lock_guard<std::mutex> lk(m_);
             q_.push_back(std::move(j));
-            if (th_.size() < kPeakReaders) th_.emplace_back([this] { Run(); });
+            if (th_.size() < kPeakReaders) {
+                ++alive_;
+                th_.emplace_back([this] { Run(); });
+            }
         }
         cv_.notify_one();
     }
@@ -459,8 +463,7 @@ public:
             stop_ = true;
         }
         cv_.notify_all();
-        for (std::thread& t : th_)
-            if (t.joinable()) t.join();
+        JoinAllWithin(th_, [this] { return alive_.load() == 0; });  // freeze audit #8: a read stuck on a dead share is abandoned
         th_.clear();
         for (JobResult& r : Take()) {
             delete r.src;
@@ -478,6 +481,10 @@ public:
 private:
     void Run()
     {
+        struct Alive {
+            std::atomic<int>& n;
+            ~Alive() { --n; }
+        } alive{alive_};
         static std::atomic<int> s_next{0};  // freeze audit: each reader its slot
         const int slot = RAV_WORKER_SLOT("Peak reader", s_next.fetch_add(1));
         (void)slot;
@@ -526,6 +533,7 @@ private:
     }
 
     std::vector<std::thread> th_;
+    std::atomic<int>         alive_{0};
     std::mutex               m_;
     std::condition_variable  cv_;
     std::deque<Job>          q_;

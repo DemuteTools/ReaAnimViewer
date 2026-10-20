@@ -4,6 +4,7 @@
 // load, fallback folder index with its cache, favourites. No REAPER call, nothing throws.
 
 #include "media_db.h"
+#include "timed_join.h"  // freeze audit #8
 #include "watchdog.h"  // freeze audit: breadcrumbs and scopes
 
 #include <algorithm>
@@ -900,7 +901,10 @@ struct LoadState {
     std::shared_ptr<const MediaDbIndex> idx = std::make_shared<MediaDbIndex>();
     MediaDbInfo                         info;
     std::thread                         th;
-    std::atomic<bool>                   cancel{false};
+    // Freeze audit #8: one cancel token per run (a reload leaves the old run to end by itself, its result dropped), and
+    // the number of runs still alive (an unload waits for them, but not for ever).
+    std::shared_ptr<std::atomic<bool>>  tok = std::make_shared<std::atomic<bool>>(false);
+    std::atomic<int>                    alive{0};
     std::atomic<bool>                   ready{false};
 };
 
@@ -911,9 +915,10 @@ LoadState& State()
     return *s;
 }
 
-void LoadWorkerBody(const std::string& resource_path)
+void LoadWorkerBody(const std::string& resource_path, const std::shared_ptr<std::atomic<bool>>& tok)
 {
-    LoadState& s = State();
+    LoadState&               s = State();
+    const std::atomic<bool>& cancel = *tok;
     const auto t0 = std::chrono::steady_clock::now();
     std::string ini;
     ReadFileText(JoinPath(resource_path, "reaper.ini"), &ini);
@@ -935,16 +940,16 @@ void LoadWorkerBody(const std::string& resource_path)
     MediaDbInfo info;
     std::vector<DbFile> files;
     for (const DbEntry& e : dbs) {
-        if (s.cancel.load()) return;
+        if (cancel.load()) return;
         std::ifstream in(fs::u8path(e.path), std::ios::binary);
         if (!in) continue;
         files.clear();
         size_t bad = 0;
-        ParseReaperFileList(in, e.name, &files, &bad, &s.cancel);
-        if (s.cancel.load()) return;
+        ParseReaperFileList(in, e.name, &files, &bad, &cancel);
+        if (cancel.load()) return;
         size_t added = 0;
         for (DbFile& f : files) {
-            if ((++added & 4095) == 0 && s.cancel.load()) return;
+            if ((++added & 4095) == 0 && cancel.load()) return;
             idx->Add(std::move(f));  // 13-69: no copy of the search fields
         }
         info.unparsed += bad;
@@ -953,20 +958,26 @@ void LoadWorkerBody(const std::string& resource_path)
     info.files = idx->Size();
     info.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     std::lock_guard<std::mutex> lk(s.m);
-    if (s.cancel.load()) return;
+    if (cancel.load()) return;
     s.idx = std::move(idx);
     s.info = std::move(info);
     s.ready = true;
 }
 
 // Thread entry: an exception escaping a std::thread would terminate REAPER.
-void LoadWorker(std::string resource_path)
+struct AliveGuard {
+    std::atomic<int>& n;
+    ~AliveGuard() { --n; }
+};
+
+void LoadWorker(std::string resource_path, std::shared_ptr<std::atomic<bool>> tok)
 {
+    AliveGuard alive{State().alive};  // counted by MediaDbStartLoad before the thread starts
     const int slot = RAV_WORKER_SLOT("Media database load", 0);  // freeze audit
     (void)slot;
     RAV_WORKER_BUSY(slot, "loading", resource_path);
     try {
-        LoadWorkerBody(resource_path);
+        LoadWorkerBody(resource_path, tok);
     } catch (...) {
         // the previous index stays; not ready
     }
@@ -975,29 +986,41 @@ void LoadWorker(std::string resource_path)
 
 }  // namespace
 
-void MediaDbStop()
+bool MediaDbStop(double wait_s)
 {
     LoadState& s = State();
-    s.cancel = true;
     std::thread th;
     {
         std::lock_guard<std::mutex> lk(s.m);
+        s.tok->store(true);
         th = std::move(s.th);
     }
-    if (th.joinable()) th.join();
+    // Freeze audit #8: a load stalled in a file call (a dead share) must not hang REAPER at unload: wait a while, then
+    // give up on the thread (detached, the DLL pinned: it may still run our code).
+    const bool done = detail::WaitFor([&s] { return s.alive.load() == 0; }, wait_s);
+    if (th.joinable()) {
+        if (done) th.join();
+        else th.detach();
+    }
+    if (!done) RAV_PIN_MODULE();
+    return done;
 }
 
 void MediaDbStartLoad(const std::string& resource_path)
 {
-    MediaDbStop();
     LoadState& s = State();
     std::lock_guard<std::mutex> lk(s.m);
-    s.cancel = false;
+    // A reload never waits for the previous run (it may sit in a stalled file read): that run is cancelled and left to
+    // end by itself, its result dropped (its own token); it is joined or abandoned at unload (MediaDbStop).
+    s.tok->store(true);
+    if (s.th.joinable()) s.th.detach();
+    s.tok = std::make_shared<std::atomic<bool>>(false);
     s.ready = false;
     try {
-        s.th = std::thread(LoadWorker, resource_path);
+        ++s.alive;
+        s.th = std::thread(LoadWorker, resource_path, s.tok);
     } catch (...) {
-        // no thread: the previous index stays, never ready
+        --s.alive;  // no thread: the previous index stays, never ready
     }
 }
 

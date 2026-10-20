@@ -109,6 +109,9 @@ void WorkerIdle(int slot);
 // Starts the watchdog thread (Windows; nothing elsewhere). `resource_path`: REAPER's resource folder (UTF-8), the
 // reports go to <it>\RAV. Also reads the report the last session left (FreezeReportFromLastSession).
 void StartWatchdog(const char* resource_path, const char* version);
+// Pins this DLL in memory for the rest of the process (Windows; nothing elsewhere): a thread was abandoned that may
+// still run its code, so it must never be unmapped.
+void PinModule();
 // Stops it (first thing at unload): the thread joined.
 void StopWatchdog();
 // The newest report written since the one last shown ("" when none): its file name + text. Main thread.
@@ -167,6 +170,7 @@ void ResetForTest();
 #define RAV_MAIN_BEAT() ((void)0)
 #define RAV_AUDIO_SCOPE(what) ((void)0)
 #define RAV_AUDIO_ARG(path) ((void)0)
+#define RAV_PIN_MODULE() ((void)0)
 #define RAV_VIDEO_SCOPE(what, arg) ((void)0)
 #define RAV_WORKER_SLOT(name, index) (-1)
 #define RAV_WORKER_BUSY(slot, what, arg) ((void)0)
@@ -180,6 +184,7 @@ void ResetForTest();
 #define RAV_MAIN_BEAT() ::rav::wd::MainBeat()
 #define RAV_AUDIO_SCOPE(what) const ::rav::wd::AudioScope RAV_WD_CAT(rav_wd_audio_, __COUNTER__)(what)
 #define RAV_AUDIO_ARG(path) ::rav::wd::AudioArg(path)
+#define RAV_PIN_MODULE() ::rav::wd::PinModule()
 #define RAV_VIDEO_SCOPE(what, arg) const ::rav::wd::VideoScope RAV_WD_CAT(rav_wd_video_, __COUNTER__)(what, arg)
 #define RAV_WORKER_SLOT(name, index) ::rav::wd::WorkerSlot(name, index)
 #define RAV_WORKER_BUSY(slot, what, arg) ::rav::wd::WorkerBusy(slot, what, arg)

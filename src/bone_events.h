@@ -343,4 +343,8 @@ constexpr double kGatePrecision = 0.98;
 constexpr double kGateMaxErrS = 0.016;
 bool PassesAccuracyGate(const MatchResult& m);
 
+// Freeze audit #9: `v` (degrees) moved by whole turns to within 180 of `ref`, the nearest turn. Bounded: a huge value is
+// reduced at once and a NaN / infinite one is returned as it is (the old loops never ended on an infinity).
+double UnwrapNear(double v, double ref);
+
 }  // namespace rav

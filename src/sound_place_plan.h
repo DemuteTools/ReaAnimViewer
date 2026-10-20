@@ -216,4 +216,27 @@ double PiecePosition(double anchor_pos, double from_anchor, double playrate);
 // "stem-001.ext" (REAPER's own numbering), the next free one when a different file has the name.
 std::string MediaCopyName(const std::string& file_name, int n);
 
+// Freeze audit #5: a total time budget for waiting on the peak reader across a whole gesture (a Populate that places a
+// pile per event waited up to 3 s per member item, N x 3 s on the UI thread with no end in sight). Grant gives the
+// seconds this wait may last (never more than `want`, 0 once the budget is spent); Spent records what the wait used.
+// A gesture is a run of waits less than kIdleResetS apart: a later wait starts a fresh budget.
+class WaitBudget {
+public:
+    static constexpr double kBudgetS = 10.0, kIdleResetS = 2.0;
+    double Grant(double now_s, double want_s)
+    {
+        if (now_s - last_s_ > kIdleResetS || now_s < last_s_) spent_s_ = 0.0;
+        const double left = kBudgetS - spent_s_;
+        return left <= 0.0 ? 0.0 : (want_s < left ? (want_s > 0.0 ? want_s : 0.0) : left);
+    }
+    void Spent(double now_s, double used_s)
+    {
+        spent_s_ += used_s > 0.0 ? used_s : 0.0;
+        last_s_ = now_s;
+    }
+
+private:
+    double spent_s_ = 0.0, last_s_ = -1e9;
+};
+
 }  // namespace rav

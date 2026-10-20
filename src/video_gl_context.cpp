@@ -267,8 +267,8 @@ bool VideoGlFrame::Begin(int width, int height)
         g.ok = CreateThreadContext(g, /*message_only=*/true, &fail);
         if (!g.ok) {
             DestroyThreadContext(g);
-            LogInfo("video FX: the driver refused a message-only GL window (%s, error %lu): a hidden "
-                    "top-level window is used",
+            LogWarn("video FX: the driver refused a message-only GL window (%s, error %lu): a hidden "
+                    "top-level window is used (a broadcast message can then wait on it: freeze audit #7)",
                     fail.what, static_cast<unsigned long>(fail.err));
             g.ok = CreateThreadContext(g, /*message_only=*/false, &fail);
             if (!g.ok) {

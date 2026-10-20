@@ -54,6 +54,7 @@
 #include "sound_audition_plan.h"  // ReachCache
 #include "sound_entries.h"
 #include "sound_peaks.h"
+#include "timed_join.h"  // freeze audit #8
 #include "sound_project.h"
 #include "sound_record.h"
 #include "ui_flow.h"
@@ -195,7 +196,10 @@ public:
             std::lock_guard<std::mutex> lk(m_);
             if (front) q_.push_front(std::move(t));
             else q_.push_back(std::move(t));
-            if (!th_.joinable()) th_ = std::thread([this] { Run(); });
+            if (!th_.joinable()) {
+                ++alive_;
+                th_ = std::thread([this] { Run(); });
+            }
         }
         cv_.notify_one();
     }
@@ -215,7 +219,7 @@ public:
             q_.clear();
         }
         cv_.notify_all();
-        if (th_.joinable()) th_.join();
+        JoinWithin(th_, [this] { return alive_.load() == 0; });  // freeze audit #8: a check stuck on a dead share is abandoned
         Take();
         std::lock_guard<std::mutex> lk(m_);
         stop_ = false;
@@ -224,6 +228,10 @@ public:
 private:
     void Run()
     {
+        struct Alive {
+            std::atomic<int>& n;
+            ~Alive() { --n; }
+        } alive{alive_};
         const int slot = RAV_WORKER_SLOT("Media Explorer disk", 0);  // freeze audit
         (void)slot;
         for (;;) {
@@ -272,6 +280,7 @@ private:
     }
 
     std::thread             th_;
+    std::atomic<int>        alive_{0};
     std::mutex              m_;
     std::condition_variable cv_;
     std::deque<Task>        q_;

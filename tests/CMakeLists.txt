@@ -57,6 +57,12 @@ target_include_directories(watchdog_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../
 target_compile_definitions(watchdog_test PRIVATE RAV_WATCHDOG_HOST)
 target_link_libraries(watchdog_test PRIVATE Threads::Threads)
 add_test(NAME watchdog COMMAND watchdog_test)
+# Freeze audit #8 -- a join that gives up (src/timed_join.h).
+add_executable(timed_join_test timed_join_test.cpp ../src/watchdog.cpp)
+target_include_directories(timed_join_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_compile_definitions(timed_join_test PRIVATE RAV_WATCHDOG_HOST)
+target_link_libraries(timed_join_test PRIVATE Threads::Threads)
+add_test(NAME timed_join COMMAND timed_join_test)
 # Freeze audit #3 -- a replaced store is retired, freed only at a top-level point (src/store_graveyard.h).
 add_executable(store_graveyard_test store_graveyard_test.cpp)
 target_include_directories(store_graveyard_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)

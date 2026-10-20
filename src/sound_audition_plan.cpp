@@ -357,7 +357,8 @@ LoopSeg LoopSegAt(double t, int left, double sr, double head_s, double loop_s)
     LoopSeg s;
     s.n = std::max(left, 0);
     s.t = t;
-    if (!(loop_s > 0.0) || !(sr > 0.0) || left <= 0 || !std::isfinite(t)) return s;
+    // Freeze audit #6: a NaN / infinite head or loop length plays straight on (n = what is left), never a zero-length step.
+    if (!(loop_s > 0.0) || !std::isfinite(loop_s) || !std::isfinite(head_s) || !(sr > 0.0) || left <= 0 || !std::isfinite(t)) return s;
     const double head = std::max(head_s, 0.0);
     double       end = 0.0;  // the next boundary, in s.t's terms
     if (t < head) {

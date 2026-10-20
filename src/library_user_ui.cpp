@@ -55,6 +55,7 @@
 #include "sound_record.h"
 #include "sound_tracks.h"
 #include "texture_locate.h"
+#include "timed_join.h"  // freeze audit #8
 #include "ui_flow.h"
 #include "ui_flow_math.h"
 #include "ui_theme.h"
@@ -1758,7 +1759,9 @@ void QuitLibraryUser()
     if (g_timer_on && g_register) g_register("-timer", reinterpret_cast<void*>(&OnTimer));
     g_timer_on = false;
     g_job.cancel = true;  // 13-38: a scan of a huge folder stops at once
-    JoinLocate();
+    // Freeze audit #8: a scan stuck in a folder of a dead share is given up on after a while, not waited for for ever.
+    JoinWithin(g_job.worker, [] { return g_job.done.load(); });
+    g_job.running = false;
 }
 
 }  // namespace rav

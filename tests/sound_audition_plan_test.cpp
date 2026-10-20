@@ -1068,6 +1068,16 @@ static void TestLinkedBlendAudition()
     CHECK(off_ok);
 }
 
+void TestLoopSegNaN()
+{  // freeze audit #6: a segment always advances, whatever the lengths
+    const double nan = std::numeric_limits<double>::quiet_NaN(), inf = std::numeric_limits<double>::infinity();
+    for (double head : {0.25, nan, inf, -1.0})
+        for (double loop : {0.5, nan, inf, 0.0, -2.0}) {
+            const LoopSeg s = LoopSegAt(0.3, 100, 48000.0, head, loop);
+            CHECK(s.n >= 1 && s.n <= 100);
+        }
+}
+
 void TestReachCache()
 {
     ReachCache c;
@@ -1118,6 +1128,7 @@ int main()
     TestAuditionEnded();
     TestPartsAudition();
     TestReachCache();
+    TestLoopSegNaN();
     if (g_fail) {
         std::printf("%d failure(s)\n", g_fail);
         return 1;

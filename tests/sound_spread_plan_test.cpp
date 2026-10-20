@@ -270,8 +270,8 @@ int main()
         CHECK(d.mode == DetectMode::Takes && d.frames.size() == 4 && Near(d.frames[0].length, 0.5));
         const SoundData w = PileSoundData("fold", 1, 0.5);
         CHECK(w.mode == DetectMode::Whole && w.frames.size() == 1);
-        // Take markers (NVK): one variation per slice of the top member, taking over the takes.
-        const SoundData tm = PileSoundData("fold", 4, 0.5, {{0.0, 0.3, "1"}, {1.0, 0.25, "2"}, {2.0, 0.4, "3"}});
+        // Take markers (NVK): one variation per marker of the top member (PileVariations), taking over the takes.
+        const SoundData tm = PileSoundData("fold", 4, 0.5, DetectMode::TakeMarkers, {{0.0, 0.3}, {1.0, 0.25}, {2.0, 0.4}});
         CHECK(tm.mode == DetectMode::TakeMarkers && tm.frames.size() == 3 && tm.linked_copies);
         CHECK(Near(tm.frames[1].start, 1.0) && Near(tm.frames[1].length, 0.25));
         SpreadSource folder = Src("fold", "Steps", 1, 20.0, 0.5, 0.02);
@@ -437,7 +437,7 @@ int main()
     {
         SpreadSource folder = Src("{FOLD}", "Steps", 1, 20.0, 0.5, 0.02);
         folder.folder = true;
-        folder.sound = PileSoundData("{FOLD}", 1, 0.5, {{0.0, 0.3, "1"}, {1.0, 0.3, "2"}, {2.0, 0.3, "3"}});
+        folder.sound = PileSoundData("{FOLD}", 1, 0.5, DetectMode::TakeMarkers, {{0.0, 0.3}, {1.0, 0.3}, {2.0, 0.3}});
         SoundLibrary lib;
         SetLibraryContent(lib, SpreadLayerNodes({Src("kid1", "K1", 2, 20.0, 0.4, 0.0), folder, Src("other", "O", 2, 30.0, 0.4, 0.0)},
                                                 "FS", &Uid));
@@ -474,7 +474,7 @@ int main()
         EntryFacts f;
         f.source_len = 12.562;
         f.item_len = 12.562;
-        f.slices = {{0.0, 2.0, "1"}, {2.0, 2.0, "2"}, {4.0, 2.0, "3"}, {6.0, 2.0, "4"}, {8.0, 2.0, "5"}};  // ignored
+        f.slices = {{0.0, 2.0, "1"}, {2.0, 2.0, "2"}, {4.0, 2.0, "3"}, {6.0, 2.0, "4"}, {8.0, 2.0, "5"}};  // SilenceVariations ignores them
         SoundData d;
         d.mode = DetectMode::TakeMarkers;
         d.frames = {{0.0, 2.0}};
@@ -497,10 +497,10 @@ int main()
         tk.mode = DetectMode::Takes;
         CHECK(SilenceVariations(tk, f, &pk).mode == DetectMode::Takes);
         CHECK(SilenceVariations(d, f, nullptr).mode == DetectMode::TakeMarkers);
-        // A folder pile: the top member's regions, take markers ignored; several takes stay Takes.
-        const SoundData pile = PileSoundData("{F}", 1, 12.0, f.slices, s.frames);
+        // A folder pile: the top member's regions (PileSoundData given them); several takes stay Takes.
+        const SoundData pile = PileSoundData("{F}", 1, 12.0, DetectMode::Silence, s.frames);
         CHECK(pile.mode == DetectMode::Silence && pile.frames.size() == 6);
-        CHECK(PileSoundData("{F}", 3, 12.0, {}, s.frames).mode == DetectMode::Takes);
+        CHECK(PileSoundData("{F}", 3, 12.0, DetectMode::Silence, s.frames).mode == DetectMode::Takes);
         // Its copies sync as Silence Sounds do (their own attack), not on the item's snap.
         SpreadSource src = Src("{S}", "S", 1, 0.0, 12.0, 0.4);
         src.sound = s;
@@ -529,6 +529,160 @@ int main()
         const double s5 = ZoneSnap(e, {5, 0}, &pk).t;
         SnapWindows(e, 0.0, 5.0, f.source_len, &pk);
         CHECK(e.frames[5].zones.front().b == f.source_len && std::fabs(ZoneSnap(e, {5, 0}, &pk).t - s5) < 1e-9);
+    }
+
+    // Spec attach-take-markers-variations (Antho 2026-10-20): a plain item with take markers is a Take markers Sound, one
+    // variation per marker, each zone's snap detected on the peaks, each as long as the original around it. His
+    // "FEETHmn_Boots Concrete Grit Run Sequence 01" item: 25 take markers ~0.32 s apart, the item playing 0.2797 s from
+    // 0.251 (marker 1 at 0.256), its snap 5 ms in. Each step's attack sits 4..40 ms after its marker (irregular).
+    {
+        const double marks[25] = {0.256, 0.58, 0.905, 1.226, 1.55, 1.878, 2.199, 2.52, 2.844, 3.162, 3.781, 4.102, 4.426,
+                                  4.754, 5.075, 5.4, 5.724, 6.045, 6.694, 7.333, 7.707, 8.112, 8.51, 9.085, 9.487};
+        double attack[25];
+        PeakData pk;
+        pk.rate = 1000.0;
+        const double file_len = 10.0;
+        pk.max_abs.assign(static_cast<size_t>(file_len * pk.rate), 0.0f);
+        for (int k = 0; k < 25; ++k) {
+            attack[k] = marks[k] + 0.004 + 0.036 * static_cast<double>((k * 7) % 10) / 9.0;
+            for (size_t i = static_cast<size_t>(attack[k] * pk.rate); i < static_cast<size_t>((attack[k] + 0.12) * pk.rate); ++i)
+                pk.max_abs[i] = 0.5f * static_cast<float>(1.0 - (static_cast<double>(i) / pk.rate - attack[k]) / 0.12) + 0.01f;
+        }
+        EntryFacts f;
+        f.source_len = file_len;
+        f.start_offs = 0.251;
+        f.item_len = 0.2797;
+        f.item_db = 6.0;  // the item's gain sits on every variation
+        for (int k = 0; k < 25; ++k)
+            f.slices.push_back({marks[k], (k < 24 ? marks[k + 1] : file_len) - marks[k], std::to_string(k + 1)});
+        SoundData d;  // as ItemSoundData reads it
+        d.mode = DefaultDetectMode(f, false);
+        d.frames = DetectFrames(f, d.mode, d.silence, nullptr);
+        RefreshParts(d, nullptr);
+        CHECK(d.mode == DetectMode::TakeMarkers);
+        const double pre = 0.005, post = 0.2797 - 0.005;
+        SoundData a = AttachVariations(d, f, &pk, pre, post);
+        CHECK(a.mode == DetectMode::TakeMarkers && a.frames.size() == 25);
+        for (size_t v = 0; v < a.frames.size() && v < 25; ++v) {
+            CHECK(a.frames[v].zones.size() == 1);
+            if (a.frames[v].zones.size() != 1) continue;
+            const EditZone& z = a.frames[v].zones.front();
+            const double    sn = ZoneSnap(a, {static_cast<int>(v), 0}, &pk).t;
+            CHECK(std::fabs(sn - attack[v]) < 0.003);  // its own attack, never the item's 5 ms after the marker
+            CHECK(std::fabs(z.a - (sn - pre)) < 1e-9 && std::fabs(z.b - (sn + post)) < 1e-9);
+            CHECK(std::fabs(a.frames[v].length - 0.2797) < 1e-9);
+            CHECK(z.db == 6.0);  // the item's gain, moved into its zone by RefreshParts
+        }
+        // Its copies keep the Sound's sync mode (each zone's pinned snap), never Slice start + the item's snap.
+        SpreadSource src = Src("{B}", "Boots", 1, 0.0, 0.2797, 0.005);
+        src.sound = a;
+        const std::vector<SoundNode> nodes = SpreadLayerNodes({src}, "FS", &Uid);
+        CHECK(nodes.size() == 2 && nodes[1].sound.mode == DetectMode::TakeMarkers && nodes[1].sound.sync_mode == a.sync_mode
+              && nodes[1].sound.sync_mode != SyncMode::SliceStart);
+
+        // No peaks in time: one variation (Whole), never the marker slices.
+        const SoundData np = AttachVariations(d, f, nullptr, pre, post);
+        CHECK(np.mode == DetectMode::Whole && np.frames.size() == 1 && Near(np.frames[0].start, 0.251));
+        // Takes: unchanged.
+        SoundData tk = d;
+        tk.mode = DetectMode::Takes;
+        tk.frames = {{0.0, 0.3}, {0.0, 0.3}};
+        const SoundData tko = AttachVariations(tk, f, &pk, pre, post);
+        CHECK(tko.mode == DetectMode::Takes && tko.frames.size() == 2);
+
+        // No markers (0 or 1): cut on silence at the new Sound's defaults, zoned and windowed at creation.
+        for (int nm = 0; nm < 2; ++nm) {
+            EntryFacts g = f;
+            g.slices.resize(static_cast<size_t>(nm));
+            SoundData w;
+            w.mode = DefaultDetectMode(g, false);
+            w.frames = DetectFrames(g, w.mode, w.silence, nullptr);
+            const SoundData sv = AttachVariations(w, g, &pk, pre, post);
+            CHECK(sv.mode == DetectMode::Silence && sv.frames.size() >= 2);  // the 200 ms gap glues some steps (why markers win)
+            CHECK(sv.silence.threshold_db == SilenceParams{}.threshold_db && sv.silence.min_gap_ms == SilenceParams{}.min_gap_ms);
+            for (size_t v = 0; v < sv.frames.size(); ++v)
+                CHECK(sv.frames[v].zones.size() == 1 && std::fabs(sv.frames[v].length - 0.2797) < 1e-9
+                      && sv.frames[v].zones.front().db == 6.0);  // its gain, moved into its zone by RefreshParts
+            // Silence finds nothing: Whole as it came.
+            PeakData quiet = pk;
+            for (float& x : quiet.max_abs) x = 0.0f;
+            CHECK(AttachVariations(w, g, &quiet, pre, post).mode == DetectMode::Whole);
+            // No peaks: one Whole variation.
+            CHECK(AttachVariations(w, g, nullptr, pre, post).frames.size() == 1);
+        }
+
+        // A folder pile whose top member has 3 markers: Take markers, 3 variations, zoned on its peaks.
+        EntryFacts top = f;
+        top.slices.resize(3);
+        const SoundData pv = PileVariations(top, &pk);
+        CHECK(pv.mode == DetectMode::TakeMarkers && pv.frames.size() == 3);
+        SoundData pile = PileSoundData("{P}", 1, 0.2797, pv.mode, pv.frames);
+        RefreshParts(pile, &pk);
+        CHECK(pile.mode == DetectMode::TakeMarkers && pile.frames.size() == 3 && pile.linked_copies);
+        for (size_t v = 0; v < pile.frames.size(); ++v) CHECK(pile.frames[v].zones.size() == 1);
+        // Without markers: its regions of sound; without peaks: as before (Whole / takes).
+        EntryFacts bare = f;
+        bare.slices.clear();
+        const SoundData pb = PileVariations(bare, &pk);
+        CHECK(pb.mode == DetectMode::Silence && pb.frames.size() >= 2);
+        for (const SoundFrame& fr : pb.frames) CHECK(fr.db == 6.0);
+        const SoundData pn = PileVariations(top, nullptr);
+        CHECK(pn.frames.empty());
+        CHECK(PileSoundData("{P}", 1, 0.3, pn.mode, pn.frames).mode == DetectMode::Whole);
+        CHECK(PileSoundData("{P}", 3, 0.3, pn.mode, pn.frames).mode == DetectMode::Takes);
+    }
+
+    // The 4901a53 shape: NVK markers on the loudest peak, the attack before it at an irregular distance (10..250 ms),
+    // the item cut from its own attack. Re-reading the item's fixed offset from its marker put copies in silence; each
+    // zone's snap detected on the peaks puts every copy's window on its own sound.
+    {
+        const double marks[4] = {1.0, 2.0, 3.0, 4.0};
+        const double lead[4] = {0.05, 0.25, 0.01, 0.15};  // attack -> marker (its loudest peak)
+        PeakData pk;
+        pk.rate = 1000.0;
+        pk.max_abs.assign(5000, 0.0f);
+        for (int k = 0; k < 4; ++k) {
+            const double at = marks[k] - lead[k];
+            for (size_t i = static_cast<size_t>(at * pk.rate); i < static_cast<size_t>((marks[k] + 0.1) * pk.rate); ++i)
+                pk.max_abs[i] = std::fabs(static_cast<double>(i) / pk.rate - marks[k]) < 0.002 ? 0.9f : 0.2f;
+        }
+        EntryFacts f;
+        f.source_len = 5.0;
+        f.start_offs = marks[0] - lead[0] - 0.005;  // from just before its attack
+        f.item_len = 0.4;
+        for (int k = 0; k < 4; ++k) f.slices.push_back({marks[k], 1.0, std::to_string(k + 1)});
+        SoundData d;
+        d.mode = DetectMode::TakeMarkers;
+        d.frames = DetectFrames(f, d.mode, d.silence, nullptr);
+        const double pre = 0.005, post = 0.395;  // its snap on its attack
+        // Attack: each snap on its own attack, even 250 ms before its marker (beyond the item's own 50 ms).
+        d.sync_mode = SyncMode::Attack;
+        const SoundData a = AttachVariations(d, f, &pk, pre, post);
+        CHECK(a.mode == DetectMode::TakeMarkers && a.frames.size() == 4);
+        for (size_t v = 0; v < a.frames.size() && v < 4; ++v) {
+            CHECK(a.frames[v].zones.size() == 1);
+            if (a.frames[v].zones.size() != 1) continue;
+            const double sn = ZoneSnap(a, {static_cast<int>(v), 0}, &pk).t;
+            CHECK(std::fabs(sn - (marks[v] - lead[v])) < 0.003);
+            const EditZone& z = a.frames[v].zones.front();
+            CHECK(z.a <= marks[v] && z.b >= marks[v]);  // its window holds its loudest peak
+        }
+        // Peak: each snap on its marker (its loudest peak).
+        d.sync_mode = SyncMode::Peak;
+        const SoundData p = AttachVariations(d, f, &pk, pre, post);
+        CHECK(p.mode == DetectMode::TakeMarkers && p.frames.size() == 4);
+        for (size_t v = 0; v < p.frames.size() && v < 4; ++v) {
+            CHECK(p.frames[v].zones.size() == 1);
+            if (p.frames[v].zones.size() != 1) continue;
+            CHECK(std::fabs(ZoneSnap(p, {static_cast<int>(v), 0}, &pk).t - marks[v]) < 0.003);
+        }
+        // Markers that clamp to fewer than 2 frames (past the file's end) and quiet peaks: one Whole variation.
+        EntryFacts out = f;
+        out.slices = {{6.0, 0.5, "1"}, {7.0, 0.5, "2"}};
+        PeakData quiet = pk;
+        for (float& x : quiet.max_abs) x = 0.0f;
+        const SoundData w = AttachVariations(d, out, &quiet, pre, post);
+        CHECK(w.mode == DetectMode::Whole && w.frames.size() == 1);
     }
 
     if (g_fail) {

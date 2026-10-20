@@ -42,23 +42,32 @@ std::vector<std::vector<int>> SpreadPiles(const std::vector<AttachItem>& items);
 void SyncFromSnap(SoundData& d, double snap_s);
 
 // A folder item's Sound (an NVK pile, placed by Populate as its child items): source = the folder item,
-// copies share the variation number (linked_copies): TakeMarkers mode with one variation per slice when its
-// top member has take markers (`slices` >= 2: every layer plays its own k-th slice), else Takes mode with
-// one variation per take when its children hold `takes` >= 2 (every layer plays take k), else Whole.
-// `len` = the folder item's length (s).
-SoundData PileSoundData(const std::string& folder_guid, int takes, double len, const std::vector<Slice>& slices = {},
-                        const std::vector<SoundFrame>& silence = {});
-// Antho 2026-10-20 ("detect by silence, not take markers"): a selected source's variations are its regions of sound:
-// `d` (the item's Sound, ItemSoundData) cut on silence of its peaks (DetectFrames Silence, a new Sound's SilenceParams),
-// take markers ignored. A Takes Sound (several takes), no peaks, or no region found: `d` unchanged. With `silence`
-// (the top member's regions), PileSoundData makes a folder pile's Sound the same way (each member plays its own k-th
-// region at placement). The caller lays out its zones (RefreshParts) with the peaks.
+// copies share the variation number (linked_copies). `regions` = its top member's variations (PileVariations), every
+// layer playing its own k-th one: take markers (`regions_mode` TakeMarkers, 2 or more) win over the takes; silence
+// regions (Silence) only when its children hold fewer than 2 `takes`. Else Takes mode with one variation per take when
+// they hold `takes` >= 2 (every layer plays take k), else Whole. `len` = the folder item's length (s).
+SoundData PileSoundData(const std::string& folder_guid, int takes, double len, DetectMode regions_mode = DetectMode::Whole,
+                        const std::vector<SoundFrame>& regions = {});
+// Antho 2026-10-20: a selected source's variations cut on silence of its peaks: `d` (the item's Sound, ItemSoundData)
+// split on silence (SplitOnSilence) with a new Sound's SilenceParams, every frame at the item's gain (facts.item_db).
+// A Takes Sound (several takes), no peaks, or no region found: `d` unchanged. The caller lays out its zones (RefreshParts) with the peaks.
 SoundData SilenceVariations(SoundData d, const EntryFacts& facts, const PeakData* peaks);
+// Antho 2026-10-20 (spec attach-take-markers-variations): a folder pile's variations, read on its top member (`facts`,
+// `peaks`): its take markers when it has 2 or more (DetectFrames TakeMarkers), else its regions of sound
+// (SilenceVariations). Mode Whole with no frames when there are no peaks or nothing is found.
+SoundData PileVariations(const EntryFacts& facts, const PeakData* peaks);
 // Antho 2026-10-20 (the copies were as long as their whole region): every variation of `d` (laid out, one zone each)
 // cut as the original item is around its snap: [its snap - pre, its snap + post] (source seconds: the item's snap and
 // what follows it), clamped to [0, file_len] (0 = no upper clamp); its snap = its zone's (the S of the Edit window),
 // pinned. So every copy is as long as the original and its snap lands on the marker. Takes Sounds unchanged.
 void SnapWindows(SoundData& d, double pre, double post, double file_len, const PeakData* peaks);
+// Antho 2026-10-20 (spec attach-take-markers-variations): a plain selected item's Sound for Attach / Add to pile. `d` =
+// its Sound (ItemSoundData), `f` its facts, `pk` its file's peaks (null: not read in time), `pre` / `post` = its snap
+// and what follows it (source s). A Takes Sound: as is. No peaks: one variation (Whole) instead of take-marker slices.
+// Take markers (2 or more): one variation per marker (DetectFrames TakeMarkers), zoned on the peaks, each zone's snap
+// detected there (its sync mode, never the item's snap offset), then cut by SnapWindows. Else cut on silence
+// (SilenceVariations), zoned and windowed the same way.
+SoundData AttachVariations(SoundData d, const EntryFacts& f, const PeakData* pk, double pre, double post);
 
 // The nodes of one layer: nodes[0] = a Random named `name` (parent ""), one child per pile in time
 // order: a pile holding a folder item = that item's Sound alone (its first folder item, top first; the

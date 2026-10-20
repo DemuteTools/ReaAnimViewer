@@ -286,35 +286,27 @@ ReadSounds ReadSources(const std::vector<SelectedSound>& sel, const std::vector<
                 if (in_first && r.first_items.insert(k).second) r.attach_items.push_back(k);
             }
             if (in_first && !kids.empty()) r.first_folders.push_back({s.facts.guid, kids});
-            // Antho 2026-10-20: the pile's variations = the top member's regions of sound (take markers ignored).
-            SoundMedia              top_media;
-            std::vector<SoundFrame> regions;
-            PeakData                pk;
-            if (!kids.empty() && ReadItemMedia(kids.front(), &top_media) && WaitPeaks(top_media.path, &pk))
-                regions = SilenceVariations(SoundData(), top_media.facts, &pk).frames;
-            src.sound = PileSoundData(s.facts.guid, takes, s.facts.len, {}, regions);
+            // Spec attach-take-markers-variations: the pile's variations = the top member's take markers (2 or more),
+            // else its regions of sound, zoned at creation on its peaks (each member plays its own k-th variation).
+            SoundMedia top_media;
+            SoundData  regions;
+            PeakData   pk;
+            const bool peaks = !kids.empty() && ReadItemMedia(kids.front(), &top_media) && WaitPeaks(top_media.path, &pk);
+            if (peaks) regions = PileVariations(top_media.facts, &pk);
+            src.sound = PileSoundData(s.facts.guid, takes, s.facts.len, regions.mode, regions.frames);
+            if (peaks && (src.sound.mode == DetectMode::TakeMarkers || src.sound.mode == DetectMode::Silence))
+                RefreshParts(src.sound, &pk);
         } else {
             src.sound = ItemSoundData(s.item);
-            // Antho 2026-10-20 ("detect by silence, not take markers"): its variations = its regions of sound.
+            // Spec attach-take-markers-variations: its take markers (2 or more) are its variations, else its regions of
+            // sound; each zone's snap detected on the peaks, each variation as long as the original around it.
             SoundMedia m;
             PeakData   pk;
-            const bool media = src.sound.mode != DetectMode::Takes && ReadItemMedia(s.item, &m);
-            if (media && WaitPeaks(m.path, &pk)) {
-                src.sound = SilenceVariations(src.sound, m.facts, &pk);
-                if (src.sound.mode == DetectMode::Silence) {
-                    RefreshParts(src.sound, &pk);
-                    // Antho 2026-10-20: each variation as long as the original, cut around its own snap.
-                    const double rate = m.facts.playrate > 0.0 ? m.facts.playrate : 1.0;
-                    SnapWindows(src.sound, s.facts.snap * rate, (s.facts.len - s.facts.snap) * rate, m.facts.source_len, &pk);
-                }
-            }
-            if (media && src.sound.mode == DetectMode::TakeMarkers) {  // no region read: one variation, never the slices
-                const std::vector<SoundFrame> whole = DetectFrames(m.facts, DetectMode::Whole, SilenceParams{}, nullptr);
-                if (!whole.empty()) {
-                    src.sound.mode = DetectMode::Whole;
-                    src.sound.frames = whole;
-                    RefreshParts(src.sound, nullptr);
-                }
+            if (src.sound.mode != DetectMode::Takes && ReadItemMedia(s.item, &m)) {
+                const bool   peaks = WaitPeaks(m.path, &pk);
+                const double rate = m.facts.playrate > 0.0 ? m.facts.playrate : 1.0;
+                src.sound = AttachVariations(src.sound, m.facts, peaks ? &pk : nullptr, s.facts.snap * rate,
+                                             (s.facts.len - s.facts.snap) * rate);
             }
             if (MediaItem_Take* take = GetActiveTake(s.item)) src.playrate = GetMediaItemTakeInfo_Value(take, "D_PLAYRATE");
         }

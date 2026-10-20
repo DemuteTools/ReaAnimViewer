@@ -55,9 +55,10 @@ SoundNode SoundOf(const SpreadSource& s, const std::string& uid, const std::stri
     // 13-68 v3: its copies play at its take's rate (keep_rate, plain and folder piles); the sync in source seconds, which
     // the copy reads back over 1 / rate (ApplyPiece), so its snap lands on the marker.
     n.sound.keep_rate = true;
-    // Antho 2026-10-20: a Sound cut on silence syncs as Silence Sounds do (each region on its own attack), never on the
-    // item's snap: each copy plays its own region, never silence.
-    if (n.sound.mode != DetectMode::Silence) SyncFromSnap(n.sound, SourceSecondsOf(s.facts.snap, s.playrate));
+    // Antho 2026-10-20: a Sound cut on silence or on take markers syncs on each zone's own detected snap (its sync mode,
+    // pinned by SnapWindows), never on the item's snap: each copy plays its own variation, never silence (4901a53).
+    if (n.sound.mode != DetectMode::Silence && n.sound.mode != DetectMode::TakeMarkers)
+        SyncFromSnap(n.sound, SourceSecondsOf(s.facts.snap, s.playrate));
     return n;
 }
 
@@ -67,11 +68,14 @@ SoundData SilenceVariations(SoundData d, const EntryFacts& facts, const PeakData
 {
     if (d.mode == DetectMode::Takes || !peaks) return d;
     const SilenceParams           sp;  // what a new Sound gets (-60 dB, 200 ms gap, its pre-roll and tail)
-    const std::vector<SoundFrame> frames = DetectFrames(facts, DetectMode::Silence, sp, peaks);
+    // Its regions of sound alone (DetectFrames would fall back on the item's stretch: nothing found = `d` as it came).
+    const std::vector<SoundFrame> frames = SplitOnSilence(*peaks, sp, facts.source_len);
     if (frames.empty()) return d;
     d.mode = DetectMode::Silence;
     d.silence = sp;
     d.frames = frames;
+    // The item's gain sits on what it plays (Antho 2026-10-13), as DetectFrames gives it to every frame.
+    for (SoundFrame& f : d.frames) f.db = std::isfinite(facts.item_db) ? facts.item_db : 0.0;
     return d;
 }
 
@@ -96,26 +100,90 @@ void SnapWindows(SoundData& d, double pre, double post, double file_len, const P
     }
 }
 
-SoundData PileSoundData(const std::string& folder_guid, int takes, double len, const std::vector<Slice>& slices,
-                        const std::vector<SoundFrame>& silence)
+SoundData PileVariations(const EntryFacts& facts, const PeakData* peaks)
+{
+    SoundData d;
+    d.mode = DetectMode::Whole;
+    if (!peaks) return d;
+    if (facts.slices.size() >= 2) {  // its take markers: one variation per marker
+        const std::vector<SoundFrame> frames = DetectFrames(facts, DetectMode::TakeMarkers, SilenceParams{}, peaks);
+        if (frames.size() >= 2) {
+            d.mode = DetectMode::TakeMarkers;
+            d.frames = frames;
+            return d;
+        }
+    }
+    d = SilenceVariations(d, facts, peaks);
+    if (d.mode != DetectMode::Silence) d.frames.clear();
+    return d;
+}
+
+SoundData AttachVariations(SoundData d, const EntryFacts& f, const PeakData* pk, double pre, double post)
+{
+    if (d.mode == DetectMode::Takes) return d;
+    if (!pk) {  // peaks not read in time: one variation, never the take-marker slices
+        if (d.mode == DetectMode::TakeMarkers) {
+            const std::vector<SoundFrame> whole = DetectFrames(f, DetectMode::Whole, SilenceParams{}, nullptr);
+            if (!whole.empty()) {
+                d.mode = DetectMode::Whole;
+                d.frames = whole;
+                RefreshParts(d, nullptr);
+            }
+        }
+        return d;
+    }
+    if (f.slices.size() >= 2) {  // take markers: one variation per marker, each snap detected on the peaks
+        const std::vector<SoundFrame> frames = DetectFrames(f, DetectMode::TakeMarkers, d.silence, pk);
+        if (frames.size() >= 2) {
+            d.mode = DetectMode::TakeMarkers;
+            d.frames = frames;
+            // Each snap searched from halfway after the previous marker (the first: back by the same half-gap as the
+            // second), its end kept: an attack further before its marker than the item's own offset stays in its zone
+            // (SnapWindows cuts every copy to the original's length after).
+            std::vector<double> marks;
+            for (const Slice& sl : f.slices) marks.push_back(sl.start);
+            std::sort(marks.begin(), marks.end());
+            if (marks.size() == d.frames.size()) {
+                for (size_t k = 0; k < marks.size(); ++k) {
+                    const double half = (k > 0 ? marks[k] - marks[k - 1] : marks[1] - marks[0]) / 2.0;
+                    SoundFrame&  fr = d.frames[k];
+                    const double end = fr.start + fr.length;
+                    const double st = std::max(0.0, marks[k] - half);
+                    if (st < fr.start) {
+                        fr.start = st;
+                        fr.length = end - st;
+                    }
+                }
+            }
+            RefreshParts(d, pk);
+            SnapWindows(d, pre, post, f.source_len, pk);
+            return d;
+        }
+    }
+    d = SilenceVariations(d, f, pk);
+    if (d.mode == DetectMode::Silence) {
+        RefreshParts(d, pk);
+        SnapWindows(d, pre, post, f.source_len, pk);
+    } else if (d.mode == DetectMode::TakeMarkers) {  // its markers gave no variations and silence none: one, Whole
+        return AttachVariations(d, f, nullptr, pre, post);
+    }
+    return d;
+}
+
+SoundData PileSoundData(const std::string& folder_guid, int takes, double len, DetectMode regions_mode,
+                        const std::vector<SoundFrame>& regions)
 {
     SoundData d;
     d.source.kind = SoundSourceKind::Item;
     d.source.item_guid = folder_guid;
     d.linked_copies = true;
-    if (takes < 2 && !silence.empty()) {  // Antho 2026-10-20: the top member's regions of sound, take markers ignored
-        d.mode = DetectMode::Silence;
-        d.frames = silence;
-        return d;
-    }
-    if (slices.size() >= 2) {  // (the Attach passes none since 2026-10-20: its regions of sound instead)  // take markers (NVK): one variation per slice of the top member
-        d.mode = DetectMode::TakeMarkers;
-        for (const Slice& s : slices) {
-            SoundFrame f;
-            f.start = s.start;
-            f.length = s.length;
-            d.frames.push_back(f);
-        }
+    // Spec attach-take-markers-variations: the top member's variations (PileVariations): its take markers (they take
+    // over the takes, as NVK piles always did), or its regions of sound when its children hold fewer than 2 takes.
+    const bool markers = regions_mode == DetectMode::TakeMarkers && regions.size() >= 2;
+    const bool silence = regions_mode == DetectMode::Silence && !regions.empty() && takes < 2;
+    if (markers || silence) {
+        d.mode = regions_mode;
+        d.frames = regions;
         return d;
     }
     d.mode = takes >= 2 ? DetectMode::Takes : DetectMode::Whole;

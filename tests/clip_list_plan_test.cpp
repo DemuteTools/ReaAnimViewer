@@ -378,20 +378,22 @@ int main()
         CHECK(s.top == 52.0f && s.bottom == 212.0f);
     }
 
-    // 6-5-10c: the menu button: the corner icons' 24 px button, centred on the top row, 18 px in; the
-    // open menu's panel 8 px around it; the list 8 px under it, at every scale.
+    // 6-5-10c: the menu button: the corner icons' 24 px button, centred on the top row, as far in as
+    // down (Antho 2026-10-20); the open menu's panel 8 px around it; the list 8 px under it, at every scale.
     {
         MenuButtonBox b = MenuButtonAt(32.0f, 1.0f);  // 100 %: 14 + 10 + 16 / 2
-        CHECK(b.x == 18.0f && b.y == 20.0f && b.size == 24.0f && b.bottom == 44.0f);
-        CHECK(b.panel_x == 10.0f && b.panel_y == 12.0f && b.trail == 50.0f);
+        CHECK(b.x == 20.0f && b.y == 20.0f && b.size == 24.0f && b.bottom == 44.0f);
+        CHECK(b.panel_x == 12.0f && b.panel_y == 12.0f && b.trail == 52.0f);
         b = MenuButtonAt(48.0f, 1.5f);  // 150 %
-        CHECK(b.x == 27.0f && b.y == 30.0f && b.size == 36.0f && b.bottom == 66.0f);
-        CHECK(b.panel_x == 15.0f && b.panel_y == 18.0f && b.trail == 75.0f);
+        CHECK(b.x == 30.0f && b.y == 30.0f && b.size == 36.0f && b.bottom == 66.0f);
+        CHECK(b.panel_x == 18.0f && b.panel_y == 18.0f && b.trail == 78.0f);
+        b = MenuButtonAt(21.0f, 1.0f);  // the view switch's middle (8 + 26 / 2): 9 px from both edges
+        CHECK(b.x == 9.0f && b.y == 9.0f);
         b = MenuButtonAt(30.5f, 1.0f);  // a smaller font: whole pixels, still centred
         CHECK(b.y == 19.0f || b.y == 18.0f);
-        b = MenuButtonAt(4.0f, 1.0f);   // never closer than 10 px to the window's top
-        CHECK(b.y == 10.0f && b.panel_y == 2.0f);
-        b = MenuButtonAt(40.0f, 1.25f);  // 125 %: whole pixels on x too (18 * 1.25 = 22.5)
+        b = MenuButtonAt(4.0f, 1.0f);   // never closer than 4 px to the window's top
+        CHECK(b.y == 4.0f && b.x == 4.0f);
+        b = MenuButtonAt(40.0f, 1.25f);  // 125 %: whole pixels on x too
         CHECK(b.x == std::round(b.x) && b.y == std::round(b.y) && b.size == std::round(b.size));
         for (float dp : {1.0f, 1.25f, 1.5f, 2.0f}) {
             const MenuButtonBox m = MenuButtonAt(32.0f * dp, dp);

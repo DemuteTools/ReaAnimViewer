@@ -177,7 +177,7 @@ bool ButtonFits(float menu_bottom, float switch_top, float btn, float dp);
 // Antho 2026-10-14: the burger's frame was far too big for its three lines, and the list's top sat
 // against it. The burger is the corner icons' 24 px button (an 18 px icon, 3 px around it), framed
 // tight over the 3D view; its middle is the top row's (`row_mid`: the FPS readout's text line, where
-// the keyboard and full screen icons are centred), its left edge 18 px from the window's. Open, the
+// the keyboard and full screen icons are centred), its left edge as far from the window's as its top. Open, the
 // menu's panel (8 px padding) holds it at the very same place. `bottom` is the list's `menu_bottom`
 // (PanelVerticalSpan keeps 8 px under it), `trail` the first x the view switch may use (8 px right of it).
 struct MenuButtonBox {

@@ -36,6 +36,8 @@ void SkeletonViewFrame(const Renderer& r);
 
 // The Model / Skeleton switch, its bottom-left corner at (left_x, bottom_y).
 void DrawSkeletonSwitch(float left_x, float bottom_y);
+// The switch's width as last drawn (0 before), to place the status icon beside it.
+float SkeletonSwitchWidth();
 
 // The overlay over the 3D image (area_w x area_h from the window's top-left: the frame the
 // renderer just drew), and the pick. Does nothing in Model mode. The hint ends at hint_right

@@ -1113,9 +1113,16 @@ void StatusIconWidget()
 {
     if (g_load_msg_title.empty() || g_load_msg_info) return;  // info = no problem to show
 
-    const float icon_top = ViewBottom() - kStatusIconMargin - kStatusIconSize;  // Story 11-5: above the strip
+    // Story 11-5: above the strip. Antho 2026-10-20: in RAV and Tagging view the Model / Skeleton
+    // switch has the corner (12 px from both edges), the icon sits 8 px right of it, on its middle.
+    const bool  beside_switch = !VideoViewActive() && !LibraryViewActive();
+    const float icon_left = beside_switch ? kStatusIconMargin + SkeletonSwitchWidth() + ui::Dp(8.0f)
+                                          : static_cast<float>(kStatusIconMargin);
+    const float icon_top = beside_switch ? ViewBottom() - kStatusIconMargin - (ui::ControlH() + ui::Dp(4.0f)) * 0.5f -
+                                               kStatusIconSize * 0.5f
+                                         : ViewBottom() - kStatusIconMargin - kStatusIconSize;
     bool icon_hovered = false;
-    if (ui::BeginOverlay("##statusicon", ImVec2(kStatusIconMargin, icon_top))) {
+    if (ui::BeginOverlay("##statusicon", ImVec2(icon_left, icon_top))) {
         ImDrawList* dl = ImGui::GetWindowDrawList();
         const ImVec2 p0 = ImGui::GetCursorScreenPos();
         ImGui::InvisibleButton("##statushit", ImVec2(kStatusIconSize, kStatusIconSize));
@@ -1146,7 +1153,7 @@ void StatusIconWidget()
     // The panel's bottom edge sits just above the icon (pivot bottom-left), so the mouse
     // crosses only a couple of pixels — covered by the grace — to reach "Copy details".
     // 13-14: the theme's floating card.
-    if (ui::BeginFloatingCard("##statuspanel", ImVec2(kStatusIconMargin, icon_top - ui::Dp(2.0f)), ImVec2(0.0f, 1.0f))) {
+    if (ui::BeginFloatingCard("##statuspanel", ImVec2(icon_left, icon_top - ui::Dp(2.0f)), ImVec2(0.0f, 1.0f))) {
         DrawLoadMessageBody();
         if (ImGui::IsWindowHovered()) g_status_panel_until = now + kStatusPanelGrace;
     }
@@ -1727,9 +1734,15 @@ void DrawToolUi()
     // Story 11-4: at the view area's corner, left of the panel button in Video view.
     // 13-14 (C0.4): hidden in the Library view (no 3D view to measure); the other views keep it.
     const bool        library_view = LibraryViewActive();
-    const float       corner_x = area_right - ui::Dp(video_view ? 46.0f : 10.0f);
     const bool        fps_shown = g_fps_overlay_on && !library_view;
     const ImGuiStyle& st = ImGui::GetStyle();
+    // Antho 2026-10-20: the FPS card is the view switch's height (its text line padded to it), so on
+    // the top row its top is the switch's; the corner element (the card, else the keyboard icon) is
+    // as far from the right edge as from the top. Video view: left of the panel button, as before.
+    const float fps_pad_y = std::max(0.0f, (ui::ControlH() + ui::Dp(4.0f) - ImGui::GetTextLineHeight()) * 0.5f);
+    const float corner_top = fps_shown ? TopRowMid() - fps_pad_y - ImGui::GetTextLineHeight() * 0.5f
+                                       : TopRowMid() - ui::Dp(12.0f);  // the keyboard icon's 24 px button
+    const float corner_x = area_right - (video_view ? ui::Dp(46.0f) : std::round(corner_top));
     // A fixed slot ("000 FPS") so the icons do not jitter as the digits change.
     const float fps_w = fps_shown ? ImGui::CalcTextSize("000 FPS").x + 2.0f * st.WindowPadding.x + ui::Dp(2.0f) : 0.0f;
     const float keys_w = ui::Dp(24.0f) + ui::Dp(2.0f);  // the keyboard icon's 24 px button + its gap
@@ -1745,8 +1758,8 @@ void DrawToolUi()
                                                     &corner_below);
     // On the top row, its text line's middle is TopRowMid() (the menu button is centred on it too).
     const float readout_top = corner_below ? ui::Dp(8.0f) + toggle_size.y + ui::Dp(4.0f)
-                                           : TopRowMid() - st.WindowPadding.y - ImGui::GetTextLineHeight() * 0.5f;
-    const float text_mid = readout_top + st.WindowPadding.y + ImGui::GetTextLineHeight() * 0.5f;
+                                           : TopRowMid() - fps_pad_y - ImGui::GetTextLineHeight() * 0.5f;
+    const float text_mid = readout_top + fps_pad_y + ImGui::GetTextLineHeight() * 0.5f;
 
     // Epic 13 (D20, 13-2) -- Library view: one full-area window under the view toggle, drawn
     // before the readouts and overlays (which stay on top of it). Story 6-5-9: under the corner
@@ -1759,12 +1772,14 @@ void DrawToolUi()
 
     if (fps_shown) {
         ImGui::SetNextWindowPos(ImVec2(corner_x, readout_top), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(st.WindowPadding.x, fps_pad_y));
         if (ImGui::Begin("##fps", nullptr, kReadoutFlags)) {
             char fps_text[32];
             std::snprintf(fps_text, sizeof(fps_text), "%.0f FPS", g_fps);
             ui::ToneText(fps_text, ui::kMuted);
         }
         ImGui::End();
+        ImGui::PopStyleVar();
     }
 
     // Spec 11-fb-3 — the keyboard icon (Shortcuts popup), left of the FPS readout, centred on
@@ -1816,7 +1831,7 @@ void DrawToolUi()
         const float view_h = tagging_view ? ViewBottom() : static_cast<float>(g_client_h);
         DrawSkeletonOverlay(g_renderer, view_w, view_h, area_right - kNavCubeMargin - kNavCubeSize - ui::Dp(8.0f),
                             ViewBottom() - kNavCubeMargin);
-        DrawSkeletonSwitch(kStatusIconMargin, ViewBottom() - kStatusIconMargin - kStatusIconSize - ui::Dp(6.0f));
+        DrawSkeletonSwitch(kStatusIconMargin, ViewBottom() - kStatusIconMargin);  // 12 px from both edges
     }
 
     // Load message (AC7) — a brief transient message, top-centre, shown while fresh
@@ -1866,7 +1881,7 @@ void DrawToolUi()
     // the menu button's own frame (the burger's bottom), which nothing larger surrounds any more.
     {
         const float icon_top = ViewBottom() - kStatusIconMargin - kStatusIconSize;
-        const float switch_bottom = icon_top - ui::Dp(6.0f);
+        const float switch_bottom = ViewBottom() - kStatusIconMargin;
         const float switch_top = switch_bottom - ui::ControlH() - ui::Dp(4.0f);
         const bool  switch_shown = !video_view && !library_view;
         const char* view_name = library_view ? "Library" : video_view ? "Video" : tagging_view ? "Tagging" : "Main";

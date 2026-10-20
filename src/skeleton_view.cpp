@@ -34,6 +34,7 @@ constexpr float kPickRadius = 10.0f;  // mockup px (Dp at use)
 
 bool        g_skeleton = false;  // Skeleton mode (Model at start)
 std::string g_selected;          // the selected bone's raw name ("" = none)
+float       g_switch_w = 0.0f;   // the Model / Skeleton switch's width, last drawn
 
 // Per-frame scratch (kept to avoid reallocating each frame).
 std::vector<OverlayPoint>        g_pts;
@@ -105,8 +106,14 @@ void DrawSkeletonSwitch(float left_x, float bottom_y)
         static const char* const kModes[2] = {"Model", "Skeleton"};
         int sel = g_skeleton ? 1 : 0;
         if (ui::Segmented("##skelmode", kModes, 2, &sel)) g_skeleton = sel == 1;
+        g_switch_w = ImGui::GetItemRectSize().x;  // Segmented ends with one item, the whole well
     }
     ui::EndOverlay();
+}
+
+float SkeletonSwitchWidth()
+{
+    return g_switch_w;
 }
 
 void DrawSkeletonOverlay(const Renderer& r, float area_w, float area_h, float hint_right, float hint_bottom)

@@ -336,9 +336,11 @@ MenuButtonBox MenuButtonAt(float row_mid, float dp)
 {
     MenuButtonBox b;
     b.size = std::round(24.0f * dp);
-    b.x = std::round(18.0f * dp);  // whole pixels: crisp at 125 %
-    // Centred on the row (whole pixels), never closer than 10 px to the window's top.
-    b.y = std::max(10.0f * dp, std::round(row_mid - b.size * 0.5f));
+    // Centred on the row (whole pixels: crisp at 125 %), never closer than 4 px to the window's top;
+    // as far from the window's left edge as from its top (Antho 2026-10-20: every corner element
+    // sits at the same distance from its two edges).
+    b.y = std::max(std::round(4.0f * dp), std::round(row_mid - b.size * 0.5f));
+    b.x = b.y;
     b.bottom = b.y + b.size;
     b.panel_x = b.x - 8.0f * dp;
     b.panel_y = b.y - 8.0f * dp;

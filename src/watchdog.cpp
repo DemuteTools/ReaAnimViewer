@@ -78,6 +78,12 @@ std::atomic<int>         g_audio_depth{0};
 std::atomic<const char*> g_audio_what{nullptr};
 std::atomic<int64_t>     g_audio_in{0}, g_audio_out{0};
 std::atomic<uint32_t>    g_audio_tid{0};
+char                     g_audio_arg[kArgLen] = {};  // the file the audio thread reads (racy copy, read for a report only)
+std::atomic<int>         g_video_depth{0};
+std::atomic<const char*> g_video_what{nullptr};
+std::atomic<int64_t>     g_video_in{0}, g_video_out{0};
+std::atomic<uint32_t>    g_video_tid{0};
+char                     g_video_arg[kArgLen] = {};
 
 struct WorkerSlotData {
     std::atomic<bool>        taken{false};
@@ -196,6 +202,35 @@ void AudioExit()
     g_audio_depth.fetch_sub(1, std::memory_order_relaxed);
 }
 
+void AudioArg(const char* path)
+{
+    if (!path) return;
+    const size_t n = std::min(std::strlen(path), static_cast<size_t>(kArgLen - 1));
+    std::memcpy(g_audio_arg, path + (std::strlen(path) - n), n);  // the end of the path: its file name
+    g_audio_arg[n] = '\0';
+}
+
+void VideoEnter(const char* what, const char* arg)
+{
+    if (arg) {
+        const size_t n = std::min(std::strlen(arg), static_cast<size_t>(kArgLen - 1));
+        std::memcpy(g_video_arg, arg + (std::strlen(arg) - n), n);
+        g_video_arg[n] = '\0';
+    } else {
+        g_video_arg[0] = '\0';
+    }
+    g_video_what.store(what, std::memory_order_relaxed);
+    g_video_tid.store(CurrentThreadId(), std::memory_order_relaxed);
+    g_video_in.store(NowMs(), std::memory_order_relaxed);
+    g_video_depth.fetch_add(1, std::memory_order_relaxed);
+}
+
+void VideoExit()
+{
+    g_video_out.store(NowMs(), std::memory_order_relaxed);
+    g_video_depth.fetch_sub(1, std::memory_order_relaxed);
+}
+
 int WorkerSlot(const char* name, int index)
 {
     if (!name) return -1;
@@ -299,6 +334,27 @@ size_t FormatReport(char* buf, size_t cap, const ReportHead& h)
         o.f("Audio thread: INSIDE %s for %.1f s (thread %u).\r\n", aw ? aw : "?", Secs(h.now_ms - ain),
             static_cast<unsigned>(g_audio_tid.load(std::memory_order_relaxed)));
     else o.f("Audio thread: idle, last left %s %.2f s ago.\r\n", aw ? aw : "?", Secs(h.now_ms - aout));
+    if (ain && ad > 0 && g_audio_arg[0]) {
+        char file[kArgLen];
+        std::memcpy(file, g_audio_arg, kArgLen);
+        file[kArgLen - 1] = '\0';
+        o.f("  reading \"%s\" (the last file it asked for)\r\n", file);
+    }
+    const int     vd = g_video_depth.load(std::memory_order_relaxed);
+    const int64_t vin = g_video_in.load(std::memory_order_relaxed), vout = g_video_out.load(std::memory_order_relaxed);
+    if (!vin) {
+        o.f("Video thread: never ran RAV's video frame.\r\n");
+    } else if (vd > 0) {
+        char file[kArgLen];
+        std::memcpy(file, g_video_arg, kArgLen);
+        file[kArgLen - 1] = '\0';
+        const char* vw = g_video_what.load(std::memory_order_relaxed);
+        o.f("Video thread: INSIDE %s%s%s%s for %.1f s (thread %u).\r\n", vw ? vw : "?", file[0] ? " \"" : "", file,
+            file[0] ? "\"" : "", Secs(h.now_ms - vin), static_cast<unsigned>(g_video_tid.load(std::memory_order_relaxed)));
+    } else {
+        const char* vw = g_video_what.load(std::memory_order_relaxed);
+        o.f("Video thread: idle, last left %s %.2f s ago.\r\n", vw ? vw : "?", Secs(h.now_ms - vout));
+    }
 
     o.f("Workers:");
     bool any = false;
@@ -343,6 +399,12 @@ void ResetForTest()
     g_audio_what.store(nullptr);
     g_audio_in.store(0);
     g_audio_out.store(0);
+    g_audio_arg[0] = '\0';
+    g_video_depth.store(0);
+    g_video_what.store(nullptr);
+    g_video_in.store(0);
+    g_video_out.store(0);
+    g_video_arg[0] = '\0';
     for (WorkerSlotData& w : g_workers) {
         w.taken.store(false);
         w.name.store(nullptr);
@@ -445,24 +507,24 @@ struct RawStack {
     size_t   got = 0;  // bytes copied into g_stack_copy (from the stack pointer up)
 };
 
-RawStack SuspendAndCopy()
+RawStack SuspendAndCopy(HANDLE target)
 {
     RawStack r;
 #if defined(_M_X64) || defined(__x86_64__)
-    if (!g_main) return r;
+    if (!target) return r;
     // Time-critical while the main thread is suspended, so the window stays a few microseconds even on a busy PC
     // (the main thread may hold a lock the audio thread waits for).
     const HANDLE self = GetCurrentThread();
     const int    prio = GetThreadPriority(self);
     SetThreadPriority(self, THREAD_PRIORITY_TIME_CRITICAL);
-    if (SuspendThread(g_main) == static_cast<DWORD>(-1)) {
+    if (SuspendThread(target) == static_cast<DWORD>(-1)) {
         SetThreadPriority(self, prio == THREAD_PRIORITY_ERROR_RETURN ? THREAD_PRIORITY_NORMAL : prio);
         return r;
     }
     CONTEXT ctx;
     std::memset(&ctx, 0, sizeof(ctx));
     ctx.ContextFlags = CONTEXT_CONTROL;
-    if (GetThreadContext(g_main, &ctx)) {
+    if (GetThreadContext(target, &ctx)) {
         r.pc = ctx.Rip;
         MEMORY_BASIC_INFORMATION mb;
         if (VirtualQuery(reinterpret_cast<LPCVOID>(ctx.Rsp), &mb, sizeof(mb)) == sizeof(mb) && mb.State == MEM_COMMIT) {
@@ -473,7 +535,7 @@ RawStack SuspendAndCopy()
                 r.got = static_cast<size_t>(got);
         }
     }
-    ResumeThread(g_main);
+    ResumeThread(target);
     SetThreadPriority(self, prio == THREAD_PRIORITY_ERROR_RETURN ? THREAD_PRIORITY_NORMAL : prio);
 #endif
     return r;
@@ -517,7 +579,18 @@ int StackReturns(const RawStack& r, uint64_t* pcs, int cap)
     return n;
 }
 
-int SampleMainStack(uint64_t* pcs, int cap) { return StackReturns(SuspendAndCopy(), pcs, cap); }
+int SampleMainStack(uint64_t* pcs, int cap) { return StackReturns(SuspendAndCopy(g_main), pcs, cap); }
+
+// A named thread's stack (the audio or the video thread that is the one stuck): opened by id for the sample only.
+int SampleThreadStack(uint32_t tid, uint64_t* pcs, int cap)
+{
+    if (!tid) return 0;
+    HANDLE th = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, tid);
+    if (!th) return 0;
+    const int n = StackReturns(SuspendAndCopy(th), pcs, cap);
+    CloseHandle(th);
+    return n;
+}
 
 // "module.dll+0x1a2b" for an address (its image's base from the memory map: no loader lock taken).
 void ModuleOffset(uint64_t pc, char* out, size_t cap)
@@ -682,6 +755,18 @@ DWORD WINAPI WatchLoop(LPVOID)
         cpu1 = ThreadCpu100ns(g_main);
         n1 = SampleMainStack(pcs1, kMaxFrames);
         WriteStack(report, "Main thread's stack, first sample", pcs1, n1);
+        // The audio / video thread when it is the one stuck inside RAV (a blocked file read, or a loop in our mixer).
+        const int64_t t_now = NowMs();
+        if (g_audio_depth.load(std::memory_order_relaxed) > 0 && t_now - g_audio_in.load(std::memory_order_relaxed) > 2000) {
+            uint64_t pa[kMaxFrames];
+            const int na = SampleThreadStack(g_audio_tid.load(std::memory_order_relaxed), pa, kMaxFrames);
+            WriteStack(report, "Audio thread's stack (it has been inside RAV's source for over 2 s)", pa, na);
+        }
+        if (g_video_depth.load(std::memory_order_relaxed) > 0 && t_now - g_video_in.load(std::memory_order_relaxed) > 2000) {
+            uint64_t pv[kMaxFrames];
+            const int nv = SampleThreadStack(g_video_tid.load(std::memory_order_relaxed), pv, kMaxFrames);
+            WriteStack(report, "Video thread's stack (it has been inside RAV's video frame for over 2 s)", pv, nv);
+        }
         WriteLine(report, "\r\n(a second sample follows in %d s, if REAPER is still running)\r\n", static_cast<int>(kSecondSampleMs / 1000));
     }
     if (report != INVALID_HANDLE_VALUE) {

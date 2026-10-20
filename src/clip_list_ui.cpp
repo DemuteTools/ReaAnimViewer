@@ -24,6 +24,7 @@
 
 #include "clip_list_plan.h"
 #include "console_log.h"
+#include "watchdog.h"  // freeze audit: breadcrumbs and scopes
 #include "pcm_source_anim.h"  // ReadPlayCandidate (story 11-7)
 #include "ui_fold_all.h"
 #include "ui_theme.h"
@@ -346,6 +347,7 @@ void LineTopsFor(float header_h, float row_h)
 // one's address), and a list read from a closed project is read again.
 void PruneTick()
 {
+    RAV_QUIET_SCOPE("PruneTick", nullptr);  // freeze audit
     try {
         if (g_grouping.empty() && g_folds.empty() && !g.read_proj) return;
         std::vector<ReaProject*> open;

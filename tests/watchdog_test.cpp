@@ -138,6 +138,14 @@ int main()
         }
         CHECK(Has(buf, "Main thread inside RAV, outermost first (1 open)") && Has(buf, "Sound Edit  \"Footsteps\""));
         CHECK(Has(buf, "Audio thread: INSIDE AuditionMix"));
+        wd::AudioArg("Y:\\Shared drives\\Media Files\\door_close.wav");
+        wd::VideoEnter("video frame", "C:\\anim\\run.fbx");
+        n = wd::FormatReport(buf, sizeof(buf), h);
+        CHECK(Has(buf, "reading \"Y:\\Shared drives\\Media Files\\door_close.wav\""));
+        CHECK(Has(buf, "Video thread: INSIDE video frame \"C:\\anim\\run.fbx\""));
+        wd::VideoExit();
+        n = wd::FormatReport(buf, sizeof(buf), h);
+        CHECK(Has(buf, "Video thread: idle, last left video frame"));
         CHECK(Has(buf, "Peak reader 0: peaks  \"C:\\sounds\\steps.wav\""));
         CHECK(Has(buf, "Last 2 crumbs") && Has(buf, "main   ModifySoundStore  \"RAV: Zone edge\""));
         wd::AudioExit();

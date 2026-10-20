@@ -307,6 +307,7 @@ void RefreshCaches()
         g.from_items.clear();
         const std::string dir = ProjectFolder();
         const int         n = CountMediaItems(proj);
+        RAV_SCOPE("RefreshCaches stat", n);  // freeze audit: a stalled drive names itself here
         for (int i = 0; i < n; ++i) {
             MediaItem* it = GetMediaItem(proj, i);
             if (!it) continue;
@@ -325,6 +326,7 @@ void RefreshCaches()
 std::string FileFromProjectItems(const AssetIdentity& a)
 {
     if (a.name.empty()) return {};
+    RAV_QUIET_SCOPE("FileFromProjectItems", a.name);  // freeze audit
     const std::string name = LowerAscii(a.name);
     const std::string dir = ProjectFolder();
     const int         n = CountMediaItems(nullptr);

@@ -114,6 +114,7 @@ public:
                 t.time_s = start_ + block->time_s;
                 t.length = n;
                 t.samples_out = 0;
+                RAV_AUDIO_ARG(inner_->GetFileName());  // freeze audit
                 inner_->GetSamples(&t);
                 got = std::max(0, std::min(n, t.samples_out));
             }

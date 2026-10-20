@@ -36,6 +36,7 @@ PreviewFn        f_stop = nullptr;
 
 struct Voice {
     std::unique_ptr<PCM_source> src;
+    std::string                 path;  // for the freeze report only
     double                      start = 0.0, length = 0.0, delay = 0.0, gain = 1.0;
     double                      fade_in = 0.0, fade_out = 0.0;  // s (FadeGainAt)
     int                         in_shape = 0, out_shape = 0;
@@ -124,6 +125,7 @@ private:
             if (!d) return false;
             Voice c;
             c.src.reset(d);
+            c.path = v.path;
             c.start = v.start; c.length = v.length; c.delay = v.delay; c.gain = v.gain;
             c.fade_in = v.fade_in; c.fade_out = v.fade_out;
             c.in_shape = v.in_shape; c.out_shape = v.out_shape;
@@ -151,6 +153,7 @@ private:
             tr.nch = nch;
             tr.length = cnt;
             tr.samples = scratch_.data();
+            RAV_AUDIO_ARG(v.path.c_str());  // freeze audit: the report names the file a stalled read is in
             v.src->GetSamples(&tr);
             const int    got = std::min(cnt, std::max(0, tr.samples_out));
             const double t_voice = a - v.delay + v.fade_from;  // the first sample's time into the faded stretch
@@ -268,6 +271,7 @@ std::vector<Voice> OpenVoices(const std::vector<PlayVoice>& voices, std::vector<
         }
         Voice v;
         v.src.reset(s);
+        v.path = p.path;
         v.start = std::max(0.0, p.start_s);
         const double rest = std::max(0.0, s->GetLength() - v.start);
         v.length = p.length_s > 0.0 ? std::min(p.length_s, rest) : rest;

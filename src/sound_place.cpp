@@ -24,6 +24,7 @@
 
 #include "reaper_item_read.h"
 #include "sound_entries.h"  // DetectFrames (13-68: a pile member's variations)
+#include "watchdog.h"  // freeze audit: breadcrumbs and scopes
 #include "sound_peaks.h"  // ReadItemMedia (13-68 v2: a pile member's slices)
 #include "sound_project.h"
 #include "sound_record.h"
@@ -129,6 +130,7 @@ MediaItem* FindItem(ReaProject* proj, const std::string& guid)
 // True when both files hold the same bytes (read in 64 KB blocks; false on any read error).
 bool SameBytes(const std::filesystem::path& a, const std::filesystem::path& b)
 {
+    RAV_SCOPE("SameBytes", a.filename().u8string());  // freeze audit: a whole-file compare, maybe on a drive
     std::ifstream fa(a, std::ios::binary), fb(b, std::ios::binary);
     if (!fa || !fb) return false;
     std::vector<char> ba(65536), bb(65536);

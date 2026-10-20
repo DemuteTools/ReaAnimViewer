@@ -13,6 +13,7 @@
 
 #include "asset_cache.h"
 #include "console_log.h"
+#include "watchdog.h"  // freeze audit: breadcrumbs and scopes
 #include "display_settings.h"
 #include "gl_loader.h"
 #include "renderer.h"
@@ -255,6 +256,7 @@ int VideoContentRenderFrame(const RavVideoFrameRequest* req)
     if (!FindVideoItemAt(*snap, req->track, req->project_time, hit)) return 0;
 
     // The model, complete or nothing (parsed here on a miss: this frame waits for it).
+    RAV_VIDEO_SCOPE("video frame", hit.item->path.c_str());  // freeze audit: a parse on a miss names its file
     const std::shared_ptr<const CpuAsset> cpu = AcquireCpuAsset(hit.item->path);
     if (!cpu) return 0;
 

@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "console_log.h"
+#include "watchdog.h"  // freeze audit: breadcrumbs and scopes
 #include "rav_version.h"
 
 namespace rav {
@@ -443,6 +444,7 @@ std::optional<std::string> SwapIfNewer(bool allow_reapack_compare)
 // which loads after us) is loaded.
 void OnFirstTick()
 {
+    RAV_SCOPE("self_update OnFirstTick", nullptr);  // freeze audit (runs once)
     try {
         if (g_timer_registered && g_register) {
             g_register("-timer", (void*)&OnFirstTick);

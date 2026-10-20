@@ -27,6 +27,7 @@
 #include "event_list.h"
 #include "item_rules.h"
 #include "reaper_api.h"
+#include "watchdog.h"  // freeze audit: breadcrumbs and scopes
 #include "reaper_item_read.h"
 #include "reaper_toast.h"
 #include "rule_record.h"
@@ -1529,6 +1530,7 @@ int BringBackOriginals(ReaProject* proj, const WatchRead& last, const std::set<s
 // deleted is put back there). One RAV undo point right after the user's.
 bool PropagateDelete(ReaProject* proj, const WatchRead& last, const std::set<std::string>& gone, am::Scope scope)
 {
+    RAV_SCOPE("PropagateDelete", gone.size());  // freeze audit: a timer's write of the store
     const am::DeletePlan dp = am::PlanPropagatedDelete(last.snap.inst, gone, scope);
     if (dp.delete_guids.empty() && dp.removals.empty()) return false;
     const std::string undo = "RAV: Delete linked instances" + ScopeText(scope);
@@ -1615,6 +1617,7 @@ const std::vector<std::string>& DeleteNames()
 
 void WatchTick()
 {
+    RAV_QUIET_SCOPE("AttachWatchTick", nullptr);  // freeze audit
     ReaProject* proj = EnumProjects(-1, nullptr, 0);
     if (!proj) return;
     if (proj != g_watch.proj) {
@@ -1828,6 +1831,7 @@ void AttachWatchPostCommand(int command, int)
 {
     // REAPER's "Item: Remove items" and "Remove items/tracks/envelope points (depending on focus)" (the Delete key):
     // a new delete even when its undo point has the same name as the last one.
+    RAV_QUIET_SCOPE("AttachWatchPostCommand", command);  // freeze audit
     if (command == 40006 || command == 40697) g_watch.delete_cmd = true;
 }
 

@@ -80,6 +80,19 @@ struct AudioScope {
     AudioScope& operator=(const AudioScope&) = delete;
 };
 
+// The file the audio thread is reading right now (audit: a read of a stalled drive names its file): the end of the
+// path is copied (no lock, no allocation: a few bytes per voice per block). Call it before each file read.
+void AudioArg(const char* path);
+// REAPER's video thread inside RAV's video frame (`what` a literal; `arg` copied: the file being parsed on a miss).
+void VideoEnter(const char* what, const char* arg = nullptr);
+void VideoExit();
+struct VideoScope {
+    explicit VideoScope(const char* what, const char* arg = nullptr) { VideoEnter(what, arg); }
+    ~VideoScope() { VideoExit(); }
+    VideoScope(const VideoScope&) = delete;
+    VideoScope& operator=(const VideoScope&) = delete;
+};
+
 // The main thread is alive (a REAPER timer tick, a viewer frame).
 void MainBeat();
 // A worker thread's slot (`name` a literal, `index` for several of one kind); -1 when all are taken.
@@ -151,6 +164,8 @@ void ResetForTest();
 #define RAV_QUIET_SCOPE(what, arg) ((void)0)
 #define RAV_MAIN_BEAT() ((void)0)
 #define RAV_AUDIO_SCOPE(what) ((void)0)
+#define RAV_AUDIO_ARG(path) ((void)0)
+#define RAV_VIDEO_SCOPE(what, arg) ((void)0)
 #define RAV_WORKER_SLOT(name, index) (-1)
 #define RAV_WORKER_BUSY(slot, what, arg) ((void)0)
 #define RAV_WORKER_IDLE(slot) ((void)0)
@@ -162,6 +177,8 @@ void ResetForTest();
 #define RAV_QUIET_SCOPE(what, arg) const ::rav::wd::Scope RAV_WD_CAT(rav_wd_scope_, __COUNTER__)(::rav::wd::Quiet{}, what, arg)
 #define RAV_MAIN_BEAT() ::rav::wd::MainBeat()
 #define RAV_AUDIO_SCOPE(what) const ::rav::wd::AudioScope RAV_WD_CAT(rav_wd_audio_, __COUNTER__)(what)
+#define RAV_AUDIO_ARG(path) ::rav::wd::AudioArg(path)
+#define RAV_VIDEO_SCOPE(what, arg) const ::rav::wd::VideoScope RAV_WD_CAT(rav_wd_video_, __COUNTER__)(what, arg)
 #define RAV_WORKER_SLOT(name, index) ::rav::wd::WorkerSlot(name, index)
 #define RAV_WORKER_BUSY(slot, what, arg) ::rav::wd::WorkerBusy(slot, what, arg)
 #define RAV_WORKER_IDLE(slot) ::rav::wd::WorkerIdle(slot)

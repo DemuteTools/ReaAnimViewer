@@ -3301,6 +3301,7 @@ void PumpNormJob(const SoundLibrary& lib, const SoundNode& n)
         if (!first && Clock::now() - t0 > std::chrono::milliseconds(8)) return;
         first = false;
         auto it = j.sources.find(r.path);
+        if (it == j.sources.end()) RAV_CRUMB("Normalize opens", wd::PathTail(r.path));  // freeze audit
         if (it == j.sources.end()) it = j.sources.emplace(r.path, r.path.empty() ? nullptr : PCM_Source_CreateFromFile(r.path.c_str())).first;
         const PartSpan& sp = r.spans[j.span];
         double          adj = std::numeric_limits<double>::quiet_NaN();

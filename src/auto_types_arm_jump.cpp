@@ -150,12 +150,15 @@ std::vector<PhysicsEvent> ArmEvents(const PhysicsAnalysis& a, const PhysicsParam
                 for (long j = st; j <= en && own; ++j) own = !(at(j) > v);
                 if (!own) continue;
                 // The arm's way over the run: up for a take-off, down for a landing.
-                // At its peak or its end the arm is higher (lower) than at its start: a swing
-                // through the bottom of the arm's arc goes down to its peak, then up.
+                // Take-off: at its peak or its end the arm is higher than at its start (a swing
+                // through the bottom of the arm's arc goes down to its peak, then up). Landing:
+                // the arm ends lower than it started (review 10-9k: a pendulum through the bottom
+                // that comes back up is a running arm's swing, Running Jump Over Hole's right arm
+                // -0.65 -> -0.79 -> -0.33; the arms coming down at a landing end 0.2-1.8 lower).
                 if (h.rise.size() == a.samples) {
                     const double r0 = h.rise[static_cast<size_t>(st)], rp = h.rise[static_cast<size_t>(k)],
                                  re = h.rise[static_cast<size_t>(en)];
-                    if (w.up ? !(std::max(rp, re) > r0) : !(std::min(rp, re) < r0)) continue;
+                    if (w.up ? !(std::max(rp, re) > r0) : !(re < r0)) continue;
                 }
                 best = k, best_start = st, best_end = en;
             }

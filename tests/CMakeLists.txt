@@ -18,7 +18,8 @@ set(RAV_AUTO_SRCS ../src/auto_detect.cpp ../src/auto_types.cpp ../src/auto_types
                   ../src/heel_taps.cpp  # 10-9i
                   ../src/auto_types_arm_jump.cpp  # 10-9k
                   ../src/scuff_peak.cpp  # 10-9j
-                  ../src/auto_types_slap.cpp)  # 10-9l
+                  ../src/auto_types_slap.cpp  # 10-9l
+                  ../src/auto_types_strike.cpp)  # 10-9n
 
 enable_testing()
 
@@ -183,6 +184,11 @@ add_executable(hand_slap_test hand_slap_test.cpp ${RAV_AUTO_SRCS} ../src/motion_
                ../src/rule_record.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
 target_include_directories(hand_slap_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME hand_slap COMMAND hand_slap_test)
+# Story 10-9n -- Arms > Strike (src/auto_types_strike.cpp) through Detect, and its Swing replacement.
+add_executable(strike_test strike_test.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/motion_whoosh.cpp ../src/bone_events.cpp
+               ../src/rule_record.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
+target_include_directories(strike_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME strike COMMAND strike_test)
 
 add_executable(bone_roles_test bone_roles_test.cpp ../src/bone_events.cpp)
 target_include_directories(bone_roles_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)

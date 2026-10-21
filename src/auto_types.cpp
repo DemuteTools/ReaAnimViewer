@@ -245,6 +245,10 @@ bool AutoMissingArmJump(char side, const std::vector<int>& role_to_bone);
 void AutoLanesArmJump(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
 void AutoLanesArmLand(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
 
+// auto_types_strike.cpp (story 10-9n: arc blows; parts, match and roles are Swing's)
+std::vector<PhysicsEvent> AutoSourceStrike(const PhysicsAnalysis& a, const PhysicsParams& p);
+void AutoLanesStrike(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+
 namespace {
 
 using C = AutoCategory;
@@ -415,6 +419,21 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "without them, a slap cannot be told apart and the contacts stay Grabs.",
      "slap", {{&P::hand_contact_speed, S::Times}, {&P::body_min_speed, S::Divide}}, &AutoPartsSlap, false, false, false,
      true, false, static_cast<int>(T::Grab), static_cast<int>(T::HandOnBody), true},
+    // Story 10-9n: an arc blow that stops (auto_types_strike.cpp); higher sensitivity = slower
+    // blows count (strike_speed / f). With Swing ticked it replaces that hand's Swing over its run
+    // (`replaces_in_span`), with Arms Land that hand's Arms Land at its peak (`replaces`: a blow
+    // landing with a jump hits, Jump Attack's sword). Never raised by Detect: most clips hold no
+    // blow, a raise would turn a running arm's reversal into one. conf_scale 0.25: the speed is
+    // not what sets a blow apart (its stop and its arc are), so its line sits close under the real
+    // ones: Jump Attack's right hand on the sword 5.42 leg/s over 5.0 (0.4 at quarter steps, 0.2
+    // at half steps), the uppercut 6.47.
+    {T::Strike, "Strike", "Strike", C::Arms,
+     "A marker where a hand's fast arc blow stops, at its fastest (Strike L / Strike R): a hammer\n"
+     "fist, a hook, an uppercut, a weapon blow. A straight thrust is a Punch, an arm swinging on\n"
+     "is a Swing. With Swing or Arms Land ticked, it replaces that hand's swing or landing arm\n"
+     "there. Fist or weapon: pick the sound with the character's Gear switch (Movement library).",
+     "strike", {{&P::strike_speed, S::Divide}, {}}, &AutoPartsWhooshHand, false, false, false, true, false,
+     static_cast<int>(T::ArmLand), static_cast<int>(T::Swing), true, 0u, 0.25},
 };
 
 // ---- Strength levels (story 10-10b) ------------------------------------------------------------
@@ -477,6 +496,10 @@ constexpr AutoStrengthCuts kStrengthRows[] = {
     // AirPunch's landing on the hands 2.97 and 8.21 leg/s; the hand's approach, as Grab): wp33 1.42,
     // wp67 2.61.
     {T::Slap, 1.4, 2.6},
+    // Story 10-9n: 7 on 6 clips (Jump Attack's right hand 5.42, the uppercut 6.47, Fist Fight's
+    // left 7.88, the sword 8.03, the hook 10.6, the hammer fist 11.6, Lvl_TopDown 14.9 leg/s; the
+    // hand's peak speed): wp33 7.88, wp67 10.6.
+    {T::Strike, 7.9, 10.6},
 };
 
 // ---- Kinds -------------------------------------------------------------------------------------
@@ -684,6 +707,10 @@ constexpr AutoKindInfo kKindRows[] = {
     {K::Slap, "slap", T::Slap, "Slap", {0x46B4DC, 0xDC7846}, kNo, false, false, "hand", K::Slap,
      {{"contact", &AutoSourceSlapContact, &AutoMatchSlapContact}, {"on body", &AutoSourceSlapBody, &AutoMatchSlapBody}},
      &AutoMissingSlap, &AutoLanesSlap, &AutoRolesSlap},
+    // Story 10-9n: the strike, on the hand (a violet / gold, away from Punch's red / green).
+    {K::Strike, "strike", T::Strike, "Strike", {0x6E46DC, 0xDCB446}, kNo, false, false, "hand", K::Strike,
+     {{"arc blow", &AutoSourceStrike, &AutoMatchSwing}}, &AutoMissingWhooshHand, &AutoLanesStrike,
+     &AutoRolesWhooshHand},
 };
 
 // One row per enum value, in enum order.

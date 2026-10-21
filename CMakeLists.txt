@@ -208,6 +208,7 @@ if(WIN32)
             src/auto_types_arm_jump.cpp  # 10-9k
             src/scuff_peak.cpp  # 10-9j
             src/auto_types_slap.cpp  # 10-9l
+            src/auto_types_strike.cpp  # 10-9n
             src/detection_measure.cpp
             src/rule_record.cpp
             src/preset_store.cpp

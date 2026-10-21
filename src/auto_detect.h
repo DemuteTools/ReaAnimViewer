@@ -133,14 +133,14 @@ namespace rav {
 // ---- Types and block kinds ---------------------------------------------------------------------
 
 // The types the section ticks (story 10-9e appends Tap and Drag, story 10-9b Knee, Elbow, Sit, Fall,
-// story 10-9d Clap and Hand on body, story 10-9c Kick, Swing and Punch, story 10-9l Slap).
+// story 10-9d Clap and Hand on body, story 10-9c Kick, Swing and Punch, story 10-9l Slap, story 10-9n Strike).
 enum class AutoType : int { Step = 0, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land, Jolt, Spin, Tap, Drag,
-                            Knee, Elbow, Sit, Fall, Clap, HandOnBody, Kick, Swing, Punch, HeelTap, ArmJump, ArmLand, Slap };
-constexpr int kAutoTypeCount = 26;  // story 10-9g: Jolt; 10-9f: Spin (Body, sideless); 10-9e: Tap, Drag; 10-9b; 10-9d; 10-9c; 10-9i: Heel Tap; 10-9k: Arms Jump, Land; 10-9l: Slap
+                            Knee, Elbow, Sit, Fall, Clap, HandOnBody, Kick, Swing, Punch, HeelTap, ArmJump, ArmLand, Slap, Strike };
+constexpr int kAutoTypeCount = 27;  // story 10-9g: Jolt; 10-9f: Spin (Body, sideless); 10-9e: Tap, Drag; 10-9b; 10-9d; 10-9c; 10-9i: Heel Tap; 10-9k: Arms Jump, Land; 10-9l: Slap; 10-9n: Strike
 // "Step", "Lift-off", "Slide scuff", "Pivot scuff", "Grab", "Release", "Pivot scuff" (the hand's),
 // "Jump", "Land", "Jolt" (story 10-9g, Body), "Spin" (story 10-9f, Body), "Tap", "Drag";
 // story 10-9b: "Knee", "Elbow", "Sit", "Fall"; story 10-9d: "Clap", "Hand on body"; story 10-9c:
-// "Kick", "Swing", "Punch"; story 10-9i: "Heel Tap"; story 10-9k: "Jump", "Land" (Arms); story 10-9l: "Slap"
+// "Kick", "Swing", "Punch"; story 10-9i: "Heel Tap"; story 10-9k: "Jump", "Land" (Arms); story 10-9l: "Slap"; story 10-9n: "Strike"
 const char* AutoTypeLabel(AutoType t);
 
 // Story 10-9-0: every type, category and kind has one descriptor row in auto_types.cpp (labels,
@@ -176,9 +176,10 @@ enum class AutoKind : int {
     PivotPeak, PivotHeelPeak, PivotToePeak, PivotHeelLongestPeak, PivotToeLongestPeak,
     HandPivotPeak, HandPivotAnyPeak,
     ArmJump, ArmLand,  // story 10-9k
-    Slap  // story 10-9l
+    Slap,  // story 10-9l
+    Strike  // story 10-9n
 };
-constexpr int kAutoKindCount = 63;
+constexpr int kAutoKindCount = 64;
 // "step", "heel", "toe", "lift", "slide", "pivot", "grab", "release", "hand_pivot", "hand_pivot_any",
 // "slide_heel", "slide_toe", "pivot_heel", "pivot_toe", "slide_heel_longest", "slide_toe_longest",
 // "pivot_heel_longest", "pivot_toe_longest", "jump", "land", "lift_heel", "lift_toe", "jump_heel",
@@ -187,7 +188,7 @@ constexpr int kAutoKindCount = 63;
 // "kick_start", "kick_heel_start", "kick_toe_start", "swing", "swing_start", "punch", "punch_start" (10-9c), "heel_tap" (10-9i),
 // "slide_peak", "slide_heel_peak", "slide_toe_peak", "slide_heel_longest_peak", "slide_toe_longest_peak",
 // "pivot_peak", "pivot_heel_peak", "pivot_toe_peak", "pivot_heel_longest_peak", "pivot_toe_longest_peak",
-// "hand_pivot_peak", "hand_pivot_any_peak" (10-9j), "arm_jump", "arm_land" (10-9k), "slap" (10-9l)
+// "hand_pivot_peak", "hand_pivot_any_peak" (10-9j), "arm_jump", "arm_land" (10-9k), "slap" (10-9l), "strike" (10-9n)
 const char* AutoKindWord(AutoKind k);
 bool AutoKindFromWord(const std::string& w, AutoKind* out);
 AutoType AutoTypeOfKind(AutoKind k);

@@ -697,6 +697,28 @@ struct PhysicsParams {
     double     arm_land_speed = 3.0;
     double     arm_land_before_s = 0.10;
     double     arm_land_after_s = 0.20;
+    // Story 10-9n: strikes, a fast arc blow that stops (auto_types_strike.cpp). A hand speed peak
+    // relative to the torso of strike_speed at least (leg/s; the sensitivity divides it) whose
+    // speed falls under strike_stop_frac of the peak within strike_stop_s after it, and that hits
+    // (under strike_hit_frac within strike_hit_s: a sword into the floor) or travels an arc (the
+    // arm raised at the peak, the shoulder -> hand direction's vertical share at strike_min_rise
+    // at least, and the hand moving forward, its velocity's share along the body's facing at
+    // strike_min_fwd at least). A clap or a hand on body within strike_touch_s of the run (before
+    // its start: the hands parting after a clap; after its end: the hands meeting) is that touch.
+    // Measured on the fixtures (spec 10-9n): the blows 5.4-14.9 leg/s (the uppercut 6.47),
+    // stopping to 30 % within 0.05-0.15 s; the air blows' arm at -0.38..+0.03, forward
+    // +0.63..+0.96; the hits down to 10-29 % within 70 ms. A follow-through (Armada, Roue) takes
+    // 0.20-0.27 s to stop, a counter-arm pull (AirPunch R) moves backward (-0.95), running arms and
+    // jump swings pass the bottom of the arc (-0.7..-1.0); the running arms' reversals stop at
+    // 3.9-4.9 leg/s and keep 41-58 % of their speed after 70 ms.
+    double     strike_speed = 5.0;
+    double     strike_stop_s = 0.175;
+    double     strike_stop_frac = 0.3;
+    double     strike_hit_s = 0.07;
+    double     strike_hit_frac = 0.32;
+    double     strike_min_rise = -0.6;
+    double     strike_min_fwd = 0.3;
+    double     strike_touch_s = 0.10;
 };
 
 // One contact of a part, in samples [start, end).

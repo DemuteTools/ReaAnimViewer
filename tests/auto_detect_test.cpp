@@ -893,7 +893,8 @@ int main()
                               t == static_cast<int>(AutoType::HandOnBody) ||  // story 10-9d
                               t == static_cast<int>(AutoType::Swing) || t == static_cast<int>(AutoType::Punch) ||  // 10-9c
                               t == static_cast<int>(AutoType::ArmJump) || t == static_cast<int>(AutoType::ArmLand) ||
-                              t == static_cast<int>(AutoType::Slap);  // 10-9k, 10-9l
+                              t == static_cast<int>(AutoType::Slap) ||  // 10-9k, 10-9l
+                              t == static_cast<int>(AutoType::Strike);  // 10-9n
             // Story 10-9b: Elbow in Arms, Sit and Fall in Body.
             const bool arms = hand || t == static_cast<int>(AutoType::Elbow);
             const bool body = t == static_cast<int>(AutoType::Jolt) || t == static_cast<int>(AutoType::Spin) ||  // 10-9g, 10-9f
@@ -1183,6 +1184,7 @@ int main()
                     case AutoKind::Swing:
                     case AutoKind::SwingStart:
                     case AutoKind::Punch:
+                    case AutoKind::Strike:  // story 10-9n: a swing's parts
                     case AutoKind::PunchStart: parts = {Role::Chest, side == 'R' ? Role::RightHand : Role::LeftHand}; break;
                     // Story 10-9k: the arms of a jump: a jump's parts and a swing's.
                     case AutoKind::ArmJump:

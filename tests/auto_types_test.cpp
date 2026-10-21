@@ -209,6 +209,25 @@ void TestKnownValues()
         CHECK(AutoPhysicsParams(AutoType::ArmLand, 0.0, false).arm_land_speed == d0.arm_land_speed * 2.0);
         CHECK(AutoPhysicsParams(AutoType::ArmJump, 100.0, false).swing_speed == d0.swing_speed);
     }
+    // Story 10-9n: Arms > Strike: replacing its hand's Swing over its run and its Arms Land at its
+    // peak, never raised by Detect, the sensitivity dividing its speed.
+    {
+        CHECK(std::string(AutoTypeLabel(AutoType::Strike)) == "Strike" &&
+              std::string(AutoTypeRow(AutoType::Strike).undo_label) == "Strike");
+        CHECK(AutoCategoryOf(AutoType::Strike) == AutoCategory::Arms);
+        CHECK(AutoMarkerName(AutoKind::Strike, 'L') == "Strike L" && AutoMarkerName(AutoKind::Strike, 'R') == "Strike R");
+        CHECK(std::string(AutoKindWord(AutoKind::Strike)) == "strike" && std::string(AutoTypeWord(AutoType::Strike)) == "strike");
+        const AutoTypeInfo& r = AutoTypeRow(AutoType::Strike);
+        CHECK(r.replaces == static_cast<int>(AutoType::ArmLand) && r.replaces_in_span == static_cast<int>(AutoType::Swing) &&
+              r.replaces_own_side);
+        CHECK(r.no_sens_raise && !r.start_option && !r.part_split && !r.sideless && !r.shared_sides);
+        CHECK(AutoKindsOf(AutoType::Strike).size() == 1 && AutoTypeOfKind(AutoKind::Strike) == AutoType::Strike);
+        CHECK(r.hint && std::string(r.hint).find("Gear") != std::string::npos);
+        const PhysicsParams d0;
+        CHECK(AutoPhysicsParams(AutoType::Strike, 100.0, false).strike_speed == d0.strike_speed / 2.0);
+        CHECK(AutoPhysicsParams(AutoType::Strike, 0.0, false).strike_speed == d0.strike_speed * 2.0);
+        CHECK(AutoPhysicsParams(AutoType::Strike, 100.0, false).swing_speed == d0.swing_speed);
+    }
     CHECK(AutoKindRow(AutoKind::PivotHeel).degrees && !AutoKindRow(AutoKind::SlideHeel).degrees);
     CHECK(AutoKindRow(AutoKind::SlideToeLongest).scuff == ScuffParts::Longest && !AutoKindRow(AutoKind::SlideToeLongest).scuff_heel);
     const PhysicsParams d;

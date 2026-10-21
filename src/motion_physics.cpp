@@ -812,7 +812,6 @@ std::vector<BoneTrack> PhysicsRoleTracks(const std::vector<int>& bone_of_role,
 
 namespace {
 
-// The analysis of one track as it is (AnalyseMotion without p.looping).
 // Story 10-9b: the body parts that touch the ground (BodyTrack), after the feet (the floor is
 // read from their heights) and the ground frame. `track` gives a role's track (null: no bone),
 // `ground_y` a height in the ground frame, `sm` the feet parts' smoothed positions.
@@ -912,6 +911,7 @@ void AnalyseBody(PhysicsAnalysis& a, const TrackFn& track, const PhysicsParams& 
     }
 }
 
+// The analysis of one track as it is (AnalyseMotion without p.looping).
 PhysicsAnalysis AnalyseTrack(const std::vector<BoneTrack>& rt, const PhysicsParams& p)
 {
     PhysicsAnalysis a;

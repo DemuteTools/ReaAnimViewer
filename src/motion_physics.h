@@ -782,6 +782,8 @@ std::vector<PhysicsEvent> JoltEvents(const PhysicsAnalysis& a, const PhysicsPara
 //                 and stops descending (vertical speed above -fall_stop_speed), having fallen at
 //                 fall_min_speed at least within fall_window_s before: a body landing (a fall on
 //                 the back after a free fall). One per stay low (re-armed above 1.5 x fall_height).
+//                 A squat is none: where the descent stops, the chest sit_min_upright above the
+//                 hips with the hips within sit_min_offset of the feet's middle.
 //                 Strength = that peak downward speed.
 // No floor (no foot bone) or no bone for a part: none of its events (BodyContactSummary says why).
 std::vector<PhysicsEvent> BodyContactEvents(const PhysicsAnalysis& a, const PhysicsParams& p = {});

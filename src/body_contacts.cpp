@@ -143,7 +143,12 @@ std::vector<PhysicsEvent> BodyContactEvents(const PhysicsAnalysis& a, const Phys
                     low(q, &vq);
                     peak = std::max(peak, -vq);
                 }
-                if (peak >= p.fall_min_speed) ev.push_back(BodyEvent(PhysicsKind::Fall, 'B', j, rate, peak));
+                // A squat is no fall: the back upright with the hips over the feet (Sit's rule),
+                // whatever its depth (a deep squat's hips come down to about 0.3 leg, fast).
+                const size_t ju = static_cast<size_t>(j);
+                const bool   squat = hips.present && chest.present && b.hips_feet.size() == static_cast<size_t>(n) &&
+                                   (chest.y[ju] - hips.y[ju]) / leg >= p.sit_min_upright && b.hips_feet[ju] < p.sit_min_offset;
+                if (peak >= p.fall_min_speed && !squat) ev.push_back(BodyEvent(PhysicsKind::Fall, 'B', j, rate, peak));
                 i = j;
                 break;
             }

@@ -2522,6 +2522,43 @@ int main()
                                                          move(Vec3d{0.0, 1.35, -0.14}, Vec3d{0.0, 0.55, -1.0}, 1.0, 0.8, 3.0),
                                                          nullptr));
             CHECK(Of(BodyContactEvents(l, dp), PhysicsKind::Sit).empty());
+            // Review: a deep squat dropped into fast (0.35 s), the hips at 0.28 m (0.32 leg), 0.16 m
+            // behind the heels, the knees at 0.48 m, the back upright: no sit, no fall, no knee,
+            // at the default and at 100 % (sensitivity x 2).
+            const Vec3d knee_squat{-0.1, 0.48, 0.25};
+            PhysicsParams hi = dp;
+            hi.knee_contact_speed *= 2.0;
+            hi.sit_contact_speed *= 2.0;
+            hi.fall_min_speed /= 2.0;
+            for (const PhysicsParams& pp : {dp, hi}) {
+                const PhysicsAnalysis d = AnalyseMotion(
+                    body(move(knee_up, knee_squat, 1.0, 0.35, 3.0), move(stand, Vec3d{0.0, 0.28, -0.30}, 1.0, 0.35, 3.0),
+                         move(Vec3d{0.0, 1.35, -0.14}, Vec3d{0.0, 0.75, -0.02}, 1.0, 0.35, 3.0), nullptr),
+                    pp);
+                const std::vector<PhysicsEvent> ev = BodyContactEvents(d, pp);
+                CHECK(Of(ev, PhysicsKind::Sit).empty() && Of(ev, PhysicsKind::Fall).empty() && Of(ev, PhysicsKind::Knee).empty());
+            }
+            // A fall onto the backside (sitting on the floor, the legs out): the hips drop to 0.10 m
+            // 0.7 m behind the feet, the back upright: a fall, and a sit.
+            const PhysicsAnalysis bs =
+                AnalyseMotion(body(nullptr, move(stand, Vec3d{0.0, 0.10, -0.75}, 1.0, 0.35), move(Vec3d{0.0, 1.35, -0.14}, Vec3d{0.0, 0.58, -0.85}, 1.0, 0.35),
+                                   nullptr));
+            const std::vector<PhysicsEvent> bse = BodyContactEvents(bs, dp);
+            CHECK(Of(bse, PhysicsKind::Fall).size() == 1 && Of(bse, PhysicsKind::Sit).size() == 1);
+        }
+        // Review: crawling on the hands with straight arms: the elbow comes down to 0.27 m (0.31
+        // leg) every 0.8 s and rests there 0.3 s: no elbow, at the default and at 100 %.
+        {
+            auto crawl = [](double t) {
+                const double in = std::fmod(t, 0.8), u = std::clamp(in / 0.5, 0.0, 1.0);
+                return Vec3d{-0.3, 0.27 + 0.12 * std::sin(kPi * u), 0.4 * std::floor(t / 0.8) + 0.4 * Ease(u)};
+            };
+            for (double f : {1.0, 2.0}) {
+                PhysicsParams pp = dp;
+                pp.elbow_contact_speed *= f;
+                const PhysicsAnalysis a = AnalyseMotion(body(nullptr, nullptr, nullptr, crawl), pp);
+                CHECK(Of(BodyContactEvents(a, pp), PhysicsKind::Elbow).empty());
+            }
         }
         // No foot bone: no floor, no body contact.
         {

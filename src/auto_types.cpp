@@ -665,6 +665,43 @@ static_assert(CategoryRowsInOrder(), "category rows follow the AutoCategory orde
 static_assert(KindSignaturesValid(), "every kind: a first signature, used slots contiguous and named");
 static_assert(TypeRowsInOrder(), "type rows follow the AutoType order");
 static_assert(KindRowsInOrder(), "kind rows follow the AutoKind order");
+// Story 10-9j (review): a `start_option` type's twins pair by position (StartTwin, auto_detect.cpp):
+// the n-th kind of each flavour. Each pair must be one kind in both flavours: one word the other's
+// plus "_start" or "_peak", the same marker, sound key and part mode.
+constexpr bool SameText(const char* a, const char* b)
+{
+    for (; *a && *a == *b; ++a, ++b) {}
+    return *a == *b;
+}
+constexpr bool TwinWords(const char* a, const char* b)
+{
+    for (; *a && *a == *b; ++a, ++b) {}
+    const char* tail = *a ? a : b;  // the longer word's rest
+    if (*a && *b) return false;
+    return SameText(tail, "_start") || SameText(tail, "_peak");
+}
+constexpr const AutoKindInfo* NthOfFlavour(AutoType t, bool at_start, int n)
+{
+    for (const AutoKindInfo& r : kKindRows)
+        if (r.type == t && r.at_start == at_start && n-- == 0) return &r;
+    return nullptr;
+}
+constexpr bool StartTwinsPaired()
+{
+    for (const AutoTypeInfo& t : kTypeRows) {
+        if (!t.start_option) continue;
+        for (int n = 0;; ++n) {
+            const AutoKindInfo* a = NthOfFlavour(t.type, false, n);
+            const AutoKindInfo* b = NthOfFlavour(t.type, true, n);
+            if (!a && !b) break;
+            if (!a || !b || !TwinWords(a->word, b->word) || !SameText(a->marker, b->marker) ||
+                a->sound_key != b->sound_key || a->scuff != b->scuff || a->scuff_heel != b->scuff_heel)
+                return false;
+        }
+    }
+    return true;
+}
+static_assert(StartTwinsPaired(), "a start_option type's Peak and Start kinds pair in the same order");
 
 int RowIndex(int i, int count)
 {

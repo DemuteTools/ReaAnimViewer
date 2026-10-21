@@ -412,6 +412,7 @@ inline int ShortcutOwner(const ShortcutBindings& b, const KeyBinding& key, int e
     if (key.vk == 0) return -1;  // 13-61: no key (a row without one) is nobody's
     for (int i = 0; i < kShortcutCount; ++i) {
         if (i == except || !(b[static_cast<size_t>(i)] == key)) continue;
+        if (!ShortcutRowBuilt(kShortcutTable[i].context)) continue;  // release 0.4.0: a row not built owns no key
         if (except >= 0 && except < kShortcutCount &&
             !ShortcutContextsOverlap(kShortcutTable[i].context, kShortcutTable[except].context))
             continue;
@@ -502,7 +503,7 @@ inline int ShortcutActionFor(const ShortcutKeymap& m, unsigned key, bool ctrl, b
 inline int ShortcutKeyOwner(const ShortcutKeymap& m, const KeyBinding& key, int except)
 {
     for (int i = 0; i < kShortcutCount; ++i) {
-        if (i == except) continue;
+        if (i == except || !ShortcutRowBuilt(kShortcutTable[i].context)) continue;  // release 0.4.0: not built: no key
         const std::vector<KeyBinding>& ks = m.keys[static_cast<size_t>(i)];
         if (std::find(ks.begin(), ks.end(), key) == ks.end()) continue;
         if (except >= 0 && except < kShortcutCount &&

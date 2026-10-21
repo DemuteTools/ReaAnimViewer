@@ -636,7 +636,8 @@ void DrawVideoViewToggle(float center_x)
     if (ui::BeginOverlay("##viewtoggle", ImVec2(center_x, ui::Dp(8.0f)), ImVec2(0.5f, 0.0f))) {
         // Story 10-3: RAV view / Tagging view / Video view, in V's cycle order; Epic 13 (D20): Library view.
         static const char* const kViews[4] = {"Main", "Tagging", "Video", "Library"};
-        static const ViewMode kModes[4] = {ViewMode::Rav, ViewMode::Tagging, ViewMode::Video, ViewMode::Library};
+        static constexpr ViewMode kModes[4] = {ViewMode::Rav, ViewMode::Tagging, ViewMode::Video, ViewMode::Library};
+        static_assert(kModes[3] == ViewMode::Library, "release 0.4.0 hides Library by cutting the last entry");
         constexpr int kShown = kWithSounds ? 4 : 3;  // release 0.4.0: Library (the last) only with the sound library
         const ViewMode mode = GetViewMode();
         int sel = 0;

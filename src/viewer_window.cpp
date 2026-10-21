@@ -194,6 +194,7 @@ bool  g_menu_open      = false;     // the hamburger toggles the option list
 // follows the view when the view changes; otherwise the picked tab stays.
 // 13-17 (N6): a Library tab, opened with the Library view.
 enum MenuTab { kMenuTabGlobal = 0, kMenuTabRav, kMenuTabTagging, kMenuTabVideo, kMenuTabLibrary, kMenuTabCount };
+static_assert(kMenuTabLibrary == kMenuTabCount - 1, "release 0.4.0 hides the Library tab by cutting the last one");
 int   g_menu_tab       = kMenuTabRav;
 int   g_menu_tab_view  = -1;        // the view the tab last followed (-1 = none yet)
 float g_light_azimuth  = 0.0f;      // seeded from the renderer's default direction

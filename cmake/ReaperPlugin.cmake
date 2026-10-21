@@ -33,8 +33,8 @@ function(add_reaper_extension target)
         "${CMAKE_SOURCE_DIR}/extern/reaper-sdk/sdk"
     )
 
-    # src/rav_features.h: the sound library on or off (option RAV_WITH_SOUNDS, CMakeLists.txt).
-    if(RAV_WITH_SOUNDS)
+    # src/rav_features.h: the sound library on or off (RAV_WITH_SOUNDS_EFFECTIVE, CMakeLists.txt).
+    if(RAV_WITH_SOUNDS_EFFECTIVE)
         target_compile_definitions(${target} PRIVATE RAV_WITH_SOUNDS=1)
     else()
         target_compile_definitions(${target} PRIVATE RAV_WITH_SOUNDS=0)

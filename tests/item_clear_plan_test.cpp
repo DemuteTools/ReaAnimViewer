@@ -100,6 +100,13 @@ static ClearTagged Tagged(const char* guid, const std::string& tag)
     return t;
 }
 
+// The plan with the sound library (the cases below are the sounds-on behaviour, also in the OFF twin).
+static ItemClearPlan PlanOn(const std::vector<ClearTarget>& targets, const std::vector<ClearTagged>& tagged,
+                            const std::vector<std::string>& sources)
+{
+    return PlanItemClear(targets, tagged, sources, /*with_sounds=*/true);
+}
+
 static void TestPoolOnlyRecord()
 {
     CHECK(PoolOnlyRecord("").empty());
@@ -131,7 +138,7 @@ static void TestLinkedCopies()
         Tagged("{S1}", Tag("{A}")), Tagged("{S2}", Tag("{A}")), Tagged("{S3}", Tag("{B}")),
         Tagged("{S4}", Tag("{C}")), Tagged("{OTHER}", Tag("{Z}")),
     };
-    const ItemClearPlan p = PlanItemClear(targets, tagged, {});
+    const ItemClearPlan p = PlanOn(targets, tagged, {});
     CHECK(p.anything);
     CHECK(p.counts.items == 3 && p.counts.copies == 2);
     CHECK(p.counts.events == 9);   // 3 per record (the suppression is no event)
@@ -157,21 +164,21 @@ static void TestLinkedCopies()
 static void TestMadeUnique()
 {
     const ItemClearPlan p =
-        PlanItemClear({Target("{A}", RulesRecord("pool id={X}"), SoundsRecord({"{S1}"}))}, {Tagged("{S1}", Tag("{A}"))}, {});
+        PlanOn({Target("{A}", RulesRecord("pool id={X}"), SoundsRecord({"{S1}"}))}, {Tagged("{S1}", Tag("{A}"))}, {});
     CHECK(p.records.size() == 1);
     CHECK(p.records[0].rules && p.records[0].rules_text == PoolOnlyRecord(RulesRecord("pool id={X}")));
     CHECK(!p.records[0].rules_text.empty());
     CHECK(p.counts.copies == 0);
     CHECK(ClearConfirmTitle(0) == "Clear this item?");
     // Cleared once: nothing left to clear.
-    const ItemClearPlan again = PlanItemClear({Target("{A}", p.records[0].rules_text)}, {}, {});
+    const ItemClearPlan again = PlanOn({Target("{A}", p.records[0].rules_text)}, {}, {});
     CHECK(!again.anything);
 }
 
 // Attached + library source: 2 attached items, one is a Project Library Sound's source.
 static void TestAttachedAndLibrarySource()
 {
-    const ItemClearPlan p = PlanItemClear({Target("{A}", RulesRecord(), SoundsRecord({"{P1}", "{T1}", "{T2}"}))},
+    const ItemClearPlan p = PlanOn({Target("{A}", RulesRecord(), SoundsRecord({"{P1}", "{T1}", "{T2}"}))},
                                           {Tagged("{P1}", Tag("{A}")), Tagged("{T1}", Tag("{A}", Ownership::Attached)),
                                            Tagged("{T2}", Tag("{A}", Ownership::Attached))},
                                           {"{t2}"});  // case ignored
@@ -185,7 +192,7 @@ static void TestAttachedAndLibrarySource()
 // tag names another owner -> deleted too. An untagged item is never in the list (the user's).
 static void TestStrayTag()
 {
-    const ItemClearPlan p = PlanItemClear({Target("{a}", RulesRecord(), SoundsRecord({"{L1}"}))},
+    const ItemClearPlan p = PlanOn({Target("{a}", RulesRecord(), SoundsRecord({"{L1}"}))},
                                           {Tagged("{STRAY}", Tag("{A}")), Tagged("{L1}", Tag("{Q}")),
                                            Tagged("{FOREIGN}", Tag("{Q}"))},
                                           {});
@@ -198,7 +205,7 @@ static void TestStrayTag()
 // Unreadable record: its keys cleared, sounds by tag deleted, no marker readable (none deleted).
 static void TestUnreadable()
 {
-    const ItemClearPlan p = PlanItemClear({Target("{A}", "RAVRULES-NEXT whatever\nblock\n", "garbage", "garbage")},
+    const ItemClearPlan p = PlanOn({Target("{A}", "RAVRULES-NEXT whatever\nblock\n", "garbage", "garbage")},
                                           {Tagged("{S1}", Tag("{A}"))}, {});
     CHECK(p.anything);
     CHECK(p.records.size() == 1);
@@ -212,7 +219,7 @@ static void TestUnreadable()
 // Nothing: a fresh item.
 static void TestNothing()
 {
-    const ItemClearPlan p = PlanItemClear({Target("{A}", "")}, {Tagged("{S}", Tag("{Z}"))}, {});
+    const ItemClearPlan p = PlanOn({Target("{A}", "")}, {Tagged("{S}", Tag("{Z}"))}, {});
     CHECK(!p.anything);
     CHECK(p.records.empty() && p.delete_guids.empty() && p.untag_guids.empty());
 }
@@ -241,7 +248,7 @@ static void TestLibrarySourceGuids()
     const std::vector<std::string> g = LibrarySourceGuids(store);
     CHECK(g.size() == 2 && Has(g, "{I1}") && Has(g, "{F1}") && !Has(g, "{R1}"));
     // Both stay on the timeline (untagged), not deleted.
-    const ItemClearPlan p = PlanItemClear({Target("{A}", RulesRecord())},
+    const ItemClearPlan p = PlanOn({Target("{A}", RulesRecord())},
                                           {Tagged("{I1}", Tag("{A}", Ownership::Attached)), Tagged("{F1}", Tag("{A}"))}, g);
     CHECK(p.delete_guids.empty() && p.untag_guids.size() == 2);
     CHECK(ClearDoneText(p.counts) == "Cleared: 1 item");

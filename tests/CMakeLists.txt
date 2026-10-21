@@ -337,6 +337,20 @@ add_executable(shortcut_key_index_test shortcut_key_index_test.cpp ../src/shortc
                ../src/reaper_view_keys.cpp)
 target_include_directories(shortcut_key_index_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME shortcut_key_index COMMAND shortcut_key_index_test)
+# Release 0.4.0 -- the same, built without the sound library (RAV_WITH_SOUNDS=0, the release branch's build).
+add_executable(shortcut_key_index_off_test shortcut_key_index_test.cpp ../src/shortcut_key_index.cpp ../src/view_nav.cpp
+               ../src/reaper_view_keys.cpp)
+target_include_directories(shortcut_key_index_off_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_compile_definitions(shortcut_key_index_off_test PRIVATE RAV_WITH_SOUNDS=0)
+add_test(NAME shortcut_key_index_off COMMAND shortcut_key_index_off_test)
+# Release 0.4.0 -- the views' cycle (src/view_mode.h), with and without the sound library.
+add_executable(view_mode_test view_mode_test.cpp)
+target_include_directories(view_mode_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME view_mode COMMAND view_mode_test)
+add_executable(view_mode_off_test view_mode_test.cpp)
+target_include_directories(view_mode_off_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_compile_definitions(view_mode_off_test PRIVATE RAV_WITH_SOUNDS=0)
+add_test(NAME view_mode_off COMMAND view_mode_off_test)
 # Story 13-7b fix -- src/ui_drag_number.h (a DragNumber drag commits its own value)
 add_executable(ui_drag_number_test ui_drag_number_test.cpp)
 target_include_directories(ui_drag_number_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
@@ -376,6 +390,11 @@ add_test(NAME busy_progress COMMAND busy_progress_test)
 add_executable(item_clear_plan_test item_clear_plan_test.cpp ../src/item_clear_plan.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/sound_entries.cpp ../src/rule_record.cpp)
 target_include_directories(item_clear_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME item_clear_plan COMMAND item_clear_plan_test)
+# Release 0.4.0 -- the same, built without the sound library (RAV_WITH_SOUNDS=0): Clear keeps the sounds.
+add_executable(item_clear_plan_off_test item_clear_plan_test.cpp ../src/item_clear_plan.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/sound_entries.cpp ../src/rule_record.cpp)
+target_include_directories(item_clear_plan_off_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_compile_definitions(item_clear_plan_off_test PRIVATE RAV_WITH_SOUNDS=0)
+add_test(NAME item_clear_plan_off COMMAND item_clear_plan_off_test)
 
 # Story 6-5-10 -- the animation clip list's plan (src/clip_list_plan.h).
 add_executable(clip_list_plan_test clip_list_plan_test.cpp ../src/clip_list_plan.cpp)

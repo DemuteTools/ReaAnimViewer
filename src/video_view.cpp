@@ -869,19 +869,9 @@ void SetViewMode(ViewMode mode)
 {
     // Entering or leaving Video view keeps its rules (first entry opens the panel, a running
     // gesture is written as shown); RAV view <-> Tagging view only switches the mode.
-    if (!kWithSounds && mode == ViewMode::Library) mode = ViewMode::Rav;  // release 0.4.0: no Library view
+    mode = ViewModeBuilt(mode);  // release 0.4.0: no Library view without the sound library
     SetVideoViewActive(mode == ViewMode::Video);
     g_mode = mode;
-}
-
-ViewMode NextViewMode(ViewMode mode, bool with_sounds)
-{
-    switch (mode) {
-    case ViewMode::Rav: return ViewMode::Tagging;
-    case ViewMode::Tagging: return ViewMode::Video;
-    case ViewMode::Video: return with_sounds ? ViewMode::Library : ViewMode::Rav;  // release 0.4.0
-    default: return ViewMode::Rav;
-    }
 }
 
 void SetVideoViewActive(bool on)

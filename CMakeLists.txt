@@ -16,8 +16,22 @@ project(reaanimviewer
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 # The sound library (Epic 13). OFF builds RAV without it: every sound entry point is off (src/rav_features.h),
-# the sound code still compiles.
-option(RAV_WITH_SOUNDS "Build RAV with the sound library" ON)
+# the sound code still compiles. The branch's default (ON on dev, OFF on release); -DRAV_WITH_SOUNDS=ON|OFF
+# overrides it for that configure only: like RAV_VERSION below, it is dropped from the cache right away, so a
+# build folder never carries one branch's value into the other.
+set(RAV_WITH_SOUNDS_DEFAULT ON)
+if(DEFINED RAV_WITH_SOUNDS AND NOT RAV_WITH_SOUNDS STREQUAL "")
+    if(RAV_WITH_SOUNDS)
+        set(RAV_WITH_SOUNDS_EFFECTIVE ON)
+    else()
+        set(RAV_WITH_SOUNDS_EFFECTIVE OFF)
+    endif()
+else()
+    set(RAV_WITH_SOUNDS_EFFECTIVE ${RAV_WITH_SOUNDS_DEFAULT})
+endif()
+unset(RAV_WITH_SOUNDS CACHE)
+unset(RAV_WITH_SOUNDS)
+message(STATUS "ReaAnimViewer sound library: ${RAV_WITH_SOUNDS_EFFECTIVE}")
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(ReaperPlugin)

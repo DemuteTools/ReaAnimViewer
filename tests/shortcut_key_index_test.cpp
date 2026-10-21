@@ -207,13 +207,14 @@ static void TestRavSide()
     u = RavUsesOf(km, nav, Key(vk::kDelete));
     CHECK(u.size() == 2);
     // Space: the Sound Edit window's own key, fixed. Shift+Space too. E: Tagging's row and Edit's own.
+    // Release 0.4.0 (the OFF twin): no Sound Edit window, so none of its keys.
     u = RavUsesOf(km, nav, Key(vk::kSpace));
-    CHECK(u.size() == 1 && u[0].kind == RavKeyUse::Kind::EditReserved && u[0].index == 0);
+    CHECK(kWithSounds ? u.size() == 1 && u[0].kind == RavKeyUse::Kind::EditReserved && u[0].index == 0 : u.empty());
     u = RavUsesOf(km, nav, Key(vk::kSpace, kViewModShift));
-    CHECK(u.size() == 1 && u[0].kind == RavKeyUse::Kind::EditReserved && u[0].index == 1);
+    CHECK(kWithSounds ? u.size() == 1 && u[0].kind == RavKeyUse::Kind::EditReserved && u[0].index == 1 : u.empty());
     u = RavUsesOf(km, nav, Key('E'));
-    CHECK(u.size() == 2 && u[0].kind == RavKeyUse::Kind::KeyRow && u[0].index == kShortcutTagAddEvent &&
-          u[1].kind == RavKeyUse::Kind::EditReserved);
+    CHECK(u.size() == (kWithSounds ? 2u : 1u) && u[0].kind == RavKeyUse::Kind::KeyRow && u[0].index == kShortcutTagAddEvent);
+    if (kWithSounds) CHECK(u.size() == 2 && u[1].kind == RavKeyUse::Kind::EditReserved);
     // The plain wheel: Zoom horizontally (REAPER's default) and the 3D view's fixed Zoom.
     u = RavUsesOf(km, nav, Wheel());
     CHECK(u.size() == 2 && u[0].kind == RavKeyUse::Kind::ViewRow && u[0].index == kNavZoomH &&
@@ -228,7 +229,7 @@ static void TestRavSide()
         for (const RavKeyUse& x : u)
             if (x.kind == RavKeyUse::Kind::KeyRow && (x.index == kShortcutEditGainUp || x.index == kShortcutEditGainDown) && !x.shadowed)
                 ++gain_rows;
-        CHECK(gain_rows == 2);
+        CHECK(gain_rows == (kWithSounds ? 2 : 0));  // release 0.4.0: no Sound Edit row in the OFF twin
     }
     CHECK(KbGestureOfBinding(KeyBinding{vk::kWheelUp, true, true, false}) == Wheel(kViewModCtrl | kViewModShift));
     CHECK(KbGestureOfBinding(KeyBinding{vk::kWheelDown, true, true, false}) == Wheel(kViewModCtrl | kViewModShift));
@@ -286,6 +287,18 @@ static void TestBuiltWithoutSounds()
         ++mi;
     }
     CHECK(mouse_on == mi && mouse_off == mi - 1);
+    // Without the sounds (the OFF twin), a Sound Edit row's REAPER fallback key (Split's B) is nobody's: a
+    // Timelines key recorded on B is not refused as a hidden row's; with them it is Split's.
+    {
+        ShortcutKeyLists linked{};
+        bool             on_reaper[kShortcutCount] = {};
+        on_reaper[kShortcutEditSplit] = true;
+        ApplyReaperFallbacks(linked, on_reaper);
+        const ShortcutKeymap fm = ResolveShortcutKeys(DefaultShortcutBindings(), linked, on_reaper);
+        const KeyBinding     b_key{'B', false, false, false};
+        CHECK(ShortcutKeyOwner(fm, b_key, -1) == (kWithSounds ? kShortcutEditSplit : -1));
+        CHECK(ShortcutOwner(DefaultShortcutBindings(), KeyBinding{'V', false, false, false}, -1) == kShortcutToggleView);
+    }
     // A Library Edit row never takes another row's key without the sounds (no conflict with a row not built).
     CHECK(ShortcutContextsOverlap(ShortcutContext::Anywhere, ShortcutContext::LibraryEdit) == kWithSounds);
     CHECK(ShortcutContextsOverlap(ShortcutContext::Anywhere, ShortcutContext::TaggingView));

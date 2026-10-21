@@ -27,7 +27,7 @@
 #include <glm/glm.hpp>
 
 #include "camera.h"
-#include "rav_features.h"  // release 0.4.0: kWithSounds
+#include "view_mode.h"  // ViewMode, NextViewMode (release 0.4.0: pure, host-tested)
 #include "video_camera_params.h"
 #include "video_shots.h"
 
@@ -102,14 +102,12 @@ const VideoViewModel& GetVideoViewModel();
 bool VideoViewShotTouchesNext(int index);
 
 // ---- Session state (not saved) -----------------------------------------------------------
-// Story 10-3 -- the viewer's views, in the toggle's (and V's) order. Epic 13 (D20, 13-2): Library.
-enum class ViewMode { Rav, Tagging, Video, Library };
+// The viewer's views (ViewMode) and their cycle (NextViewMode): view_mode.h.
 ViewMode GetViewMode();
 // Entering Video view = SetVideoViewActive(true); leaving it = SetVideoViewActive(false), then
 // the new mode.
+// Release 0.4.0: without the sound library, a request for Library gives RAV view (ViewModeBuilt).
 void SetViewMode(ViewMode mode);
-// The next view in the cycle: RAV -> Tagging -> Video -> Library -> RAV.
-ViewMode NextViewMode(ViewMode mode, bool with_sounds = kWithSounds);  // release 0.4.0: no Library without the sounds
 // True in Tagging view (RAV view's camera and render, the Auto-Tagging strip and panel).
 bool TaggingViewActive();
 // True only in Video view.

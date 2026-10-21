@@ -60,6 +60,7 @@ std::vector<ShownEvent> BuildEventList(const std::vector<Event>& detections, con
         s.speed = e.speed;
         s.detection = static_cast<int>(d);
         s.signature = e.signature;
+        s.confidence = e.confidence;
         s.kind = ShownKind::Detected;
         // The nearest suppression of this rule within the window.
         double best = 1e300;
@@ -128,6 +129,7 @@ void KeepBlockEvents(std::vector<Event>& detections, const std::vector<EventEntr
         e.strength = x.strength;
         e.speed = x.speed;
         e.signature = -1;  // story 10-9a-2: signatures are not saved (no "Found by")
+        e.confidence = x.has_confidence ? x.confidence : 1.0;  // story 10-10a
         detections.push_back(e);
     }
     std::stable_sort(detections.begin(), detections.end(), [](const Event& a, const Event& b) {
@@ -459,6 +461,11 @@ std::vector<PlannedMarker> PlanMarkers(const std::vector<ShownEvent>& list, cons
         m.user = e.kind == ShownKind::User;
         m.strength = e.strength;
         m.speed = e.speed;
+        // Story 10-10a: a doubtful detection takes the amber marker colour (its name unchanged).
+        if (!m.user) {
+            m.confidence = e.confidence;
+            if (IsDoubtful(e.confidence)) m.color = kDoubtColor;
+        }
         out.push_back(m);
     }
     std::stable_sort(out.begin(), out.end(), [](const PlannedMarker& a, const PlannedMarker& b) {
@@ -532,6 +539,10 @@ void RecordApplied(ItemRules& rules, const std::vector<PlannedMarker>& planned, 
         e.strength = m.strength;
         e.speed = m.speed;
         e.has_block = e.has_strength = e.has_speed = true;
+        // Story 10-10a: an auto detection's confidence under 1, so a kept block plans its marker
+        // in the colour Commit wrote.
+        e.confidence = m.confidence;
+        e.has_confidence = m.confidence < 1.0;
         snapshot.push_back(e);
     }
     rules.events.erase(std::remove_if(rules.events.begin(), rules.events.end(),
@@ -580,6 +591,25 @@ int FindTwinMarker(const std::vector<ExistingMarker>& existing, double t, const 
 std::string PreviewMarkerName(const std::string& name)
 {
     return name + kPreviewSuffix;
+}
+
+namespace {
+double g_doubt_limit = kDefaultDoubtLimit;
+}  // namespace
+
+double DoubtLimit()
+{
+    return g_doubt_limit;
+}
+
+void SetDoubtLimit(double limit)
+{
+    g_doubt_limit = std::isfinite(limit) ? std::clamp(limit, 0.0, 1.0) : kDefaultDoubtLimit;
+}
+
+bool IsDoubtful(double confidence)
+{
+    return confidence < g_doubt_limit - 1e-9;
 }
 
 uint32_t PreviewColor(uint32_t color)

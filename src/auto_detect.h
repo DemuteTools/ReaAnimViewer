@@ -347,6 +347,40 @@ std::vector<Event> AutoEvents(const std::vector<AutoAnalysis>& analyses, const s
 std::vector<Event> DetectAutoEvents(const std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
                                     std::vector<AutoAnalysis>* cache, bool looping);
 
+// ---- Confidence (story 10-10a) ----------------------------------------------------------------
+//
+// An auto event's confidence (Event::confidence, 0..1) = its margin to its type's thresholds,
+// one generic measure for every type, read from the type table: the constants a type's
+// sensitivity moves (AutoTypeInfo::sens: a contact speed, a minimum turn, a contact length, a
+// peak in g...) ARE its thresholds. The block runs again with them made stricter, step by step
+// (kAutoConfidenceStepSens sensitivity points each, kAutoConfidenceSteps steps: the last one
+// halves the sensitivity factor, 2^(-50/50)); the confidence is the share of steps the event
+// survives in a row (an event of the block within kAutoConfidenceTolS of its time, no Land /
+// Jump replacement). 1 = still found with every threshold twice as strict; 0 = gone at the first
+// step (only just over a threshold). Relative to the block's own sensitivity (Detect's raise
+// included: an event that only appears after a raise reads low). A type needs no code of its own:
+// a new row's `sens` fields give its confidence (its `conf_probe` may leave out a field that is a
+// tolerance, not a margin: Clap / Hand on body's reach). What it cannot see: a constant no sensitivity
+// moves (a knee's height over the floor, a clap's stop), and an event that is physically sound but
+// not the motion the clip means (a hands' grip join read as a clap).
+// The tolerance is wider than kAutoMergeS: a stricter contact speed delays a contact's start
+// (measured on the fixtures: 26 of the events lost at 60 ms were found again 60-100 ms away).
+// Whether an event is doubtful (amber): event_list.h DoubtLimit.
+constexpr double kAutoConfidenceStepSens = 10.0;
+constexpr int    kAutoConfidenceSteps = 5;
+constexpr double kAutoConfidenceTolS = 0.100;
+// The confidence of an event that survived `kept_steps` steps (0..kAutoConfidenceSteps).
+double AutoConfidenceOfSteps(int kept_steps);
+// Sets Event::confidence of the auto blocks' events of `events` (the others untouched), on role
+// tracks. `cache` (optional): the probes' analyses (keep it apart from DetectAutoEvents' cache:
+// the two evict each other's).
+void RateAutoEvents(std::vector<Event>& events, const std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
+                    std::vector<AutoAnalysis>* cache, bool looping);
+// DetectAutoEvents then RateAutoEvents (what the Tagging view and Commit run).
+std::vector<Event> DetectRatedAutoEvents(const std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
+                                         std::vector<AutoAnalysis>* cache, std::vector<AutoAnalysis>* probe_cache,
+                                         bool looping);
+
 // ---- Sensitivity search (story 10-8h) ---------------------------------------------------------
 
 // One block's search result.

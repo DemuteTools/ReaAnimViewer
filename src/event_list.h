@@ -52,7 +52,24 @@ struct ShownEvent {
     int       entry = -1;      // Suppressed: the suppression; Orphan / User: the entry (index into ItemRules::events)
     int       detection = -1;  // Detected / Suppressed: index into the detections given
     int       signature = 0;   // story 10-9a-2: Detected / Suppressed: the detection's Event::signature
+    double    confidence = 1.0;  // story 10-10a: Detected / Suppressed: the detection's Event::confidence; 1 otherwise
 };
+
+// ---- Story 10-10a: doubtful events --------------------------------------------------------------
+//
+// An auto detection whose confidence (auto_detect.h RateAutoEvents) is under the doubt limit is
+// doubtful: amber in the Tagging view and on its markers (kDoubtColor instead of the rule's
+// colour; its name unchanged), "check it by ear". One limit for every type (a confidence is
+// already a share of the same strictness steps for each), a global option of the Tagging view
+// kept across sessions (tag_markers.h). A user event is never doubtful. The colour is part of the
+// marker signature, so a changed limit shows previews until the next Commit. MarkerEditBlock reads
+// an amber marker by its name (no rule has that colour), then by the event near it.
+constexpr double   kDefaultDoubtLimit = 0.4;
+constexpr uint32_t kDoubtColor = 0x1000000u | 0xFFB020u;  // amber (0x1000000 | 0xRRGGBB, as Block::color)
+// The limit in force (0..1; kDefaultDoubtLimit until set). Process-wide.
+double DoubtLimit();
+void   SetDoubtLimit(double limit);  // clamped to 0..1 (non-finite: the default)
+bool   IsDoubtful(double confidence);  // confidence < DoubtLimit()
 
 // The displayed list, sorted by time (then rule). `detections` = the live detections (any
 // order, Event::block = the rule), `entries` = the record's. Entries of an unknown kind, of
@@ -136,6 +153,7 @@ struct PlannedMarker {
     double      strength = 0.0;
     double      speed = 0.0;
     bool        in_item = true;   // 10-4b: the event shows on the item's first pass (else no project marker is written)
+    double      confidence = 1.0; // story 10-10a: a detection's (doubtful: `color` is kDoubtColor); 1 for a user event
 };
 
 // Story 10-10b: the marker name an event of rule b writes: the rule's marker (on one line,

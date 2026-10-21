@@ -361,6 +361,22 @@ void TestRowInvariants()
             else CHECK(r.sigs[0].source == combined.sigs[0].source);
         }
     }
+    // Story 10-10a: every type's confidence probes at least one of its sensitivity fields (its
+    // `conf_probe` names only fields it has); Clap and Hand on body leave their reach out.
+    for (int t = 0; t < kAutoTypeCount; ++t) {
+        const AutoTypeInfo& r = AutoTypeRow(static_cast<AutoType>(t));
+        int                 probed = 0;
+        for (int i = 0; i < kAutoSensFields; ++i) {
+            const bool named = r.conf_probe == 0 || ((r.conf_probe >> i) & 1u) != 0;
+            if (named && r.conf_probe != 0) CHECK(r.sens[i].field != nullptr);
+            probed += named && r.sens[i].field != nullptr;
+        }
+        CHECK(probed >= 1);
+        CHECK(r.conf_probe < (1u << kAutoSensFields));
+    }
+    CHECK(AutoTypeRow(AutoType::Clap).conf_probe == 1u && AutoTypeRow(AutoType::Clap).sens[1].field == &PhysicsParams::clap_reach);
+    CHECK(AutoTypeRow(AutoType::HandOnBody).conf_probe == 1u &&
+          AutoTypeRow(AutoType::HandOnBody).sens[1].field == &PhysicsParams::body_reach);
 }
 
 // Story 10-10b: every type's strength levels (the row follows the type: a static_assert checks

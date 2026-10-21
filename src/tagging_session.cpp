@@ -75,6 +75,7 @@ struct Session {
     SampleKey                 role_key;
     std::vector<BoneTrack>    role_tracks;
     std::vector<AutoAnalysis> auto_cache;
+    std::vector<AutoAnalysis> auto_probe_cache;  // story 10-10a: the confidence probes' analyses
     // The rules shown: the preview while a drag runs.
     bool      previewing = false;
     ItemRules preview;
@@ -213,6 +214,7 @@ void LoadFile(double now)
     g.have_tracks = false;
     g.have_role_tracks = false;
     g.auto_cache.clear();
+    g.auto_probe_cache.clear();
     g.names_by_path.erase(m.path);
     m.bone_names.clear();
     m.bone_parents.clear();
@@ -306,6 +308,7 @@ bool EnsureRoleTracks()
         g.role_key = std::move(key);
         g.have_role_tracks = true;
         g.auto_cache.clear();
+        g.auto_probe_cache.clear();
         m.auto_searched.clear();
         m.auto_none.clear();
     }
@@ -320,7 +323,8 @@ std::vector<Event> SessionAutoEvents(const std::vector<Block>& blocks, bool loop
     TaggingModel& m = g.model;
     m.auto_error.clear();
     if (!HasActiveAutoBlocks(blocks) || !EnsureRoleTracks()) return {};
-    std::vector<Event> ev = DetectAutoEvents(blocks, g.role_tracks, &g.auto_cache, looping);
+    // Story 10-10a: rated (each event's confidence: amber when doubtful).
+    std::vector<Event> ev = DetectRatedAutoEvents(blocks, g.role_tracks, &g.auto_cache, &g.auto_probe_cache, looping);
     for (const PhysicsParams& p : AutoParamSets(blocks, looping))
         for (const AutoAnalysis& a : g.auto_cache)
             if (SameAutoAnalysis(a.params, p) && !a.analysis.ok && m.auto_error.empty()) m.auto_error = a.analysis.error;
@@ -489,6 +493,7 @@ void TaggingSessionFrame(MediaItem* item, const std::string& path)
                 g.have_tracks = false;
                 g.have_role_tracks = false;
                 g.auto_cache.clear();
+                g.auto_probe_cache.clear();
                 g.stamp_checked_at = -1.0;
                 const int sc = m.sel_count, snr = m.sel_without_rules, srs = m.sel_roles_skipped;
                 const int stc = m.sel_to_commit, sca = m.sel_cancellable, sln = m.sel_linked;
@@ -884,9 +889,10 @@ ItemDetection DetectItem(MediaItem* item)
         if (HasActiveAutoBlocks(out.rules.blocks)) {
             const SampleKey rkey = RoleTrackKey(path, stamp, role_to_bone);
             if (g.have_role_tracks && rkey == g.role_key) {
-                MergeEvents(out.events, DetectAutoEvents(out.rules.blocks, g.role_tracks, &g.auto_cache, out.rules.clip.loop));
+                MergeEvents(out.events, DetectRatedAutoEvents(out.rules.blocks, g.role_tracks, &g.auto_cache,
+                                                              &g.auto_probe_cache, out.rules.clip.loop));
             } else {
-                MergeEvents(out.events, DetectAutoEvents(out.rules.blocks, SampleRoleTracks(*asset, role_to_bone), nullptr,
+                MergeEvents(out.events, DetectRatedAutoEvents(out.rules.blocks, SampleRoleTracks(*asset, role_to_bone), nullptr, nullptr,
                                                          out.rules.clip.loop));
             }
         }

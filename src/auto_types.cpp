@@ -49,6 +49,10 @@
 // A type may also live in a file of its own (auto_types_jolt.cpp, story 10-9g: one type, its
 // physics and its row functions); a strength in a unit other than leg/s or degrees takes the kind
 // row's `strength_unit` ("g"), which the inspector shows (and its speed is 0).
+// Confidence (story 10-10a): a new type gets its events' confidence (amber when doubtful) from its
+// row's `sens` fields, with no code (auto_detect.h RateAutoEvents: the block run again with them
+// stricter); a field that is a tolerance rather than a margin (a reach) is left out with
+// `conf_probe` (Clap, Hand on body).
 // The save words (kind `word`, type `sound_word`) are saved data: never rename one.
 
 #include "auto_types.h"
@@ -314,12 +318,13 @@ constexpr AutoTypeInfo kTypeRows[] = {
     {T::Clap, "Clap", "Clap", C::Arms,
      "A marker where the two hands meet at speed and stop against each other,\n"
      "on the faster hand (Clap L / Clap R).",
-     "clap", {{&P::clap_min_speed, S::Divide}, {&P::clap_reach, S::Times}}, &AutoPartsClap, false, false, true, true},
+     "clap", {{&P::clap_min_speed, S::Divide}, {&P::clap_reach, S::Times}}, &AutoPartsClap, false, false, true, true,
+     false, -1, -1, false, 0b01u},  // story 10-10a: the confidence probes the approach speed, not the reach
     {T::HandOnBody, "Hand on body", "Hand on body", C::Arms,
      "A marker where a hand lands at speed on the body (trunk, head or thigh) and stops there:\n"
      "Hand on body L / Hand on body R.",
      "hand_body", {{&P::body_min_speed, S::Divide}, {&P::body_reach, S::Times}}, &AutoPartsHandOnBody, false, false,
-     false, true},
+     false, true, false, -1, -1, false, 0b01u},  // story 10-10a: the speed only, as Clap
     // Story 10-9c: the whooshes; higher sensitivity = slower motions count (their speed / f).
     {T::Kick, "Kick", "Kick", C::Legs,
      "A marker where a foot whips through the air, raised off the ground (Kick L / Kick R),\n"

@@ -2543,6 +2543,69 @@ int main()
         CHECK(HasBodySegment(map));  // spine -> head (the missing chest and neck skipped)
     }
 
+    // Story 10-10a: confidence. The steps of 0..5 strictness steps a kept event survived.
+    {
+        CHECK(AutoConfidenceOfSteps(0) == 0.0 && AutoConfidenceOfSteps(kAutoConfidenceSteps) == 1.0);
+        CHECK(std::fabs(AutoConfidenceOfSteps(2) - 0.4) < 1e-12 && AutoConfidenceOfSteps(9) == 1.0 &&
+              AutoConfidenceOfSteps(-1) == 0.0);
+    }
+    // The slow slide (none at 50 %, one at 80 %): rated at 80 %, its confidence is the share of
+    // 10-point steps below 80 it is still found at, in a row; the rule's events stay at 1.
+    {
+        const FootFn slide = [](double t) {
+            FootPose f;
+            f.ball = Vec3d{-0.1, 0.02, 0.18 * std::clamp(t - 1.0, 0.0, 0.4)};
+            return f;
+        };
+        Options o;
+        o.dur = 3.0;
+        const std::vector<BoneTrack> rig = Rig(slide, Planted(0.1, 0.2), o);
+        std::vector<Block>           blocks = AutoBlocks(Ticked(false, false, true, false));
+        for (Block& b : blocks) b.sens = 80.0;
+        std::vector<Event> ev = DetectAutoEvents(blocks, rig, nullptr, false);
+        CHECK(OfBlock(ev, 0).size() == 1);
+        for (const Event& e : ev) CHECK(e.confidence == 1.0);  // not rated yet
+        Event rule_ev;
+        rule_ev.block = 99;  // not an auto block: untouched
+        rule_ev.confidence = 0.7;
+        ev.push_back(rule_ev);
+        std::vector<AutoAnalysis> probes;
+        RateAutoEvents(ev, blocks, rig, &probes, false);
+        CHECK(ev.back().confidence == 0.7);
+        int kept = 0;  // the steps the slide survives, by hand: the block at 70, 60, 50...
+        for (int k = 1; k <= kAutoConfidenceSteps; ++k) {
+            std::vector<Block> stricter = blocks;
+            for (Block& b : stricter) b.sens = 80.0 - kAutoConfidenceStepSens * k;
+            if (OfBlock(DetectAutoEvents(stricter, rig, nullptr, false), 0).empty()) break;
+            ++kept;
+        }
+        CHECK(kept < 3);  // gone by 50 %
+        const std::vector<Event> sl = OfBlock(ev, 0);
+        CHECK(sl.size() == 1 && std::fabs(sl[0].confidence - AutoConfidenceOfSteps(kept)) < 1e-12);
+        CHECK(!probes.empty());
+        // Without a cache, the same; the cache reused (no new analysis).
+        std::vector<Event> ev2 = DetectAutoEvents(blocks, rig, nullptr, false);
+        RateAutoEvents(ev2, blocks, rig, nullptr, false);
+        const size_t n = probes.size();
+        std::vector<Event> ev3 = DetectRatedAutoEvents(blocks, rig, nullptr, &probes, false);
+        CHECK(probes.size() == n);
+        CHECK(ev2.size() == ev3.size());
+        for (size_t i = 0; i < ev2.size() && i < ev3.size(); ++i) CHECK(ev2[i].confidence == ev3[i].confidence);
+    }
+    // A clear walk: its steps and lift-offs rated, each 0..1, the steps of a firm walk confident.
+    {
+        const std::vector<BoneTrack> rig = Walk();
+        const std::vector<Block>     blocks = AutoBlocks(Ticked(true, true, false, false));
+        const std::vector<Event>     ev = DetectRatedAutoEvents(blocks, rig, nullptr, nullptr, false);
+        CHECK(!ev.empty());
+        int firm = 0;
+        for (const Event& e : ev) {
+            CHECK(e.confidence >= 0.0 && e.confidence <= 1.0);
+            firm += e.confidence >= kDefaultDoubtLimit;
+        }
+        CHECK(firm == static_cast<int>(ev.size()));
+    }
+
     if (g_fails) std::printf("%d check(s) failed\n", g_fails);
     else std::printf("auto_detect: all checks passed\n");
     return g_fails ? 1 : 0;

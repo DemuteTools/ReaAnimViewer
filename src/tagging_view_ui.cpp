@@ -445,9 +445,29 @@ bool EventsEditableOn(const TaggingModel& m, int b)
     return EventsEditable(m) && !RowSkipped(m, b);
 }
 
-// The marker kinds a shown event draws, in a notify row from ry to ry + rh at x.
+// Story 10-10a: a detection whose confidence is under the doubt limit (amber, "check it by ear").
+bool DoubtfulEvent(const ShownEvent& e)
+{
+    return (e.kind == ShownKind::Detected || e.kind == ShownKind::Suppressed) && IsDoubtful(e.confidence);
+}
+
+// Story 10-10a: why an event is doubtful, for its tooltips.
+std::string DoubtWhy(const ShownEvent& e)
+{
+    char buf[200];
+    std::snprintf(buf, sizeof(buf),
+                  "Doubtful (confidence %.0f %%): close to its detection threshold, it disappears when\n"
+                  "the thresholds get a little stricter. Check it by ear.",
+                  e.confidence * 100.0);
+    return buf;
+}
+
+// The marker kinds a shown event draws, in a notify row from ry to ry + rh at x. Story 10-10a: a
+// doubtful one (DoubtfulEvent) in amber (the caller's `col` replaced, its alpha kept) with a "?".
 void DrawEventMark(ImDrawList* dl, const ShownEvent& e, float x, float ry, float rh, ImU32 col, bool selected)
 {
+    const bool doubt = DoubtfulEvent(e);
+    if (doubt) col = (ui::kWarn & ~IM_COL32_A_MASK) | (col & IM_COL32_A_MASK);
     // 13-14: mockup px at the screen's DPI.
     const float y0 = ry + ui::Dp(2.0f), y1 = ry + rh - ui::Dp(2.0f);
     if (e.kind == ShownKind::Orphan) {
@@ -465,6 +485,10 @@ void DrawEventMark(ImDrawList* dl, const ShownEvent& e, float x, float ry, float
     if (e.kind == ShownKind::User) {
         const float fs = ImGui::GetFontSize() * 0.85f;
         dl->AddText(ImGui::GetFont(), fs, ImVec2(x + ui::Dp(4.0f), y1 - fs), col, "you");
+    }
+    if (doubt) {
+        const float fs = ImGui::GetFontSize() * 0.85f;
+        dl->AddText(ImGui::GetFont(), fs, ImVec2(x + ui::Dp(4.0f), y1 - fs), col, "?");
     }
     if (selected)
         dl->AddRect(ImVec2(x - ui::Dp(7.0f), ry + 1.0f), ImVec2(x + ui::Dp(8.0f), ry + rh - 1.0f), kPlayhead, ui::Dp(3.0f));
@@ -1402,9 +1426,9 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                         } else if (e.kind == ShownKind::Orphan) {
                             vline(ex, WithAlpha(rc, is_sel ? 0xC0 : 0x66), 1.0f, true);
                         } else if (e.kind == ShownKind::Suppressed) {
-                            vline(ex, WithAlpha(rc, is_sel ? 0x99 : 0x38), 1.0f, false);
+                            vline(ex, WithAlpha(DoubtfulEvent(e) ? ui::kWarn : rc, is_sel ? 0x99 : 0x38), 1.0f, false);
                         } else {
-                            vline(ex, WithAlpha(rc, is_sel ? 0xF0 : 0x80), 1.0f, false);
+                            vline(ex, WithAlpha(DoubtfulEvent(e) ? ui::kWarn : rc, is_sel ? 0xF0 : 0x80), 1.0f, false);
                         }
                     }
                     if (dragging) {
@@ -1570,10 +1594,13 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                 if (area_hovered && !area_active) {
                     int cond = -1;
                     bool margin = false;
-                    if (events_ok && event_at(mouse.x, mouse.y)) {
+                    if (const ShownEvent* hov = events_ok ? event_at(mouse.x, mouse.y) : nullptr) {
                         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
-                        ui::ItemTip("Click: select  " RAV_DOT "  Drag: make it yours at a new time\n"
-                                    "Right-click / Del: suppress, restore or delete");
+                        // Story 10-10a: a doubtful event says why first.
+                        const std::string why = DoubtfulEvent(*hov) ? DoubtWhy(*hov) + "\n\n" : std::string();
+                        ui::ItemTip("%sClick: select  " RAV_DOT "  Drag: make it yours at a new time\n"
+                                    "Right-click / Del: suppress, restore or delete",
+                                    why.c_str());
                     } else if (line_at(mouse.x, mouse.y, &cond, &margin)) {
                         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
                     } else if (mouse.x < lane_x) {
@@ -3708,6 +3735,24 @@ void DrawEventInspector(const TaggingModel& m, const ItemRules& rules, const Sho
                 ui::ItemTip("The way of recognising this event that found it (a kind can have several;\n"
                             "when two find the same moment, the first in the list gives its time).");
             }
+        }
+        // Story 10-10a: its confidence, amber with a "doubtful" tag under the limit (Options).
+        key("Confidence");
+        char cb[32];
+        std::snprintf(cb, sizeof(cb), "%.0f %%", e.confidence * 100.0);
+        const bool doubt = DoubtfulEvent(e);
+        if (doubt) ui::ToneText(cb, ui::kWarn);
+        else ImGui::TextUnformatted(cb);
+        const std::string conf_tip =
+            (doubt ? DoubtWhy(e) + "\n\n" : std::string()) +
+            "How much stricter this rule's thresholds can get before the event disappears\n"
+            "(100 %: still found when they are twice as strict). Amber below the limit set in\n"
+            "Options > Tagging > Doubtful events.";
+        ui::ItemTipText(conf_tip.c_str());
+        if (doubt) {
+            ImGui::SameLine();
+            ui::Tag("doubtful", ui::TagTone::Warn);
+            ui::ItemTipText(conf_tip.c_str());
         }
     }
 

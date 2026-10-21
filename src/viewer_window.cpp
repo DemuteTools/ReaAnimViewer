@@ -1637,6 +1637,27 @@ void DrawToolUi()
                             MarkerModeLine(GetTaggingMarkerMode()));
             }
             ui::EndSection(sec);
+            // Story 10-10a: Smart Detection's doubtful events (amber), below one confidence for
+            // every type; written on release (a drag rewrites the previews once).
+            if (ui::BeginSection(sec, "Doubtful events")) {
+                static float doubt_pct = -1.0f;
+                static bool  doubt_drag = false;
+                if (!doubt_drag) doubt_pct = static_cast<float>(GetTaggingDoubtLimit() * 100.0);
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextUnformatted("Amber below");
+                ImGui::SameLine();
+                ui::FaderOpts fo;
+                fo.format = "%.0f %%";
+                ui::Fader("##doubtlimit", &doubt_pct, 0.0f, 100.0f, 0.0f, fo);
+                doubt_drag = ImGui::IsItemActive();
+                if (ImGui::IsItemDeactivated() && !ui::FaderCancelled())
+                    SetTaggingDoubtLimit(static_cast<double>(doubt_pct) / 100.0);
+                ui::ItemTipText("Smart Detection rates each event it finds: how much stricter its thresholds\n"
+                                "can get before it disappears (100 %: still found when they are twice as strict).\n"
+                                "Below this confidence an event is doubtful: amber in the strip and on its marker,\n"
+                                "check it by ear. 0 %: never amber.");
+            }
+            ui::EndSection(sec);
             // Epic 13 (D20): the Sounds section of the menu (13-9).
             DrawSoundsMenuSection();
             break;

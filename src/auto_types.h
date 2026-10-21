@@ -87,6 +87,11 @@ struct AutoTypeInfo {
     int             replaces = -1;
     int             replaces_in_span = -1;
     bool            replaces_own_side = false;
+    // Story 10-10a: the `sens` fields the confidence probes make stricter (bit i = sens[i];
+    // 0 = all of them, the default): a field that is a tolerance rather than a margin is left out
+    // (Clap / Hand on body's reach: two hands that meet cannot come much closer, so a real clap
+    // would read as doubtful). See auto_detect.h RateAutoEvents.
+    unsigned        conf_probe = 0;
 };
 
 // An event source: the physics events of one analysis a kind reads (FootEvents, HandEvents...).

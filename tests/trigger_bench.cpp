@@ -46,6 +46,7 @@
 #include "auto_types.h"
 #include "bone_roles.h"
 #include "dump_clip.h"
+#include "event_list.h"  // story 10-10a: IsDoubtful
 #include "footstep_measure.h"
 #include "motion_physics.h"
 #include "ref_file.h"
@@ -223,6 +224,7 @@ struct Found {
     double      t = 0.0;
     double      strength = 0.0;  // story 10-10b: the event's strength (its type's unit)
     AutoType    type = AutoType::Step;
+    double      conf = 1.0;  // story 10-10a: Event::confidence
 };
 
 struct Raised {
@@ -240,13 +242,14 @@ ConfigRun RunConfig(BenchConfig cfg, const std::vector<BoneTrack>& role_tracks, 
 {
     ConfigRun                 r;
     const std::vector<Block>  blocks = AutoBlocks(BenchSettings(cfg));
-    std::vector<AutoAnalysis> cache;
-    for (const Event& e : DetectAutoEvents(blocks, role_tracks, &cache, false)) {
+    std::vector<AutoAnalysis> cache, probes;
+    // Story 10-10a: the product path rates the events (their confidence).
+    for (const Event& e : DetectRatedAutoEvents(blocks, role_tracks, &cache, &probes, false)) {
         if (e.block < 0 || static_cast<size_t>(e.block) >= blocks.size()) continue;
         const Block& b = blocks[static_cast<size_t>(e.block)];
         AutoKind     k = AutoKind::Step;
         AutoBlockKind(b, &k, nullptr);
-        r.found.push_back({FoundTarget(b.auto_type), b.auto_side, e.time_s, e.strength, AutoTypeOfKind(k)});
+        r.found.push_back({FoundTarget(b.auto_type), b.auto_side, e.time_s, e.strength, AutoTypeOfKind(k), e.confidence});
     }
     // Detect's raise, on a copy.
     std::vector<Block>          copy = blocks;
@@ -661,6 +664,58 @@ int main(int argc, char** argv)
                             AutoTypeRow(static_cast<AutoType>(kv.first)).sound_word, kv.second.size(), pct(kv.second, 0.0),
                             pct(kv.second, 0.5), pct(kv.second, 1.0), lv[1], lv[2], lv[3]);
             }
+        }
+    }
+
+    // Story 10-10a: each found event's confidence (RateAutoEvents), by what the reference says of
+    // it: matched to a confirmed line, to a draft, extra (a clip with a reference, no line near),
+    // or no reference. Per clip, the events under full confidence; then the counts per level.
+    std::printf("\n--- Confidence (story 10-10a; default matrix; doubtful below %.2f) ---\n", kDefaultDoubtLimit);
+    {
+        const int                 nl = kAutoConfidenceSteps + 1;
+        std::map<std::string, std::vector<int>> hist;  // class -> count per level
+        const char*               classes[4] = {"confirmed", "draft", "extra", "no ref"};
+        for (const char* k : classes) hist[k].assign(static_cast<size_t>(nl), 0);
+        for (const ClipResult& c : clips) {
+            if (!c.read) continue;
+            std::string lines;
+            int         full = 0;  // confirmed at full confidence (not listed)
+            for (const auto& kv : Ordered(Rows(c, BenchConfig::Default))) {
+                std::vector<RowRef> conf_refs;
+                for (const RowRef& r : kv.second.refs)
+                    if (r.confirmed) conf_refs.push_back(r);
+                const RowScore all = ScoreRow(kv.second.refs, kv.second.det, kMatchWindowS, c.clip.lo, c.clip.hi);
+                const RowScore only_c = ScoreRow(conf_refs, kv.second.det, kMatchWindowS, c.clip.lo, c.clip.hi);
+                auto in = [](const std::vector<double>& v, double t) {
+                    return std::find(v.begin(), v.end(), t) != v.end();
+                };
+                for (const Found& f : c.run[0].found) {
+                    if (f.target != kv.first.target || f.side != kv.first.side) continue;
+                    if (f.t < c.clip.lo || f.t > c.clip.hi) continue;
+                    const char* cls = !c.has_ref                ? "no ref"
+                                      : in(all.extra_t, f.t)    ? "extra"
+                                      : !in(only_c.extra_t, f.t) ? "confirmed"
+                                                                 : "draft";
+                    const int lvl = std::clamp(static_cast<int>(std::lround(f.conf * kAutoConfidenceSteps)), 0, nl - 1);
+                    ++hist[cls][static_cast<size_t>(lvl)];
+                    if (f.conf >= 1.0 && std::string(cls) == "confirmed") {
+                        ++full;
+                        continue;
+                    }
+                    char buf[200];
+                    std::snprintf(buf, sizeof(buf), "  %-16s %7.3f s  conf %.1f  %s%s\n",
+                                  RowName(kv.first.target, kv.first.side).c_str(), f.t, f.conf, cls,
+                                  IsDoubtful(f.conf) ? "  DOUBTFUL" : "");
+                    lines += buf;
+                }
+            }
+            if (!lines.empty() || full) std::printf("%s  (%d confirmed at 1.0)\n%s", c.src.id.c_str(), full, lines.c_str());
+        }
+        std::printf("Events per confidence level (0.0 .. 1.0, step %.1f):\n", 1.0 / kAutoConfidenceSteps);
+        for (const char* k : classes) {
+            std::printf("  %-10s", k);
+            for (int v : hist[k]) std::printf(" %5d", v);
+            std::printf("\n");
         }
     }
 

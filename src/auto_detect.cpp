@@ -514,18 +514,34 @@ double SensitivityFactor(double sens)
     return std::pow(2.0, (sens - 50.0) / 50.0);
 }
 
-PhysicsParams AutoPhysicsParams(AutoType t, double sens, bool looping)
+namespace {
+
+// Story 10-10a: the constants at sensitivity `sens` made `shift` points stricter (the confidence
+// probes, RateAutoEvents), past 0 when needed: f = SensitivityFactor(sens) x 2^(-shift / 50).
+// shift 0 = AutoPhysicsParams.
+PhysicsParams ShiftedAutoParams(AutoType t, double sens, double shift, bool looping)
 {
     PhysicsParams p;
     p.looping = looping;
-    const double  f = SensitivityFactor(sens);
     if (!InRange(static_cast<int>(t), kAutoTypeCount)) return p;
-    for (const AutoSensField& sf : AutoTypeRow(t).sens) {
+    const AutoTypeInfo& row = AutoTypeRow(t);
+    for (int i = 0; i < kAutoSensFields; ++i) {
+        const AutoSensField& sf = row.sens[i];
         if (!sf.field) continue;
+        // Only the fields the row's conf_probe names get stricter (all by default).
+        const bool   probed = shift != 0.0 && (row.conf_probe == 0 || ((row.conf_probe >> i) & 1u) != 0);
+        const double f = probed ? SensitivityFactor(sens) * std::pow(2.0, -shift / 50.0) : SensitivityFactor(sens);
         if (sf.dir == AutoSensDir::Times) p.*sf.field *= f;
         else p.*sf.field /= f;
     }
     return p;
+}
+
+}  // namespace
+
+PhysicsParams AutoPhysicsParams(AutoType t, double sens, bool looping)
+{
+    return ShiftedAutoParams(t, sens, 0.0, looping);
 }
 
 bool SameAutoAnalysis(const PhysicsParams& a, const PhysicsParams& b)
@@ -555,18 +571,28 @@ bool HasActiveAutoBlocks(const std::vector<Block>& blocks)
     return false;
 }
 
-std::vector<PhysicsParams> AutoParamSets(const std::vector<Block>& blocks, bool looping)
+namespace {
+
+// AutoParamSets with every block `shift` sensitivity points stricter (story 10-10a).
+std::vector<PhysicsParams> ShiftedParamSets(const std::vector<Block>& blocks, bool looping, double shift)
 {
     std::vector<PhysicsParams> out;
     for (const Block& b : blocks) {
         AutoKind k;
         if (!b.enabled || !AutoBlockKind(b, &k, nullptr)) continue;
-        const PhysicsParams p = AutoPhysicsParams(AutoTypeOfKind(k), b.sens, looping);
+        const PhysicsParams p = ShiftedAutoParams(AutoTypeOfKind(k), b.sens, shift, looping);
         bool                seen = false;
         for (const PhysicsParams& q : out) seen = seen || SameAutoAnalysis(p, q);
         if (!seen) out.push_back(p);
     }
     return out;
+}
+
+}  // namespace
+
+std::vector<PhysicsParams> AutoParamSets(const std::vector<Block>& blocks, bool looping)
+{
+    return ShiftedParamSets(blocks, looping, 0.0);
 }
 
 std::vector<AutoSigPick> MergeSignatureEvents(const std::vector<std::vector<double>>& times, double period)
@@ -599,8 +625,10 @@ namespace {
 
 // AutoEvents; `replace` (story 10-9a): Land / Jump events replace the steps / lift-offs near them
 // (off for Detect's per-block event counts, which read each block's own detections).
+// Story 10-10a: `shift` = every block's sensitivity that many points stricter (the confidence
+// probes; 0 otherwise).
 std::vector<Event> AutoEventsImpl(const std::vector<AutoAnalysis>& analyses, const std::vector<Block>& blocks,
-                                  bool looping, bool replace)
+                                  bool looping, bool replace, double shift = 0.0)
 {
     std::vector<Event> out;
     std::vector<double>   raw;     // per event in `out`: its physics time (before the block's offset)
@@ -622,7 +650,7 @@ std::vector<Event> AutoEventsImpl(const std::vector<AutoAnalysis>& analyses, con
         AutoKind     k;
         char         side;
         if (!b.enabled || !AutoBlockKind(b, &k, &side)) continue;
-        const PhysicsParams p = AutoPhysicsParams(AutoTypeOfKind(k), b.sens, looping);
+        const PhysicsParams p = ShiftedAutoParams(AutoTypeOfKind(k), b.sens, shift, looping);
         size_t              ai = analyses.size();
         for (size_t j = 0; j < analyses.size() && ai == analyses.size(); ++j)
             if (SameAutoAnalysis(analyses[j].params, p)) ai = j;
@@ -772,6 +800,104 @@ std::vector<Event> DetectAutoEvents(const std::vector<Block>& blocks, const std:
                                     std::vector<AutoAnalysis>* cache, bool looping)
 {
     return DetectImpl(blocks, role_tracks, cache, looping, true);
+}
+
+// ---- Confidence (story 10-10a) ----------------------------------------------------------------
+
+namespace {
+
+// The loop period of the clip the analyses read (0: not looping): the first analysis that ran.
+double AnalysesLoopPeriod(const std::vector<AutoAnalysis>& runs, bool looping)
+{
+    if (!looping) return 0.0;
+    for (const AutoAnalysis& r : runs)
+        if (r.analysis.ok && r.analysis.looping && r.analysis.window_samples > 1 && r.analysis.rate_hz > 0.0)
+            return static_cast<double>(r.analysis.window_samples - 1) / r.analysis.rate_hz;
+    return 0.0;
+}
+
+}  // namespace
+
+double AutoConfidenceOfSteps(int kept_steps)
+{
+    return std::clamp(static_cast<double>(kept_steps) / kAutoConfidenceSteps, 0.0, 1.0);
+}
+
+void RateAutoEvents(std::vector<Event>& events, const std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
+                    std::vector<AutoAnalysis>* cache, bool looping)
+{
+    std::vector<size_t> rated;  // the auto events, by index into `events`
+    for (size_t i = 0; i < events.size(); ++i) {
+        const int b = events[i].block;
+        if (b < 0 || b >= static_cast<int>(blocks.size()) || !IsActiveAutoBlock(blocks[static_cast<size_t>(b)])) continue;
+        events[i].confidence = 1.0;
+        rated.push_back(i);
+    }
+    if (rated.empty()) return;
+    std::vector<AutoAnalysis>  local;
+    std::vector<AutoAnalysis>& runs = cache ? *cache : local;
+    std::vector<PhysicsParams> used;  // every probe's parameter sets (kept in the cache)
+    std::vector<char>          alive(rated.size(), 1);
+    for (int k = 1; k <= kAutoConfidenceSteps; ++k) {
+        const double shift = kAutoConfidenceStepSens * k;
+        for (const PhysicsParams& p : ShiftedParamSets(blocks, looping, shift)) {
+            used.push_back(p);
+            bool have = false;
+            for (const AutoAnalysis& r : runs) have = have || SameAutoAnalysis(r.params, p);
+            if (have) continue;
+            AutoAnalysis r;
+            r.params = p;
+            r.analysis = AnalyseMotion(role_tracks, p);
+            runs.push_back(std::move(r));
+        }
+        // Each block's own events at that strictness (no Land / Jump replacement: an event's own
+        // threshold only).
+        const std::vector<Event> probe = AutoEventsImpl(runs, blocks, looping, false, shift);
+        const double             period = AnalysesLoopPeriod(runs, looping);
+        bool                     any = false;
+        for (size_t j = 0; j < rated.size(); ++j) {
+            if (!alive[j]) continue;
+            Event& ev = events[rated[j]];
+            bool   found = false;
+            for (const Event& q : probe) {
+                if (q.block != ev.block) continue;
+                double d = std::fabs(q.time_s - ev.time_s);
+                if (period > 0.0) {
+                    d = std::fmod(d, period);
+                    d = std::min(d, period - d);
+                }
+                if (d <= kAutoConfidenceTolS + 1e-9) {
+                    found = true;
+                    break;
+                }
+            }
+            if (found) {
+                any = true;
+                continue;
+            }
+            alive[j] = 0;
+            ev.confidence = AutoConfidenceOfSteps(k - 1);
+        }
+        if (!any) break;
+    }
+    // A cache keeps the probes' analyses and a few others.
+    if (cache) {
+        for (size_t i = 0; i < runs.size() && runs.size() > std::max(kMaxCachedAnalyses, used.size());) {
+            bool in_use = false;
+            for (const PhysicsParams& p : used) in_use = in_use || SameAutoAnalysis(runs[i].params, p);
+            if (in_use) ++i;
+            else runs.erase(runs.begin() + static_cast<std::ptrdiff_t>(i));
+        }
+    }
+}
+
+std::vector<Event> DetectRatedAutoEvents(const std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
+                                         std::vector<AutoAnalysis>* cache, std::vector<AutoAnalysis>* probe_cache,
+                                         bool looping)
+{
+    std::vector<Event> ev = DetectAutoEvents(blocks, role_tracks, cache, looping);
+    RateAutoEvents(ev, blocks, role_tracks, probe_cache, looping);
+    return ev;
 }
 
 // ---- Sensitivity search (story 10-8h) ---------------------------------------------------------

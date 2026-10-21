@@ -246,10 +246,12 @@ struct EventEntry {
     int       block = 0;  // the rule (index into ItemRules::blocks)
     double    strength = 0.0;
     double    speed = 0.0;
+    double    confidence = 1.0;  // story 10-10a: a Detected entry's (an auto detection's, under 1 only)
     // Which optional fields the line writes (set when read with them, or by the code that makes it).
     bool      has_block = true;
     bool      has_strength = false;
     bool      has_speed = false;
+    bool      has_confidence = false;
     KeptText  kept;  // its `event` line
 };
 

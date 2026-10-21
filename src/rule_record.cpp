@@ -917,6 +917,7 @@ Fields EventFields(const EventEntry& e)
     if (e.has_block) f.push_back({"block", FormatInt(e.block)});
     if (e.has_strength) f.push_back({"strength", FormatNumber(e.strength)});
     if (e.has_speed) f.push_back({"speed", FormatNumber(e.speed)});
+    if (e.has_confidence) f.push_back({"confidence", FormatNumber(e.confidence)});  // story 10-10a
     return f;
 }
 
@@ -927,6 +928,7 @@ Set SetEvent(EventEntry& e, const std::string& k, const std::string& v)
     if (k == "block") return R(e.has_block = ReadInt(v, &e.block));
     if (k == "strength") return R(e.has_strength = ReadNumber(v, &e.strength));
     if (k == "speed") return R(e.has_speed = ReadNumber(v, &e.speed));
+    if (k == "confidence") return R(e.has_confidence = ReadNumber(v, &e.confidence));
     return Set::Unknown;
 }
 

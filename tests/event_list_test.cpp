@@ -1897,6 +1897,64 @@ int main()
         CHECK(!MarkersUpToDate(r, off, MarkerMode::Both) && off.size() == plan.size());
     }
 
+    // ---- Story 10-10a: doubtful events in amber -------------------------------------------------
+    {
+        CHECK(DoubtLimit() == kDefaultDoubtLimit);
+        Block fs = Rule("FS L", 0x1000000u | 0x112233u);
+        fs.auto_type = "step";
+        const std::vector<Block> blocks = {fs};
+        ItemClipMap map;
+        map.item_pos = 10.0;
+        map.item_len = 5.0;
+        map.clip_len = 5.0;
+        Event firm = Det(0, 0.5), doubt = Det(0, 1.5), edge = Det(0, 2.5);
+        doubt.confidence = 0.2;
+        edge.confidence = kDefaultDoubtLimit;  // at the limit: not doubtful
+        ItemRules r;
+        r.blocks = blocks;
+        r.events.push_back(MakeUserEvent(0, 3.0, 0.4, 0.9));  // never doubtful
+        const std::vector<Event>      det = {firm, doubt, edge};
+        const std::vector<ShownEvent> l = BuildEventList(det, r.events, blocks.size());
+        CHECK(l.size() == 4 && l[1].confidence == 0.2 && l[3].kind == ShownKind::User && l[3].confidence == 1.0);
+        std::vector<PlannedMarker> plan = PlanMarkers(l, blocks, map);
+        CHECK(plan.size() == 4);
+        if (plan.size() == 4) {
+            CHECK(plan[0].color == fs.color && plan[1].color == kDoubtColor && plan[2].color == fs.color &&
+                  plan[3].color == fs.color);
+            CHECK(plan[1].name == "FS L" && plan[1].confidence == 0.2 && plan[3].confidence == 1.0);  // name unchanged
+            CHECK(PreviewPlan(plan)[1].color == PreviewColor(kDoubtColor));
+        }
+        // The colour is in the signature: another limit, other markers.
+        const std::string sig = MarkerSignature(plan, MarkerMode::Both);
+        SetDoubtLimit(0.0);  // never amber
+        const std::vector<PlannedMarker> plain = PlanMarkers(l, blocks, map);
+        CHECK(plain.size() == 4 && plain[1].color == fs.color && MarkerSignature(plain, MarkerMode::Both) != sig);
+        SetDoubtLimit(2.0);
+        CHECK(DoubtLimit() == 1.0 && IsDoubtful(0.99) && !IsDoubtful(1.0));
+        SetDoubtLimit(std::nan(""));
+        CHECK(DoubtLimit() == kDefaultDoubtLimit && IsDoubtful(0.2) && !IsDoubtful(0.4));
+        // Commit records a confidence under 1 (only), the record reads it back, and a block kept
+        // from it (its part has no bone) plans its marker amber again: still up to date.
+        RecordApplied(r, plan, MarkerMode::Both);
+        int with = 0;
+        for (const EventEntry& e : r.events) with += e.has_confidence;
+        CHECK(with == 2);  // the doubtful one and the one at the limit
+        ItemRules back;
+        CHECK(ParseItemRules(SerializeItemRules(r), &back));
+        std::vector<Event> kept;
+        KeepBlockEvents(kept, back.events, blocks, {1});
+        CHECK(kept.size() == 3 && kept[1].confidence == 0.2 && kept[0].confidence == 1.0);
+        CHECK(MarkersUpToDate(back, PlanMarkers(BuildEventList(kept, back.events, 1), blocks, map), MarkerMode::Both));
+        // A REAPER-side edit of an amber marker finds its rule by its name.
+        MarkerEdit me;
+        me.kind = MarkerEditKind::Delete;
+        me.c = 1.5;
+        me.name = "FS L";
+        me.color = kDoubtColor;
+        me.has_color = true;
+        CHECK(MarkerEditBlock(back, me) == 0);
+    }
+
     if (g_fails) {
         std::printf("event_list_test: %d failure(s)\n", g_fails);
         return 1;

@@ -2463,6 +2463,24 @@ int main()
                                                          nullptr, nullptr));
             CHECK(Of(BodyContactEvents(a, dp), PhysicsKind::Knee).empty());
         }
+        // Story 10-9h: a knee coming down to 5 cm and sliding on (a low crawl's dragged knee, 0.8
+        // leg/s: too fast for a contact): one Knee, where its descent stops; sliding at 2.5 leg/s
+        // (a body's slide after a fall): none.
+        for (const double slide : {0.8, 2.5}) {
+            const PosFn knee = [=](double t) {
+                const double e = Ease(std::clamp((t - 1.0) / 0.5, 0.0, 1.0));
+                const double z = -0.14 + slide * 0.87 * std::max(0.0, t - 1.0);  // the 0.87 m leg
+                return Vec3d{-0.1, 0.48 + (0.05 - 0.48) * e, z};
+            };
+            const PhysicsAnalysis           a = AnalyseMotion(body(knee, nullptr, nullptr, nullptr));
+            const std::vector<PhysicsEvent> k = Of(BodyContactEvents(a, dp), PhysicsKind::Knee, 'L');
+            if (slide < 1.0) {
+                CHECK(k.size() == 1);
+                if (k.size() == 1) CHECK(k[0].time_s > 1.3 && k[0].time_s < 1.56 && k[0].strength >= dp.knee_land_descent);
+            } else {
+                CHECK(k.empty());
+            }
+        }
         // Elbow: down to 5 cm: one; down to 15 cm (0.17 leg): none.
         {
             const Vec3d           up{-0.3, 1.1, -0.1};

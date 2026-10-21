@@ -181,15 +181,28 @@ void TestTurns()
         const Found f = Run(TurningRig([](double t) { return 15.0 * std::sin(2.0 * kPi * t); }, 4.0));
         CHECK(f.start.empty());
     }
-    // A 90 deg turn one way then straight back: two spins (a turn back ends the first).
+    // Story 10-9h: a 90 deg turn one way then straight back is a twist (out and back, a punch's
+    // hip drive): no spin.
     {
         const YawFn y = [](double t) { return 90.0 * Ease((t - 0.5) / 0.6) - 90.0 * Ease((t - 1.1) / 0.6); };
         const Found f = Run(TurningRig(y, 2.5));
+        CHECK(f.start.empty() && f.end.empty());
+    }
+    // The same turn back after a 0.5 s pause: two spins (a turn back ends the first).
+    {
+        const YawFn y = [](double t) { return 90.0 * Ease((t - 0.5) / 0.6) - 90.0 * Ease((t - 1.6) / 0.6); };
+        const Found f = Run(TurningRig(y, 3.0));
         CHECK(f.start.size() == 2 && f.end.size() == 2);
         if (f.start.size() == 2 && f.end.size() == 2) {
             CHECK(f.end[0] <= f.start[1] + 1e-9);
             CHECK(f.sweep[0] > 85.0 && f.sweep[1] > 85.0);
         }
+    }
+    // A 180 deg turn and a 45 deg turn straight back (unlike sweeps): both spins.
+    {
+        const YawFn y = [](double t) { return 180.0 * Ease((t - 0.5) / 0.8) - 50.0 * Ease((t - 1.3) / 0.4); };
+        const Found f = Run(TurningRig(y, 2.5));
+        CHECK(f.start.size() == 2 && f.end.size() == 2);
     }
     // A turn running at the clip's start and end is kept, cut there.
     {

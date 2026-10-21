@@ -27,8 +27,10 @@
 // Why these, measured 2026-10-21 on the fixtures (57 clips, 240 Hz; no clip holds a clap or a
 // tagged body touch: the values are settled from the motions): wrists with the palms together
 // sit 0.08-0.11 leg apart (Pistol Equip's two-handed grip at 0.97 s), a two-handed sword grip
-// 0.23 leg or more (Great Sword Idle), so clap_reach 0.15. A hanging hand's wrist sits 0.11-0.20
-// leg from the thigh's axis (Walk With Briefcase, Right Turn), as close as a palm on the body, so
+// 0.23 leg or more (Great Sword Idle); story 10-9h: Clap_Standing Clap_Normal's light claps stop
+// with the wrists 0.11-0.17 leg apart (the hard ones 0.12-0.14), so clap_reach 0.18. A hanging
+// hand's wrist sits 0.11-0.20 leg from the thigh's axis (Walk With Briefcase, Right Turn), as
+// close as a palm on the body, so
 // the reach does not tell a touch from a hand at rest: the stop does. An arm swing passes the
 // body at full speed (no stop); a swing's turn near the body brakes over 100-300 ms (Two Cycle
 // Sprint, Treadmill Running, the arms falling back after Jump_Small / Standing Jump, Jump

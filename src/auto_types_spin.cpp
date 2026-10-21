@@ -9,7 +9,9 @@
 // back on the unsmoothed yaw (SpinSpans); its rate above spin_start_dps starts
 // a spin, which runs back and forward from there while the rate stays at spin_end_dps or more in
 // the same direction (a stop or a turn back ends it); a spin is kept when its yaw changes by
-// spin_min_deg at least. A sample where the hip line is too steep to give a yaw counts as no
+// spin_min_deg at least; two kept spins turning opposite ways back to back (spin_twist_gap_s),
+// of like sweeps (spin_twist_ratio), are a twist (out and back: a punch's hip drive), neither a
+// spin (story 10-9h). A sample where the hip line is too steep to give a yaw counts as no
 // turn. On a loop, the middle cycle's yaw changes are repeated over the unrolled track (a
 // turning loop's heading jumps back at the seams, and its other cycles are shifted, not
 // turned), and only the starts (and ends) in the middle cycle are the clip's.
@@ -57,6 +59,7 @@ struct SpinYaw {
     std::vector<double> rate;
     std::vector<double> raw_rate;  // the unsmoothed yaw's rate (deg/s): where the markers go
     double              sigma = 0.0;  // the smoothing (samples)
+    double              rate_hz = 0.0;
 };
 
 SpinYaw SpinYawOf(const PhysicsAnalysis& a, const PhysicsParams& p)
@@ -80,6 +83,7 @@ SpinYaw SpinYawOf(const PhysicsAnalysis& a, const PhysicsParams& p)
     std::vector<double> joined(n, 0.0);
     for (size_t i = 1; i < n; ++i) joined[i] = joined[i - 1] + delta(i);
     out.sigma = p.spin_smooth_s * a.rate_hz;
+    out.rate_hz = a.rate_hz;
     out.yaw = SmoothCurve(joined, out.sigma);
     out.rate.assign(n, 0.0);
     out.raw_rate.assign(n, 0.0);
@@ -140,7 +144,22 @@ std::vector<SpinSpan> SpinSpans(const SpinYaw& y, const PhysicsParams& p)
         if (std::fabs(sp.sweep) >= p.spin_min_deg) out.push_back(sp);
         i = e;
     }
-    return out;
+    // Story 10-9h: a twist (out and back) is no spin: two spins turning opposite ways, the second
+    // starting within spin_twist_gap_s of the first's end, their sweeps within spin_twist_ratio.
+    const double          rate = y.rate_hz;
+    std::vector<char>     twist(out.size(), 0);
+    for (size_t k = 1; k < out.size() && rate > 0.0; ++k) {
+        const SpinSpan& u = out[k - 1];
+        const SpinSpan& v = out[k];
+        const double    a = std::fabs(u.sweep), b = std::fabs(v.sweep);
+        if ((u.sweep > 0.0) != (v.sweep > 0.0) && static_cast<double>(v.start) - static_cast<double>(u.end) <= p.spin_twist_gap_s * rate &&
+            std::max(a, b) <= p.spin_twist_ratio * std::min(a, b))
+            twist[k - 1] = twist[k] = 1;
+    }
+    std::vector<SpinSpan> kept;
+    for (size_t k = 0; k < out.size(); ++k)
+        if (!twist[k]) kept.push_back(out[k]);
+    return kept;
 }
 
 // An analysed time as a clip time (false outside the clip window; a loop: the middle cycle).

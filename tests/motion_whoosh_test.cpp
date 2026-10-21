@@ -61,6 +61,7 @@ Vec3d AboutX(const Vec3d& p, const Vec3d& pivot, double ang)
 struct Body {
     bool   swing = false;   // left hand: an arc about the shoulder at 0.5 s
     bool   punch = false;   // right hand: a straight thrust at 1.2 s
+    bool   punch_down = false;  // 10-9h: the thrust driven down (to the floor) instead of forward
     bool   kick = false;    // left leg: a straight-leg front kick at 1.6 s
     bool   fold = false;    // right shank: a fast heel kick-up behind (a running stride's fold) at 0.4 s
     bool   pump = false;    // right hand: a running arm pump, the elbow straightening as it swings forward
@@ -108,7 +109,8 @@ std::vector<BoneTrack> MakeBody(const Body& b)
             put(Role::RightHand, AboutX(Plus(shr, V(0.0, -reach, 0.0)), shr, ang));
         } else {
             put(Role::RightHand,
-                b.punch ? Plus(guard, V(0.0, 0.1 * Smoothstep((t - 1.2) / 0.08), 0.55 * Smoothstep((t - 1.2) / 0.08)))
+                b.punch ? Plus(guard, b.punch_down ? V(0.0, -0.5 * Smoothstep((t - 1.2) / 0.08), 0.2 * Smoothstep((t - 1.2) / 0.08))
+                                                   : V(0.0, 0.1 * Smoothstep((t - 1.2) / 0.08), 0.55 * Smoothstep((t - 1.2) / 0.08)))
                         : guard);
         }
         for (int s = 0; s < 2; ++s) {
@@ -209,6 +211,26 @@ void TestPhysics()
     arcs.punch_radial_frac = 1.01;
     const std::vector<PhysicsEvent> ar = WhooshEvents(a, arcs, false);
     CHECK(Count(ar, PhysicsKind::Punch) == 0 && Count(ar, PhysicsKind::Swing) == 2);
+    // Story 10-9h: a punch is an extension (bent -> straight, along the shoulder -> hand line):
+    // strength = its extending speed's peak (0.55 m in 0.08 s, smoothstep: 1.5 x 0.55 / 0.08 =
+    // 10.3 m/s at most, along the line a little less).
+    if (pu) CHECK(pu->strength > p.punch_speed && pu->strength < 10.4 / kLeg);
+    // The arm must end straight: with the end reach above 1, none (the peak is a swing).
+    PhysicsParams bent = p;
+    bent.punch_end_reach = 1.01;
+    CHECK(Count(WhooshEvents(a, bent, false), PhysicsKind::Punch) == 0 && Count(WhooshEvents(a, bent, false), PhysicsKind::Swing) == 2);
+    // It must start bent: with the start reach at 0.1 of the arm, none.
+    PhysicsParams straight = p;
+    straight.punch_start_reach = 0.1;
+    CHECK(Count(WhooshEvents(a, straight, false), PhysicsKind::Punch) == 0);
+    // The same thrust driven down (an arm thrown to the floor, for support or balance): no punch.
+    {
+        Body down;
+        down.punch = down.punch_down = true;
+        const PhysicsAnalysis da = AnalyseMotion(MakeBody(down), p);
+        CHECK(da.ok && Count(WhooshEvents(da, p, false), PhysicsKind::Punch) == 0);
+        CHECK(da.whoosh_hand[1].rise.back() < p.punch_min_rise);
+    }
     // A kick must be raised: with the minimum height at 2 leg, none.
     PhysicsParams low = p;
     low.kick_min_height = 2.0;

@@ -86,6 +86,12 @@ inline bool NormaliseRefKind(const std::string& kind, const std::string& part, s
         p = "toe";
     } else if (kind == "hand_pivot_any") {
         b = "hand_pivot";
+    } else if (kind == "kick_heel") {  // story 10-9h
+        b = "kick";
+        p = "heel";
+    } else if (kind == "kick_toe") {
+        b = "kick";
+        p = "toe";
     } else if (kind == "lift_heel" || kind == "jump_heel" || kind == "land_heel") {
         b = kind.substr(0, 4);
         p = "heel";
@@ -95,7 +101,10 @@ inline bool NormaliseRefKind(const std::string& kind, const std::string& part, s
     } else if (!(kind == "step" || kind == "lift" || kind == "slide" || kind == "pivot" || kind == "grab" ||
                  kind == "release" || kind == "hand_pivot" || kind == "jump" || kind == "land" ||
                  // story 10-9b: body contacts (sit and fall: side B)
-                 kind == "knee" || kind == "elbow" || kind == "sit" || kind == "fall")) {
+                 kind == "knee" || kind == "elbow" || kind == "sit" || kind == "fall" ||
+                 // story 10-9h: the other wave-3 kinds (jolt, spin, spin_end: side B)
+                 kind == "kick" || kind == "swing" || kind == "punch" || kind == "clap" || kind == "hand_body" ||
+                 kind == "tap" || kind == "drag" || kind == "jolt" || kind == "spin" || kind == "spin_end")) {
         return false;
     }
     if (base) *base = b;
@@ -104,10 +113,11 @@ inline bool NormaliseRefKind(const std::string& kind, const std::string& part, s
 }
 
 // Jump and land: the kinds whose reference may say side B (no particular foot, story 10-9a).
-// Story 10-9b: sit and fall are always side B (the body).
+// Story 10-9b: sit and fall are always side B (the body); 10-9h: jolt, spin and spin_end too.
 inline bool SidelessTarget(const std::string& word)
 {
-    return word == "jump" || word == "land" || word == "sit" || word == "fall";
+    return word == "jump" || word == "land" || word == "sit" || word == "fall" || word == "jolt" || word == "spin" ||
+           word == "spin_end";
 }
 
 // One line of a reference file. False (and `err`) for a malformed line; a '#' or blank line is
@@ -223,6 +233,13 @@ inline std::string RefTarget(const RefLine& r, BenchConfig c)
         if (c == BenchConfig::Default) return part == "any" ? base : "";
         if (part == "heel") return base == "step" ? "heel" : base + "_heel";
         if (part == "toe" || part == "tip") return base == "step" ? "toe" : base + "_toe";
+        return "";
+    }
+    // Story 10-9h: a kick, as a step: one row in Default, the part's (heel, toe) in Parts.
+    if (base == "kick") {
+        if (c == BenchConfig::Default) return part == "any" ? base : "";
+        if (part == "heel") return "kick_heel";
+        if (part == "toe" || part == "tip") return "kick_toe";
         return "";
     }
     return base;

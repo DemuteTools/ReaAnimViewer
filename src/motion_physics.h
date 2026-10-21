@@ -502,6 +502,13 @@ struct PhysicsParams {
     double     spin_end_dps = 5.0;
     double     spin_min_deg = 45.0;
     double     spin_smooth_s = 0.050;
+    // Story 10-9h: a twist is no spin. Two spins turning opposite ways, the second starting within
+    // spin_twist_gap_s of the first's end, sweeping within spin_twist_ratio of each other (the
+    // hips turning out and back: a punch's hip drive, 60-123 deg there, back-to-back 0.01-0.22 s
+    // apart), are neither. A turn and a much smaller turn back (Capoeira's 220 deg roue then 56)
+    // stay spins; turns apart (Hip Hop Dancing's, ~1 s apart) too.
+    double     spin_twist_gap_s = 0.250;
+    double     spin_twist_ratio = 2.5;
     // Story 10-9e: foot taps and drags (FootTapEvents, FootDragEvents, foot_taps.h). A tap is a
     // toe contact (ball or tip) of tap_max_s at most, the heel up (higher above that part than in
     // the foot's flat pose by tap_heel_rise, leg) and the other foot down the whole time (it
@@ -548,6 +555,18 @@ struct PhysicsParams {
     double     body_min_descent = 0.3;       // leg/s: a knee / elbow contact comes down at this speed at least
     double     body_stop_frac = 0.2;         // a knee / elbow is timed where its downward speed falls to this x the descent's peak
     double     knee_ground_height = 0.20;    // leg
+    // A knee landing that slides on (a low crawl drags its knees at 0.5-1.3 leg/s, too fast for
+    // the contact speed): the knee comes within knee_land_height of the floor (re-armed above 1.5
+    // x it) after a descent of knee_land_descent at least (over fall_window_s), timed where its
+    // downward speed falls to body_stop_frac of that peak, sliding at knee_land_max_hspeed at most
+    // there (Jump Away's knees hitting the floor in its slide: 2.1-2.6), and no counted Knee of that
+    // side within knee_land_merge_s (the contact gives it). Story 10-9h, measured: crawls' and the
+    // hands-and-knees landing's knees 0.02-0.10 leg high, descents 0.58-3.84 leg/s; the slow
+    // kneels 0.31-0.34 (counted by their contacts).
+    double     knee_land_height = 0.10;      // leg
+    double     knee_land_descent = 0.5;      // leg/s
+    double     knee_land_max_hspeed = 1.6;   // leg/s
+    double     knee_land_merge_s = 0.200;
     double     elbow_ground_height = 0.12;   // leg
     double     body_floor_pct = 5.0;         // the floor: this percentile of the lowest foot part's height
     // Sit: the hips at rest below sit_max_height, the chest at least sit_min_upright above them,
@@ -577,7 +596,7 @@ struct PhysicsParams {
     // and its abruptness (the stop within this long of the braking's start, s). See hand_touch.h
     // for the values measured on the fixtures. Not moved by the sensitivity: the stop and the
     // window.
-    double     clap_reach = 0.15;
+    double     clap_reach = 0.18;
     double     clap_min_speed = 1.5;
     double     clap_stop_s = 0.150;
     double     body_reach = 0.22;
@@ -600,16 +619,29 @@ struct PhysicsParams {
     // and sprinting (Sword And Shield Run 5.72), 5-7.6 swinging the arms into a jump (Standing
     // Jump 7.59), Jump Attack's strike 8.03; 7.0 keeps every run. Running feet whip at 8-14 leg/s
     // relative to the torso, folded (up leg -> foot 0.56-0.94 leg when 0.4 leg up or more) or low
-    // (0.20-0.30 leg up when extended to 1.0-1.06): a raised extended foot is a kick. No fixture
-    // holds a kick or a punch (the radial share peaks at 0.42 there).
+    // (0.20-0.30 leg up when extended to 1.0-1.06): a raised extended foot is a kick.
+    // Punch (story 10-9h, settled on the Fight_* fixtures, 11 straight punches): not a speed peak
+    // but an extension: the hand's speed along the shoulder -> hand line stays positive over a
+    // run, peaks at punch_speed at least (leg/s; the sensitivity divides it; measured 2.34-4.69),
+    // where it is at least punch_radial_frac of the hand's speed (0.45-0.74; a swing that also
+    // opens the arm, Lvl_TopDown's 14.7 leg/s strike, 0.17), the arm goes from at most
+    // punch_start_reach of its length (0.33-0.58) to at least punch_end_reach (0.92-1.00), and
+    // ends no lower than punch_min_rise (the shoulder -> hand direction's vertical share; -0.42
+    // to +0.38 on the punches; an arm reaching down to a support or for balance, -0.68 to -0.98).
+    // The arm's length: shoulder -> elbow + elbow -> hand (medians), else the hand's farthest
+    // reach. Elsewhere: runs, jumps, climbs, strafes, claps: 2.36 leg/s at most, and those fail
+    // the start, the end or the rise.
     double     kick_speed = 6.0;
     double     swing_speed = 7.0;
-    double     punch_speed = 7.0;
+    double     punch_speed = 2.0;
     double     whoosh_edge_frac = 0.25;
     double     whoosh_smooth_s = 0.020;
     double     kick_min_height = 0.5;
     double     kick_min_reach = 1.0;
-    double     punch_radial_frac = 0.7;
+    double     punch_radial_frac = 0.4;
+    double     punch_start_reach = 0.65;
+    double     punch_end_reach = 0.90;
+    double     punch_min_rise = -0.6;
 };
 
 // One contact of a part, in samples [start, end).
@@ -708,6 +740,8 @@ struct WhooshTrack {
     std::vector<double> speed;
     std::vector<double> radial;
     std::vector<double> reach;   // the anchor -> limb distance (leg; a foot: its fastest part's)
+    std::vector<double> rise;    // a hand: the shoulder -> hand direction's vertical share (-1 down .. +1 up)
+    std::vector<double> arm_len;    // a hand: shoulder -> elbow + elbow -> hand (leg); empty without an elbow
     std::vector<double> height;
     std::vector<int>    part;
 };

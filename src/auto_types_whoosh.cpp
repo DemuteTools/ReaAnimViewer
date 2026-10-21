@@ -44,17 +44,18 @@ const WhooshTrack& Hand(const AutoLaneArgs& args)
 }
 
 // A whoosh lane: the limb's speed relative to the torso vs the type's speed (fires above).
+// Story 10-9h: a punch's lane is the hand's speed along the shoulder -> hand line (`radial`).
 void SpeedLane(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason, const WhooshTrack& w,
-               const char* name, double thr)
+               const char* name, double thr, bool radial = false)
 {
     if (!w.present) {
         reason = w.missing;
         return;
     }
     AutoLane l;
-    l.label = std::string(name) + " " + std::string(1, args.side) + "  speed vs torso";
+    l.label = std::string(name) + " " + std::string(1, args.side) + (radial ? "  extending speed" : "  speed vs torso");
     l.unit = "leg/s";
-    l.curve = AutoLaneWindow(w.speed, args.first, args.n, false);
+    l.curve = AutoLaneWindow(radial ? w.radial : w.speed, args.first, args.n, false);
     l.threshold = thr;
     l.above = true;
     out.push_back(std::move(l));
@@ -155,7 +156,7 @@ void AutoLanesSwing(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::s
 
 void AutoLanesPunch(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason)
 {
-    SpeedLane(args, out, reason, Hand(args), "Hand", args.p->punch_speed);
+    SpeedLane(args, out, reason, Hand(args), "Hand", args.p->punch_speed, true);
 }
 
 // ---- Roles -------------------------------------------------------------------------------------

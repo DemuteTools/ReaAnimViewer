@@ -16,10 +16,18 @@
 //           lowest part and at least kick_min_reach leg from the up leg (the hips without one):
 //           raised on an extended leg. A running stride's foot whips as fast, but folded under the
 //           hips when it is up, and low when the leg is extended. Part = that fastest part.
-//   swing   a hand, not in contact at the peak (a climbing hand pulls the torso past it).
-//   punch   the same hand peak, whose speed along the shoulder -> hand line (extending) is at
-//           least punch_radial_frac of its speed: a straight thrust; any other hand peak is a
-//           swing. One peak is one or the other.
+//   swing   a hand, not in contact at the peak (a climbing hand pulls the torso past it), and
+//           whose run does not overlap a punch's extension (one motion is one or the other).
+//   punch   (story 10-9h) an extension, not a speed peak: a run where the hand's speed along the
+//           shoulder -> hand line (radial) stays positive, peaking at punch_speed at least (the
+//           sensitivity divides it), there at least punch_radial_frac of the hand's speed (a
+//           straight thrust, not an arc that also opens the arm), the arm opening from at most
+//           punch_start_reach of its length to at least punch_end_reach (bent -> straight), its
+//           end no lower than punch_min_rise (the shoulder -> hand direction's vertical share: an
+//           arm thrown down to a support or for balance is none) and the hand not in contact
+//           at its peak. Peak = the hand's fastest sample within start / end, those where the
+//           extending speed falls under whoosh_edge_frac of its peak; strength = the radial peak
+//           (leg/s).
 // Looping clips: read on the unrolled track as the other events, kept when the peak lies in the
 // clip (its start wrapped into [0, T)). Not looping, a peak on the first or last sample, or a
 // whoosh already under way on the clip's first sample (its speed there at whoosh_edge_frac of the
@@ -40,6 +48,7 @@ constexpr char kWhooshSide[2] = {'L', 'R'};
 const Role     kWhooshHand[2] = {Role::LeftHand, Role::RightHand};
 const Role     kWhooshShoulder[2] = {Role::LeftShoulder, Role::RightShoulder};
 const Role     kWhooshUpLeg[2] = {Role::LeftUpLeg, Role::RightUpLeg};
+const Role     kWhooshElbow[2] = {Role::LeftElbow, Role::RightElbow};
 // Two runs above the speed whose dip stays above this share of it are one whoosh.
 constexpr double kWhooshMergeFrac = 0.7;
 // A whoosh's start / end stops at a dip under this share of its peak.
@@ -162,6 +171,77 @@ std::vector<WhooshRun> FindRuns(const std::vector<double>& v, double thr, double
     return out;
 }
 
+// Story 10-9h: a hand's punches (see the header): its extension runs (radial speed > 0) that pass
+// the punch's tests. Peak = the fastest sample between start and end; start / end = where the radial speed
+// falls under whoosh_edge_frac of its peak; speed = the radial peak; cut_start when the run
+// starts on the clip's first sample.
+// The arm's length (leg): the median of shoulder -> elbow -> hand, else the hand's farthest reach,
+// over the clip's own samples (a loop: its middle cycle; the others are shifted copies).
+double ArmLength(const PhysicsAnalysis& a, const WhooshTrack& h)
+{
+    const size_t n = h.reach.size();
+    const bool   win = a.looping && a.window_samples > 1 && a.window_first + a.window_samples <= n;
+    const size_t w0 = win ? a.window_first : 0, wn = win ? a.window_samples : n;
+    if (wn == 0) return 0.0;
+    if (h.arm_len.size() == n) {
+        std::vector<double> v(h.arm_len.begin() + static_cast<std::ptrdiff_t>(w0), h.arm_len.begin() + static_cast<std::ptrdiff_t>(w0 + wn));
+        std::nth_element(v.begin(), v.begin() + static_cast<std::ptrdiff_t>(wn / 2), v.end());
+        return v[wn / 2];
+    }
+    return *std::max_element(h.reach.begin() + static_cast<std::ptrdiff_t>(w0), h.reach.begin() + static_cast<std::ptrdiff_t>(w0 + wn));
+}
+
+template <class Touching>
+std::vector<WhooshRun> PunchRuns(const WhooshTrack& h, double arm, const PhysicsParams& p, Touching touching)
+{
+    std::vector<WhooshRun> out;
+    const int              n = static_cast<int>(h.radial.size());
+    if (n < 3 || !(arm > 0.0)) return out;
+    int i = 0;
+    while (i < n) {
+        if (!(h.radial[static_cast<size_t>(i)] > 0.0)) {
+            ++i;
+            continue;
+        }
+        const int st = i;
+        int       rp = i;
+        while (i < n && h.radial[static_cast<size_t>(i)] > 0.0) {
+            if (h.radial[static_cast<size_t>(i)] > h.radial[static_cast<size_t>(rp)]) rp = i;
+            ++i;
+        }
+        const int    en = i - 1;
+        const size_t r = static_cast<size_t>(rp), e = static_cast<size_t>(en);
+        if (h.radial[r] < p.punch_speed || h.radial[r] < p.punch_radial_frac * h.speed[r]) continue;
+        // The arm's least reach before the peak, its most after (a slow drift at the run's ends
+        // does not move them), and the direction where it is the most open.
+        double lo = h.reach[r], hi = h.reach[r];
+        size_t top = r;
+        for (int j = st; j <= rp; ++j) lo = std::min(lo, h.reach[static_cast<size_t>(j)]);
+        for (size_t j = r; j <= e; ++j)
+            if (h.reach[j] > hi) {
+                hi = h.reach[j];
+                top = j;
+            }
+        if (lo > p.punch_start_reach * arm || hi < p.punch_end_reach * arm) continue;
+        if (h.rise[top] < p.punch_min_rise) continue;
+        // The marker span: where the extending speed, walking away from its peak, falls under
+        // whoosh_edge_frac of it (inside the run).
+        WhooshRun w;
+        w.start = rp;
+        while (w.start > st && h.radial[static_cast<size_t>(w.start - 1)] >= p.whoosh_edge_frac * h.radial[r]) --w.start;
+        w.end = rp;
+        while (w.end < en && h.radial[static_cast<size_t>(w.end + 1)] >= p.whoosh_edge_frac * h.radial[r]) ++w.end;
+        w.peak = w.start;
+        for (int j = w.start; j <= w.end; ++j)
+            if (h.speed[static_cast<size_t>(j)] > h.speed[static_cast<size_t>(w.peak)]) w.peak = j;
+        if (touching(w.peak)) continue;
+        w.speed = h.radial[r];
+        w.cut_start = st == 0;
+        out.push_back(w);
+    }
+    return out;
+}
+
 }  // namespace
 
 void AnalyseWhooshTracks(const std::vector<BoneTrack>& rt, const PhysicsParams& p, PhysicsAnalysis& a)
@@ -203,13 +283,21 @@ void AnalyseWhooshTracks(const std::vector<BoneTrack>& rt, const PhysicsParams& 
         w.speed.resize(n);
         w.radial.resize(n);
         w.reach.resize(n);
+        w.rise.resize(n);
         for (size_t i = 0; i < n; ++i) {
             w.speed[i] = Len(Sub(hv[i], tv[i])) / leg;
             const Vec3d  d = Sub(hsm[i], asm_[i]);
             const double dl = Len(d);
             w.reach[i] = dl / leg;
+            w.rise[i] = dl > 1e-9 ? d.y / dl : 0.0;
             const Vec3d  rv = Sub(hv[i], av[i]);
             w.radial[i] = dl > 1e-9 ? (rv.x * d.x + rv.y * d.y + rv.z * d.z) / dl / leg : 0.0;
+        }
+        // The arm's length per sample (story 10-9h: a punch's reach is read against it).
+        const BoneTrack* el = RoleTrackOf(rt, kWhooshElbow[s], n);
+        if (sh && el) {
+            w.arm_len.resize(n);
+            for (size_t i = 0; i < n; ++i) w.arm_len[i] = (Len(Sub(el->pos[i], sh->pos[i])) + Len(Sub(h->pos[i], el->pos[i]))) / leg;
         }
     }
     // Feet: the fastest present part relative to the torso, its height above the other foot.
@@ -317,15 +405,15 @@ std::vector<PhysicsEvent> WhooshEvents(const PhysicsAnalysis& a, const PhysicsPa
         const WhooshTrack& h = a.whoosh_hand[s];
         if (!h.present) continue;
         const std::vector<char>& hc = a.hand[s].part.contact;
-        for (int pass = 0; pass < 2; ++pass) {
-            const bool punch = pass == 1;
-            for (const WhooshRun& r : FindRuns(h.speed, punch ? p.punch_speed : p.swing_speed, p.whoosh_edge_frac)) {
-                const size_t i = static_cast<size_t>(r.peak);
-                if (i < hc.size() && hc[i]) continue;
-                const bool thrust = h.radial[i] >= p.punch_radial_frac * h.speed[i];
-                if (thrust != punch) continue;
-                push(punch ? PhysicsKind::Punch : PhysicsKind::Swing, kWhooshSide[s], -1, r);
-            }
+        auto touching = [&](int i) { return static_cast<size_t>(i) < hc.size() && hc[static_cast<size_t>(i)]; };
+        const std::vector<WhooshRun> punches = PunchRuns(h, ArmLength(a, h), p, touching);
+        for (const WhooshRun& r : punches) push(PhysicsKind::Punch, kWhooshSide[s], -1, r);
+        for (const WhooshRun& r : FindRuns(h.speed, p.swing_speed, p.whoosh_edge_frac)) {
+            if (touching(r.peak)) continue;
+            bool in_punch = false;
+            for (const WhooshRun& q : punches)
+                if (r.start <= q.end && q.start <= r.end) in_punch = true;
+            if (!in_punch) push(PhysicsKind::Swing, kWhooshSide[s], -1, r);
         }
     }
     std::sort(ev.begin(), ev.end(), [](const PhysicsEvent& x, const PhysicsEvent& y) {

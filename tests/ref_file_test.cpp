@@ -79,6 +79,24 @@ int main()
         CHECK(e2.empty() && back.size() == 4);
         CHECK(FormatRefFile(back) == w);
     }
+    // ---- Story 10-9h: the other wave-3 kinds; jolt, spin, spin_end are side B; a kick as a step.
+    {
+        RefLine r;
+        std::string e;
+        for (const char* k : {"punch", "swing", "clap", "hand_body", "tap", "drag", "knee", "elbow"}) {
+            CHECK(ParseRefLine(std::string(k) + "\tL\tany\t1\tdraft\tmotion", &r, &e));
+            CHECK(!ParseRefLine(std::string(k) + "\tB\tany\t1\tdraft\tmotion", nullptr, &e));
+        }
+        for (const char* k : {"jolt", "spin", "spin_end", "sit", "fall"}) CHECK(ParseRefLine(std::string(k) + "\tB\tany\t1\tdraft\tmotion", &r, &e));
+        CHECK(ParseRefLine("punch\tR\tany\t0.97\tdraft\tmotion", &r, &e) && RefTarget(r, BenchConfig::Default) == "punch" &&
+              RefTarget(r, BenchConfig::Parts) == "punch");
+        CHECK(ParseRefLine("kick\tL\tany\t1.18\tdraft\tmotion", &r, &e) && RefTarget(r, BenchConfig::Default) == "kick" &&
+              RefTarget(r, BenchConfig::Parts).empty());
+        CHECK(ParseRefLine("kick\tL\ttoe\t1.18\tdraft\tmotion", &r, &e) && RefTarget(r, BenchConfig::Default).empty() &&
+              RefTarget(r, BenchConfig::Parts) == "kick_toe");
+        CHECK(ParseRefLine("kick_heel\tR\tany\t1\tdraft\tmotion", &r, &e) && RefTarget(r, BenchConfig::Parts) == "kick_heel");
+        CHECK(ParseRefLine("spin_end\tB\tany\t1.55\tdraft\tmotion", &r, &e) && RefTarget(r, BenchConfig::Default) == "spin_end");
+    }
 
     // ---- Configuration targets.
     {

@@ -90,6 +90,31 @@ std::vector<PhysicsEvent> BodyContactEvents(const PhysicsAnalysis& a, const Phys
             }
         }
 
+    // Story 10-9h: a knee landing that slides on (no contact: too fast), see knee_land_height.
+    for (int s = 0; s < 2; ++s) {
+        const PartTrack& pt = b.knee[s];
+        if (!pt.present) continue;
+        const double H = p.knee_land_height;
+        auto         h = [&](int i) { return (pt.y[static_cast<size_t>(i)] - b.floor_y) / leg; };
+        bool         armed = h(0) > 1.5 * H;
+        for (int i = 1; i < n; ++i) {
+            if (h(i) > 1.5 * H) armed = true;
+            if (!armed || h(i) > H) continue;
+            armed = false;
+            const double descent = PeakBefore(pt.vy, i, w, true);
+            if (descent < p.knee_land_descent) continue;
+            int at = i;
+            while (at < n - 1 && -pt.vy[static_cast<size_t>(at)] > p.body_stop_frac * descent) ++at;
+            if (pt.hspeed[static_cast<size_t>(at)] > p.knee_land_max_hspeed) continue;
+            bool counted = false;
+            for (const PhysicsEvent& e : ev)
+                if (e.kind == PhysicsKind::Knee && e.side == kBodySides[s] &&
+                    std::fabs(e.time_s - at / rate) <= p.knee_land_merge_s + 1e-9)
+                    counted = true;
+            if (!counted) ev.push_back(BodyEvent(PhysicsKind::Knee, kBodySides[s], at, rate, descent));
+        }
+    }
+
     // Sit: a hips contact, upright, away from the feet, no knee down.
     const PartTrack& hips = b.hips;
     const PartTrack& chest = b.chest;

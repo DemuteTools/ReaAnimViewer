@@ -154,8 +154,10 @@ std::string EncodeAutoPresets(const std::vector<AutoPreset>& presets)
         for (int i = 0; i < kAutoTypeCount; ++i) {
             const AutoType t = static_cast<AutoType>(i);
             if (std::find(p.types.begin(), p.types.end(), t) == p.types.end()) continue;
+            const char* w = AutoTypeRow(t).sound_word;
+            if (!w) continue;
             if (!first) out += ',';
-            out += AutoTypeRow(t).sound_word;
+            out += w;
             first = false;
         }
     }

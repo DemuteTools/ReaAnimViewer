@@ -415,16 +415,17 @@ bool ChipButton(const char* label, const ImVec2& size = ImVec2(0.0f, 0.0f), bool
 // zone (a reserved tick slot, ticked when `on`, then the label; bold when `bold`) and a ⚙ zone
 // (`gear`, ControlH() wide, after a divider). Both always there, so ticking never changes the width.
 // `selected` fills the ⚙ zone with kAccent and rings the pill (drawn outside, takes no room); `flag`
-// puts a kWarn dot on the ⚙. Shrinks to the room left, its label ellipsized (full label as tooltip).
+// puts a kWarn dot on the ⚙. Shrinks to the room left, its label ellipsized (full label as tooltip);
+// `label_max` > 0 caps the label's room (a preset name: the mockup's 140 px).
 struct SplitChipClick {
     bool main = false;
     bool gear = false;
     bool main_hovered = false;  // for the caller's tooltip
     bool gear_hovered = false;
 };
-float          SplitChipWidth(const char* label, bool bold = false);
+float          SplitChipWidth(const char* label, bool bold = false, float label_max = 0.0f);
 SplitChipClick SplitChip(const char* id_label, const Icon& gear, bool on, bool selected = false, bool flag = false,
-                         bool bold = false);
+                         bool bold = false, float label_max = 0.0f);
 // The help mark (.qmark): an 18 px circle with "?"; `tip` shown on hover. True when clicked. Centred on
 // a `line_h` high line (13-53: its toolbar's button height), the frame height by default.
 bool HelpMark(const char* id, const char* tip = nullptr, float line_h = 0.0f);

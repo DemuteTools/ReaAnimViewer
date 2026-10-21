@@ -781,7 +781,7 @@ bool ChipButton(const char* label, const ImVec2& size, bool on)
 
 // Story 10-10e: the two-zone chip. Metrics: 6 px left pad, an 11 px tick slot, 4 px, the label,
 // 6 px, a 1 px divider, then the ⚙ zone ControlH() wide.
-float SplitChipWidth(const char* label, bool bold)
+float SplitChipWidth(const char* label, bool bold, float label_max)
 {
     float tw;
     if (bold) {
@@ -790,16 +790,18 @@ float SplitChipWidth(const char* label, bool bold)
     } else {
         tw = TextWidth(label);
     }
+    if (label_max > 0.0f) tw = std::min(tw, label_max);
     return Dp(6.0f) + Dp(11.0f) + Dp(4.0f) + tw + Dp(6.0f) + ControlH();
 }
 
-SplitChipClick SplitChip(const char* id_label, const Icon& gear, bool on, bool selected, bool flag, bool bold)
+SplitChipClick SplitChip(const char* id_label, const Icon& gear, bool on, bool selected, bool flag, bool bold,
+                         float label_max)
 {
     SplitChipClick out;
     const float h = ControlH();
     const float gw = h;
     const float avail = ImGui::GetContentRegionAvail().x;
-    float       w = SplitChipWidth(id_label, bold);
+    float       w = SplitChipWidth(id_label, bold, label_max);
     if (!WindowAutoSizes() && w > avail) w = std::max(gw + h, avail);
     const ImVec2 a = ImGui::GetCursorScreenPos();
     const float  main_w = std::max(1.0f, w - gw);

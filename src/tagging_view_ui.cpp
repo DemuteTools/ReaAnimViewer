@@ -3985,8 +3985,10 @@ int  g_preset_edit = -1;        // the preset the ⚙ menu / rename is about (-1
 bool g_preset_delete_ask = false;
 bool g_preset_name_focus = false;
 char g_preset_name[64] = {};
-// The settings card's height: one for the panel's width (grown when a type's settings need more).
-float g_card_h = 0.0f, g_card_w = -1.0f, g_card_bottom_h = 0.0f;
+// The settings card's height: the tallest of every type's settings at the panel's width (measured
+// once per width and text size), so it never changes while types are shown, ticked or searched.
+float g_card_h = 0.0f, g_card_w = -1.0f, g_card_fh = -1.0f, g_card_bottom_h = 0.0f;
+bool  g_card_measure = false;
 float g_auto_fixed_h = 0.0f;  // the section's height less its chip list, last frame
 float g_auto_sec_h = 0.0f;    // the whole section's height, last frame (the panel lays out from it)
 
@@ -4068,15 +4070,29 @@ void TwoLineText(const char* text, ImU32 col)
 // The settings of one type, in fixed slots: the header (its tick, category, hide), its hint (2
 // lines), Sensitivity / Offset (+ Per side), one note line, the per-side rows, the type's own options;
 // pinned at the bottom, Marker name and Sound. Every option comes from the type's row.
-void DrawAutoTypeSettings(const TaggingModel& m, const ItemRules& rules, AutoType t, float card_inner_h)
+// `measure`: the type's tallest layout (Per side open, every Separate mode, the Sound row's widest
+// case, the bottom right after the options), drawn clipped to size the card (nothing is written).
+void DrawAutoTypeSettings(const TaggingModel& m, const ItemRules& rules, AutoType t, float card_inner_h,
+                          bool measure = false)
 {
     const AutoSettings& item = g_auto_seen;
     const int           ti = static_cast<int>(t);
     const AutoTypeInfo& row = AutoTypeRow(t);
     ImGuiStorage*       storage = ImGui::GetStateStorage();
     ImGui::PushID(ti);
-    // Header.
+    // Header: the mockup's accent ⚙ badge, the type's tick, its category, hide.
     {
+        const float  badge = ui::Dp(18.0f);
+        const float  fh0 = ImGui::GetFrameHeight();
+        const ImVec2 bp = ImGui::GetCursorScreenPos();
+        ImGui::Dummy(ImVec2(badge, fh0));
+        {
+            ImDrawList*  dl = ImGui::GetWindowDrawList();
+            const ImVec2 c(bp.x + badge * 0.5f, bp.y + fh0 * 0.5f);
+            dl->AddCircleFilled(c, badge * 0.5f, ui::kAccent);
+            DrawToolGlyph(dl, ImVec2(c.x - ui::Dp(6.0f), c.y - ui::Dp(6.0f)), ui::Dp(12.0f), kToolGear, ui::kWhite);
+        }
+        ImGui::SameLine(0.0f, ui::Dp(8.0f));
         bool              on = g_auto_ui.type[ti].on;
         const std::string lbl = std::string(AutoTypeLabel(t)) + "##cardtick";
         if (ui::Checkbox(lbl.c_str(), &on)) g_auto_ui.type[ti].on = on;
@@ -4095,7 +4111,14 @@ void DrawAutoTypeSettings(const TaggingModel& m, const ItemRules& rules, AutoTyp
     // The rows: the item's blocks of the type, or the blocks Detect would create.
     std::vector<Block> rows;
     bool               differ = st.differ;
-    if (detected) {
+    if (measure) {
+        AutoSettings one;
+        one.type[ti].on = true;
+        one.separate_steps = true;
+        one.slide_parts = one.pivot_parts = ScuffParts::EachPart;
+        for (bool& s : one.separate_parts) s = true;
+        rows = AutoBlocks(one);
+    } else if (detected) {
         for (const Block* b : st.blocks) rows.push_back(*b);
     } else {
         AutoSettings one = g_auto_ui;
@@ -4109,7 +4132,7 @@ void DrawAutoTypeSettings(const TaggingModel& m, const ItemRules& rules, AutoTyp
     const bool    can_split = rows.size() > 1;
     const ImGuiID split_id = ImGui::GetID("##autosplit");
     const int     split_state = storage->GetInt(split_id, -1);  // -1: default (open when rows differ)
-    const bool    split = can_split && (split_state < 0 ? differ : split_state == 1);
+    const bool    split = can_split && (measure || (split_state < 0 ? differ : split_state == 1));
     auto row_list = [&rows](bool sens) {
         std::string out;
         char        buf[64];
@@ -4234,7 +4257,8 @@ void DrawAutoTypeSettings(const TaggingModel& m, const ItemRules& rules, AutoTyp
         // Story 10-8m: heel / toe separate scuffs, and Each part or Longest part while Separate.
         static const char* const kScuffModes[] = {"Combined", "Separate"};
         static const char* const kScuffParts[] = {"Each part", "Longest part"};
-        ScuffParts& mode = t == AutoType::Slide ? g_auto_ui.slide_parts : g_auto_ui.pivot_parts;
+        ScuffParts  worst = ScuffParts::EachPart;  // measure: both rows shown, nothing written
+        ScuffParts& mode = measure ? worst : (t == AutoType::Slide ? g_auto_ui.slide_parts : g_auto_ui.pivot_parts);
         const char* word = t == AutoType::Slide ? "Slide" : "Pivot";
         ui::LabelRow("Parts", ui::Dp(120.0f), lcol);
         int sel = mode == ScuffParts::Combined ? 0 : 1;
@@ -4271,7 +4295,7 @@ void DrawAutoTypeSettings(const TaggingModel& m, const ItemRules& rules, AutoTyp
     if (!on) ImGui::EndDisabled();
     // Pinned at the bottom: Marker name and Sound (the same place for every type).
     const float top_end = ImGui::GetCursorPosY();
-    const float y_bottom = std::max(top_end, card_inner_h - g_card_bottom_h);
+    const float y_bottom = measure ? top_end : std::max(top_end, card_inner_h - g_card_bottom_h);
     ImGui::SetCursorPosY(y_bottom);
     const float b0 = ImGui::GetCursorPosY();
     {
@@ -4306,30 +4330,56 @@ void DrawAutoTypeSettings(const TaggingModel& m, const ItemRules& rules, AutoTyp
                     cut.medium, unit, cut.medium, cut.hard, example.c_str(), example.c_str());
     }
     // Antho 2026-10-12 (13-8): the type's sound, every row at once (its own "Sound:" row).
-    DrawAutoSoundRow(m.item, rules, AutoSoundKeys(rows));
+    if (measure) {
+        // The Sound row's tallest case (DrawAssignSummaryRow: two lines when narrow, with its ↗),
+        // whether or not a library exists yet, so making one never grows the card.
+        const float sp = ImGui::GetStyle().ItemSpacing.x;
+        const float fh = ImGui::GetFrameHeight();
+        const bool  narrow = ImGui::GetContentRegionAvail().x <
+                            ImGui::CalcTextSize("Sound:").x + ui::Dp(6.0f) + ui::Dp(120.0f) +
+                                ui::ButtonWidth("Assign...##assign") + ui::ControlH() + 2.0f * sp;
+        ImGui::Dummy(ImVec2(1.0f, narrow ? 2.0f * fh + ImGui::GetStyle().ItemSpacing.y : fh));
+    } else {
+        DrawAutoSoundRow(m.item, rules, AutoSoundKeys(rows));
+    }
     if (!on) ImGui::EndDisabled();
-    g_card_bottom_h = ImGui::GetCursorPosY() - b0;
+    if (!measure) g_card_bottom_h = ImGui::GetCursorPosY() - b0;
     ImGui::PopID();
 }
 
-// The card with no type shown: how to show one.
+// The card with no type shown: how to show one (the mockup's .empty: a line, a sample chip, two lines).
 void DrawAutoCardEmpty(float card_inner_h)
 {
     const char* l1 = "No type shown.";
     const char* l2 = "Click a type's name to tick or untick it.";
     const char* l3 = "Click its gear to tick it and see its settings here.";
     const float lh = ImGui::GetTextLineHeightWithSpacing();
-    ImGui::SetCursorPosY(std::max(ImGui::GetCursorPosY(), (card_inner_h - lh * 3.0f) * 0.5f));
-    for (const char* l : {l1, l2, l3}) {
+    const float ch = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y;
+    ImGui::SetCursorPosY(std::max(ImGui::GetCursorPosY(), (card_inner_h - lh * 3.0f - ch) * 0.5f));
+    auto centred = [](const char* l, ImU32 col) {
         const float w = ImGui::GetContentRegionAvail().x;
         const float tw = ImGui::CalcTextSize(l).x;
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (w - tw) * 0.5f));
-        ui::FitText(l, l == l1 ? ui::kMuted : ui::kFaint);
+        ui::FitText(l, col);
+    };
+    centred(l1, ui::kMuted);
+    {
+        // A sample chip (ticked Step), not clickable.
+        const char* demo = "Step##autodemochip";
+        const float w = ImGui::GetContentRegionAvail().x;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (w - ui::SplitChipWidth(demo)) * 0.5f));
+        ImGui::PushStyleVar(ImGuiStyleVar_DisabledAlpha, 1.0f);
+        ImGui::BeginDisabled();
+        ui::SplitChip(demo, ToolIcon(kToolGear), true);
+        ImGui::EndDisabled();
+        ImGui::PopStyleVar();
     }
+    centred(l2, ui::kFaint);
+    centred(l3, ui::kFaint);
 }
 
-// The card's first height at this width: the tallest type's settings (Per side open, every option
-// wrapped once on a narrow panel), from the type table; grown later if a type needs more.
+// The card's height before its first measure (one frame): a rough figure from the type table. The
+// card then takes MeasureAutoCardHeight's (every type's tallest layout at this width).
 float EstimateAutoCardHeight(float w)
 {
     static int max_rows = -1;
@@ -4361,15 +4411,21 @@ void DrawAutoPresetsRow()
     std::vector<AutoPreset>& presets = AutoPresets();
     int                      on_count = 0;
     for (const AutoTypeSettings& t : g_auto_ui.type) on_count += t.on ? 1 : 0;
-    bool open_name = false;
+    bool       open_name = false;
+    const bool full = static_cast<int>(presets.size()) >= kAutoPresetMax;
+    if (full) ImGui::BeginDisabled();
     if (ui::SolidButton("+ Preset##autonewpreset")) {
         g_preset_edit = -1;
         g_preset_name[0] = '\0';
         open_name = true;
     }
-    ui::ItemTip("A preset of the %d type%s ticked now: it asks its name.\nYour presets are kept on this "
-                "PC, in every project.",
-                on_count, on_count == 1 ? "" : "s");
+    if (full) ImGui::EndDisabled();
+    if (full)
+        ui::ItemTipText("You have the most presets kept (64): delete one (its gear) to make another.");
+    else
+        ui::ItemTip("A preset of the %d type%s ticked now: it asks its name.\nYour presets are kept on this "
+                    "PC, in every project.",
+                    on_count, on_count == 1 ? "" : "s");
     if (presets.empty()) {
         ImGui::SameLine();
         ImGui::AlignTextToFramePadding();
@@ -4379,9 +4435,11 @@ void DrawAutoPresetsRow()
     for (size_t i = 0; i < presets.size(); ++i) {
         const AutoPreset& p = presets[i];
         const std::string lbl = p.name + "##autopreset" + std::to_string(i);
-        ui::SameLineIfFits(ui::SplitChipWidth(lbl.c_str()));
+        const float lmax = ui::Dp(140.0f);  // the mockup's .preset .lbl max-width
+        ui::SameLineIfFits(ui::SplitChipWidth(lbl.c_str(), false, lmax));
         const ui::SplitChipClick c = ui::SplitChip(lbl.c_str(), ToolIcon(kToolGear), AutoPresetMatches(p, g_auto_ui),
-                                                   g_preset_edit == static_cast<int>(i) && ImGui::IsPopupOpen("##autopresetgear"));
+                                                   g_preset_edit == static_cast<int>(i) && ImGui::IsPopupOpen("##autopresetgear"),
+                                                   false, false, lmax);
         if (c.main_hovered) {
             std::string list;
             for (AutoType t : p.types) list += (list.empty() ? "" : ", ") + std::string(AutoTypeRow(t).undo_label);
@@ -4418,6 +4476,11 @@ void DrawAutoPresetsRow()
             AutoPreset& p = presets[static_cast<size_t>(g_preset_edit)];
             char        hint[32];
             std::snprintf(hint, sizeof(hint), "%d ticked", on_count);
+            {
+                char n[32];
+                std::snprintf(n, sizeof(n), " \xC2\xB7 %d type%s", static_cast<int>(p.types.size()), p.types.size() == 1 ? "" : "s");
+                ui::ToneText(p.name + n, ui::kFaint);  // the mockup's menu title
+            }
             if (ui::MenuEntry("Rename...")) {
                 std::snprintf(g_preset_name, sizeof(g_preset_name), "%s", p.name.c_str());
                 open_name = true;
@@ -4472,8 +4535,22 @@ void DrawAutoSearch()
 {
     const float fh = ImGui::GetFrameHeight();
     const float gap = ImGui::GetStyle().ItemSpacing.x;
+    {
+        // The mockup's magnifier before the field (drawn: the default font has no symbol).
+        const float  s = ui::Dp(14.0f);
+        const float  h = ui::FieldH();
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        ImGui::Dummy(ImVec2(s, h));
+        ImDrawList*  dl = ImGui::GetWindowDrawList();
+        const ImVec2 c(p.x + s * 0.42f, p.y + h * 0.5f - s * 0.08f);
+        const float  r = s * 0.28f;
+        dl->AddCircle(c, r, ui::kFaint, 0, ui::Dp(1.5f));
+        dl->AddLine(ImVec2(c.x + r * 0.72f, c.y + r * 0.72f), ImVec2(c.x + s * 0.48f, c.y + s * 0.48f), ui::kFaint, ui::Dp(1.5f));
+        ImGui::SameLine(0.0f, ui::Dp(4.0f));
+    }
     const float w = std::max(ui::Dp(40.0f), ImGui::GetContentRegionAvail().x - fh - gap);
-    ui::TextField("##autosearch", "Search a type (step, clap, pivot...)", g_auto_search, sizeof(g_auto_search), w);
+    ui::TextField("##autosearch", "Search a type (step, clap, pivot...)", g_auto_search, sizeof(g_auto_search), w,
+                  ImGuiInputTextFlags_EscapeClearsAll);
     ImGui::SameLine();
     if (g_auto_search[0]) {
         if (ui::IconOnlyButton("##autosearchclear", ToolIcon(kToolCrossSmall), "Clear the search", fh)) g_auto_search[0] = '\0';
@@ -4630,9 +4707,11 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules, float room)
         DrawAutoChipList(m, rules, list_h);
         // The settings card.
         const float w = ImGui::GetContentRegionAvail().x;
-        if (std::fabs(w - g_card_w) > 0.5f) {
+        if (std::fabs(w - g_card_w) > 0.5f || std::fabs(ImGui::GetFrameHeight() - g_card_fh) > 0.01f) {
             g_card_w = w;
-            g_card_h = EstimateAutoCardHeight(w);
+            g_card_fh = ImGui::GetFrameHeight();
+            if (g_card_h <= 0.0f) g_card_h = EstimateAutoCardHeight(w);
+            g_card_measure = true;
         }
         if (g_auto_sel >= kAutoTypeCount) g_auto_sel = -1;
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::kRaised);
@@ -4643,9 +4722,27 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules, float room)
         if (ImGui::BeginChild("##autocard", ImVec2(0.0f, card_h), ImGuiChildFlags_Borders,
                               ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
             const float inner_h = card_h - ui::Dp(7.0f);
+            if (g_card_measure) {
+                // Every type's tallest layout, clipped away (no item can be hovered or clicked), at
+                // the card's own width: the card's height is the tallest (the mockup's #ruler).
+                g_card_measure = false;
+                const ImVec2 start = ImGui::GetCursorPos();
+                float        tallest = 0.0f;
+                ImGui::PushClipRect(ImVec2(-1.0e5f, -1.0e5f), ImVec2(-1.0e5f + 1.0f, -1.0e5f + 1.0f), false);
+                ImGui::PushID("##cardmeasure");
+                for (int ti = 0; ti < kAutoTypeCount; ++ti) {
+                    ImGui::SetCursorPos(start);
+                    DrawAutoTypeSettings(m, rules, static_cast<AutoType>(ti), inner_h, /*measure=*/true);
+                    tallest = std::max(tallest, ImGui::GetCursorPosY() - start.y);
+                }
+                ImGui::PopID();
+                ImGui::PopClipRect();
+                ImGui::SetCursorPos(start);
+                g_card_h = std::ceil(start.y + tallest + ui::Dp(7.0f) - ImGui::GetStyle().ItemSpacing.y);
+            }
             if (g_auto_sel >= 0) DrawAutoTypeSettings(m, rules, static_cast<AutoType>(g_auto_sel), inner_h);
             else DrawAutoCardEmpty(inner_h);
-            // A type that needs more room grows the card once (for this width).
+            // A safety net only (the measure above covers every type's tallest layout).
             const float need = ImGui::GetCursorPosY() + ui::Dp(7.0f) - ImGui::GetStyle().ItemSpacing.y;
             if (need > g_card_h + 0.5f) g_card_h = std::ceil(need);
         }

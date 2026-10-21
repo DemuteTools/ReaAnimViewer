@@ -2395,6 +2395,144 @@ int main()
             CHECK(hl[0].part == ho[0].part && std::fabs(hl[0].time_s - ho[0].time_s - dp.lift_offset_s) < 1e-9);
     }
 
+    // ---- Body contacts (story 10-9b) -------------------------------------------------------------
+    {
+        // Both feet planted; the knees, hips, chest and elbows given per test (a 0.87 m leg, the
+        // floor at the toe tips, 0 m).
+        Options o;
+        o.dur = 4.0;
+        using PosFn = std::function<Vec3d(double)>;
+        auto set = [&](std::vector<BoneTrack>& t, Role r, const PosFn& fn) {
+            BoneTrack& b = t[static_cast<size_t>(r)];
+            b = BoneTrack{};
+            b.rate_hz = o.rate;
+            const int n = static_cast<int>(std::floor(o.dur * o.rate + 1e-9)) + 1;
+            for (int i = 0; i < n; ++i) b.pos.push_back(fn(i / o.rate));
+        };
+        // From `from` to `to` (eased) over [a, a + len), back over [b, b + len) (b < 0: never).
+        auto move = [](Vec3d from, Vec3d to, double a, double len, double b = -1.0) {
+            return [=](double t) {
+                double u = std::clamp((t - a) / len, 0.0, 1.0);
+                if (b >= 0.0 && t >= b) u = 1.0 - std::clamp((t - b) / len, 0.0, 1.0);
+                const double e = Ease(u);
+                return Vec3d{from.x + (to.x - from.x) * e, from.y + (to.y - from.y) * e, from.z + (to.z - from.z) * e};
+            };
+        };
+        auto body = [&](const PosFn& knee_l, const PosFn& hips, const PosFn& chest, const PosFn& elbow_l) {
+            std::vector<BoneTrack> t = Rig(Planted(-0.1, 0.0), Planted(0.1, 0.0), o);
+            if (knee_l) set(t, Role::LeftKnee, knee_l);
+            if (hips) set(t, Role::Hips, hips);
+            set(t, Role::Chest, chest ? chest : PosFn([](double) { return Vec3d{0.0, 1.35, -0.14}; }));
+            if (elbow_l) set(t, Role::LeftElbow, elbow_l);
+            return t;
+        };
+        const Vec3d knee_up{-0.1, 0.48, -0.14};
+        const PhysicsParams dp;
+
+        // Kneel: the left knee comes down to 10 cm (0.11 leg) at 1.5 s, stays until 3 s.
+        {
+            const PhysicsAnalysis a = AnalyseMotion(body(move(knee_up, Vec3d{-0.1, 0.10, 0.20}, 1.0, 0.5, 3.0), nullptr,
+                                                         nullptr, nullptr));
+            CHECK(a.ok && a.body.has_floor && std::fabs(a.body.floor_y) < 0.03);
+            const std::vector<PhysicsEvent> ev = BodyContactEvents(a, dp);
+            const std::vector<PhysicsEvent> k = Of(ev, PhysicsKind::Knee, 'L');
+            CHECK(k.size() == 1 && Of(ev, PhysicsKind::Knee, 'R').empty() && Of(ev, PhysicsKind::Sit).empty() &&
+                  Of(ev, PhysicsKind::Fall).empty());
+            if (k.size() == 1) CHECK(k[0].time_s > 1.40 && k[0].time_s < 1.56 && k[0].strength > 0.3 && k[0].part == -1);
+            CHECK(BodyContactSummary(a, ev) == "body: knees 1, elbows 0, sits 0, falls 0; missing: L elbow: no bone for left "
+                                                "elbow, R elbow: no bone for right elbow");
+            PhysicsEvent e;
+            e.kind = PhysicsKind::Knee;
+            e.side = 'L';
+            e.strength = 0.84;
+            CHECK(PhysicsMarkerName(e) == "PHY L knee 0.8");
+            e.kind = PhysicsKind::Fall;
+            e.side = 'B';
+            CHECK(PhysicsMarkerName(e) == "PHY B fall 0.8");
+        }
+        // A crouch: the knee stops 25 cm (0.29 leg) above the floor: no knee.
+        {
+            const PhysicsAnalysis a = AnalyseMotion(body(move(knee_up, Vec3d{-0.1, 0.25, 0.20}, 1.0, 0.5, 3.0), nullptr,
+                                                         nullptr, nullptr));
+            CHECK(Of(BodyContactEvents(a, dp), PhysicsKind::Knee).empty());
+        }
+        // Legs sliding on the floor that come to rest (the end of a body slide): low, but no
+        // descent: no knee.
+        {
+            const PhysicsAnalysis a = AnalyseMotion(body(move(Vec3d{-0.1, 0.04, -1.0}, Vec3d{-0.1, 0.04, 0.2}, 1.0, 0.8), nullptr,
+                                                         nullptr, nullptr));
+            CHECK(Of(BodyContactEvents(a, dp), PhysicsKind::Knee).empty());
+        }
+        // Elbow: down to 5 cm: one; down to 15 cm (0.17 leg): none.
+        {
+            const Vec3d           up{-0.3, 1.1, -0.1};
+            const PhysicsAnalysis a = AnalyseMotion(body(nullptr, nullptr, nullptr, move(up, Vec3d{-0.3, 0.05, 0.3}, 1.0, 0.6)));
+            const std::vector<PhysicsEvent> el = Of(BodyContactEvents(a, dp), PhysicsKind::Elbow, 'L');
+            CHECK(el.size() == 1);
+            if (el.size() == 1) CHECK(el[0].time_s > 1.45 && el[0].time_s < 1.66);
+            const PhysicsAnalysis b = AnalyseMotion(body(nullptr, nullptr, nullptr, move(up, Vec3d{-0.3, 0.15, 0.3}, 1.0, 0.6)));
+            CHECK(Of(BodyContactEvents(b, dp), PhysicsKind::Elbow).empty());
+        }
+        // Fall: hips and chest fall freely from standing onto the back (hips 0.10 m) at 1.0 + 0.42 s.
+        {
+            const double t0 = 1.0, tf = 0.42;
+            auto drop = [=](double h0, double h1, double z) {
+                return [=](double t) {
+                    const double u = std::clamp(t - t0, 0.0, tf);
+                    const double y = std::max(h1, h0 - 0.5 * 9.81 * u * u);
+                    return Vec3d{0.0, t < t0 ? h0 : y, z};
+                };
+            };
+            const PhysicsAnalysis a = AnalyseMotion(body(nullptr, drop(0.92, 0.10, -0.6), drop(1.35, 0.12, -1.0), nullptr));
+            const std::vector<PhysicsEvent> f = Of(BodyContactEvents(a, dp), PhysicsKind::Fall, 'B');
+            CHECK(f.size() == 1);
+            const double land = t0 + std::sqrt(2.0 * (0.92 - 0.10) / 9.81);
+            if (f.size() == 1) CHECK(std::fabs(f[0].time_s - land) < 0.05 && f[0].strength > 2.0);
+            // Lying down in 1.6 s (eased: 0.7 leg/s down over the 0.3 s before it stops): no fall;
+            // with the Fall sensitivity at 100 % (fall_min_speed / 2) it is one.
+            const PhysicsAnalysis b = AnalyseMotion(body(nullptr, move(Vec3d{0.0, 0.92, -0.14}, Vec3d{0.0, 0.10, -0.6}, 1.0, 1.6),
+                                                         move(Vec3d{0.0, 1.35, -0.14}, Vec3d{0.0, 0.12, -1.0}, 1.0, 1.6), nullptr));
+            CHECK(Of(BodyContactEvents(b, dp), PhysicsKind::Fall).empty());
+            PhysicsParams hp = dp;
+            hp.fall_min_speed /= 2.0;
+            CHECK(Of(BodyContactEvents(b, hp), PhysicsKind::Fall).size() == 1);
+        }
+        // Sit: the hips come down to 0.5 m (0.57 leg) 0.4 m behind the feet, the back upright.
+        {
+            const Vec3d stand{0.0, 0.92, -0.14};
+            const PhysicsAnalysis a = AnalyseMotion(body(nullptr, move(stand, Vec3d{0.0, 0.50, -0.55}, 1.0, 0.8, 3.0),
+                                                         move(Vec3d{0.0, 1.35, -0.14}, Vec3d{0.0, 0.95, -0.60}, 1.0, 0.8, 3.0),
+                                                         nullptr));
+            const std::vector<PhysicsEvent> s = Of(BodyContactEvents(a, dp), PhysicsKind::Sit, 'B');
+            CHECK(s.size() == 1 && Of(BodyContactEvents(a, dp), PhysicsKind::Fall).empty());
+            if (s.size() == 1) CHECK(s[0].time_s > 1.6 && s[0].time_s < 1.85);
+            // A squat: the same height over the feet: no sit.
+            const PhysicsAnalysis q = AnalyseMotion(body(nullptr, move(stand, Vec3d{0.0, 0.50, -0.14}, 1.0, 0.8, 3.0),
+                                                         move(Vec3d{0.0, 1.35, -0.14}, Vec3d{0.0, 0.95, -0.05}, 1.0, 0.8, 3.0),
+                                                         nullptr));
+            CHECK(Of(BodyContactEvents(q, dp), PhysicsKind::Sit).empty());
+            // Kneeling back onto the heels with a knee down: a kneel, no sit.
+            const PhysicsAnalysis k = AnalyseMotion(body(move(knee_up, Vec3d{-0.1, 0.10, 0.20}, 1.0, 0.5, 3.0),
+                                                         move(stand, Vec3d{0.0, 0.50, -0.55}, 1.0, 0.8, 3.0),
+                                                         move(Vec3d{0.0, 1.35, -0.14}, Vec3d{0.0, 0.95, -0.60}, 1.0, 0.8, 3.0),
+                                                         nullptr));
+            CHECK(Of(BodyContactEvents(k, dp), PhysicsKind::Sit).empty() && Of(BodyContactEvents(k, dp), PhysicsKind::Knee).size() == 1);
+            // Lying: the chest as low as the hips: no sit.
+            const PhysicsAnalysis l = AnalyseMotion(body(nullptr, move(stand, Vec3d{0.0, 0.50, -0.55}, 1.0, 0.8, 3.0),
+                                                         move(Vec3d{0.0, 1.35, -0.14}, Vec3d{0.0, 0.55, -1.0}, 1.0, 0.8, 3.0),
+                                                         nullptr));
+            CHECK(Of(BodyContactEvents(l, dp), PhysicsKind::Sit).empty());
+        }
+        // No foot bone: no floor, no body contact.
+        {
+            std::vector<BoneTrack> t = body(move(knee_up, Vec3d{-0.1, 0.10, 0.20}, 1.0, 0.5, 3.0), nullptr, nullptr, nullptr);
+            for (char s : {'L', 'R'})
+                for (int q = 0; q < kFootPartCount; ++q) t[static_cast<size_t>(FootPartRole(s, q))] = BoneTrack{};
+            const PhysicsAnalysis a = AnalyseMotion(t);
+            CHECK(!a.body.has_floor && BodyContactEvents(a, dp).empty());
+        }
+    }
+
     if (g_fails == 0) std::printf("motion_physics: all tests passed\n");
     return g_fails == 0 ? 0 : 1;
 }

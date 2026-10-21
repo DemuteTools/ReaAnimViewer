@@ -93,7 +93,9 @@ inline bool NormaliseRefKind(const std::string& kind, const std::string& part, s
         b = kind.substr(0, 4);
         p = "toe";
     } else if (!(kind == "step" || kind == "lift" || kind == "slide" || kind == "pivot" || kind == "grab" ||
-                 kind == "release" || kind == "hand_pivot" || kind == "jump" || kind == "land")) {
+                 kind == "release" || kind == "hand_pivot" || kind == "jump" || kind == "land" ||
+                 // story 10-9b: body contacts (sit and fall: side B)
+                 kind == "knee" || kind == "elbow" || kind == "sit" || kind == "fall")) {
         return false;
     }
     if (base) *base = b;
@@ -102,7 +104,11 @@ inline bool NormaliseRefKind(const std::string& kind, const std::string& part, s
 }
 
 // Jump and land: the kinds whose reference may say side B (no particular foot, story 10-9a).
-inline bool SidelessTarget(const std::string& word) { return word == "jump" || word == "land"; }
+// Story 10-9b: sit and fall are always side B (the body).
+inline bool SidelessTarget(const std::string& word)
+{
+    return word == "jump" || word == "land" || word == "sit" || word == "fall";
+}
 
 // One line of a reference file. False (and `err`) for a malformed line; a '#' or blank line is
 // false with an empty `err` (nothing to read).

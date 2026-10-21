@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 //
-// Story 10-9-0: the Legs category's types (step, lift-off, slide, pivot; story 10-9a: jump, land)
+// Story 10-9-0: the Legs category's types (step, lift-off, slide, pivot; story 10-9a: jump, land;
+// story 10-9b: knee)
 // as the rows of auto_types.cpp read them: their event sources, matches, required parts, lanes and
 // roles.
 
@@ -453,6 +454,50 @@ std::vector<Role> AutoRolesJump(char)
     for (char side : kSides)
         for (int q = 0; q < kFootPartCount; ++q) out.push_back(FootPartRole(side, q));
     return out;
+}
+
+// ---- Story 10-9b: the knee touching the ground --------------------------------------------------
+
+// Knee: the knees, and a foot for the floor (each foot's heel listed when no foot has a part).
+void AutoPartsKnee(bool, const std::vector<int>& role_to_bone, std::vector<std::string>& out)
+{
+    for (Role knee : {Role::LeftKnee, Role::RightKnee})
+        if (!AutoHasRole(role_to_bone, knee)) AutoPushOnce(out, RoleName(knee));
+    if (AutoMissingFootAny('L', role_to_bone) && AutoMissingFootAny('R', role_to_bone))
+        for (char side : kSides) AutoPushOnce(out, RoleName(FootPartRole(side, 0)));
+}
+
+bool AutoMatchKnee(const PhysicsEvent& e, const PhysicsAnalysis&, char)
+{
+    return e.kind == PhysicsKind::Knee;
+}
+
+// The knee, and a foot for the floor.
+bool AutoMissingKnee(char side, const std::vector<int>& role_to_bone)
+{
+    return !AutoHasRole(role_to_bone, side == 'R' ? Role::RightKnee : Role::LeftKnee) ||
+           (AutoMissingFootAny('L', role_to_bone) && AutoMissingFootAny('R', role_to_bone));
+}
+
+// The knee's speed vs knee_contact_speed, shaded where it rests low (its contact).
+void AutoLanesKnee(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason)
+{
+    const BodyTrack& b = args.a->body;
+    const PartTrack& pt = b.knee[args.side == 'R' ? 1 : 0];
+    const size_t     before = out.size();
+    if (!b.has_floor) reason = b.floor_missing;
+    else if (!pt.present) reason = pt.missing;
+    else AutoPartLane(args, out, pt, "Knee", false, args.p->knee_contact_speed);
+    if (out.size() == before) return;
+    char buf[160];
+    std::snprintf(buf, sizeof(buf), "Shaded: the knee rests within %.2f leg of the floor (a contact).",
+                  args.p->knee_ground_height);
+    out.back().shade_note = buf;
+}
+
+std::vector<Role> AutoRolesKnee(char side)
+{
+    return {side == 'R' ? Role::RightKnee : Role::LeftKnee};
 }
 
 }  // namespace rav

@@ -11,7 +11,8 @@ add_compile_definitions(RAV_HOST_TEST)
 # Story 10-9-0: the auto detection and its types' table (src/auto_types*.cpp), linked together.
 set(RAV_AUTO_SRCS ../src/auto_detect.cpp ../src/auto_types.cpp ../src/auto_types_legs.cpp ../src/auto_types_arms.cpp
                   ../src/auto_types_jolt.cpp ../src/auto_types_spin.cpp
-                  ../src/foot_taps.cpp)  # story 10-9e
+                  ../src/foot_taps.cpp  # story 10-9e
+                  ../src/auto_types_body.cpp ../src/body_contacts.cpp)  # 10-9b: Body, body contacts
 
 enable_testing()
 
@@ -110,7 +111,7 @@ target_include_directories(bone_events_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/
 add_test(NAME bone_events COMMAND bone_events_test)
 
 # Spike 10-8a -- foot events from body physics (src/motion_physics.h).
-add_executable(motion_physics_test motion_physics_test.cpp ../src/motion_physics.cpp ../src/bone_events.cpp)
+add_executable(motion_physics_test motion_physics_test.cpp ../src/motion_physics.cpp ../src/body_contacts.cpp ../src/bone_events.cpp)
 target_include_directories(motion_physics_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME motion_physics COMMAND motion_physics_test)
 

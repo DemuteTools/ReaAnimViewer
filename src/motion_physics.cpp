@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -783,7 +784,9 @@ const std::vector<Role>& PhysicsRoles()
     static const std::vector<Role> kRoles = {Role::LeftHeel,  Role::LeftToe,    Role::RightHeel,  Role::RightToe,
                                              Role::LeftKnee,  Role::RightKnee,  Role::LeftUpLeg,  Role::RightUpLeg,
                                              Role::Hips,      Role::LeftToeEnd, Role::RightToeEnd, Role::LeftHand,
-                                             Role::RightHand};
+                                             Role::RightHand,
+                                             // Story 10-9b: the body contacts' elbows and chest (or spine).
+                                             Role::LeftElbow, Role::RightElbow, Role::Spine, Role::Chest};
     return kRoles;
 }
 
@@ -810,6 +813,105 @@ std::vector<BoneTrack> PhysicsRoleTracks(const std::vector<int>& bone_of_role,
 namespace {
 
 // The analysis of one track as it is (AnalyseMotion without p.looping).
+// Story 10-9b: the body parts that touch the ground (BodyTrack), after the feet (the floor is
+// read from their heights) and the ground frame. `track` gives a role's track (null: no bone),
+// `ground_y` a height in the ground frame, `sm` the feet parts' smoothed positions.
+template <class TrackFn, class GroundYFn>
+void AnalyseBody(PhysicsAnalysis& a, const TrackFn& track, const PhysicsParams& p, const GroundYFn& ground_y,
+                 const std::vector<Vec3d> (&sm)[2][kFootPartCount])
+{
+    BodyTrack&   b = a.body;
+    const size_t n = a.samples;
+    const double rate = a.rate_hz, leg = a.leg_length;
+    std::vector<double> lows;
+    lows.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+        double m = std::numeric_limits<double>::infinity();
+        for (const FootTrack& f : a.foot)
+            for (const PartTrack& pt : f.part)
+                if (pt.present && i < pt.y.size()) m = std::min(m, pt.y[i]);
+        if (std::isfinite(m)) lows.push_back(m);
+    }
+    if (lows.empty() || !(leg > 0.0)) {
+        b.floor_missing = "no foot bone";
+        return;
+    }
+    const size_t k = std::min(lows.size() - 1, static_cast<size_t>(std::clamp(p.body_floor_pct, 0.0, 100.0) / 100.0 *
+                                                                   static_cast<double>(lows.size() - 1)));
+    std::nth_element(lows.begin(), lows.begin() + static_cast<std::ptrdiff_t>(k), lows.end());
+    b.floor_y = lows[k];
+    b.has_floor = true;
+
+    // A part's heights and ground-frame speeds; segmented (as a hand) where it is under `max_h`
+    // (leg) above the floor, free above (its speed read as far above the contact speed there).
+    auto fill = [&](PartTrack& pt, Role r, double contact_speed, double max_h, bool segment) -> std::vector<Vec3d> {
+        const auto* t = track(r);
+        if (!t) {
+            pt.missing = std::string("no bone for ") + RoleName(r);
+            return {};
+        }
+        pt.present = true;
+        const std::vector<Vec3d> s = Smooth(t->pos, p.smooth_ms / 1000.0, rate);
+        const std::vector<Vec3d> v = Velocity(s, rate);
+        pt.y.resize(n);
+        pt.speed.resize(n);
+        pt.hspeed.resize(n);
+        pt.vy.resize(n);
+        for (size_t i = 0; i < n; ++i) {
+            const double dx = v[i].x - a.ground_vel[i].x, dz = v[i].z - a.ground_vel[i].z;
+            const double dy = v[i].y - a.ground_vel[i].y;
+            pt.y[i] = ground_y(s[i].y, i);
+            pt.speed[i] = std::sqrt(dx * dx + dy * dy + dz * dz) / leg;
+            pt.hspeed[i] = std::sqrt(dx * dx + dz * dz) / leg;
+            pt.vy[i] = dy / leg;
+        }
+        if (segment) {
+            PhysicsParams bp = p;
+            bp.contact_speed = contact_speed;
+            bp.switch_cost = p.body_switch_cost;
+            const std::vector<double> speed = pt.speed;
+            const double              high = 10.0 * std::max(contact_speed, 1e-3);
+            for (size_t i = 0; i < n; ++i)
+                if ((pt.y[i] - b.floor_y) / leg > max_h) pt.speed[i] = std::max(pt.speed[i], high);
+            SegmentPart(pt, leg, rate, bp);
+            pt.speed = speed;
+        }
+        return s;
+    };
+    for (int s = 0; s < 2; ++s) {
+        fill(b.knee[s], kKneeRole[s], p.knee_contact_speed, p.knee_ground_height, true);
+        fill(b.elbow[s], s ? Role::RightElbow : Role::LeftElbow, p.elbow_contact_speed, p.elbow_ground_height, true);
+    }
+    const std::vector<Vec3d> hips = fill(b.hips, Role::Hips, p.sit_contact_speed, p.sit_max_height, true);
+    fill(b.chest, track(Role::Chest) ? Role::Chest : Role::Spine, 0.0, 0.0, false);
+    if (b.chest.present) b.chest.missing.clear();
+    else b.chest.missing = std::string("no bone for ") + RoleName(Role::Chest);
+
+    // The hips' horizontal distance to the feet's middle (the heels, else any part of each foot).
+    if (hips.size() == n) {
+        std::vector<const std::vector<Vec3d>*> feet;
+        for (int s = 0; s < 2; ++s)
+            for (int q = 0; q < kFootPartCount; ++q)
+                if (a.foot[s].part[q].present && sm[s][q].size() == n) {
+                    feet.push_back(&sm[s][q]);
+                    break;
+                }
+        if (!feet.empty()) {
+            b.hips_feet.resize(n);
+            for (size_t i = 0; i < n; ++i) {
+                double x = 0.0, z = 0.0;
+                for (const std::vector<Vec3d>* f : feet) {
+                    x += (*f)[i].x;
+                    z += (*f)[i].z;
+                }
+                x /= static_cast<double>(feet.size());
+                z /= static_cast<double>(feet.size());
+                b.hips_feet[i] = std::hypot(hips[i].x - x, hips[i].z - z) / leg;
+            }
+        }
+    }
+}
+
 PhysicsAnalysis AnalyseTrack(const std::vector<BoneTrack>& rt, const PhysicsParams& p)
 {
     PhysicsAnalysis a;
@@ -1354,6 +1456,8 @@ PhysicsAnalysis AnalyseTrack(const std::vector<BoneTrack>& rt, const PhysicsPara
         h.has_heading = true;
         h.pivots = FindHandPivots(pt, deg, h.heading_rate_dps, h.heading_valid, static_cast<int>(n), rate, p);
     }
+    // Story 10-9b: the body parts that touch the ground (BodyTrack, BodyContactEvents).
+    AnalyseBody(a, track, p, ground_y, sm);
     // Story 10-8j: a part arriving at the clip end; a loop has no end (its track is unrolled).
     if (!p.looping) {
         for (FootTrack& f : a.foot)
@@ -1486,6 +1590,11 @@ PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& rt, const PhysicsPar
     a.window_first = n - 1;
     a.window_samples = n;
     return a;
+}
+
+void PhysicsEventsToClipTime(const PhysicsAnalysis& a, std::vector<PhysicsEvent>& ev)
+{
+    ToClipTime(a, ev);
 }
 
 std::vector<PhysicsEvent> FootEvents(const PhysicsAnalysis& a, const PhysicsParams& p)
@@ -2074,6 +2183,10 @@ constexpr PhysicsKindRow kPhysicsKindRows[] = {
     {PhysicsKind::SpinEnd, "spin end", PhyPart::None, true, true},
     {PhysicsKind::Tap, "tap", PhyPart::Foot, false, false},  // story 10-9e
     {PhysicsKind::Drag, "drag", PhyPart::Foot, false, true},
+    {PhysicsKind::Knee, "knee", PhyPart::None, false, false},  // story 10-9b
+    {PhysicsKind::Elbow, "elbow", PhyPart::None, false, false},
+    {PhysicsKind::Sit, "sit", PhyPart::None, false, false},
+    {PhysicsKind::Fall, "fall", PhyPart::None, false, false},
 };
 constexpr bool PhysicsKindRowsInOrder()
 {
@@ -2136,6 +2249,10 @@ std::string PhysicsSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEv
         case PhysicsKind::SpinEnd: break;  // story 10-9f: the Spin type's (auto_types_spin.cpp)
         case PhysicsKind::Tap:
         case PhysicsKind::Drag: break;  // story 10-9e: FootTapEvents / FootDragEvents'
+        case PhysicsKind::Knee:
+        case PhysicsKind::Elbow:
+        case PhysicsKind::Sit:
+        case PhysicsKind::Fall: break;  // BodyContactSummary's (story 10-9b)
         }
     }
     const std::string vertical = a.ground_velocity.y != 0.0 ? Format(", vertical %+.2f m/s", a.ground_velocity.y) : "";

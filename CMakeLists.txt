@@ -198,6 +198,8 @@ if(WIN32)
             src/auto_types_jolt.cpp  # 10-9g
             src/auto_types_spin.cpp  # 10-9f
             src/foot_taps.cpp  # 10-9e
+            src/auto_types_body.cpp  # 10-9b
+            src/body_contacts.cpp
             src/detection_measure.cpp
             src/rule_record.cpp
             src/preset_store.cpp

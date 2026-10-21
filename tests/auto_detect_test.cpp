@@ -878,9 +878,12 @@ int main()
         for (int t = 0; t < kAutoTypeCount; ++t) {
             const bool hand = t == static_cast<int>(AutoType::Grab) || t == static_cast<int>(AutoType::Release) ||
                               t == static_cast<int>(AutoType::HandPivot);
-            const bool body = t == static_cast<int>(AutoType::Jolt) || t == static_cast<int>(AutoType::Spin);  // 10-9g, 10-9f
+            // Story 10-9b: Elbow in Arms, Sit and Fall in Body.
+            const bool arms = hand || t == static_cast<int>(AutoType::Elbow);
+            const bool body = t == static_cast<int>(AutoType::Jolt) || t == static_cast<int>(AutoType::Spin) ||  // 10-9g, 10-9f
+                              t == static_cast<int>(AutoType::Sit) || t == static_cast<int>(AutoType::Fall);
             CHECK(AutoCategoryOf(static_cast<AutoType>(t)) ==
-                  (hand ? AutoCategory::Arms : body ? AutoCategory::Body : AutoCategory::Legs));
+                  (arms ? AutoCategory::Arms : body ? AutoCategory::Body : AutoCategory::Legs));
         }
         CHECK(std::string(AutoCategoryLabel(AutoCategory::Legs)) == "Legs" &&
               std::string(AutoCategoryLabel(AutoCategory::Arms)) == "Arms");
@@ -1127,6 +1130,16 @@ int main()
                     case AutoKind::LandHeel: parts = {Role::Hips, heel}; break;
                     case AutoKind::JumpToe:
                     case AutoKind::LandToe: parts = {Role::Hips, toe}; break;
+                    // Story 10-9b: its own part (sit: hips and chest; fall: the hips, listed only
+                    // without a chest too), or no foot at all (each foot's heel listed only then).
+                    case AutoKind::Knee:
+                        parts = {side == 'R' ? Role::RightKnee : Role::LeftKnee, Role::LeftHeel, Role::RightHeel};
+                        break;
+                    case AutoKind::Elbow:
+                        parts = {side == 'R' ? Role::RightElbow : Role::LeftElbow, Role::LeftHeel, Role::RightHeel};
+                        break;
+                    case AutoKind::Sit: parts = {Role::Hips, Role::Chest, Role::LeftHeel, Role::RightHeel}; break;
+                    case AutoKind::Fall: parts = {Role::Hips, Role::LeftHeel, Role::RightHeel}; break;
                     default: parts = {side == 'R' ? Role::RightHand : Role::LeftHand}; break;
                     }
                     auto is_listed = [&](Role r) {

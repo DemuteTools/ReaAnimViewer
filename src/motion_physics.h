@@ -529,6 +529,46 @@ struct PhysicsParams {
     double     drag_min_s = 0.100;
     double     drag_min_dist = 0.08;
     double     drag_gap_s = 0.100;
+    // Story 10-9b: body contacts (see BodyContactEvents). A knee, elbow or the hips touch when they
+    // come to rest (segmented as a hand: contact speed, switch cost, min contact) while low over
+    // the floor ("stationary and low", HuMoR's knee / hand rule, research d3); heights in leg
+    // lengths above the floor, of the joint centres. Measured on the fixtures (the knee joint):
+    // kneeling rests at 0.12-0.14 (Kneel_1knee), 0.09 (Kneeling Down To Crouch), crawling -0.05 to
+    // 0.06; the lowest knee elsewhere 0.15 moving at 0.4-0.8 leg/s (Jump Attack's lunge), 0.17 at
+    // 1+ leg/s (Running Crawl, never at rest), 0.28 (Standing Jump02), 0.32 (Crouched Walking).
+    // HuMoR's 0.08 m (0.09 leg) misses the Kneel clip's knee: 0.20. An elbow's centre sits closer
+    // to its skin (a forearm flat on the floor: about 0.05 leg): 0.12; no fixture rests on its
+    // elbows (Jump Away's lie on the back: 0.18-0.24, crawling 0.26+). The descent: the kneels
+    // and crawls come down at 0.5-1.0 leg/s, Jump Away's legs stop sliding at 0.1: 0.3.
+    double     knee_contact_speed = 0.4;     // leg/s (the Knee sensitivity multiplies it)
+    double     elbow_contact_speed = 0.4;    // leg/s (the Elbow sensitivity multiplies it)
+    double     sit_contact_speed = 0.4;      // leg/s, the hips (the Sit sensitivity multiplies it)
+    double     body_switch_cost = 10.0;      // samples of clear evidence (240 Hz), as the hands'
+    double     body_min_contact_s = 0.150;   // a shorter rest is no contact
+    double     body_min_descent = 0.3;       // leg/s: a knee / elbow contact comes down at this speed at least
+    double     body_stop_frac = 0.2;         // a knee / elbow is timed where its downward speed falls to this x the descent's peak
+    double     knee_ground_height = 0.20;    // leg
+    double     elbow_ground_height = 0.12;   // leg
+    double     body_floor_pct = 5.0;         // the floor: this percentile of the lowest foot part's height
+    // Sit: the hips at rest below sit_max_height, the chest at least sit_min_upright above them,
+    // at least sit_min_offset (horizontal) from the feet, no knee down, for sit_min_s. A squat
+    // must keep the hips over the feet to balance (Kneeling Down To Crouch 0.04, Kneel_1knee
+    // 0.05-0.08 leg), a chair holds them a thigh behind (about 0.5 leg); a lying or crawling
+    // trunk has its chest 0.1-0.2 leg over the hips, a standing or kneeling one 0.35+. No fixture
+    // sits: chosen from these, checked on synthetic clips only.
+    double     sit_max_height = 0.75;        // leg
+    double     sit_min_upright = 0.30;       // leg
+    double     sit_min_offset = 0.25;        // leg
+    double     sit_min_s = 0.300;
+    // Fall: the trunk (the lower of the hips and the chest) comes within fall_height of the floor
+    // falling at fall_min_speed at least over the fall_window_s before its descent stops (the
+    // Fall sensitivity divides fall_min_speed). Measured: Jump Away lands on its back with the
+    // hips at 0.11 leg falling at 3.4 leg/s; the lowest trunk elsewhere is 0.44 (Kneeling Down To
+    // Crouch's hips), 0.47 (crawling), 0.48 (Jumping Down's landing crouch).
+    double     fall_height = 0.35;           // leg
+    double     fall_min_speed = 1.0;         // leg/s, downwards
+    double     fall_window_s = 0.300;
+    double     fall_stop_speed = 0.25;       // leg/s: the descent has stopped (vertical speed above -this)
 };
 
 // One contact of a part, in samples [start, end).
@@ -599,6 +639,22 @@ struct HandTrack {
     std::vector<Scuff>  pivots;               // part -1; every resting hand's (HandEvents filters)
 };
 
+// Story 10-9b: the body parts that touch the ground. knee / elbow / hips: segmented as a hand
+// (their own contact speed, PhysicsParams::body_switch_cost) where they are low enough (knee /
+// elbow: knee_ground_height / elbow_ground_height; hips: sit_max_height), free above; chest: its
+// heights and speeds only (the chest role, else the spine). Heights (PartTrack::y) in the ground
+// frame, metres; `floor_y` the floor (body_floor_pct of the lowest foot part's height).
+struct BodyTrack {
+    bool                has_floor = false;
+    double              floor_y = 0.0;      // m
+    std::string         floor_missing;      // !has_floor: why ("no foot bone")
+    PartTrack           knee[2];            // L, R
+    PartTrack           elbow[2];           // L, R
+    PartTrack           hips;
+    PartTrack           chest;
+    std::vector<double> hips_feet;          // per sample: the hips' horizontal distance to the feet's middle (leg); empty without
+};
+
 struct PhysicsAnalysis {
     bool                     ok = false;
     std::string              error;          // !ok: why
@@ -628,6 +684,7 @@ struct PhysicsAnalysis {
     std::vector<double>      hips_yaw_deg;
     std::vector<char>        hips_yaw_valid;
     std::string              spin_missing;
+    BodyTrack                body;           // story 10-9b
     // The clip inside the analysed track (story 10-8i): looping, the track is three cycles and
     // the clip is its samples [window_first, window_first + window_samples); otherwise 0 and
     // `samples`. Per-sample data (PartTrack...) is indexed in the analysed track; the event
@@ -651,11 +708,13 @@ std::vector<BoneTrack> PhysicsRoleTracks(const std::vector<int>& bone_of_role,
 // hands' rot_world are read (one per sample, else ignored).
 PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& role_tracks, const PhysicsParams& p = {});
 
-// Story 10-9e appends Tap and Drag (foot_taps.h).
-enum class PhysicsKind { Step, FootStep, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land, Jolt, Spin, SpinEnd, Tap, Drag };
+// Story 10-9e appends Tap and Drag (foot_taps.h); story 10-9b Knee, Elbow (side L / R), Sit, Fall
+// (side 'B': the body).
+enum class PhysicsKind { Step, FootStep, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land, Jolt, Spin, SpinEnd, Tap, Drag,
+                         Knee, Elbow, Sit, Fall };
 // Story 10-9f: Spin / SpinEnd, a spin's start / end (side B, start_s / end_s its span, strength =
 // its sweep in degrees; auto_types_spin.cpp).
-constexpr int kPhysicsKindCount = 15;  // story 10-9-0: PhysicsMarkerName's rows follow the enum
+constexpr int kPhysicsKindCount = 19;  // story 10-9-0: PhysicsMarkerName's rows follow the enum
 
 struct PhysicsEvent {
     PhysicsKind kind = PhysicsKind::Step;
@@ -706,6 +765,31 @@ std::vector<double> JoltAccelerationG(const PhysicsAnalysis& a, const PhysicsPar
 // within p.jolt_merge_s of each other make one (on a loop, through the seam too). Strength = the
 // peak (g).
 std::vector<PhysicsEvent> JoltEvents(const PhysicsAnalysis& a, const PhysicsParams& p = {});
+
+// Story 10-9b: body contacts (src/body_contacts.cpp), by time:
+//   knee / elbow  (side L / R) a counted contact (BodyTrack: at rest and low), never at the clip
+//                 start, lasting body_min_contact_s at least (one the clip end cuts short
+//                 counts), that came down at body_min_descent at least over the fall_window_s
+//                 before it (legs that stop sliding along the floor give none). Timed where the
+//                 part's downward speed falls to body_stop_frac x that peak (it has landed).
+//                 Strength = the peak downward speed (leg/s).
+//   sit           (side B) a counted hips contact (at rest under sit_max_height) lasting sit_min_s,
+//                 its chest sit_min_upright above the hips (not lying), its hips sit_min_offset
+//                 from the feet's middle (something else carries the body: a squat keeps the hips
+//                 over the feet) and no knee in contact over it (a kneel). Never at the clip start.
+//                 Strength = the hips' peak speed before.
+//   fall          (side B) the trunk (the lower of hips and chest) enters fall_height of the floor
+//                 and stops descending (vertical speed above -fall_stop_speed), having fallen at
+//                 fall_min_speed at least within fall_window_s before: a body landing (a fall on
+//                 the back after a free fall). One per stay low (re-armed above 1.5 x fall_height).
+//                 Strength = that peak downward speed.
+// No floor (no foot bone) or no bone for a part: none of its events (BodyContactSummary says why).
+std::vector<PhysicsEvent> BodyContactEvents(const PhysicsAnalysis& a, const PhysicsParams& p = {});
+// "body: knees 2, elbows 0, sits 0, falls 1" plus "; missing: ..." ("body: skipped: <error>").
+std::string BodyContactSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEvent>& ev);
+// Analysed times (time_s, start_s, end_s) as clip times (a loop: its middle cycle), dropping the
+// events outside the clip (story 10-9b: for the event functions outside motion_physics.cpp).
+void PhysicsEventsToClipTime(const PhysicsAnalysis& a, std::vector<PhysicsEvent>& ev);
 
 // The separate step times of one part (side 'L' / 'R'), by `timing` plus `offset_s`.
 std::vector<double> PartStepTimes(const PhysicsAnalysis& a, char side, int part, StepTiming timing, double offset_s);

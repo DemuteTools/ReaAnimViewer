@@ -104,11 +104,13 @@ namespace rav {
 
 // ---- Types and block kinds ---------------------------------------------------------------------
 
-// The types the section ticks (story 10-9e appends Tap and Drag).
-enum class AutoType : int { Step = 0, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land, Jolt, Spin, Tap, Drag };
-constexpr int kAutoTypeCount = 13;  // story 10-9g: Jolt; story 10-9f: Spin (Body, sideless); 10-9e: Tap, Drag
+// The types the section ticks (story 10-9e appends Tap and Drag, story 10-9b Knee, Elbow, Sit, Fall).
+enum class AutoType : int { Step = 0, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land, Jolt, Spin, Tap, Drag,
+                            Knee, Elbow, Sit, Fall };
+constexpr int kAutoTypeCount = 17;  // story 10-9g: Jolt; 10-9f: Spin (Body, sideless); 10-9e: Tap, Drag; 10-9b
 // "Step", "Lift-off", "Slide scuff", "Pivot scuff", "Grab", "Release", "Pivot scuff" (the hand's),
-// "Jump", "Land", "Jolt" (story 10-9g, Body), "Spin" (story 10-9f, Body), "Tap", "Drag"
+// "Jump", "Land", "Jolt" (story 10-9g, Body), "Spin" (story 10-9f, Body), "Tap", "Drag";
+// story 10-9b: "Knee", "Elbow", "Sit", "Fall"
 const char* AutoTypeLabel(AutoType t);
 
 // Story 10-9-0: every type, category and kind has one descriptor row in auto_types.cpp (labels,
@@ -116,35 +118,38 @@ const char* AutoTypeLabel(AutoType t);
 // read it.
 
 // The section's categories (foldable groups), each holding some types: the body part that makes
-// the sound (story 10-9-1). Body (trunk, head): Jolt (story 10-9g).
+// the sound (story 10-9-1). Body (trunk, head): Jolt (story 10-9g), Spin (10-9f), sit and fall (story 10-9b).
 enum class AutoCategory : int { Legs = 0, Arms, Body };
 constexpr int kAutoCategoryCount = 3;
-AutoCategory AutoCategoryOf(AutoType t);              // step, lift-off, slide, pivot, jump, land: Legs; grab, release, hand pivot: Arms
+AutoCategory AutoCategoryOf(AutoType t);              // step, lift-off, slide, pivot, jump, land, knee: Legs; grab, release, hand pivot, elbow: Arms; sit, fall: Body
 const char*  AutoCategoryLabel(AutoCategory c);       // "Legs", "Arms", "Body"
 
 // The block kinds (Block::auto_type words): a combined step, a separate heel or toe step, a
 // lift-off, a slide, a pivot, a grab, a release, a hand pivot after a grab or of any resting hand.
 // Story 10-8m appends the slides and pivots by part (Each part, then Longest part); story 10-9a
-// jump and land; story 10-9a-3 the lift-off, jump and land parts (Separate).
+// jump and land; story 10-9a-3 the lift-off, jump and land parts (Separate); story 10-9b knee,
+// elbow, sit, fall.
 enum class AutoKind : int {
     Step = 0, Heel, Toe, Lift, Slide, Pivot, Grab, Release, HandPivot, HandPivotAny,
     SlideHeel, SlideToe, PivotHeel, PivotToe, SlideHeelLongest, SlideToeLongest, PivotHeelLongest, PivotToeLongest,
     Jump, Land, LiftHeel, LiftToe, JumpHeel, JumpToe, LandHeel, LandToe, Jolt,
     Spin, SpinEnd,  // story 10-9f: a spin's start ("Spin") and end ("Spin End")
-    Tap, Drag       // story 10-9e
+    Tap, Drag,      // story 10-9e
+    Knee, Elbow, Sit, Fall  // story 10-9b
 };
-constexpr int kAutoKindCount = 31;
+constexpr int kAutoKindCount = 35;
 // "step", "heel", "toe", "lift", "slide", "pivot", "grab", "release", "hand_pivot", "hand_pivot_any",
 // "slide_heel", "slide_toe", "pivot_heel", "pivot_toe", "slide_heel_longest", "slide_toe_longest",
 // "pivot_heel_longest", "pivot_toe_longest", "jump", "land", "lift_heel", "lift_toe", "jump_heel",
-// "jump_toe", "land_heel", "land_toe", "jolt" (story 10-9g), "spin", "spin_end" (10-9f), "tap", "drag"
+// "jump_toe", "land_heel", "land_toe", "jolt" (story 10-9g), "spin", "spin_end" (10-9f), "tap", "drag",
+// "knee", "elbow", "sit", "fall" (10-9b)
 const char* AutoKindWord(AutoKind k);
 bool AutoKindFromWord(const std::string& w, AutoKind* out);
 AutoType AutoTypeOfKind(AutoKind k);
 // The marker name: "FS L", "Heel L", "Toe L", "Lift L", "Slide L", "Pivot L", "Grab L", "Release L",
 // "Hand Pivot L" (both hand pivot kinds), "Slide Heel L", "Slide Toe L", "Pivot Heel L", "Pivot Toe L"
-// (both part modes), "Jump L", "Land L", "Lift Heel L", "Jump Toe L", "Land Heel L"... (and R); a
-// sideless kind's has no side (any `side`).
+// (both part modes), "Jump L", "Land L", "Lift Heel L", "Jump Toe L", "Land Heel L"... (and R),
+// "Knee L", "Elbow L"; a sideless kind's has no side (any `side`): "Sit", "Fall".
 std::string AutoMarkerName(AutoKind k, char side);
 // The default colour (Block::color form: 0x1000000 | 0xRRGGBB), one per kind and side (a sideless
 // kind: one).

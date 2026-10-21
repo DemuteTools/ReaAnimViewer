@@ -108,6 +108,13 @@ bool AutoMissingJumpToe(char side, const std::vector<int>& role_to_bone);
 void AutoLanesJump(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
 void AutoLanesLand(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
 std::vector<Role> AutoRolesJump(char side);
+// Story 10-9b: the knee touching the ground.
+std::vector<PhysicsEvent> AutoSourceBody(const PhysicsAnalysis& a, const PhysicsParams& p);
+void AutoPartsKnee(bool separate, const std::vector<int>& role_to_bone, std::vector<std::string>& out);
+bool AutoMatchKnee(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMissingKnee(char side, const std::vector<int>& role_to_bone);
+void AutoLanesKnee(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+std::vector<Role> AutoRolesKnee(char side);
 
 // foot_taps.cpp (story 10-9e)
 std::vector<PhysicsEvent> AutoSourceTap(const PhysicsAnalysis& a, const PhysicsParams& p);
@@ -127,6 +134,24 @@ bool AutoMissingHand(char side, const std::vector<int>& role_to_bone);
 void AutoLanesHandContact(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
 void AutoLanesHandPivot(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
 std::vector<Role> AutoRolesHand(char side);
+// Story 10-9b: the elbow touching the ground (its source: AutoSourceBody).
+void AutoPartsElbow(bool separate, const std::vector<int>& role_to_bone, std::vector<std::string>& out);
+bool AutoMatchElbow(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMissingElbow(char side, const std::vector<int>& role_to_bone);
+void AutoLanesElbow(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+std::vector<Role> AutoRolesElbow(char side);
+
+// auto_types_body.cpp (story 10-9b): sit and fall (their source: AutoSourceBody).
+void AutoPartsSit(bool separate, const std::vector<int>& role_to_bone, std::vector<std::string>& out);
+void AutoPartsFall(bool separate, const std::vector<int>& role_to_bone, std::vector<std::string>& out);
+bool AutoMatchSit(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchFall(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMissingSit(char side, const std::vector<int>& role_to_bone);
+bool AutoMissingFall(char side, const std::vector<int>& role_to_bone);
+void AutoLanesSit(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+void AutoLanesFall(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+std::vector<Role> AutoRolesSit(char side);
+std::vector<Role> AutoRolesFall(char side);
 
 // auto_types_jolt.cpp (story 10-9g)
 std::vector<PhysicsEvent> AutoSourceJolt(const PhysicsAnalysis& a, const PhysicsParams& p);
@@ -226,6 +251,22 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "A marker where the toes slide on the ground during a swing, the heel up\n"
      "(a foot dragged behind, a crawl, a kneel): Drag L / Drag R.",
      "drag", {{&P::drag_min_s, S::Divide}, {}}, &AutoPartsFootBoth, false, false, false, true},
+    // Story 10-9b: body contacts, segmented as the hands (higher sensitivity = a faster part
+    // still counts as at rest); a fall: a slower descent counts. Sit and Fall are the body's
+    // (sideless).
+    {T::Knee, "Knee", "Knee", C::Legs, "A marker where a knee touches the ground (kneeling, crawling): Knee L / Knee R.",
+     "knee", {{&P::knee_contact_speed, S::Times}, {}}, &AutoPartsKnee},
+    {T::Elbow, "Elbow", "Elbow", C::Arms, "A marker where an elbow touches the ground (lying, crawling on the elbows):\n"
+     "Elbow L / Elbow R.",
+     "elbow", {{&P::elbow_contact_speed, S::Times}, {}}, &AutoPartsElbow},
+    {T::Sit, "Sit", "Sit", C::Body,
+     "A marker where the body sits down (on a seat or the floor): the hips come to rest, low,\n"
+     "the back upright and away from the feet, no knee down.",
+     "sit", {{&P::sit_contact_speed, S::Times}, {}}, &AutoPartsSit, true},
+    {T::Fall, "Fall", "Fall", C::Body,
+     "A marker where the body lands on the ground (hips or back) after a fall,\n"
+     "such as a fall on the back after a free fall.",
+     "fall", {{&P::fall_min_speed, S::Divide}, {}}, &AutoPartsFall, true},
 };
 
 // ---- Kinds -------------------------------------------------------------------------------------
@@ -318,6 +359,15 @@ constexpr AutoKindInfo kKindRows[] = {
      {{"contact", &AutoSourceTap, &AutoMatchTap}}, &AutoMissingHeelOrToe, &AutoLanesToe, &AutoRolesFoot},
     {K::Drag, "drag", T::Drag, "Drag", {0x8C96B4, 0xB4968C}, kNo, false, false, "toe", K::Drag,
      {{"drag", &AutoSourceDrag, &AutoMatchDrag}}, &AutoMissingHeelOrToe, &AutoLanesDrag, &AutoRolesFoot},
+    // Story 10-9b: body contacts.
+    {K::Knee, "knee", T::Knee, "Knee", {0x7F7FB4, 0xB47F7F}, kNo, false, false, "knee", K::Knee,
+     {{"contact", &AutoSourceBody, &AutoMatchKnee}}, &AutoMissingKnee, &AutoLanesKnee, &AutoRolesKnee},
+    {K::Elbow, "elbow", T::Elbow, "Elbow", {0x7FB4B4, 0xB4B47F}, kNo, false, false, "elbow", K::Elbow,
+     {{"contact", &AutoSourceBody, &AutoMatchElbow}}, &AutoMissingElbow, &AutoLanesElbow, &AutoRolesElbow},
+    {K::Sit, "sit", T::Sit, "Sit", {0xB48CDC, 0xB48CDC}, kNo, false, false, "", K::Sit,
+     {{"contact", &AutoSourceBody, &AutoMatchSit}}, &AutoMissingSit, &AutoLanesSit, &AutoRolesSit},
+    {K::Fall, "fall", T::Fall, "Fall", {0xDC5A8C, 0xDC5A8C}, kNo, false, false, "", K::Fall,
+     {{"landing", &AutoSourceBody, &AutoMatchFall}}, &AutoMissingFall, &AutoLanesFall, &AutoRolesFall},
 };
 
 // One row per enum value, in enum order.

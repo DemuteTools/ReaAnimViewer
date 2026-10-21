@@ -45,7 +45,8 @@ void StripHeightGrip(StripGripState& g, const char* id, float* stored_h, float h
 }
 
 StripWindow StripViewUpdate(StripViewState& s, double item_start, double item_end, double playhead, bool playing,
-                            double fps, bool hold, bool window_hovered, float mouse_x, float lane_x, float lane_w)
+                            double fps, bool hold, bool window_hovered, float mouse_x, float lane_x, float lane_w,
+                            int v_moves, ViewNavStep* nav_out, bool h_off)
 {
     // Spec 11-fb-12: the strip shows a view window [v0, v0 + span] of project time around
     // the current item: by default the item plus a margin, zoomed with Alt + wheel.
@@ -99,7 +100,9 @@ StripWindow StripViewUpdate(StripViewState& s, double item_start, double item_en
     // (viewer_window.cpp). The strip has no vertical view: a wheel bound to Scroll / Zoom vertically is
     // not claimed here (13-60b review: it goes on to the panel or REAPER, never eaten).
     {
-        const ViewNavStep st = ViewNavInput(window_hovered, window_hovered, 0, false, 0);
+        ViewNavStep st = ViewNavInput(window_hovered, window_hovered, 0, false, v_moves);
+        if (nav_out) *nav_out = st;
+        if (h_off) st.zoom_h = st.scroll_h = st.scroll_h_pages = 0.0;
         if (st.zoom_h != 0.0 && !hold) {
             const double t_fixed = s.v0 + f * s.span;
             VideoStripZoom(s.v0, s.span, t_fixed, st.zoom_h, min_span, max_span, &s.v0, &s.span);

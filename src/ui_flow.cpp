@@ -84,6 +84,42 @@ bool EllipsisTextTip(ImDrawList* dl, ImVec2 p, float max_x, ImU32 col, const std
     return cut;
 }
 
+bool ClampedText(const char* text, ImU32 col, int max_lines, bool fixed)
+{
+    std::string s = text ? text : "";
+    for (char& c : s)
+        if (c == '\n') c = ' ';
+    max_lines = std::max(1, max_lines);
+    const float  w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    const float  lh = ImGui::GetTextLineHeight();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImFont*      font = ImGui::GetFont();
+    const float  fs = ImGui::GetFontSize();
+    ImDrawList*  dl = ImGui::GetWindowDrawList();
+    const char*  b = s.c_str();
+    const char*  e = b + s.size();
+    int          line = 0;
+    bool         cut = false;
+    while (b < e && line < max_lines) {
+        const float y = p.y + lh * static_cast<float>(line);
+        if (line == max_lines - 1) {  // the last line: the rest, ellipsized
+            cut = EllipsisText(dl, ImVec2(p.x, y), p.x + w, col, std::string(b, e));
+            ++line;
+            break;
+        }
+        const char* l1 = font->CalcWordWrapPositionA(fs / font->FontSize, b, e, w);
+        if (l1 == b) l1 = b + 1;
+        dl->AddText(font, fs, ImVec2(p.x, y), col, b, l1);
+        ++line;
+        b = l1;
+        while (b < e && *b == ' ') ++b;
+    }
+    const int rows = fixed ? max_lines : std::max(1, line);
+    ImGui::Dummy(ImVec2(w, lh * static_cast<float>(rows) + ImGui::GetStyle().ItemSpacing.y * 0.25f));
+    if (cut) ItemTipText(text);
+    return cut;
+}
+
 bool FitText(const std::string& text, ImU32 col, float width)
 {
     const ImVec2 p = ImGui::GetCursorScreenPos();

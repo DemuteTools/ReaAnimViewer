@@ -21,6 +21,8 @@
 
 namespace rav {
 
+struct ViewNavStep;  // view_nav.h
+
 // The ruler's layout (spec 11-fb-6 / 11-fb-9), in mockup px: drawn at the screen's DPI (ui::Dp), so a
 // caller sizes the band ruler_h = font size + ui::Dp(kStripRulerTickRoom).
 constexpr float kStripRulerTickRoom = 6.0f;    // band height under the labels (minor ticks)
@@ -73,8 +75,12 @@ inline void StripViewReset(StripViewState& s)
 // Follows the current item [item_start, item_end) and the playhead (never while `hold`, a
 // drag in the lane), then applies the view actions (view_nav.h) when `window_hovered`. `mouse_x` and
 // the lane [lane_x, lane_x + lane_w] place the zoom's fixed time. Returns the window to draw.
+// 2026-10-21: `v_moves` (view_nav.h kNavMoves*): the vertical moves the strip has (the Tagging strip's
+// lanes when they are taller than it); `nav_out` gets this frame's moves (its scroll_v, the caller's);
+// `h_off`: no horizontal move this frame (the wheel scrolls the lanes over the label column).
 StripWindow StripViewUpdate(StripViewState& s, double item_start, double item_end, double playhead, bool playing,
-                            double fps, bool hold, bool window_hovered, float mouse_x, float lane_x, float lane_w);
+                            double fps, bool hold, bool window_hovered, float mouse_x, float lane_x, float lane_w,
+                            int v_moves = 0, ViewNavStep* nav_out = nullptr, bool h_off = false);
 
 // Time <-> x over a lane.
 inline float StripX(const StripWindow& w, float lane_x, float lane_w, double t)

@@ -91,6 +91,13 @@ float g_strip_h = -1.0f;  // -1 = not read yet
 float g_panel_w = -1.0f;
 StripGripState g_strip_grip;
 StripViewState g_view;
+// 2026-10-21: the lanes scroll vertically when they are taller than the strip (the ruler stays):
+// the scroll (px) and the content's height under the ruler, last frame's (the wheel and the bar
+// are read before this frame's lanes are laid out).
+float g_vscroll = 0.0f;
+float g_vcontent_h = 0.0f;
+bool  g_vsb_drag = false;     // the scroll bar's thumb is dragged
+float g_vsb_grab = 0.0f;      // where in the thumb it was taken (px from its top)
 
 // The panel's left-edge grip.
 bool  g_panel_drag = false;
@@ -956,11 +963,14 @@ void DrawTaggingStrip(float x, float y, float w, float h)
         const float body_bottom = ImGui::GetWindowPos().y + ImGui::GetWindowSize().y - ui::Dp(6.0f);
         const float gutter = std::min(ui::Dp(160.0f), std::max(ui::Dp(90.0f), avail_w * 0.22f));
         const float lane_x = c0.x + gutter;
-        const float lane_w = std::max(ui::Dp(20.0f), avail_w - gutter);
+        // 2026-10-21: a fixed column at the right for the lanes' vertical scroll bar (reserved
+        // even when everything fits, so the lanes never change width when it appears).
+        const float sb_w = ui::Dp(10.0f);
+        const float lane_w = std::max(ui::Dp(20.0f), avail_w - gutter - sb_w);
         const float ruler_h = std::floor(ImGui::GetFontSize()) + ui::Dp(kStripRulerTickRoom);
         const float rows_top = body_top + ruler_h;
         const ImVec2 area0(c0.x, body_top);
-        const ImVec2 area1(c0.x + avail_w, std::max(body_top + ui::Dp(10.0f), body_bottom));
+        const ImVec2 area1(c0.x + avail_w - sb_w, std::max(body_top + ui::Dp(10.0f), body_bottom));
 
         // One invisible button over the body: it takes the clicks (seek, select, line drags).
         ImGui::SetCursorScreenPos(area0);
@@ -1007,8 +1017,52 @@ void DrawTaggingStrip(float x, float y, float w, float h)
             const double item_start = m.map.item_pos;
             const double item_end = m.map.item_pos + m.map.item_len;
             const bool hold = area_active && g_drag != StripDrag::None;
+            // 2026-10-21: the vertical scroll of the lanes (last frame's content height). The user's
+            // "Scroll vertically" wheel / keys (view_nav.h: REAPER's Ctrl+Alt+wheel by default), or
+            // the plain wheel over the label column (as over REAPER's track panel), or the bar.
+            const float vis_h = std::max(1.0f, area1.y - rows_top);
+            const float v_max = std::max(0.0f, g_vcontent_h - vis_h);
+            const bool  v_scrolls = v_max > 0.5f;
+            const ImGuiIO& io = ImGui::GetIO();
+            const bool gutter_wheel = v_scrolls && io.MouseWheel != 0.0f && !io.KeyCtrl && !io.KeyAlt && !io.KeyShift &&
+                                      ImGui::IsWindowHovered() && mouse.x < lane_x && mouse.y >= rows_top &&
+                                      mouse.y <= area1.y;
+            ViewNavStep vnav;
             const StripWindow win = StripViewUpdate(g_view, item_start, item_end, playhead, playing, fps, hold,
-                                                    ImGui::IsWindowHovered(), mouse.x, lane_x, lane_w);
+                                                    ImGui::IsWindowHovered(), mouse.x, lane_x, lane_w,
+                                                    v_scrolls ? kNavMovesScrollV : 0, &vnav, gutter_wheel);
+            {
+                // Units: a wheel notch scrolls 15 % of the room under the ruler, a page all of it.
+                const double notches = gutter_wheel ? -static_cast<double>(io.MouseWheel)
+                                                    : vnav.scroll_v + vnav.scroll_v_pages / 0.15;
+                g_vscroll += static_cast<float>(notches * 0.15) * vis_h;
+                // The bar: the reserved column at the right, under the ruler.
+                if (v_scrolls) {
+                    const float sx0 = area1.x + ui::Dp(2.0f), sx1 = c0.x + avail_w;
+                    const float thumb_h = std::max(ui::Dp(16.0f), vis_h * vis_h / g_vcontent_h);
+                    const float travel = std::max(1.0f, vis_h - thumb_h);
+                    ImGui::SetCursorScreenPos(ImVec2(sx0, rows_top));
+                    ImGui::InvisibleButton("##tagvsb", ImVec2(std::max(1.0f, sx1 - sx0), vis_h));
+                    const bool  sb_hot = ImGui::IsItemHovered();
+                    const float ty = rows_top + travel * std::min(1.0f, std::max(0.0f, g_vscroll / v_max));
+                    if (ImGui::IsItemActivated()) {
+                        // On the thumb: drag it from there; beside it: the thumb's middle jumps to the mouse.
+                        g_vsb_grab = (mouse.y >= ty && mouse.y <= ty + thumb_h) ? mouse.y - ty : thumb_h * 0.5f;
+                        g_vsb_drag = true;
+                    }
+                    if (!ImGui::IsItemActive()) g_vsb_drag = false;
+                    if (g_vsb_drag) g_vscroll = (mouse.y - g_vsb_grab - rows_top) / travel * v_max;
+                    if (sb_hot && !g_vsb_drag) ui::ItemTipText("Drag to scroll the lanes");
+                    g_vscroll = std::min(std::max(g_vscroll, 0.0f), v_max);
+                    const float ty2 = rows_top + travel * (g_vscroll / v_max);
+                    dl->AddRectFilled(ImVec2(sx0, rows_top), ImVec2(sx1, rows_top + vis_h), ui::kBg, (sx1 - sx0) * 0.5f);
+                    dl->AddRectFilled(ImVec2(sx0 + 1.0f, ty2 + 1.0f), ImVec2(sx1 - 1.0f, ty2 + thumb_h - 1.0f),
+                                      g_vsb_drag || sb_hot ? ui::kMuted : ui::kStrokeStrong, (sx1 - sx0) * 0.5f);
+                } else {
+                    g_vsb_drag = false;
+                }
+                g_vscroll = std::min(std::max(g_vscroll, 0.0f), v_max);
+            }
             auto x_of = [&](double t) { return StripX(win, lane_x, lane_w, t); };
             const double t_mouse = StripTimeAt(win, lane_x, lane_w, mouse.x);
             const StripRuler ruler = StripRulerFor(win, lane_w, fps);
@@ -1035,8 +1089,14 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                 if (m.nothing_runs) dl->AddRect(ImVec2(lane_x, rows_top), area1, WithAlpha(kBad, 0x99), ui::kRadiusSm);
                 CenterLines(dl, ImVec2(lane_x, rows_top), area1, msg1 ? msg1 : "Detecting...", msg_col, msg2);
                 if (area_pressed) g_drag = StripDrag::Scrub;
+                g_vcontent_h = 0.0f;
+                g_vscroll = 0.0f;
             } else {
                 // ---- Notify rows: one per rule, its markers ----
+                // 2026-10-21: the rows and the lanes under them scroll (y_top: the content's top, under
+                // the ruler less the scroll); drawn clipped to the room under the ruler.
+                const float y_top = rows_top - g_vscroll;
+                dl->PushClipRect(ImVec2(c0.x, rows_top), area1, true);
                 const int nb = static_cast<int>(rules.blocks.size());
                 const ShownEvent* sel_ev = SelectedEvent(m);
                 const float row_h = std::max(ui::Dp(16.0f), th + ui::Dp(6.0f));
@@ -1052,7 +1112,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                 std::vector<float> row_y(static_cast<size_t>(nb));
                 for (int b = 0; b < nb; ++b) {
                     const Block& blk = rules.blocks[static_cast<size_t>(b)];
-                    const float ry = rows_top + kTrackGap + static_cast<float>(b) * (row_h + kTrackGap);
+                    const float ry = y_top + kTrackGap + static_cast<float>(b) * (row_h + kTrackGap);
                     row_y[static_cast<size_t>(b)] = ry;
                     const bool sel = b == g_sel;
                     TrackFill(dl, c0.x, lane_x, lane_x + lane_w, ry, ry + row_h, ui::kBg);
@@ -1107,7 +1167,8 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                                      blk.enabled ? (sel ? ui::kText : ui::kMuted) : ui::kFaint, title))
                         gutter_tips.push_back({ry, ry + row_h, title});
                 }
-                const float rows_bottom = rows_top + kTrackGap + static_cast<float>(nb) * (row_h + kTrackGap);
+                const float rows_bottom = y_top + kTrackGap + static_cast<float>(nb) * (row_h + kTrackGap);
+                float content_bottom = rows_bottom + g_vscroll;  // unscrolled: the content's height for the bar
 
                 // ---- The selected rule's lanes ----
                 std::vector<LaneGeom> lanes;
@@ -1116,11 +1177,13 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                                            ? &m.trace.blocks[static_cast<size_t>(g_sel)]
                                            : nullptr;
                 const float lanes_top = rows_bottom + ui::Dp(4.0f);
-                const float lanes_min = ui::Dp(20.0f);  // the room the lanes need under the rows
-                if (sel_blk && bt && bt->ran && lanes_top < area1.y - lanes_min) {
+                const float lanes_top_u = lanes_top + g_vscroll;  // unscrolled: the lanes' height never follows the scroll
+                if (sel_blk && bt && bt->ran) {
                     const int nc = static_cast<int>(sel_blk->conditions.size());
                     const float gap = kTrackGap;
-                    const float lh = std::max(ui::Dp(28.0f), (area1.y - lanes_top - gap * static_cast<float>(nc - 1)) / nc);
+                    // They fill the room under the rows, at least 28 px each (more: the strip scrolls).
+                    const float lh = std::max(ui::Dp(28.0f), (area1.y - lanes_top_u - gap * static_cast<float>(nc - 1)) / nc);
+                    if (nc > 0) content_bottom = lanes_top_u + static_cast<float>(nc) * lh + gap * static_cast<float>(nc - 1);
                     const Block* saved_blk =
                         g_sel < static_cast<int>(m.rules.blocks.size()) ? &m.rules.blocks[static_cast<size_t>(g_sel)] : nullptr;
                     const ImU32 rc = RuleColor(*sel_blk);
@@ -1132,7 +1195,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                         LaneGeom L;
                         L.cond = c;
                         L.y0 = lanes_top + static_cast<float>(c) * (lh + gap);
-                        L.y1 = std::min(L.y0 + lh, area1.y);
+                        L.y1 = L.y0 + lh;
                         if (L.y1 - L.y0 < ui::Dp(12.0f)) break;
                         const Condition& cd = sel_blk->conditions[static_cast<size_t>(c)];
                         const Condition* saved =
@@ -1250,7 +1313,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                         if (cut) gutter_tips.push_back({L.y0, L.y1, tip});
                         dl->PopClipRect();
                     }
-                } else if (sel_blk && sel_blk->enabled && g_auto_signals > 0 && IsAutoBlock(*sel_blk) && lanes_top < area1.y - lanes_min) {
+                } else if (sel_blk && sel_blk->enabled && g_auto_signals > 0 && IsAutoBlock(*sel_blk)) {
                     // ---- Story 10-8s: the selected auto block's signals (read-only) ----
                     // One lane per part it reads: its signal vs its sensitivity's threshold, shaded
                     // where the part is in contact. Not in `lanes`: no drag takes them.
@@ -1258,11 +1321,16 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                     std::string why;
                     TaggingAutoLanes(g_sel, &al, &why);
                     if (al.empty()) {
-                        if (!why.empty()) CenterLines(dl, ImVec2(lane_x, lanes_top), area1, why.c_str(), ui::kFaint);
+                        if (!why.empty()) {
+                            const float wy1 = std::max(area1.y - g_vscroll, lanes_top + 3.0f * th);
+                            CenterLines(dl, ImVec2(lane_x, lanes_top), ImVec2(area1.x, wy1), why.c_str(), ui::kFaint);
+                            content_bottom = std::max(content_bottom, wy1 + g_vscroll);
+                        }
                     } else {
                         const int na = static_cast<int>(al.size());
                         const float gap = kTrackGap;
-                        const float lh = std::max(ui::Dp(28.0f), (area1.y - lanes_top - gap * static_cast<float>(na - 1)) / na);
+                        const float lh = std::max(ui::Dp(28.0f), (area1.y - lanes_top_u - gap * static_cast<float>(na - 1)) / na);
+                        content_bottom = lanes_top_u + static_cast<float>(na) * lh + gap * static_cast<float>(na - 1);
                         const ImU32 rc = RuleColor(*sel_blk);
                         const double item_rate = m.map.rate > 0.0 ? m.map.rate : 1.0;
                         double clip_now = 0.0;
@@ -1271,7 +1339,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                             const AutoLane& A = al[static_cast<size_t>(c)];
                             LaneGeom L;
                             L.y0 = lanes_top + static_cast<float>(c) * (lh + gap);
-                            L.y1 = std::min(L.y0 + lh, area1.y);
+                            L.y1 = L.y0 + lh;
                             if (L.y1 - L.y0 < ui::Dp(12.0f)) break;
                             double vmax = A.threshold;
                             for (double v : A.curve)
@@ -1386,14 +1454,11 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                             dl->PopClipRect();
                         }
                     }
-                } else if (sel_blk && lanes_top >= area1.y - lanes_min) {
-                    // The notify rows leave no room for the lanes.
-                    if (area1.y - rows_bottom > ImGui::GetTextLineHeight())
-                        CenterLines(dl, ImVec2(lane_x, rows_bottom), area1, "Enlarge the strip to see this rule's signals",
-                                    ui::kFaint);
                 } else if (sel_blk && !sel_blk->enabled) {
-                    CenterLines(dl, ImVec2(lane_x, lanes_top), area1, "This rule is off: switch it on to see its signals.",
-                                ui::kFaint);
+                    const float oy1 = std::max(area1.y - g_vscroll, lanes_top + 3.0f * th);
+                    CenterLines(dl, ImVec2(lane_x, lanes_top), ImVec2(area1.x, oy1),
+                                "This rule is off: switch it on to see its signals.", ui::kFaint);
+                    content_bottom = std::max(content_bottom, oy1 + g_vscroll);
                 }
 
                 // ---- Story 10-4 follow-up: the selected rule's events through its lanes ----
@@ -1439,10 +1504,16 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                     }
                     dl->PopClipRect();
                 }
+                dl->PopClipRect();  // the room under the ruler
+                // The content's height for the next frame's scroll (its bottom padded by a gap).
+                g_vcontent_h = content_bottom + kTrackGap - rows_top;
+                g_vscroll = std::min(g_vscroll, std::max(0.0f, g_vcontent_h - vis_h));
+                // Only what shows under the ruler takes the mouse (a row scrolled under it does not).
+                const bool in_rows = mouse.y >= rows_top && mouse.y <= area1.y;
 
                 // ---- Mouse: the lines, the rows, the scrub ----
                 auto line_at = [&](float mx, float my, int* cond, bool* margin) {
-                    if (mx < lane_x || mx > lane_x + lane_w || !sel_blk) return false;
+                    if (mx < lane_x || mx > lane_x + lane_w || !sel_blk || !in_rows) return false;
                     for (const LaneGeom& L : lanes) {
                         if (my < L.y0 || my > L.y1) continue;
                         const Condition& cd = sel_blk->conditions[static_cast<size_t>(L.cond)];
@@ -1464,6 +1535,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                 };
                 // Story 10-4: the notify row under the mouse (-1 = none) and its nearest event within 7 px.
                 auto row_at = [&](float my) {
+                    if (!in_rows) return -1;
                     for (int b = 0; b < nb; ++b) {
                         const float ry = row_y[static_cast<size_t>(b)];
                         if (my >= ry && my <= ry + row_h) return b;
@@ -1604,7 +1676,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                                     why.c_str());
                     } else if (line_at(mouse.x, mouse.y, &cond, &margin)) {
                         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
-                    } else if (mouse.x < lane_x) {
+                    } else if (mouse.x < lane_x && in_rows) {
                         // 10-3 fb-2: a shortened header cell shows its full text.
                         for (const GutterTip& g : gutter_tips)
                             if (mouse.y >= g.y0 && mouse.y <= g.y1) {
@@ -4046,25 +4118,7 @@ AutoTypeState ReadAutoTypeState(const TaggingModel& m, const ItemRules& rules, A
 // whole text as a tooltip when shortened. Always two lines high (the card's slots never move).
 void TwoLineText(const char* text, ImU32 col)
 {
-    std::string s = text ? text : "";
-    for (char& c : s)
-        if (c == '\n') c = ' ';
-    const float  w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
-    const float  lh = ImGui::GetTextLineHeight();
-    const ImVec2 p = ImGui::GetCursorScreenPos();
-    ImGui::Dummy(ImVec2(w, lh * 2.0f + ImGui::GetStyle().ItemSpacing.y * 0.25f));
-    ImFont*     font = ImGui::GetFont();
-    const float fs = ImGui::GetFontSize();
-    const char* b = s.c_str();
-    const char* e = b + s.size();
-    const char* l1 = font->CalcWordWrapPositionA(fs / font->FontSize, b, e, w);
-    if (l1 == b && b < e) l1 = b + 1;
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddText(font, fs, p, col, b, l1);
-    while (l1 < e && *l1 == ' ') ++l1;
-    bool cut = false;
-    if (l1 < e) cut = ui::EllipsisText(dl, ImVec2(p.x, p.y + lh), p.x + w, col, std::string(l1, e));
-    if (cut) ui::ItemTipText(text);
+    ui::ClampedText(text, col, 2, true);  // a fixed two-line slot
 }
 
 // The settings of one type, in fixed slots: the header (its tick, category, hide), its hint (2

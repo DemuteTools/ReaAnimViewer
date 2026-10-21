@@ -1010,6 +1010,8 @@ void DrawTaggingStrip(float x, float y, float w, float h)
 
         if (!m.item || !(m.map.item_len > 0.0)) {
             StripViewReset(g_view);
+            g_vscroll = g_vcontent_h = 0.0f;  // review: no lanes, nothing to scroll (no stale bar on the next item)
+            g_vsb_drag = false;
             dl->AddRectFilled(ImVec2(lane_x, rows_top), area1, ui::kBg, ui::kRadiusSm);
             CenterLines(dl, ImVec2(lane_x, rows_top), area1, msg1 ? msg1 : "No animation item under the playhead",
                         msg_col, msg2);
@@ -1019,13 +1021,15 @@ void DrawTaggingStrip(float x, float y, float w, float h)
             const bool hold = area_active && g_drag != StripDrag::None;
             // 2026-10-21: the vertical scroll of the lanes (last frame's content height). The user's
             // "Scroll vertically" wheel / keys (view_nav.h: REAPER's Ctrl+Alt+wheel by default), or
-            // the plain wheel over the label column (as over REAPER's track panel), or the bar.
+            // the plain wheel over the label column (as over REAPER's track panel) or over the bar's
+            // column (review: as over any scroll bar), or the bar.
             const float vis_h = std::max(1.0f, area1.y - rows_top);
             const float v_max = std::max(0.0f, g_vcontent_h - vis_h);
             const bool  v_scrolls = v_max > 0.5f;
             const ImGuiIO& io = ImGui::GetIO();
+            const bool off_lanes = mouse.x < lane_x || (mouse.x >= area1.x && mouse.x <= c0.x + avail_w);
             const bool gutter_wheel = v_scrolls && io.MouseWheel != 0.0f && !io.KeyCtrl && !io.KeyAlt && !io.KeyShift &&
-                                      ImGui::IsWindowHovered() && mouse.x < lane_x && mouse.y >= rows_top &&
+                                      ImGui::IsWindowHovered() && off_lanes && mouse.y >= rows_top &&
                                       mouse.y <= area1.y;
             ViewNavStep vnav;
             const StripWindow win = StripViewUpdate(g_view, item_start, item_end, playhead, playing, fps, hold,

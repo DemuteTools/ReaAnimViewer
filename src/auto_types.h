@@ -74,10 +74,12 @@ struct AutoTypeInfo {
     // Story 10-9e: Tap and Drag too (a walk's toe skims drag from 67 %). Story 10-9d: Clap and
     // Hand on body too. Story 10-9c: Kick, Swing and Punch too.
     bool            no_sens_raise = false;
-    // Story 10-9c: Peak / Start (AutoSettings::at_start): each kind has a twin whose row says
-    // `at_start` (same type, marker, colour, role key; its sound key the peak kind), Start making
-    // the twins (kick, swing, punch). The Peak / Start widget, the settings and the block kept
-    // across a switch follow the row.
+    // Story 10-9c: Peak / Start (AutoSettings::at_start): each kind has a twin of the other flavour
+    // (same type, marker, colour, role key and sound key), Start making the kinds whose row says
+    // `at_start` (kick, swing, punch: the twins; story 10-9j: slide, pivot, hand pivot, whose own
+    // kinds are the Start ones, their Peak twins appended). The type's first kind's flavour is its
+    // default (AutoStartDefault). The Peak / Start widget, the settings and the block kept across a
+    // switch follow the row.
     bool            start_option = false;
     // Story 10-9e: the type whose events this type's events replace within kAutoReplaceS when both
     // are ticked (AutoEvents; story 10-9a: Land the steps, Jump the lift-offs), as an AutoType
@@ -155,7 +157,9 @@ struct AutoKindInfo {
     // speed is then 0 (no m/s). Null for the others.
     const char*       strength_unit = nullptr;
     // Story 10-9c: a `start_option` type's kind that marks the motion's start (its sound key is
-    // its peak twin).
+    // its twin's: the peak kind's for kick, swing, punch; story 10-9j: the scuffs' start kinds are
+    // their own, their peak twins share it). Twins pair by position among the type's kinds of each
+    // flavour (enum order).
     bool              at_start = false;
 };
 

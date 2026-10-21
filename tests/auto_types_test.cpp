@@ -199,10 +199,15 @@ void TestKnownValues()
                                            tt == AutoType::Fall));  // stories 10-9g, 10-9f, 10-9b
         CHECK(AutoTypeRow(tt).part_split ==
               (tt == AutoType::LiftOff || tt == AutoType::Jump || tt == AutoType::Land || tt == AutoType::Kick));
-        // Story 10-9c: Peak / Start on the whooshes only, and Detect never raises them.
+        // Story 10-9c: Peak / Start on the whooshes, and Detect never raises them. Story 10-9j:
+        // and on the scuffs, Start by default.
         const bool whoosh = tt == AutoType::Kick || tt == AutoType::Swing || tt == AutoType::Punch;
-        CHECK(AutoTypeRow(tt).start_option == whoosh);
+        const bool scuff = tt == AutoType::Slide || tt == AutoType::Pivot || tt == AutoType::HandPivot;
+        CHECK(AutoTypeRow(tt).start_option == (whoosh || scuff));
+        CHECK(AutoStartDefault(tt) == scuff);
         if (whoosh) CHECK(AutoTypeRow(tt).no_sens_raise);
+        if (scuff) CHECK(!AutoTypeRow(tt).no_sens_raise);
+        CHECK(AutoSettings().at_start[t] == scuff);
     }
     CHECK(AutoCategoryOf(AutoType::Jump) == AutoCategory::Legs && AutoCategoryOf(AutoType::Land) == AutoCategory::Legs);
     CHECK(std::string(AutoKindWord(AutoKind::Jump)) == "jump" && std::string(AutoKindWord(AutoKind::Land)) == "land");
@@ -334,6 +339,17 @@ void TestRoles()
     }
 }
 
+// Story 10-9j: a scuff's Peak twin's Start kind ("pivot_heel_peak" -> pivot_heel); any other kind
+// itself.
+AutoKind StartKindOf(AutoKind k)
+{
+    const std::string w = AutoKindWord(k), tail = "_peak";
+    AutoKind          out = k;
+    if (w.size() > tail.size() && w.compare(w.size() - tail.size(), tail.size(), tail) == 0)
+        CHECK(AutoKindFromWord(w.substr(0, w.size() - tail.size()), &out));
+    return out;
+}
+
 // The kinds' flags agree with each other and with their types.
 void TestRowInvariants()
 {
@@ -348,17 +364,21 @@ void TestRowInvariants()
         for (int j = 0; j < kAutoKindCount; ++j) {
             const AutoKindInfo& o = AutoKindRow(static_cast<AutoKind>(j));
             if (j == k || o.type != r.type || o.scuff != r.scuff) continue;
-            const bool hand_pivot_pair = (r.kind == AutoKind::HandPivot && o.kind == AutoKind::HandPivotAny) ||
-                                         (r.kind == AutoKind::HandPivotAny && o.kind == AutoKind::HandPivot);
+            const AutoKind rs = StartKindOf(r.kind), os = StartKindOf(o.kind);
+            const bool hand_pivot_pair = (rs == AutoKind::HandPivot && os == AutoKind::HandPivotAny) ||
+                                         (rs == AutoKind::HandPivotAny && os == AutoKind::HandPivot);
             // Story 10-9c: a Peak kind and its Start twin read their own source.
             if (hand_pivot_pair || r.at_start != o.at_start) CHECK(r.sigs[0].source != o.sigs[0].source);
             else CHECK(r.sigs[0].source == o.sigs[0].source);
         }
         if (r.scuff != ScuffParts::Combined) {
-            const AutoKindInfo& combined = AutoKindRow(r.type == AutoType::Slide ? AutoKind::Slide : AutoKind::Pivot);
+            AutoKind ck = r.type == AutoType::Slide ? AutoKind::Slide : AutoKind::Pivot;
+            if (StartKindOf(r.kind) != r.kind) ck = r.type == AutoType::Slide ? AutoKind::SlidePeak : AutoKind::PivotPeak;
+            const AutoKindInfo& combined = AutoKindRow(ck);
             CHECK(combined.scuff == ScuffParts::Combined && combined.type == r.type);
             if (r.scuff == ScuffParts::EachPart) CHECK(r.sigs[0].source != combined.sigs[0].source);
-            else CHECK(r.sigs[0].source == combined.sigs[0].source);
+            // Story 10-9j: a Longest part Peak twin times the part that holds longest (its own source).
+            else CHECK((r.sigs[0].source == combined.sigs[0].source) == (StartKindOf(r.kind) == r.kind));
         }
     }
     // Story 10-10a: every type's confidence probes at least one of its sensitivity fields (its

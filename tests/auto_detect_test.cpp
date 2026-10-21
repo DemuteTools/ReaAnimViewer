@@ -38,6 +38,17 @@ int g_fails = 0;
 
 constexpr double kPi = 3.14159265358979323846;
 
+// Story 10-9j: a scuff's Peak twin's Start kind ("pivot_heel_peak" -> pivot_heel); any other kind
+// itself.
+AutoKind StartKindOfWord(AutoKind k)
+{
+    const std::string w = AutoKindWord(k), tail = "_peak";
+    AutoKind          out = k;
+    if (w.size() > tail.size() && w.compare(w.size() - tail.size(), tail.size(), tail) == 0)
+        AutoKindFromWord(w.substr(0, w.size() - tail.size()), &out);
+    return out;
+}
+
 // A synthetic rig, as tests/motion_physics_test.cpp builds it: one foot = its ball, heading and
 // pitch; the heel 14 cm behind and 6 cm above the ball, the tip 7 cm ahead and 2 cm below; the
 // knee 42 cm and the up leg 87 cm above the heel; the hips between the up legs; the hands, when
@@ -928,10 +939,15 @@ int main()
                     continue;  // one marker name, one colour
                 // Story 10-8m: a heel scuff block takes its type's colour; a Longest part block its
                 // Each part counterpart's.
-                const AutoKind kk = static_cast<AutoKind>(k), jk = static_cast<AutoKind>(j);
+                // Story 10-9j: a scuff's Peak twin as its Start kind (the same colour).
+                AutoKind kk = StartKindOfWord(static_cast<AutoKind>(k)), jk = StartKindOfWord(static_cast<AutoKind>(j));
+                if (kk > jk) std::swap(kk, jk);
+                if (kk == jk || (kk == AutoKind::HandPivot && jk == AutoKind::HandPivotAny) ||
+                    (kk == AutoKind::HandPivotAny && jk == AutoKind::HandPivot))
+                    continue;
                 if ((kk == AutoKind::Slide && (jk == AutoKind::SlideHeel || jk == AutoKind::SlideHeelLongest)) ||
                     (kk == AutoKind::Pivot && (jk == AutoKind::PivotHeel || jk == AutoKind::PivotHeelLongest)) ||
-                    (kk >= AutoKind::SlideHeel && kk <= AutoKind::PivotToe && j == k + 4))
+                    (kk >= AutoKind::SlideHeel && kk <= AutoKind::PivotToe && jk == static_cast<AutoKind>(static_cast<int>(kk) + 4)))
                     continue;
                 // Story 10-9a-3: a lift-off / jump / land heel block takes its type's colour.
                 if ((kk == AutoKind::Lift && jk == AutoKind::LiftHeel) || (kk == AutoKind::Jump && jk == AutoKind::JumpHeel) ||
@@ -1129,7 +1145,8 @@ int main()
             hands[static_cast<size_t>(Role::RightHand)] = static_cast<int>(Role::RightHand);
             const bool no_scale = !AutoMissingParts(AutoType::Grab, false, hands).empty();
             for (int ki = 0; ki < kAutoKindCount; ++ki) {
-                const AutoKind k = static_cast<AutoKind>(ki);
+                // Story 10-9j: a scuff's Peak twin needs what its Start kind needs.
+                const AutoKind k = StartKindOfWord(static_cast<AutoKind>(ki));
                 const bool     sep = k == AutoKind::Heel || k == AutoKind::Toe || k == AutoKind::SlideHeel ||
                                k == AutoKind::SlideToe || k == AutoKind::SlideHeelLongest || k == AutoKind::SlideToeLongest ||
                                (k >= AutoKind::LiftHeel && k <= AutoKind::LandToe) ||  // story 10-9a-3: the lift-off / jump / land parts
@@ -1206,7 +1223,8 @@ int main()
                     if (k == AutoKind::JumpHeel || k == AutoKind::JumpToe || k == AutoKind::LandHeel || k == AutoKind::LandToe)
                         for (char fs : {'L', 'R'})
                             if (is_listed(FootPartRole(fs, 0)) && is_listed(FootPartRole(fs, 1))) expect = true;
-                    const bool got = AutoBlockPartMissing(MakeAutoBlock(k, side, kAutoDefaultSens, 0.0), map);
+                    const bool got =
+                        AutoBlockPartMissing(MakeAutoBlock(static_cast<AutoKind>(ki), side, kAutoDefaultSens, 0.0), map);
                     if (got != expect) std::printf("  kind %d side %c: %d, expected %d\n", ki, side, got, expect);
                     CHECK(got == expect);
                 }

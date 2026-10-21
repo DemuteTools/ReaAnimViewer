@@ -79,6 +79,10 @@
 //   types whose row says `start_option`: kinds kick_start, swing_start... sharing the peak kind's
 //   marker, colour and sound key; a block switched between them keeps its place, marker and
 //   edits). Strength = the peak speed (leg/s); see WhooshEvents (motion_physics.h).
+//   Story 10-9j: the scuffs (slide, pivot, hand pivot) have the same choice, Start by default
+//   (their markers as before, at the scuff's start), Peak at the rub's speed peak (scuff_peak.h):
+//   kinds slide_peak, pivot_heel_peak, hand_pivot_peak... sharing the Start kind's marker, colour
+//   and sound key.
 // Each ticked type x side is one block of the item (Block::auto_type, auto_side, sens), with no
 // condition: the rule engine never fires it. Story 10-9a: a sideless type (its type row's
 // `sideless`; none since story 10-9a-3, kept for the Body types) has one block per kind, saved
@@ -158,15 +162,23 @@ enum class AutoKind : int {
     Clap, HandOnBody,        // story 10-9d
     // Story 10-9c: kick (combined, heel, toe), then the same at the start; swing, punch and theirs.
     Kick, KickHeel, KickToe, KickStart, KickHeelStart, KickToeStart, Swing, SwingStart, Punch, PunchStart,
-    HeelTap  // story 10-9i
+    HeelTap,  // story 10-9i
+    // Story 10-9j: the scuffs' Peak twins (the kinds above mark the scuff's start), in the order of
+    // their Start kinds within each type.
+    SlidePeak, SlideHeelPeak, SlideToePeak, SlideHeelLongestPeak, SlideToeLongestPeak,
+    PivotPeak, PivotHeelPeak, PivotToePeak, PivotHeelLongestPeak, PivotToeLongestPeak,
+    HandPivotPeak, HandPivotAnyPeak
 };
-constexpr int kAutoKindCount = 48;
+constexpr int kAutoKindCount = 60;
 // "step", "heel", "toe", "lift", "slide", "pivot", "grab", "release", "hand_pivot", "hand_pivot_any",
 // "slide_heel", "slide_toe", "pivot_heel", "pivot_toe", "slide_heel_longest", "slide_toe_longest",
 // "pivot_heel_longest", "pivot_toe_longest", "jump", "land", "lift_heel", "lift_toe", "jump_heel",
 // "jump_toe", "land_heel", "land_toe", "jolt" (story 10-9g), "spin", "spin_end" (10-9f), "tap", "drag",
 // "knee", "elbow", "sit", "fall" (10-9b), "clap", "hand_body" (10-9d), "kick", "kick_heel", "kick_toe",
-// "kick_start", "kick_heel_start", "kick_toe_start", "swing", "swing_start", "punch", "punch_start" (10-9c), "heel_tap" (10-9i)
+// "kick_start", "kick_heel_start", "kick_toe_start", "swing", "swing_start", "punch", "punch_start" (10-9c), "heel_tap" (10-9i),
+// "slide_peak", "slide_heel_peak", "slide_toe_peak", "slide_heel_longest_peak", "slide_toe_longest_peak",
+// "pivot_peak", "pivot_heel_peak", "pivot_toe_peak", "pivot_heel_longest_peak", "pivot_toe_longest_peak",
+// "hand_pivot_peak", "hand_pivot_any_peak" (10-9j)
 const char* AutoKindWord(AutoKind k);
 bool AutoKindFromWord(const std::string& w, AutoKind* out);
 AutoType AutoTypeOfKind(AutoKind k);
@@ -232,13 +244,20 @@ struct AutoSettings {
     // (lift-off, jump, land), by AutoType; ignored for the others.
     bool             separate_parts[kAutoTypeCount] = {};
     // Story 10-9c: the marker at the motion's start, not its peak, for the types whose row says
-    // `start_option` (kick, swing, punch), by AutoType; ignored for the others.
+    // `start_option` (kick, swing, punch; story 10-9j: slide, pivot, hand pivot), by AutoType;
+    // ignored for the others. Default: the type's own (AutoStartDefault: Peak for kick, swing and
+    // punch, Start for the scuffs).
     bool             at_start[kAutoTypeCount] = {};
     // Story 10-10b: how the type's marker names carry their strength level (Block::strength_name),
     // by AutoType: its first block's (ReadAutoSettings), given to new blocks (AutoBlocks). Unlike
     // the modes above it never waits for Detect: on a detected type it is written to the blocks.
     StrengthName     strength_name[kAutoTypeCount] = {};
+    AutoSettings();  // every type off, its modes the defaults (at_start: AutoStartDefault)
 };
+// Story 10-9j: whether a `start_option` type's markers sit at the start by default: the flavour of
+// its first kind (the kinds it had before the option: kick's mark the peak, the scuffs' the start).
+// False for the others.
+bool AutoStartDefault(AutoType t);
 bool operator==(const AutoTypeSettings& a, const AutoTypeSettings& b);
 bool operator==(const AutoSettings& a, const AutoSettings& b);
 inline bool operator!=(const AutoSettings& a, const AutoSettings& b)

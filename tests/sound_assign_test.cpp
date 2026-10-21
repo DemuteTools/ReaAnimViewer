@@ -114,7 +114,11 @@ static void TestEventRoleKey()
                                         "hand", "hand",   // story 10-9d: clap, hand on body
                                         "",     "heel", "toe",  "",     "heel", "toe",   // 10-9c: kick, at the start
                                         "hand", "hand", "hand", "hand",                  // swing, punch
-                                        "heel"};                                         // 10-9i: heel tap
+                                        "heel",                                          // 10-9i: heel tap
+                                        // story 10-9j: the scuffs' Peak twins, as their Start kinds
+                                        "",     "heel", "toe",  "heel", "toe",               // slide
+                                        "",     "heel", "toe",  "heel", "toe",               // pivot
+                                        "hand", "hand"};                                 // hand pivot
     for (int k = 0; k < kAutoKindCount; ++k)
         for (char side : {'L', 'R'}) CHECK(EventRoleKey(AutoB(static_cast<AutoKind>(k), side, "x")) == want[k]);
     Block unknown = AutoB(AutoKind::Heel, 'L', "x");
@@ -181,7 +185,11 @@ static void TestPartOfBlock()
                                         // story 10-9c: kick (combined, heel, toe, then at the start), swing, punch
                                         "legs.kick", "legs.kick", "legs.kick", "legs.kick", "legs.kick", "legs.kick",
                                         "arms.swing", "arms.swing", "arms.punch", "arms.punch",
-                                        "legs.heel_tap"};  // story 10-9i
+                                        "legs.heel_tap",  // story 10-9i
+                                        // story 10-9j: the scuffs' Peak twins
+                                        "legs.slide", "legs.slide", "legs.slide", "legs.slide", "legs.slide",
+                                        "legs.pivot", "legs.pivot", "legs.pivot", "legs.pivot", "legs.pivot",
+                                        "arms.hand_pivot", "arms.hand_pivot"};
     for (int k = 0; k < kAutoKindCount; ++k) {
         const Block b = AutoB(static_cast<AutoKind>(k), 'L', "x");
         CHECK(PartOf(b) == want[k]);

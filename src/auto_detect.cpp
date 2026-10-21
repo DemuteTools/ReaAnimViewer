@@ -51,29 +51,43 @@ AutoKind PartSplitKindOf(AutoType t, bool heel_part, bool at_start = false)
     return AutoKindsOf(t).front();
 }
 
-// Story 10-9c: a `start_option` type's kinds, Peak or Start (all kinds of another type).
-std::vector<AutoKind> StartFiltered(AutoType t, const AutoSettings& s, std::vector<AutoKind> kinds)
+// Story 10-9c: a `start_option` kind's twin of that flavour (`at_start`: its Start kind, else its
+// Peak kind); the kind itself when it is of that flavour, or of a type with no Peak / Start. Story
+// 10-9j: the twins pair by position: the n-th kind of the type with `at_start` and the n-th without
+// (enum order; auto_types.cpp appends a type's twins in the order of the kinds they pair with).
+AutoKind StartTwin(AutoKind k, bool at_start)
 {
-    if (!InRangeType(t) || !AutoTypeRow(t).start_option) return kinds;
-    std::vector<AutoKind> out;
-    for (AutoKind k : kinds)
-        if (AutoKindRow(k).at_start == s.at_start[static_cast<int>(t)]) out.push_back(k);
-    return out;
+    const AutoType t = AutoTypeOfKind(k);
+    if (!InRangeType(t) || !AutoTypeRow(t).start_option || AutoKindRow(k).at_start == at_start) return k;
+    const std::vector<AutoKind> kinds = AutoKindsOf(t);
+    int                         pos = 0;
+    for (AutoKind o : kinds) {
+        if (o == k) break;
+        if (AutoKindRow(o).at_start == AutoKindRow(k).at_start) ++pos;
+    }
+    for (AutoKind o : kinds)
+        if (AutoKindRow(o).at_start == at_start && pos-- == 0) return o;
+    return k;
 }
 
-// The kinds a ticked type makes, in block order. The modes of steps, slides, pivots and hand
-// pivots pick among their kinds, and Combined / Separate among a `part_split` type's (story
-// 10-9a-3), Peak / Start among a `start_option` type's (story 10-9c); a type with no mode makes
-// all its kinds (story 10-9-0).
-std::vector<AutoKind> KindsOf(AutoType t, const AutoSettings& s)
+// Story 10-9j: the kind as the type's default flavour (its kinds before Peak / Start: kick's
+// peak kind, a scuff's start kind), for the code that names those kinds.
+AutoKind DefaultTwin(AutoKind k)
+{
+    return StartTwin(k, AutoStartDefault(AutoTypeOfKind(k)));
+}
+
+// The kinds a ticked type makes, in block order, before Peak / Start. The modes of steps, slides,
+// pivots and hand pivots pick among their kinds, and Combined / Separate among a `part_split`
+// type's (story 10-9a-3); a type with no mode makes all its kinds (story 10-9-0).
+std::vector<AutoKind> ModeKindsOf(AutoType t, const AutoSettings& s)
 {
     if (InRangeType(t) && AutoTypeRow(t).part_split) {
         std::vector<AutoKind> out;
         for (AutoKind k : AutoKindsOf(t))
             if (PartSplitKind(k) == s.separate_parts[static_cast<int>(t)]) out.push_back(k);
-        return StartFiltered(t, s, out);
+        return out;
     }
-    if (InRangeType(t) && AutoTypeRow(t).start_option) return StartFiltered(t, s, AutoKindsOf(t));
     switch (t) {
     case AutoType::Step:
         return s.separate_steps ? std::vector<AutoKind>{AutoKind::Heel, AutoKind::Toe} : std::vector<AutoKind>{AutoKind::Step};
@@ -97,6 +111,20 @@ std::vector<AutoKind> KindsOf(AutoType t, const AutoSettings& s)
     return AutoKindsOf(t);
 }
 
+// The kinds a ticked type makes, in block order: its mode's (ModeKindsOf), each as its twin of the
+// type's Peak / Start (story 10-9c; 10-9j: the scuffs), once.
+std::vector<AutoKind> KindsOf(AutoType t, const AutoSettings& s)
+{
+    std::vector<AutoKind> kinds = ModeKindsOf(t, s);
+    if (!InRangeType(t) || !AutoTypeRow(t).start_option) return kinds;
+    std::vector<AutoKind> out;
+    for (AutoKind k : kinds) {
+        const AutoKind w = StartTwin(k, s.at_start[static_cast<int>(t)]);
+        if (std::find(out.begin(), out.end(), w) == out.end()) out.push_back(w);
+    }
+    return out;
+}
+
 // Story 10-8m: a slide / pivot part kind's mode (Combined for any other kind), and whether it is
 // the heel's (the kind's row).
 ScuffParts ScuffMode(AutoKind k)
@@ -110,10 +138,11 @@ bool ScuffHeel(AutoKind k)
 }
 
 // The kinds that are one block switched between modes (place, marker, colour, edits kept): the hand
-// pivots, and each slide / pivot part across Each part / Longest part. 0 = none.
+// pivots, and each slide / pivot part across Each part / Longest part; story 10-9c: a
+// `start_option` kind and its twin (Peak / Start), story 10-9j with the scuffs' modes above (a
+// group per sound key: Hand Pivot, Slide Heel... in either mode and either flavour). 0 = none.
 int SwapGroup(AutoKind k)
 {
-    // Story 10-9c: a `start_option` kind and its twin (Peak / Start), by the peak kind.
     if (AutoTypeRow(AutoKindRow(k).type).start_option) return 100 + static_cast<int>(AutoKindRow(k).sound_key);
     if (k == AutoKind::HandPivot || k == AutoKind::HandPivotAny) return 1;
     if (ScuffMode(k) == ScuffParts::Combined) return 0;
@@ -126,6 +155,16 @@ bool InRange(int i, int count)
 }
 
 }  // namespace
+
+bool AutoStartDefault(AutoType t)
+{
+    return InRangeType(t) && AutoTypeRow(t).start_option && AutoKindRow(AutoKindsOf(t).front()).at_start;
+}
+
+AutoSettings::AutoSettings()
+{
+    for (int t = 0; t < kAutoTypeCount; ++t) at_start[t] = AutoStartDefault(static_cast<AutoType>(t));
+}
 
 const char* AutoTypeLabel(AutoType t)
 {
@@ -340,8 +379,8 @@ AutoSettings ReadAutoSettings(const std::vector<Block>& blocks)
         }
         if (k == AutoKind::Step) combined = true;
         if (k == AutoKind::Heel || k == AutoKind::Toe) separate = true;
-        if (k == AutoKind::HandPivot) strict = true;
-        if (k == AutoKind::HandPivotAny) any = true;
+        if (DefaultTwin(k) == AutoKind::HandPivot) strict = true;  // story 10-9j: either flavour
+        if (DefaultTwin(k) == AutoKind::HandPivotAny) any = true;
         if (AutoTypeRow(AutoTypeOfKind(k)).part_split) split[t][PartSplitKind(k) ? 1 : 0] = true;
         if (AutoTypeRow(AutoTypeOfKind(k)).start_option) start[t][AutoKindRow(k).at_start ? 1 : 0] = true;
         if (t == static_cast<int>(AutoType::Slide) || t == static_cast<int>(AutoType::Pivot))
@@ -359,7 +398,8 @@ AutoSettings ReadAutoSettings(const std::vector<Block>& blocks)
     s.hand_pivot_any = any && !strict;
     for (int t = 0; t < kAutoTypeCount; ++t) {
         s.separate_parts[t] = split[t][1] && !split[t][0];
-        s.at_start[t] = start[t][1] && !start[t][0];
+        // Story 10-9j: the flavour its blocks say; none or both, the type's default.
+        if (start[t][0] != start[t][1]) s.at_start[t] = start[t][1];
     }
     return s;
 }
@@ -479,21 +519,25 @@ std::vector<int> ApplyAutoSettings(std::vector<Block>& blocks, const AutoSetting
         }
         return -1;
     };
+    // Story 10-9j: a scuff's kinds are named as their default flavour (`dk`), and the new block
+    // looked for in the flavour the settings make (`flav`).
+    auto flav = [&](AutoKind w) { return StartTwin(w, s.at_start[static_cast<int>(AutoTypeOfKind(w))]); };
     for (size_t i = 0; i < old.size(); ++i) {
         AutoKind k;
         char     side;
         if (keep[i] || !AutoBlockKind(old[i], &k, &side)) continue;
+        const AutoKind dk = DefaultTwin(k);
         if (k == AutoKind::Step) map[i] = find_new(AutoKind::Heel, side);
         else if (k == AutoKind::Heel || k == AutoKind::Toe) map[i] = find_new(AutoKind::Step, side);
-        else if (k == AutoKind::HandPivot) map[i] = find_new(AutoKind::HandPivotAny, side);
-        else if (k == AutoKind::HandPivotAny) map[i] = find_new(AutoKind::HandPivot, side);
+        else if (dk == AutoKind::HandPivot) map[i] = find_new(flav(AutoKind::HandPivotAny), side);
+        else if (dk == AutoKind::HandPivotAny) map[i] = find_new(flav(AutoKind::HandPivot), side);
         // Story 10-8m: a slide / pivot switched between combined and separate, as steps.
-        else if (k == AutoKind::Slide || k == AutoKind::Pivot) {
-            const bool sl = k == AutoKind::Slide;
-            map[i] = find_new(sl ? AutoKind::SlideHeel : AutoKind::PivotHeel, side);
-            if (map[i] < 0) map[i] = find_new(sl ? AutoKind::SlideHeelLongest : AutoKind::PivotHeelLongest, side);
+        else if (dk == AutoKind::Slide || dk == AutoKind::Pivot) {
+            const bool sl = dk == AutoKind::Slide;
+            map[i] = find_new(flav(sl ? AutoKind::SlideHeel : AutoKind::PivotHeel), side);
+            if (map[i] < 0) map[i] = find_new(flav(sl ? AutoKind::SlideHeelLongest : AutoKind::PivotHeelLongest), side);
         } else if (ScuffMode(k) != ScuffParts::Combined)
-            map[i] = find_new(AutoTypeOfKind(k) == AutoType::Slide ? AutoKind::Slide : AutoKind::Pivot, side);
+            map[i] = find_new(flav(AutoTypeOfKind(k) == AutoType::Slide ? AutoKind::Slide : AutoKind::Pivot), side);
         // Story 10-9a-3: a lift-off, jump or land switched between combined and separate, as steps.
         else if (AutoTypeRow(AutoTypeOfKind(k)).part_split)
             map[i] = find_new(PartSplitKindOf(AutoTypeOfKind(k), !PartSplitKind(k),

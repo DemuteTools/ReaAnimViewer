@@ -15,7 +15,8 @@ set(RAV_AUTO_SRCS ../src/auto_detect.cpp ../src/auto_types.cpp ../src/auto_types
                   ../src/auto_types_body.cpp ../src/body_contacts.cpp  # 10-9b: Body, body contacts
                   ../src/hand_touch.cpp  # 10-9d
                   ../src/auto_types_whoosh.cpp  # 10-9c
-                  ../src/heel_taps.cpp)  # 10-9i
+                  ../src/heel_taps.cpp  # 10-9i
+                  ../src/scuff_peak.cpp)  # 10-9j
 
 enable_testing()
 
@@ -125,6 +126,12 @@ add_executable(motion_whoosh_test motion_whoosh_test.cpp ${RAV_AUTO_SRCS} ../src
                ../src/bone_events.cpp ../src/rule_record.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
 target_include_directories(motion_whoosh_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME motion_whoosh COMMAND motion_whoosh_test)
+
+# Story 10-9j -- Start / Peak on the scuffs (src/scuff_peak.cpp) and their kinds.
+add_executable(scuff_peak_test scuff_peak_test.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/motion_whoosh.cpp
+               ../src/bone_events.cpp ../src/rule_record.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
+target_include_directories(scuff_peak_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME scuff_peak COMMAND scuff_peak_test)
 
 # Story 10-8b -- auto detection: foot events from the physics as blocks of the item (src/auto_detect.h).
 add_executable(auto_detect_test auto_detect_test.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/motion_whoosh.cpp ../src/bone_events.cpp

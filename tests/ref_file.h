@@ -251,6 +251,10 @@ inline std::string RefTarget(const RefLine& r, BenchConfig c)
 // pivot read as their row's; story 10-9a-3: the lift-off / jump / land part kinds as their type).
 inline std::string FoundTarget(const std::string& kind_word)
 {
+    // Story 10-9j: a scuff's Peak twin reads as its Start kind's row.
+    const std::string peak = "_peak";
+    if (kind_word.size() > peak.size() && kind_word.compare(kind_word.size() - peak.size(), peak.size(), peak) == 0)
+        return FoundTarget(kind_word.substr(0, kind_word.size() - peak.size()));
     if (kind_word == "lift_heel" || kind_word == "lift_toe") return "lift";
     if (kind_word == "jump_heel" || kind_word == "jump_toe") return "jump";
     if (kind_word == "land_heel" || kind_word == "land_toe") return "land";

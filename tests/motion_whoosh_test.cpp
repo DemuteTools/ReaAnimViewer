@@ -372,7 +372,8 @@ void TestTypes()
         const std::vector<Block> before = saved;
         const AutoSettings       read = ReadAutoSettings(saved);
         CHECK(read == old);
-        for (int t = 0; t < kAutoTypeCount; ++t) CHECK(!read.at_start[t]);
+        // Story 10-9j: each type's default (Peak for the whooshes, Start for the scuffs).
+        for (int t = 0; t < kAutoTypeCount; ++t) CHECK(read.at_start[t] == AutoStartDefault(static_cast<AutoType>(t)));
         bool ch = true;
         ApplyAutoSettings(saved, read, &ch);
         CHECK(!ch && Words(saved) == Words(before) && !AutoPending(read, read));

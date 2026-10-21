@@ -283,15 +283,17 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "such as a fall on the back after a free fall.",
      "fall", {{&P::fall_min_speed, S::Divide}, {}}, &AutoPartsFall, true},
     // Story 10-9d: touches (hand_touch.h). Higher sensitivity = slower touches count and the reach
-    // grows. Clap: one event for both hands, on the faster one (shared_sides).
+    // grows. Clap: one event for both hands, on the faster one (shared_sides). Neither is raised by
+    // Detect (no_sens_raise): most clips hold no touch, a raise would make a swing's turn one.
     {T::Clap, "Clap", "Clap", C::Arms,
      "A marker where the two hands meet at speed and stop against each other,\n"
      "on the faster hand (Clap L / Clap R).",
-     "clap", {{&P::clap_min_speed, S::Divide}, {&P::clap_reach, S::Times}}, &AutoPartsClap, false, false, true},
+     "clap", {{&P::clap_min_speed, S::Divide}, {&P::clap_reach, S::Times}}, &AutoPartsClap, false, false, true, true},
     {T::HandOnBody, "Hand on body", "Hand on body", C::Arms,
      "A marker where a hand lands at speed on the body (trunk, head or thigh) and stops there:\n"
      "Hand on body L / Hand on body R.",
-     "hand_body", {{&P::body_min_speed, S::Divide}, {&P::body_reach, S::Times}}, &AutoPartsHandOnBody},
+     "hand_body", {{&P::body_min_speed, S::Divide}, {&P::body_reach, S::Times}}, &AutoPartsHandOnBody, false, false,
+     false, true},
 };
 
 // ---- Kinds -------------------------------------------------------------------------------------

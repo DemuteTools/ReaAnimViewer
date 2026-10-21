@@ -585,6 +585,11 @@ struct PhysicsParams {
     double     body_stop_s = 0.100;
     double     touch_stop_frac = 0.25;
     double     touch_window_s = 0.300;  // the approach's peak is searched this far before the stop
+    // Hand on body: the hand itself makes the approach, its ground-frame speed over the approach
+    // at least this x the closing speed. A body rising past a hand held still (a climb's last
+    // pull: Climbing_Large's hand 0.2 leg/s, the closing 2.5) is no touch; a slap's hand moves
+    // at 1.1-1.7 x the closing speed (Hip Hop Dancing 1.74 / 1.54, Pistol Equip 4.6 / 2.8).
+    double     body_hand_frac = 0.5;
 };
 
 // One contact of a part, in samples [start, end).

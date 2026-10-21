@@ -276,6 +276,8 @@ std::vector<PhysicsEvent> HandOnBodyEvents(const PhysicsAnalysis& a, const Physi
         if (!h) continue;
         const TouchCurves c = BodyCurves(a, *h, segs);
         for (const Touch& t : FindTouches(c, a.rate_hz, p.body_reach, p.body_min_speed, p.body_stop_s, p)) {
+            // The hand comes to the body, not the body to a still hand.
+            if (PeakSpeed(*HandPart(a, s), t.peak, t.at) < p.body_hand_frac * t.speed) continue;
             PhysicsEvent e;
             if (MakeEvent(a, PhysicsKind::HandOnBody, s ? 'R' : 'L', t, &e)) ev.push_back(e);
         }

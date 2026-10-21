@@ -2439,6 +2439,50 @@ int main()
         Options rest = o;
         rest.hand[0] = toward(Vec3d{-0.6, 0.75, 0.3}, Vec3d{-0.1, 0.75, -0.02}, 0.5, 0.5);
         CHECK(HandOnBodyEvents(AnalyseMotion(Rig(Planted(-0.1, 0.0), Planted(0.1, 0.0), rest))).empty());
+        // Review 10-9d: a slower touch (1 m/s, 1.15 leg/s) is none at the default sensitivity and
+        // found at 100 %, but Detect's search never raises a touch type (no_sens_raise): the
+        // block counts as searched, neither raised nor none. Clap is kept out the same way.
+        {
+            Options                      soft = o;
+            soft.hand[0] = toward(Vec3d{-0.1, 0.75, 0.4}, Vec3d{-0.1, 0.75, -0.02}, 0.5, 1.0);  // head-on
+            const std::vector<BoneTrack> srig = Rig(Planted(-0.1, 0.0), Planted(0.1, 0.0), soft);
+            CHECK(HandOnBodyEvents(AnalyseMotion(srig)).empty());
+            const PhysicsParams hi = AutoPhysicsParams(AutoType::HandOnBody, 100.0, false);
+            CHECK(HandOnBodyEvents(AnalyseMotion(srig, hi), hi).size() == 1);
+            std::vector<int> smap(static_cast<size_t>(Role::Count), -1);
+            for (int r = 0; r < static_cast<int>(Role::Count); ++r)
+                if (!srig[static_cast<size_t>(r)].pos.empty()) smap[static_cast<size_t>(r)] = r;
+            AutoSettings ss;
+            ss.type[static_cast<int>(AutoType::HandOnBody)].on = true;
+            ss.type[static_cast<int>(AutoType::Clap)].on = true;
+            const std::vector<Block>          sb = AutoBlocks(ss);
+            const std::vector<AutoSensResult> res = SearchAutoSensitivity(sb, srig, std::vector<int>(sb.size(), 0), smap, false);
+            CHECK(res.size() == sb.size() && sb.size() == 4);
+            for (const AutoSensResult& r : res) CHECK(r.searched && !r.raised && !r.none && r.sens == 50.0);
+            CHECK(AutoTypeRow(AutoType::HandOnBody).no_sens_raise && AutoTypeRow(AutoType::Clap).no_sens_raise);
+        }
+        // Review 10-9d: the body coming onto a hand held still (a climb's last pull) is no touch:
+        // the same closing, but made by the body. The whole body moves 0.4 m forward at 2 m/s and
+        // stops, its left thigh 12 cm behind the left hand, which never moves.
+        {
+            const double t0 = 0.5, run = 0.4, v = 2.0;
+            auto shift = [=](double t) { return std::clamp((t - t0) * v, 0.0, run) - run; };
+            Options still = o;
+            still.hand[0] = [](double) { return Vec3d{-0.1, 0.75, -0.02}; };
+            std::vector<BoneTrack> body = Rig(Planted(-0.1, 0.0), Planted(0.1, 0.0), still);
+            for (size_t r = 0; r < body.size(); ++r) {
+                if (r == static_cast<size_t>(Role::LeftHand) || r == static_cast<size_t>(Role::RightHand)) continue;
+                BoneTrack& t = body[r];
+                for (size_t i = 0; i < t.pos.size(); ++i) t.pos[i].z += shift(static_cast<double>(i) / 240.0);
+            }
+            const PhysicsAnalysis     ba = AnalyseMotion(body);
+            const std::vector<double> d = HandBodyDistance(ba, 'L');
+            CHECK(!d.empty() && d.front() > 0.4 && d.back() < 0.2);  // the closing does happen
+            CHECK(HandOnBodyEvents(ba).empty());
+            PhysicsParams any;
+            any.body_hand_frac = 0.0;  // without the hand's own approach, it would be one
+            CHECK(HandOnBodyEvents(ba, any).size() == 1);
+        }
         // The parts: a hand on body needs a body segment; the hips and up legs give one.
         std::vector<int> map(static_cast<size_t>(Role::Count), -1);
         map[static_cast<size_t>(Role::LeftHand)] = 1;

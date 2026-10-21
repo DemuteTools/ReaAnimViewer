@@ -18,7 +18,9 @@
 //                                            braking starts at the last sample where c is still
 //                                            0.9 x the peak, so a held approach speed brakes
 //                                            from its end)
-// never at the clip's first sample; then not again until d rises above 1.3 x reach. Strength =
+// never at the clip's first sample (hand on body: and only when the hand's own ground-frame speed
+// over the approach reaches body_hand_frac x the closing speed, so a body that rises or turns
+// onto a hand held still gives none); then not again until d rises above 1.3 x reach. Strength =
 // the peak closing speed (leg/s). A clap's side is the hand moving faster (the ground-frame hand
 // speed's peak over the approach; L on a tie): one marker for both hands. Hand on body: the hand's.
 //
@@ -32,8 +34,9 @@
 // Sprint, Treadmill Running, the arms falling back after Jump_Small / Standing Jump, Jump
 // Attack's sword stroke ending by the thigh, a crawl's hand passing the knee: 100-120 ms), a hand
 // landing on the body in 60-100 ms (Hip Hop Dancing's left hand on the thigh at 1.18 s, Pistol
-// Equip's left hand dropping to the thigh at 0.48 s, Climbing_Large's left arm falling to the
-// side at 2.03 s). Hence body_stop_s 0.10. Two hands braking together take longer: Pistol
+// Equip's left hand dropping to the thigh at 0.48 s). Hence body_stop_s 0.10. (Review:
+// Climbing_Large's 2.03 s "touch" is the body rising onto a left hand held still, 0.2 leg/s
+// against a 2.5 leg/s closing: body_hand_frac drops it.) Two hands braking together take longer: Pistol
 // Equip's hands joining on the grip 100-120 ms, so clap_stop_s 0.15. Min speeds 1.5 leg/s (the
 // slow drifts to rest, 1.0-1.3, are no touch), touch_stop_frac 0.25. With these, no other clip
 // gives a touch. Limits: a slow placing of the hand (under 1.5 leg/s at the default

@@ -798,8 +798,9 @@ std::vector<AutoSensResult> SearchAutoSensitivity(const std::vector<Block>& bloc
         if (!IsActiveAutoBlock(b) || AutoBlockPartMissing(b, role_to_bone)) continue;
         if (i >= event_counts.size() || event_counts[i] != 0) continue;  // has events (or unknown): untouched
         if (GroupHasEvents(blocks, event_counts, i)) continue;  // story 10-9a-3: its sibling holds the event
-        {  // story 10-9f / 10-9g / 10-9e: a type its row keeps out of the search (Spin, Jolt, Tap,
-           // Drag): counted as searched (Detect is not lit for it), neither raised nor none
+        {  // story 10-9f / 10-9g / 10-9e / 10-9d: a type its row keeps out of the search (Spin, Jolt,
+           // Tap, Drag, Clap, Hand on body): counted as searched (Detect is not lit for it), neither
+           // raised nor none
             AutoKind k;
             if (AutoBlockKind(b, &k, nullptr) && AutoTypeRow(AutoTypeOfKind(k)).no_sens_raise) {
                 r.searched = true;

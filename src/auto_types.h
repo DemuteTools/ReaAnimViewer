@@ -71,7 +71,8 @@ struct AutoTypeInfo {
     // most clips never hold, a spin: a raise would turn a clip's sway or twist into one). The
     // user's own sensitivity still applies. Story 10-9g: Jolt too (a walk or a climb has no jolt;
     // a raise would make its softest step one); the block counts as searched (Detect not lit).
-    // Story 10-9e: Tap and Drag too (a walk's toe skims drag from 67 %).
+    // Story 10-9e: Tap and Drag too (a walk's toe skims drag from 67 %). Story 10-9d: Clap and
+    // Hand on body too.
     bool            no_sens_raise = false;
     // Story 10-9e: the type whose events this type's events replace within kAutoReplaceS when both
     // are ticked (AutoEvents; story 10-9a: Land the steps, Jump the lift-offs), as an AutoType

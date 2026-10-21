@@ -145,7 +145,8 @@ struct PlannedMarker {
 // writes the marker alone. A Detected event and a user event dragged from it (10-4c: it keeps the
 // detection's strength) write the same name.
 std::string EventMarkerName(const Block& b, double strength);
-// Every name rule b may write (the marker alone, then each level's), for reading a marker back.
+// Every name rule b may write (the marker alone, then, on an auto block, each level's in both modes,
+// whatever its mode now: a marker written before the option was switched), for reading a marker back.
 std::vector<std::string> BlockMarkerNames(const Block& b);
 
 // What Apply writes for this list: its Detected and User events whose rule exists and is on,

@@ -1832,7 +1832,8 @@ int main()
         CHECK(EventMarkerName(num, cut.medium * 0.5) == "FS L 1" && EventMarkerName(num, cut.hard * 2.0) == "FS L 3");
         CHECK(EventMarkerName(word, 0.0) == "FS L" && EventMarkerName(word, std::nan("")) == "FS L");  // no strength
         CHECK(EventMarkerName(sword, 5.0) == "Sword");
-        CHECK(BlockMarkerNames(fs).size() == 1 && BlockMarkerNames(word).size() == 4 && BlockMarkerNames(word)[3] == "FS L Hard");
+        CHECK(BlockMarkerNames(sword).size() == 1 && BlockMarkerNames(fs).size() == 7 && BlockMarkerNames(word)[3] == "FS L Hard" &&
+              BlockMarkerNames(fs)[6] == "FS L 3");
 
         // PlanMarkers names each event; a user event dragged from a detection keeps its level, one
         // placed by hand (no strength) writes the marker alone; the signature follows the names.
@@ -1868,6 +1869,18 @@ int main()
         e.preview = false;
         e.name = "FS L Loud";  // not a name the rule writes
         CHECK(MarkerEditBlock(r, e) == -1);
+        e.name = "FS L Hard hit";  // a user's own name: never read as a level
+        CHECK(MarkerEditBlock(r, e) == -1);
+        // Review: the option switched to Off (or to numbers) before Commit: a committed "FS L Hard"
+        // is still its rule's.
+        {
+            ItemRules off_r = r;
+            off_r.blocks[0].strength_name = StrengthName::Off;
+            e.name = "FS L Hard";
+            CHECK(MarkerEditBlock(off_r, e) == 0);
+            off_r.blocks[0].strength_name = StrengthName::Number;
+            CHECK(MarkerEditBlock(off_r, e) == 0);
+        }
         // The drag: suppressed there, a user event with the detection's strength (its level stays).
         e.name = "FS L Hard";
         RecordApplied(r, plan, MarkerMode::Both);

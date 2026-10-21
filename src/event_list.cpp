@@ -429,8 +429,11 @@ std::string EventMarkerName(const Block& b, double strength)
 std::vector<std::string> BlockMarkerNames(const Block& b)
 {
     std::vector<std::string> out = {OneLine(b.marker)};
-    if (b.strength_name == StrengthName::Off || !AutoBlockKind(b, nullptr, nullptr)) return out;
-    for (int lv = kStrengthSoft; lv <= kStrengthHard; ++lv) out.push_back(out.front() + LevelSuffix(b.strength_name, lv));
+    if (!AutoBlockKind(b, nullptr, nullptr)) return out;
+    // Review 10-10b: both modes' names, whatever the block's mode now: the markers written before
+    // the option was switched (they stay until Commit) are still read back to their rule.
+    for (StrengthName mode : {StrengthName::Word, StrengthName::Number})
+        for (int lv = kStrengthSoft; lv <= kStrengthHard; ++lv) out.push_back(out.front() + LevelSuffix(mode, lv));
     return out;
 }
 

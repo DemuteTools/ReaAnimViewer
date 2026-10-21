@@ -4,7 +4,8 @@
 // (AutoType) and block kind (AutoKind) of auto_detect.h has one descriptor row here, in enum
 // order; the code that used to switch on them reads the rows. A type's own logic (the physics
 // events it takes, its lanes, its required parts) is reached through the function pointers of its
-// rows, in one file per category (auto_types_legs.cpp, auto_types_arms.cpp). How to add a type:
+// rows, in one file per category (auto_types_legs.cpp, auto_types_arms.cpp) or per type
+// (auto_types_jolt.cpp, story 10-9g). How to add a type:
 // see the note at the top of auto_types.cpp.
 //
 // The modes of the existing types (steps separate, slide / pivot parts, hand pivot any) stay as
@@ -119,6 +120,9 @@ struct AutoKindInfo {
     AutoPartMissingFn part_missing;
     AutoLanesFn       lanes;
     AutoRolesFn       roles;
+    // Story 10-9g: the strength's unit when it is neither leg/s nor degrees ("g": a jolt); its
+    // speed is then 0 (no m/s). Null for the others.
+    const char*       strength_unit = nullptr;
 };
 
 // The rows, by enum (a value out of range reads the first row).

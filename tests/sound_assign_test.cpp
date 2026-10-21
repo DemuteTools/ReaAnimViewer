@@ -67,7 +67,8 @@ static void TestTable()
           parts[0].types[6].word == "rules");
     CHECK(parts[1].id == "arms" && parts[1].types.size() == 4 && parts[1].types[2].word == "hand_pivot");
     CHECK(parts[2].id == "body" && parts[2].label == "Body" && parts[2].has_category &&
-          parts[2].category == AutoCategory::Body && parts[2].types.size() == 1);
+          parts[2].category == AutoCategory::Body && parts[2].types.size() == 2 &&
+          parts[2].types[0].word == "jolt" && parts[2].types[1].word == "rules");  // story 10-9g: Body > Jolt
     CHECK(parts[3].id == "other" && parts[3].label == "Other bones");
     CHECK(TypeLabel("legs", "step") == "Step" && TypeLabel("legs", "rules") == "Bone rules");
     CHECK(TypeLabel("arms", "grab") == "Grab");
@@ -95,7 +96,8 @@ static void TestEventRoleKey()
     const char* want[kAutoKindCount] = {"",     "heel", "toe",  "",     "",     "",     "hand", "hand", "hand",
                                         "hand", "heel", "toe",  "heel", "toe",  "heel", "toe",  "heel", "toe",
                                         "",     "",   // story 10-9a: jump, land (combined: no foot part)
-                                        "heel", "toe",  "heel", "toe",  "heel", "toe"};  // 10-9a-3: their parts
+                                        "heel", "toe",  "heel", "toe",  "heel", "toe",   // 10-9a-3: their parts
+                                        ""};  // story 10-9g: jolt (no part)
     for (int k = 0; k < kAutoKindCount; ++k)
         for (char side : {'L', 'R'}) CHECK(EventRoleKey(AutoB(static_cast<AutoKind>(k), side, "x")) == want[k]);
     Block unknown = AutoB(AutoKind::Heel, 'L', "x");
@@ -152,7 +154,8 @@ static void TestPartOfBlock()
                                         "arms.hand_pivot", "arms.hand_pivot", "legs.slide", "legs.slide",
                                         "legs.pivot", "legs.pivot", "legs.slide",      "legs.slide",
                                         "legs.pivot", "legs.pivot", "legs.jump", "legs.land",
-                                        "legs.lift",  "legs.lift",  "legs.jump", "legs.jump", "legs.land", "legs.land"};
+                                        "legs.lift",  "legs.lift",  "legs.jump", "legs.jump", "legs.land", "legs.land",
+                                        "body.jolt"};  // story 10-9g
     for (int k = 0; k < kAutoKindCount; ++k) {
         const Block b = AutoB(static_cast<AutoKind>(k), 'L', "x");
         CHECK(PartOf(b) == want[k]);

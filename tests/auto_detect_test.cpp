@@ -878,7 +878,9 @@ int main()
         for (int t = 0; t < kAutoTypeCount; ++t) {
             const bool hand = t == static_cast<int>(AutoType::Grab) || t == static_cast<int>(AutoType::Release) ||
                               t == static_cast<int>(AutoType::HandPivot);
-            CHECK(AutoCategoryOf(static_cast<AutoType>(t)) == (hand ? AutoCategory::Arms : AutoCategory::Legs));
+            const bool body = t == static_cast<int>(AutoType::Jolt);  // story 10-9g
+            CHECK(AutoCategoryOf(static_cast<AutoType>(t)) ==
+                  (hand ? AutoCategory::Arms : body ? AutoCategory::Body : AutoCategory::Legs));
         }
         CHECK(std::string(AutoCategoryLabel(AutoCategory::Legs)) == "Legs" &&
               std::string(AutoCategoryLabel(AutoCategory::Arms)) == "Arms");
@@ -1090,7 +1092,7 @@ int main()
                 const AutoKind k = static_cast<AutoKind>(ki);
                 const bool     sep = k == AutoKind::Heel || k == AutoKind::Toe || k == AutoKind::SlideHeel ||
                                k == AutoKind::SlideToe || k == AutoKind::SlideHeelLongest || k == AutoKind::SlideToeLongest ||
-                               k >= AutoKind::LiftHeel;  // story 10-9a-3: the lift-off / jump / land parts
+                               (k >= AutoKind::LiftHeel && k <= AutoKind::LandToe);  // story 10-9a-3: the lift-off / jump / land parts
                 const std::vector<std::string> listed = AutoMissingParts(AutoTypeOfKind(k), sep, map);
                 for (char side : {'L', 'R'}) {
                     std::vector<Role> parts;
@@ -1113,7 +1115,8 @@ int main()
                     // Story 10-9a: the hips, or a foot with none of its parts (each foot's heel is
                     // listed only then).
                     case AutoKind::Jump:
-                    case AutoKind::Land: parts = {Role::Hips, Role::LeftHeel, Role::RightHeel}; break;
+                    case AutoKind::Land:
+                    case AutoKind::Jolt: parts = {Role::Hips, Role::LeftHeel, Role::RightHeel}; break;  // 10-9g: as a jump
                     // Story 10-9a-3: the lift-off parts as the step parts; a jump / land part: the
                     // hips, its own part, or a foot with none (its heel and toe both listed, below).
                     case AutoKind::LiftHeel: parts = {heel}; break;
@@ -2192,6 +2195,91 @@ int main()
             CHECK(on[0].marker == "Jump L" && on[0].signature == 0);
             // t0 = 0: the take-off reads just before the seam (T = 2 s); t0 = 10 ms: just after it.
             CHECK(t0 == 0.0 ? on[0].time_s > 1.98 && on[0].time_s < 2.0 : on[0].time_s >= 0.0 && on[0].time_s < 0.02);
+        }
+    }
+
+    // ---- Story 10-9g: the gear jolt (Body, sideless) ------------------------------------------
+    {
+        Options ow;
+        ow.dur = 4.3;
+        // Walking steps at 0.3 / 0.8 and 2.9 / 3.4 s (each lands 0.4 s later), a both-feet jump
+        // from 1.8 s flying 0.5 s (landing at 2.3 s, 2.45 m/s down).
+        const std::vector<BoneTrack> rig =
+            Rig(StepsAndJump(-0.1, {0.3, 2.9}, 1.8, 0.5), StepsAndJump(0.1, {0.8, 3.4}, 1.8, 0.5), ow);
+        AutoSettings s;
+        s.type[static_cast<int>(AutoType::Jolt)].on = true;
+        const std::vector<Block> jb = AutoBlocks(s);
+        CHECK(jb.size() == 1 && Markers(jb) == (std::vector<std::string>{"Jolt"}));
+        AutoKind k = AutoKind::Step;
+        char     side = 0;
+        CHECK(jb.size() == 1 && AutoBlockKind(jb[0], &k, &side) && k == AutoKind::Jolt && side == 'B' && AutoKindSideless(k));
+        CHECK(std::string(AutoKindSides(AutoKind::Jolt)) == "B" && AutoMarkerName(AutoKind::Jolt, 'R') == "Jolt");
+        CHECK(MakeAutoBlock(AutoKind::Jolt, 'L', 50.0, 0.0).auto_side == 'B' && ReadAutoSettings(jb) == s);
+        CHECK(AutoCategoryOf(AutoType::Jolt) == AutoCategory::Body && std::string(AutoKindWord(AutoKind::Jolt)) == "jolt");
+        // Default (1 g): the landing jolts, the walking steps (about 0.4 g) do not; strength in g,
+        // no speed.
+        const std::vector<Event> ev = DetectAutoEvents(jb, rig, nullptr, false);
+        CHECK(ev.size() == 1);
+        if (ev.size() == 1) CHECK(ev[0].time_s > 2.2 && ev[0].time_s < 2.4 && ev[0].strength > 2.0 && ev[0].speed == 0.0);
+        // Every impact at 0 g: one jolt per step, the landing's two feet and its Land merged into one.
+        const PhysicsAnalysis a = AnalyseMotion(rig);
+        PhysicsParams         all;
+        all.jolt_min_g = 0.0;
+        const std::vector<PhysicsEvent> imp = JoltEvents(a, all);
+        CHECK(imp.size() == 5);
+        int soft = 0, hard = 0;
+        for (size_t i = 0; i < imp.size(); ++i) {
+            CHECK(imp[i].kind == PhysicsKind::Jolt && imp[i].side == 'B' && imp[i].part == -1);
+            if (i) CHECK(imp[i - 1].time_s < imp[i].time_s);
+            if (imp[i].time_s > 2.2 && imp[i].time_s < 2.4) hard += imp[i].strength > 2.0;
+            else soft += imp[i].strength < 1.0;
+        }
+        CHECK(hard == 1 && soft == 4);
+        // The sensitivity divides the threshold: at 0 % (2 g) the landing still jolts.
+        CHECK(AutoPhysicsParams(AutoType::Jolt, 0.0, false).jolt_min_g == PhysicsParams().jolt_min_g * 2.0);
+        if (!jb.empty()) {
+            Block j0 = jb[0];
+            j0.sens = 0.0;
+            CHECK(DetectAutoEvents(std::vector<Block>{j0}, rig, nullptr, false).size() == 1);
+        }
+        // A merge window longer than the gaps: every impact in one jolt, at the first's time, with
+        // the highest peak.
+        PhysicsParams wide = all;
+        wide.jolt_merge_s = 10.0;
+        const std::vector<PhysicsEvent> one = JoltEvents(a, wide);
+        CHECK(one.size() == 1 && !imp.empty());
+        if (one.size() == 1 && !imp.empty()) CHECK(one[0].time_s == imp[0].time_s && one[0].strength > 2.0);
+        // Ticking Jolt changes no other type's events.
+        AutoSettings legs = Ticked(true, true, false, false);
+        legs.type[static_cast<int>(AutoType::Jump)].on = true;
+        legs.type[static_cast<int>(AutoType::Land)].on = true;
+        AutoSettings with = legs;
+        with.type[static_cast<int>(AutoType::Jolt)].on = true;
+        const std::vector<Block> lb = AutoBlocks(legs), wb = AutoBlocks(with);
+        std::vector<Event>       others;
+        for (const Event& e : DetectAutoEvents(wb, rig, nullptr, false))
+            if (e.marker != "Jolt") others.push_back(e);
+        CHECK(SameEvents(others, DetectAutoEvents(lb, rig, nullptr, false)));
+        // No hips: the part is missing and no jolt (no acceleration).
+        std::vector<int> map(static_cast<size_t>(Role::Count), -1);
+        for (int r = 0; r < static_cast<int>(Role::Count); ++r) map[static_cast<size_t>(r)] = r;
+        if (!jb.empty()) {
+            CHECK(!AutoBlockPartMissing(jb[0], map));
+            map[static_cast<size_t>(Role::Hips)] = -1;
+            CHECK(AutoBlockPartMissing(jb[0], map));
+        }
+        std::vector<BoneTrack> no_hips = rig;
+        no_hips[static_cast<size_t>(Role::Hips)] = BoneTrack();
+        const PhysicsAnalysis nh = AnalyseMotion(no_hips);
+        CHECK(JoltAccelerationG(nh).empty() && JoltEvents(nh, all).empty());
+        // Its lane: the upward acceleration against the threshold.
+        if (!jb.empty()) {
+            AutoAnalysis aa;
+            aa.params = AutoPhysicsParams(AutoType::Jolt, kAutoDefaultSens, false);
+            aa.analysis = AnalyseMotion(rig, aa.params);
+            const std::vector<AutoLane> lanes = AutoBlockLanes(aa, jb[0]);
+            CHECK(lanes.size() == 1);
+            if (lanes.size() == 1) CHECK(lanes[0].unit == "g" && lanes[0].above && lanes[0].threshold == 1.0);
         }
     }
 

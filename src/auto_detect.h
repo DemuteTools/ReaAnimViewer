@@ -49,6 +49,11 @@
 //   pivot      the planted hand turns (Hand Pivot L / R): only after a grab (a hand that came to
 //              rest with a grab's approach, or at rest from the clip start; kind hand_pivot, the
 //              default), or any resting hand (kind hand_pivot_any).
+//   Body
+//   jolt       (story 10-9g) an impact that shakes the gear and cloth: a foot step or a jump's
+//              landing where the centre of mass's acceleration peaks above the sensitivity's
+//              threshold (motion_physics.h JoltEvents). Sideless ("Jolt", side B). Strength = the
+//              peak in g.
 // Each ticked type x side is one block of the item (Block::auto_type, auto_side, sens), with no
 // condition: the rule engine never fires it. Story 10-9a: a sideless type (its type row's
 // `sideless`; none since story 10-9a-3, kept for the Body types) has one block per kind, saved
@@ -61,14 +66,16 @@
 // constant per type by f = 2^((s - 50) / 50): step and lift-off contact_speed x f (more
 // sensitive = more contacts), slide slide_speed / f, pivot pivot_min_deg and pivot_rate_dps / f,
 // grab and release hand_contact_speed x f, hand pivot hand_pivot_min_deg and hand_pivot_rate_dps / f,
-// jump and land jump_min_flight_s / f (story 10-9a: higher sensitivity = shorter flights count).
+// jump and land jump_min_flight_s / f (story 10-9a: higher sensitivity = shorter flights count),
+// jolt jolt_min_g / f (story 10-9g: higher sensitivity = softer impacts count).
 // The arrival speed at the clip end (story 10-8j, 2 x the contact speed) follows contact_speed
 // and hand_contact_speed; the min approaches do not move.
 // The block's offset (ms) is added on top of the physics' own per-part step offsets.
 //
 // Values: strength is the physics strength (leg/s for steps, lift-offs, slides, grabs and
-// releases, the hips' vertical speed for jumps and lands, degrees for pivots and hand pivots); speed
-// is strength x the leg length (m/s), 0 for pivots and hand pivots.
+// releases, the hips' vertical speed for jumps and lands, degrees for pivots and hand pivots, g for
+// jolts); speed is strength x the leg length (m/s), 0 for pivots, hand pivots and jolts (a kind
+// row's `strength_unit`).
 //
 // Pure C++17, deterministic. Host-tested (tests/auto_detect_test.cpp).
 
@@ -87,10 +94,10 @@ namespace rav {
 // ---- Types and block kinds ---------------------------------------------------------------------
 
 // The types the section ticks.
-enum class AutoType : int { Step = 0, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land };
-constexpr int kAutoTypeCount = 9;
+enum class AutoType : int { Step = 0, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land, Jolt };
+constexpr int kAutoTypeCount = 10;
 // "Step", "Lift-off", "Slide scuff", "Pivot scuff", "Grab", "Release", "Pivot scuff" (the hand's),
-// "Jump", "Land"
+// "Jump", "Land", "Jolt" (story 10-9g, Body)
 const char* AutoTypeLabel(AutoType t);
 
 // Story 10-9-0: every type, category and kind has one descriptor row in auto_types.cpp (labels,
@@ -98,7 +105,7 @@ const char* AutoTypeLabel(AutoType t);
 // read it.
 
 // The section's categories (foldable groups), each holding some types: the body part that makes
-// the sound (story 10-9-1). Body (trunk, head) has no type yet.
+// the sound (story 10-9-1). Body (trunk, head): Jolt (story 10-9g).
 enum class AutoCategory : int { Legs = 0, Arms, Body };
 constexpr int kAutoCategoryCount = 3;
 AutoCategory AutoCategoryOf(AutoType t);              // step, lift-off, slide, pivot, jump, land: Legs; grab, release, hand pivot: Arms
@@ -111,13 +118,13 @@ const char*  AutoCategoryLabel(AutoCategory c);       // "Legs", "Arms", "Body"
 enum class AutoKind : int {
     Step = 0, Heel, Toe, Lift, Slide, Pivot, Grab, Release, HandPivot, HandPivotAny,
     SlideHeel, SlideToe, PivotHeel, PivotToe, SlideHeelLongest, SlideToeLongest, PivotHeelLongest, PivotToeLongest,
-    Jump, Land, LiftHeel, LiftToe, JumpHeel, JumpToe, LandHeel, LandToe
+    Jump, Land, LiftHeel, LiftToe, JumpHeel, JumpToe, LandHeel, LandToe, Jolt
 };
-constexpr int kAutoKindCount = 26;
+constexpr int kAutoKindCount = 27;
 // "step", "heel", "toe", "lift", "slide", "pivot", "grab", "release", "hand_pivot", "hand_pivot_any",
 // "slide_heel", "slide_toe", "pivot_heel", "pivot_toe", "slide_heel_longest", "slide_toe_longest",
 // "pivot_heel_longest", "pivot_toe_longest", "jump", "land", "lift_heel", "lift_toe", "jump_heel",
-// "jump_toe", "land_heel", "land_toe"
+// "jump_toe", "land_heel", "land_toe", "jolt" (story 10-9g)
 const char* AutoKindWord(AutoKind k);
 bool AutoKindFromWord(const std::string& w, AutoKind* out);
 AutoType AutoTypeOfKind(AutoKind k);
@@ -130,7 +137,7 @@ std::string AutoMarkerName(AutoKind k, char side);
 // kind: one).
 uint32_t AutoDefaultColor(AutoKind k, char side);
 
-// Story 10-9a: a kind of a sideless type (its type row's `sideless`; none since story 10-9a-3).
+// Story 10-9a: a kind of a sideless type (its type row's `sideless`; story 10-9g: jolt).
 bool AutoKindSideless(AutoKind k);
 // The sides of a kind's blocks: "LR", or "B" for a sideless kind.
 const char* AutoKindSides(AutoKind k);

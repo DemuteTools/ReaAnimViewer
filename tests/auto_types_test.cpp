@@ -8,6 +8,7 @@
 
 #include "auto_types.h"
 #include "sound_assign.h"
+#include "sound_auto_assign.h"  // story 10-9g: AutoSoundKey
 
 #include <cstdio>
 #include <cstring>
@@ -108,14 +109,14 @@ void TestRowsComplete()
 }
 
 // The categories' types: each type once, under its category, in enum order; the sound parts list
-// the same types. Story 10-9-1: every category but Body (no type yet) has types.
+// the same types. Story 10-9-1 / 10-9g: every category has types (Body: Jolt).
 void TestCategoryTypes()
 {
     std::vector<int> seen(kAutoTypeCount, 0);
     for (int c = 0; c < kAutoCategoryCount; ++c) {
         const AutoCategory          cat = static_cast<AutoCategory>(c);
         const std::vector<AutoType> types = AutoTypesOf(cat);
-        CHECK(types.empty() == (cat == AutoCategory::Body));
+        CHECK(!types.empty());
         for (size_t i = 0; i < types.size(); ++i) {
             CHECK(AutoCategoryOf(types[i]) == cat);
             if (i) CHECK(static_cast<int>(types[i - 1]) < static_cast<int>(types[i]));
@@ -152,17 +153,17 @@ void TestKnownValues()
     CHECK(std::string(AutoTypeRow(AutoType::HandPivot).undo_label) == "Arms Pivot scuff");
     CHECK(std::string(AutoTypeWord(AutoType::LiftOff)) == "lift");
     CHECK(std::string(AutoCategoryLabel(AutoCategory::Arms)) == "Arms");
-    // Story 10-9-1: the categories' labels and sound parts; Body is a sound part with no type.
+    // Story 10-9-1: the categories' labels and sound parts; story 10-9g: Body holds Jolt.
     CHECK(std::string(AutoCategoryLabel(AutoCategory::Legs)) == "Legs");
     CHECK(std::string(AutoCategoryRow(AutoCategory::Legs).sound_part) == "legs");
     CHECK(std::string(AutoCategoryRow(AutoCategory::Arms).sound_part) == "arms");
     CHECK(std::string(AutoCategoryLabel(AutoCategory::Body)) == "Body");
     CHECK(std::string(AutoCategoryRow(AutoCategory::Body).sound_part) == "body");
-    CHECK(AutoTypesOf(AutoCategory::Body).empty());
+    CHECK(AutoTypesOf(AutoCategory::Body) == std::vector<AutoType>({AutoType::Jolt}));
     {
         const BodyPart* body = FindBodyPart("body");
         CHECK(body && body->has_category && body->category == AutoCategory::Body && body->label == "Body" &&
-              body->types.size() == 1 && body->types[0].word == "rules");
+              body->types.size() == 2 && body->types[0].word == "jolt" && body->types[1].word == "rules");
     }
     CHECK(AutoKindRow(AutoKind::PivotHeel).degrees && !AutoKindRow(AutoKind::SlideHeel).degrees);
     CHECK(AutoKindRow(AutoKind::SlideToeLongest).scuff == ScuffParts::Longest && !AutoKindRow(AutoKind::SlideToeLongest).scuff_heel);
@@ -174,7 +175,7 @@ void TestKnownValues()
     // 10-9a-3: on the foot (no type is sideless), Combined / Separate on lift-off, jump and land.
     for (int t = 0; t < kAutoTypeCount; ++t) {
         const AutoType tt = static_cast<AutoType>(t);
-        CHECK(!AutoTypeRow(tt).sideless);
+        CHECK(AutoTypeRow(tt).sideless == (tt == AutoType::Jolt));  // story 10-9g
         CHECK(AutoTypeRow(tt).part_split == (tt == AutoType::LiftOff || tt == AutoType::Jump || tt == AutoType::Land));
     }
     CHECK(AutoCategoryOf(AutoType::Jump) == AutoCategory::Legs && AutoCategoryOf(AutoType::Land) == AutoCategory::Legs);
@@ -217,6 +218,19 @@ void TestKnownValues()
     PhysicsParams q = d;
     q.jump_impulse_g = d.jump_impulse_g / 2.0;
     CHECK(!SameAutoAnalysis(q, d));  // the push-off threshold tells analyses apart
+    // Story 10-9g: Jolt, Body, sideless (one block, side B, sound key "jolt:B"), strength in g;
+    // the sensitivity divides its threshold, which tells analyses apart.
+    CHECK(AutoTypeRow(AutoType::Jolt).category == AutoCategory::Body && AutoTypeRow(AutoType::Jolt).sideless &&
+          !AutoTypeRow(AutoType::Jolt).part_split && !AutoTypeRow(AutoType::Jolt).shared_sides);
+    CHECK(std::string(AutoTypeWord(AutoType::Jolt)) == "jolt" && std::string(AutoTypeLabel(AutoType::Jolt)) == "Jolt");
+    CHECK(AutoKindsOf(AutoType::Jolt) == std::vector<AutoKind>({AutoKind::Jolt}));
+    CHECK(std::string(AutoKindRow(AutoKind::Jolt).strength_unit) == "g" && !AutoKindRow(AutoKind::Jolt).degrees);
+    CHECK(AutoMarkerName(AutoKind::Jolt, 'L') == "Jolt" && AutoMarkerName(AutoKind::Jolt, 'B') == "Jolt");
+    CHECK(AutoSoundKey(AutoKind::Jolt, 'L') == "jolt:B" && AutoSoundKey(AutoKind::Jolt, 'B') == "jolt:B");
+    for (int k = 0; k < kAutoKindCount; ++k)
+        if (static_cast<AutoKind>(k) != AutoKind::Jolt) CHECK(AutoKindRow(static_cast<AutoKind>(k)).strength_unit == nullptr);
+    const PhysicsParams jo = AutoPhysicsParams(AutoType::Jolt, 100.0, false);
+    CHECK(jo.jolt_min_g == d.jolt_min_g / 2.0 && jo.contact_speed == d.contact_speed && !SameAutoAnalysis(jo, d));
 }
 
 // AutoTypeSeparate: steps, slides and pivots have the mode; story 10-9a-3: and lift-off, jump and
@@ -260,8 +274,8 @@ void TestRoles()
         const AutoKindInfo& r = AutoKindRow(static_cast<AutoKind>(k));
         for (char side : {'L', 'R', 'B'}) {
             std::vector<Role> want;
-            if (r.type == AutoType::Jump || r.type == AutoType::Land) {
-                if (side == 'B') continue;
+            if (r.type == AutoType::Jump || r.type == AutoType::Land || r.type == AutoType::Jolt) {
+                if (side == 'B' && r.type != AutoType::Jolt) continue;  // story 10-9g: jolt, sideless
                 want.push_back(Role::Hips);
                 for (char fs : {'L', 'R'})
                     for (int q = 0; q < kFootPartCount; ++q) want.push_back(FootPartRole(fs, q));

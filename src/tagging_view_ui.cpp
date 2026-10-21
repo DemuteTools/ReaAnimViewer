@@ -3671,16 +3671,20 @@ void DrawEventInspector(const TaggingModel& m, const ItemRules& rules, const Sho
     if (e.kind != ShownKind::Orphan && IsAutoBlock(blk)) {
         // Story 10-8b: the physics' values: leg lengths per second (degrees for a pivot), m/s.
         AutoKind   k = AutoKind::Step;
-        const bool pivot = AutoBlockKind(blk, &k, nullptr) && AutoKindRow(k).degrees;
+        const bool known = AutoBlockKind(blk, &k, nullptr);
+        const bool pivot = known && AutoKindRow(k).degrees;
+        // Story 10-9g: a strength in its own unit (a jolt's g), with no speed.
+        const char* unit = known ? AutoKindRow(k).strength_unit : nullptr;
         char       buf[64];
         // A user event on an auto row has no measured values (EventValuesAt: none for auto blocks).
         const bool user = e.kind == ShownKind::User;
         key("Strength");
         if (user) std::snprintf(buf, sizeof(buf), "-");
+        else if (unit) std::snprintf(buf, sizeof(buf), "%.2f %s", strength, unit);
         else std::snprintf(buf, sizeof(buf), pivot ? "%.0f deg" : "%.2f leg/s", strength);
         ImGui::TextUnformatted(buf);
         key("Speed");
-        if (pivot || user) std::snprintf(buf, sizeof(buf), "-");
+        if (pivot || unit || user) std::snprintf(buf, sizeof(buf), "-");
         else std::snprintf(buf, sizeof(buf), "%.2f m/s", speed);
         ImGui::TextUnformatted(buf);
     } else if (e.kind != ShownKind::Orphan) {

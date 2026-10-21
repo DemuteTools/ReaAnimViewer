@@ -470,6 +470,27 @@ struct PhysicsParams {
     // running jumps (Running Jump Over Hole's 4.37) keep their flight.
     double     jump_impulse_max_speed = 2.2;
     double     jump_impulse_smooth_s = 0.040;  // the acceleration's smoothing (Gaussian sigma, s)
+    // Story 10-9g: the gear jolts (see JoltEvents). The centre of mass's acceleration peak (g) an
+    // impact must reach (the sensitivity divides it), the window around the impact it is read in
+    // (s, before / after the contact), its smoothing (Gaussian sigma, s), and the impacts closer
+    // than jolt_merge_s that make one jolt (the earliest's time, the highest peak). 1 g = the
+    // ground pushing with twice the body's weight: running peaks at 2-3 body weights, walking at
+    // 1.1-1.3 (vertical ground reaction force). Measured on the fixtures (JoltAccelerationG peak
+    // per impact, 20 ms smoothing): jump landings 1.33-6.26 g (Running Jump Over Hole 1.33,
+    // Jumping Down 1.51, Standing Jump 2.10, Jump Attack 6.26); running steps 0.65-3.2 g (Slow Run
+    // 1.46 / 1.89, Treadmill Running 1.6-3.2, Two Cycle Sprint 1.66-2.43, Great Sword Run 0.93 /
+    // 1.11, the strafes 0.65-1.12); walks 0.05-0.54 g (Walking 0.15 / 0.20, Catwalk 0.11-0.36,
+    // Walk With Briefcase 0.39 / 0.43, Ascending Stairs 0.51 / 0.54), climbs 0.07-1.00. At 1 g
+    // every landing and most running steps jolt, no walk; the sensitivity (/ f) takes it to 0.5 g
+    // at 100 % (brisk steps, stairs) and 2 g at 0 % (hard landings, sprints). The smoothing moves
+    // the peaks (Slow Run 1.46 g at 20 ms, 1.62 at 10, 1.04 at 40): 20 ms sits between the
+    // parts' 8 ms and the push-off's 40. Window: the step time lags the hips' deceleration by up
+    // to 30 ms; the deceleration lasts 50-150 ms after it.
+    double     jolt_min_g = 1.0;
+    double     jolt_before_s = 0.030;
+    double     jolt_after_s = 0.150;
+    double     jolt_smooth_s = 0.020;
+    double     jolt_merge_s = 0.150;
 };
 
 // One contact of a part, in samples [start, end).
@@ -585,8 +606,8 @@ std::vector<BoneTrack> PhysicsRoleTracks(const std::vector<int>& bone_of_role,
 // hands' rot_world are read (one per sample, else ignored).
 PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& role_tracks, const PhysicsParams& p = {});
 
-enum class PhysicsKind { Step, FootStep, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land };
-constexpr int kPhysicsKindCount = 10;  // story 10-9-0: PhysicsMarkerName's rows follow the enum
+enum class PhysicsKind { Step, FootStep, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land, Jolt };
+constexpr int kPhysicsKindCount = 11;  // story 10-9-0: PhysicsMarkerName's rows follow the enum
 
 struct PhysicsEvent {
     PhysicsKind kind = PhysicsKind::Step;
@@ -624,6 +645,18 @@ std::vector<PhysicsEvent> JumpPushOffEvents(const PhysicsAnalysis& a, const Phys
 // Story 10-9a-3: the free-fall take-offs (Kind Jump), by time. Uses p.jump_min_flight_s,
 // p.jump_fall_g and p.jump_freefall_window_s.
 std::vector<PhysicsEvent> JumpFreeFallEvents(const PhysicsAnalysis& a, const PhysicsParams& p = {});
+// Story 10-9g (defined in auto_types_jolt.cpp, the Jolt type's file): the centre of mass's upward
+// acceleration per analysed sample, in g: HipsUpAccelerationG smoothed over p.jolt_smooth_s
+// instead, downward read as 0 (gravity not counted: 0 at a steady speed, 1 g = the ground pushing
+// with twice the body's weight). Vertical only: the horizontal speed's change (hips_vh) peaks at
+// 4-10 g away from any impact on in-place clips (Running Jump_Long 9.9 g, its vertical 0.8 g).
+// Empty without hips.
+std::vector<double> JoltAccelerationG(const PhysicsAnalysis& a, const PhysicsParams& p = {});
+// Story 10-9g: the gear jolts (Kind Jolt, side 'B', part -1), by time: an impact (a foot step or a
+// jump's landing; body contacts once 10-9b lands) whose JoltAccelerationG peak within
+// [-p.jolt_before_s, +p.jolt_after_s] of it reaches p.jolt_min_g, at the impact's time; impacts
+// within p.jolt_merge_s of each other make one. Strength = the peak (g).
+std::vector<PhysicsEvent> JoltEvents(const PhysicsAnalysis& a, const PhysicsParams& p = {});
 
 // The separate step times of one part (side 'L' / 'R'), by `timing` plus `offset_s`.
 std::vector<double> PartStepTimes(const PhysicsAnalysis& a, char side, int part, StepTiming timing, double offset_s);

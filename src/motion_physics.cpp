@@ -2039,6 +2039,7 @@ constexpr PhysicsKindRow kPhysicsKindRows[] = {
     {PhysicsKind::HandPivot, "hand pivot", PhyPart::None, true, true},
     {PhysicsKind::Jump, "jump", PhyPart::None, false, false},
     {PhysicsKind::Land, "land", PhyPart::None, false, false},
+    {PhysicsKind::Jolt, "jolt", PhyPart::None, false, false},  // story 10-9g: "PHY B jolt 1.4" (g)
 };
 constexpr bool PhysicsKindRowsInOrder()
 {
@@ -2096,6 +2097,7 @@ std::string PhysicsSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEv
         case PhysicsKind::HandPivot: break;  // HandSummary's
         case PhysicsKind::Jump:
         case PhysicsKind::Land: break;  // JumpSummary's
+        case PhysicsKind::Jolt: break;  // story 10-9g: not a foot event
         }
     }
     const std::string vertical = a.ground_velocity.y != 0.0 ? Format(", vertical %+.2f m/s", a.ground_velocity.y) : "";

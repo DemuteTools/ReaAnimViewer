@@ -38,6 +38,9 @@
 // not saved: no save word, no RAV_RULES change. The inspector names the one that found an event
 // ("Found by") when a kind has more than one; tests/detection_eval.cpp and
 // src/detection_measure.cpp print its events on a line of their own.
+// A type may also live in a file of its own (auto_types_jolt.cpp, story 10-9g: one type, its
+// physics and its row functions); a strength in a unit other than leg/s or degrees takes the kind
+// row's `strength_unit` ("g"), which the inspector shows (and its speed is 0).
 // The save words (kind `word`, type `sound_word`) are saved data: never rename one.
 
 #include "auto_types.h"
@@ -116,6 +119,14 @@ void AutoLanesHandContact(const AutoLaneArgs& args, std::vector<AutoLane>& out, 
 void AutoLanesHandPivot(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
 std::vector<Role> AutoRolesHand(char side);
 
+// auto_types_jolt.cpp (story 10-9g)
+std::vector<PhysicsEvent> AutoSourceJolt(const PhysicsAnalysis& a, const PhysicsParams& p);
+void AutoPartsJolt(bool separate, const std::vector<int>& role_to_bone, std::vector<std::string>& out);
+bool AutoMatchJolt(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMissingJolt(char side, const std::vector<int>& role_to_bone);
+void AutoLanesJolt(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+std::vector<Role> AutoRolesJolt(char side);
+
 namespace {
 
 using C = AutoCategory;
@@ -173,6 +184,12 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "Separate: Land Heel L / Land Toe L...\n"
      "With Step ticked, it replaces the steps there.",
      "land", {{&P::jump_min_flight_s, S::Divide}, {}}, &AutoPartsJump, false, true, true},
+    // Story 10-9g: the gear jolt, Body, sideless; higher sensitivity = softer impacts count.
+    {T::Jolt, "Jolt", "Jolt", C::Body,
+     "A marker where an impact shakes the gear and cloth (Jolt): a step or a jump's landing\n"
+     "where the body's acceleration peaks above the sensitivity's threshold.\n"
+     "Raise the sensitivity for softer steps, lower it for only the hard impacts.",
+     "jolt", {{&P::jolt_min_g, S::Divide}, {}}, &AutoPartsJolt, true},
 };
 
 // ---- Kinds -------------------------------------------------------------------------------------
@@ -252,6 +269,9 @@ constexpr AutoKindInfo kKindRows[] = {
      {{"flight", &AutoSourceJump, &AutoMatchLandHeel}}, &AutoMissingJumpHeel, &AutoLanesLand, &AutoRolesJump},
     {K::LandToe, "land_toe", T::Land, "Land Toe", {0x50A07D, 0xB45078}, kNo, false, false, "toe", K::LandToe,
      {{"flight", &AutoSourceJump, &AutoMatchLandToe}}, &AutoMissingJumpToe, &AutoLanesLand, &AutoRolesJump},
+    // Story 10-9g: the gear jolt (one colour, no role key), strength in g.
+    {K::Jolt, "jolt", T::Jolt, "Jolt", {0xC88C3C, 0xC88C3C}, kNo, false, false, "", K::Jolt,
+     {{"impact", &AutoSourceJolt, &AutoMatchJolt}}, &AutoMissingJolt, &AutoLanesJolt, &AutoRolesJolt, "g"},
 };
 
 // One row per enum value, in enum order.

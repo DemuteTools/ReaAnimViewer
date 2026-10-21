@@ -636,7 +636,7 @@ std::vector<Event> AutoEventsImpl(const std::vector<AutoAnalysis>& analyses, con
             ev.block = static_cast<int>(bi);
             ev.marker = b.marker;
             ev.strength = e.strength;
-            ev.speed = row.degrees ? 0.0 : e.strength * a.leg_length;
+            ev.speed = (row.degrees || row.strength_unit) ? 0.0 : e.strength * a.leg_length;  // 10-9g: a jolt's g
             out.push_back(std::move(ev));
             raw.push_back(e.time_s);
             type.push_back(row.type);

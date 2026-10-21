@@ -483,7 +483,7 @@ bool SoundFooterVisible(const TaggingSoundContext& ctx)
 
 float SoundFooterHeight(const TaggingSoundContext& ctx)
 {
-    return SoundFooterVisible(ctx) ? ImGui::GetFrameHeightWithSpacing() * 2.0f : 0.0f;
+    return SoundFooterVisible(ctx) ? ImGui::GetFrameHeightWithSpacing() : 0.0f;  // 10-10f: the Populate row
 }
 
 void DrawPopulateRow(const TaggingSoundContext& ctx, float attach_w)
@@ -492,10 +492,18 @@ void DrawPopulateRow(const TaggingSoundContext& ctx, float attach_w)
     const std::vector<MediaItem*> sel = SelectedRavItems();
     const int   n = FooterEvents(sel);
     const float sp = ImGui::GetStyle().ItemSpacing.x;
-    const float reshuffle_w = ui::ButtonWidth("Reshuffle") + ui::Dp(8.0f);
-    const float repop_w = ui::ButtonWidth("Repopulate") + ui::Dp(8.0f);
+    float       reshuffle_w = ui::ButtonWidth("Reshuffle") + ui::Dp(8.0f);
+    float       repop_w = ui::ButtonWidth("Repopulate") + ui::Dp(8.0f);
     const float avail = ImGui::GetContentRegionAvail().x - (attach_w > 0.0f ? attach_w + sp : 0.0f);
-    const float populate_w = std::max(ui::Dp(60.0f), avail - reshuffle_w - repop_w - 2.0f * sp);
+    // Review 10-10f: on a narrow panel Reshuffle and Repopulate shrink (their labels ellipsize, their tooltips
+    // stay) so the row never runs past the panel's edge; Populate keeps 60 px.
+    const float min_pop = ui::Dp(60.0f);
+    if (avail - reshuffle_w - repop_w - 2.0f * sp < min_pop) {
+        const float k = std::max(0.0f, avail - min_pop - 2.0f * sp) / (reshuffle_w + repop_w);
+        reshuffle_w = std::floor(std::max(ui::ControlH(), reshuffle_w * k));
+        repop_w = std::floor(std::max(ui::ControlH(), repop_w * k));
+    }
+    const float populate_w = std::max(min_pop, avail - reshuffle_w - repop_w - 2.0f * sp);
     char label[64];
     if (g_pending.has) {
         std::snprintf(label, sizeof(label), "Populating...##ravpopulate");

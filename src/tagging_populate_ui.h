@@ -40,7 +40,7 @@ void RunPickedSoundGestures();
 void PickSoundGesture(std::function<SoundReport()> gesture);
 // True when the footer shows Populate (D9: Commit is then a SolidButton).
 bool SoundFooterVisible(const TaggingSoundContext& ctx);
-// The extra footer height (px) the sound rows take, 0 when hidden.
+// The extra footer height (px) the sound row takes (10-10f: the Populate row), 0 when hidden.
 float SoundFooterHeight(const TaggingSoundContext& ctx);
 // Populate (the one primary button), Reshuffle and Repopulate (story 10-10f: moved from Options > Sounds; its
 // orange confirm bubble opens over it), leaving `attach_w` px on its right for Attach. Narrow, Populate's label

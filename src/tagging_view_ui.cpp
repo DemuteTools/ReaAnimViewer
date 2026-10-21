@@ -114,7 +114,8 @@ MediaItem* g_sel_item = nullptr;  // the item g_sel belongs to
 enum class TagTab { Smart, Rules };
 TagTab g_tab = TagTab::Smart;
 int    g_auto_sel = -1;
-float  g_footer_h = 0.0f;
+float  g_footer_h = 0.0f;  // measured last frame, for g_footer_lines lines
+int    g_footer_lines = 0;
 
 // A drag in the strip's lanes: a threshold or re-arm line, a scrub, or (story 10-4) an event.
 enum class StripDrag { None, Scrub, Threshold, Margin, Event };
@@ -4351,7 +4352,8 @@ void DrawStripEmpty(float inner_h)
 }
 
 // The Sound row's height at the bottom of the strip: DrawAssignSummaryRow's (two lines when narrow, with its ↗),
-// none while the project has no library (the row is not drawn).
+// none while the project has no library (the row is not drawn). Measured at the tab's width (the strip's inner
+// width is that less its 8 px padding each side): the strip's height and its rows use this one value.
 float StripSoundRowHeight()
 {
     if (GetSoundStore(nullptr).libraries.empty()) return 0.0f;
@@ -4400,17 +4402,26 @@ void DrawStripEvent(const TaggingModel& m, const ItemRules& rules, const ShownEv
         ImGui::SameLine();
         const char* dk = ShortcutKeyLabel(kShortcutTagDelEvent);
         const std::string act = std::string(EventActionWord(e)) + "##stripevact";
-        const float right_w = ui::ButtonWidth("Go to event##stripevgo") + ui::ButtonWidth(act.c_str()) + fh + 2.0f * sp;
         const ImVec2 p = ImGui::GetCursorScreenPos();
+        // Review 10-10f: on a narrow panel "Go to event" shortens to "Go" (its tooltip says it), so the
+        // buttons never run past the strip's edge.
+        const float row_end = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+        const char* go = "Go to event##stripevgo";
+        float right_w = ui::ButtonWidth(go) + ui::ButtonWidth(act.c_str()) + fh + 2.0f * sp;
+        if (row_end - right_w - sp - (p.x + ui::Dp(12.0f)) < ui::Dp(40.0f)) {
+            go = "Go##stripevgo";
+            right_w = ui::ButtonWidth(go) + ui::ButtonWidth(act.c_str()) + fh + 2.0f * sp;
+        }
         ImDrawList*  dl = ImGui::GetWindowDrawList();
         dl->AddCircleFilled(ImVec2(p.x + ui::Dp(4.0f), p.y + fh * 0.5f), ui::Dp(4.0f), RuleColor(blk), 12);
         const float name_x = p.x + ui::Dp(12.0f);
-        const float name_end = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x - right_w - sp;
+        const float name_end = row_end - right_w - sp;
         ImGui::Dummy(ImVec2(std::max(1.0f, name_end - p.x), fh));
         ui::EllipsisTextTip(dl, ImVec2(name_x, p.y + (fh - ImGui::GetTextLineHeight()) * 0.5f), name_end, ui::kText,
                             "Event " + rule);
         ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowContentRegionMax().x - right_w + sp));
-        EventGoButton(m, e, "Go to event##stripevgo");
+        EventGoButton(m, e, go);
+        if (go[2] == '#') ui::ItemTipText("Go to event (the playhead to it)");
         ImGui::SameLine();
         EventActionButton(m, e, act.c_str(), dk);
         ImGui::SameLine();
@@ -4477,7 +4488,7 @@ void DrawStripEvent(const TaggingModel& m, const ItemRules& rules, const ShownEv
 
 // The strip (variant B), `strip_h` high: the selected type's compact settings, an event of a type (Event mode),
 // or how to show one.
-void DrawAutoStrip(const TaggingModel& m, const ItemRules& rules, float strip_h)
+void DrawAutoStrip(const TaggingModel& m, const ItemRules& rules, float strip_h, float sound_h)
 {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::kRaised);
     ImGui::PushStyleColor(ImGuiCol_Border, ui::kStrokeStrong);
@@ -4492,7 +4503,6 @@ void DrawAutoStrip(const TaggingModel& m, const ItemRules& rules, float strip_h)
         const ImGuiStyle& st = ImGui::GetStyle();
         const float       fh = ImGui::GetFrameHeight();
         const float       inner_h = strip_h - 2.0f * ui::Dp(6.0f);
-        const float       sound_h = StripSoundRowHeight();
         const float       mid_h = inner_h - fh - st.ItemSpacing.y - (sound_h > 0.0f ? sound_h + st.ItemSpacing.y : 0.0f);
         const ShownEvent* ev = SelectedEvent(m);
         const bool        auto_ev = ev && ev->block >= 0 && ev->block < static_cast<int>(rules.blocks.size()) &&
@@ -4530,13 +4540,12 @@ void DrawAutoStrip(const TaggingModel& m, const ItemRules& rules, float strip_h)
     ImGui::EndChild();
 }
 
-// The strip's height: its header, four rows and the Sound row (the tallest type in its compact form), at the
-// tab's width.
-float AutoStripHeight()
+// The strip's height: its header, four rows and the Sound row (`sound_h`: StripSoundRowHeight at the tab's
+// width; the tallest type in its compact form).
+float AutoStripHeight(float sound_h)
 {
     const float fh = ImGui::GetFrameHeight();
     const float gap = ui::Dp(4.0f);
-    const float sound_h = StripSoundRowHeight();
     return std::floor(2.0f * ui::Dp(6.0f) + fh + gap + 4.0f * fh + 3.0f * gap + (sound_h > 0.0f ? gap + sound_h : 0.0f));
 }
 
@@ -4549,7 +4558,7 @@ void DrawAutoPresetsRow()
     bool       open_name = false;
     const bool full = static_cast<int>(presets.size()) >= kAutoPresetMax;
     if (full) ImGui::BeginDisabled();
-    if (ui::SolidButton("+ Preset##autonewpreset")) {
+    if (ui::AddButton("+ Preset##autonewpreset", ImVec2(0.0f, 0.0f), nullptr, /*pill=*/true)) {  // .tchip.plus
         g_preset_edit = -1;
         g_preset_name[0] = '\0';
         open_name = true;
@@ -4848,11 +4857,12 @@ void DrawSmartTab(const TaggingModel& m, const ItemRules& rules)
     DrawAutoPresetsRow();
     DrawAutoSearch(m, rules);
     const float fh = ImGui::GetFrameHeight();
-    const float strip_h = AutoStripHeight();
+    const float sound_h = StripSoundRowHeight();
+    const float strip_h = AutoStripHeight(sound_h);
     const float min_h = 2.0f * fh + ui::Dp(16.0f);  // a caption and a chip row
     const float list_h = std::floor(std::max(min_h, ImGui::GetContentRegionAvail().y - strip_h - ImGui::GetStyle().ItemSpacing.y));
     DrawAutoChipList(m, rules, list_h);
-    DrawAutoStrip(m, rules, strip_h);
+    DrawAutoStrip(m, rules, strip_h, sound_h);
 }
 
 // Detect, the footer's first button (`w` wide): lit while a tick or a mode waits for it.
@@ -5829,7 +5839,13 @@ void DrawTaggingPanel(float x, float y, float w, float h)
             // and the footer, pinned at the bottom (its height from the last frame: three fixed lines, two
             // without the sound footer). Only the chip list or the inspector scrolls.
             DrawTabs(m, rules);
-            const float footer_h = g_footer_h > 0.0f ? g_footer_h : 3.0f * ImGui::GetFrameHeightWithSpacing() + ui::Dp(8.0f);
+            // Review 10-10f: the footer's height is computed (the separator's spacing, then its lines: three
+            // with the sound footer, two without), so the first frame or the sound footer appearing never
+            // pushes it under the panel's edge; last frame's measure only adds to it (same lines).
+            const float sound_rows = SoundFooterHeight(SoundContextOf(m, rules, g_sel));
+            const int   footer_lines = sound_rows > 0.0f ? 3 : 2;
+            const float footer_calc = ImGui::GetStyle().ItemSpacing.y + 2.0f * ImGui::GetFrameHeightWithSpacing() + sound_rows;
+            const float footer_h = std::max(footer_calc, g_footer_lines == footer_lines ? g_footer_h : 0.0f);
             const float body_h = std::max(ui::Dp(80.0f), ImGui::GetContentRegionAvail().y - footer_h);
             if (ImGui::BeginChild("##tagbody", ImVec2(0.0f, body_h), ImGuiChildFlags_None,
                                   ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
@@ -5840,6 +5856,7 @@ void DrawTaggingPanel(float x, float y, float w, float h)
             const float fy = ImGui::GetCursorPosY();
             DrawFooter(m, rules);
             g_footer_h = ImGui::GetCursorPosY() - fy;
+            g_footer_lines = footer_lines;
         }
         RolesWindow(m);  // story 10-3d (closes itself when the item changes)
     }

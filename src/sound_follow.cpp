@@ -1095,7 +1095,6 @@ void DrawSoundsMenuSection()
         g_track_picks.Run();    // after its menu: the gesture replaces the store
 
         // Story 10-10f: Repopulate moved to the Tagging footer's Populate row.
-        ui::ToneText("Repopulate: moved to the Tagging footer, beside Reshuffle.", ui::kFaint, /*wrap=*/true);
 
         const std::vector<ReportLine> rep = FollowReport(proj);
         if (rep.empty()) {

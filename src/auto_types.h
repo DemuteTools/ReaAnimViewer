@@ -92,6 +92,12 @@ struct AutoTypeInfo {
     // (Clap / Hand on body's reach: two hands that meet cannot come much closer, so a real clap
     // would read as doubtful). See auto_detect.h RateAutoEvents.
     unsigned        conf_probe = 0;
+    // Story 10-9h: the share of each probe step the probed fields take (1 = the full
+    // kAutoConfidenceStepSens points). Under 1 for a type whose threshold sits close under its
+    // real events by nature, its shape (not its speed) setting it apart: Punch, 0.5 (a jab's
+    // extending speed 2.34-2.44 leg/s over a 2.0 threshold that cannot come lower, Hip Hop
+    // reading as a punch from 1.7; at a full step the jabs would read as doubtful).
+    double          conf_scale = 1.0;
 };
 
 // An event source: the physics events of one analysis a kind reads (FootEvents, HandEvents...).

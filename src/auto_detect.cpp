@@ -529,8 +529,10 @@ PhysicsParams ShiftedAutoParams(AutoType t, double sens, double shift, bool loop
         const AutoSensField& sf = row.sens[i];
         if (!sf.field) continue;
         // Only the fields the row's conf_probe names get stricter (all by default).
+        // Story 10-9h: by the row's conf_scale share of the shift.
         const bool   probed = shift != 0.0 && (row.conf_probe == 0 || ((row.conf_probe >> i) & 1u) != 0);
-        const double f = probed ? SensitivityFactor(sens) * std::pow(2.0, -shift / 50.0) : SensitivityFactor(sens);
+        const double f = probed ? SensitivityFactor(sens) * std::pow(2.0, -shift * row.conf_scale / 50.0)
+                                : SensitivityFactor(sens);
         if (sf.dir == AutoSensDir::Times) p.*sf.field *= f;
         else p.*sf.field /= f;
     }

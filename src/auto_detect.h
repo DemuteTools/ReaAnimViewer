@@ -361,7 +361,8 @@ std::vector<Event> DetectAutoEvents(const std::vector<Block>& blocks, const std:
 // threshold). Relative to the block's own sensitivity (Detect's raise included: an event that
 // only appears after a raise reads low). A type needs no code of its own:
 // a new row's `sens` fields give its confidence (its `conf_probe` may leave out a field that is a
-// tolerance, not a margin: Clap / Hand on body's reach). What it cannot see: a constant no sensitivity
+// tolerance, not a margin: Clap / Hand on body's reach; its `conf_scale` may shorten the steps:
+// Punch, half steps). What it cannot see: a constant no sensitivity
 // moves (a knee's height over the floor, a clap's stop), and an event that is physically sound but
 // not the motion the clip means (a hands' grip join read as a clap).
 // The tolerance is wider than kAutoMergeS: a stricter contact speed delays a contact's start

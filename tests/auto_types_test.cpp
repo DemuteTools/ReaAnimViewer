@@ -373,7 +373,10 @@ void TestRowInvariants()
         }
         CHECK(probed >= 1);
         CHECK(r.conf_probe < (1u << kAutoSensFields));
+        CHECK(r.conf_scale > 0.0 && r.conf_scale <= 1.0);  // story 10-9h
     }
+    CHECK(AutoTypeRow(AutoType::Punch).conf_scale == 0.5);
+    CHECK(AutoTypeRow(AutoType::Swing).conf_scale == 1.0);
     CHECK(AutoTypeRow(AutoType::Clap).conf_probe == 1u && AutoTypeRow(AutoType::Clap).sens[1].field == &PhysicsParams::clap_reach);
     CHECK(AutoTypeRow(AutoType::HandOnBody).conf_probe == 1u &&
           AutoTypeRow(AutoType::HandOnBody).sens[1].field == &PhysicsParams::body_reach);

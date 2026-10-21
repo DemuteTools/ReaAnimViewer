@@ -72,6 +72,11 @@ struct AutoTypeInfo {
     // user's own sensitivity still applies. Story 10-9g: Jolt too (a walk or a climb has no jolt;
     // a raise would make its softest step one); the block counts as searched (Detect not lit).
     bool            no_sens_raise = false;
+    // Story 10-9e: the type whose events this type's events replace within kAutoReplaceS when both
+    // are ticked (AutoEvents; story 10-9a: Land the steps, Jump the lift-offs), as an AutoType
+    // value; -1 = none. `replaces_own_side`: only those of the same foot (Tap), else either foot.
+    int             replaces = -1;
+    bool            replaces_own_side = false;
 };
 
 // An event source: the physics events of one analysis a kind reads (FootEvents, HandEvents...).

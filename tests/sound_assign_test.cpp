@@ -60,11 +60,11 @@ static void TestTable()
 {
     const std::vector<BodyPart>& parts = BodyParts();
     CHECK(parts.size() == 4);
-    // Story 10-9a: Legs > Jump / Land, assigned like any type.
-    CHECK(parts[0].id == "legs" && parts[0].label == "Legs" && parts[0].types.size() == 7);
+    // Story 10-9a: Legs > Jump / Land, assigned like any type (story 10-9e: and Tap / Drag).
+    CHECK(parts[0].id == "legs" && parts[0].label == "Legs" && parts[0].types.size() == 9);
     CHECK(parts[0].types[0].word == "step" && parts[0].types[1].word == "lift" && parts[0].types[2].word == "slide" &&
           parts[0].types[3].word == "pivot" && parts[0].types[4].word == "jump" && parts[0].types[5].word == "land" &&
-          parts[0].types[6].word == "rules");
+          parts[0].types[6].word == "tap" && parts[0].types[7].word == "drag" && parts[0].types[8].word == "rules");
     CHECK(parts[1].id == "arms" && parts[1].types.size() == 4 && parts[1].types[2].word == "hand_pivot");
     CHECK(parts[2].id == "body" && parts[2].label == "Body" && parts[2].has_category &&
           parts[2].category == AutoCategory::Body && parts[2].types.size() == 3 &&
@@ -99,7 +99,8 @@ static void TestEventRoleKey()
                                         "",     "",   // story 10-9a: jump, land (combined: no foot part)
                                         "heel", "toe",  "heel", "toe",  "heel", "toe",   // 10-9a-3: their parts
                                         "",                                              // story 10-9g: jolt (no part)
-                                        "",     ""};  // story 10-9f: spin, spin end (no part)
+                                        "",     "",   // story 10-9f: spin, spin end (no part)
+                                        "toe",  "toe"};  // story 10-9e: tap, drag (on the toe)
     for (int k = 0; k < kAutoKindCount; ++k)
         for (char side : {'L', 'R'}) CHECK(EventRoleKey(AutoB(static_cast<AutoKind>(k), side, "x")) == want[k]);
     Block unknown = AutoB(AutoKind::Heel, 'L', "x");
@@ -158,7 +159,8 @@ static void TestPartOfBlock()
                                         "legs.pivot", "legs.pivot", "legs.jump", "legs.land",
                                         "legs.lift",  "legs.lift",  "legs.jump", "legs.jump", "legs.land", "legs.land",
                                         "body.jolt",                // story 10-9g
-                                        "body.spin", "body.spin"};  // story 10-9f
+                                        "body.spin", "body.spin",   // story 10-9f
+                                        "legs.tap",   "legs.drag"};  // story 10-9e
     for (int k = 0; k < kAutoKindCount; ++k) {
         const Block b = AutoB(static_cast<AutoKind>(k), 'L', "x");
         CHECK(PartOf(b) == want[k]);

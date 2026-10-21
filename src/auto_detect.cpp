@@ -575,6 +575,7 @@ std::vector<Event> AutoEventsImpl(const std::vector<AutoAnalysis>& analyses, con
     std::vector<AutoType> type;    // per event in `out`: its block's type
     std::vector<double>   period;  // per event in `out`: its analysis' loop period (0: not looping)
     std::vector<const char*> part;  // per event in `out`: its kind's role key ("heel", "toe"; "" = the foot)
+    std::vector<char>        sides; // per event in `out`: its block's side (story 10-9e)
     // Each analysis' event sources (the kinds' rows: foot events, hand events...), each computed
     // once, when a block first reads it.
     struct Source {
@@ -642,21 +643,25 @@ std::vector<Event> AutoEventsImpl(const std::vector<AutoAnalysis>& analyses, con
             type.push_back(row.type);
             period.push_back(loop_period);
             part.push_back(row.role_key ? row.role_key : "");
+            sides.push_back(side);
         }
     }
     // Story 10-9a: a Land replaces the steps within kAutoReplaceS of it, a Jump the lift-offs, on
     // their physics times (a block's offset never adds or removes one). Only when both types run.
     // Story 10-8r: in Separate (heel / toe), only the steps / lift-offs of its own part: a Land Toe
     // never drops the Heel slap that follows it (a whole-foot kind, on either side, still replaces
-    // any part's).
+    // any part's). Story 10-9e: read from the type rows (`replaces`); a Tap replaces its own
+    // foot's steps only.
     if (replace) {
         std::vector<char> drop(out.size(), 0);
         bool              any = false;
         for (size_t i = 0; i < out.size(); ++i) {
-            if (type[i] != AutoType::Land && type[i] != AutoType::Jump) continue;
-            const AutoType replaced = type[i] == AutoType::Land ? AutoType::Step : AutoType::LiftOff;
+            const AutoTypeInfo& tr = AutoTypeRow(type[i]);
+            if (tr.replaces < 0) continue;
+            const AutoType replaced = static_cast<AutoType>(tr.replaces);
             for (size_t j = 0; j < out.size(); ++j) {
                 if (type[j] != replaced) continue;
+                if (tr.replaces_own_side && sides[j] != sides[i]) continue;
                 if (*part[i] && *part[j] && std::strcmp(part[i], part[j]) != 0) continue;
                 double d = std::fabs(raw[j] - raw[i]);
                 // A loop: the distance through the seam too.

@@ -2072,6 +2072,8 @@ constexpr PhysicsKindRow kPhysicsKindRows[] = {
     {PhysicsKind::Jolt, "jolt", PhyPart::None, false, false},  // story 10-9g: "PHY B jolt 1.4" (g)
     {PhysicsKind::Spin, "spin", PhyPart::None, true, true},  // story 10-9f
     {PhysicsKind::SpinEnd, "spin end", PhyPart::None, true, true},
+    {PhysicsKind::Tap, "tap", PhyPart::Foot, false, false},  // story 10-9e
+    {PhysicsKind::Drag, "drag", PhyPart::Foot, false, true},
 };
 constexpr bool PhysicsKindRowsInOrder()
 {
@@ -2132,6 +2134,8 @@ std::string PhysicsSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEv
         case PhysicsKind::Jolt: break;  // story 10-9g: not a foot event
         case PhysicsKind::Spin:
         case PhysicsKind::SpinEnd: break;  // story 10-9f: the Spin type's (auto_types_spin.cpp)
+        case PhysicsKind::Tap:
+        case PhysicsKind::Drag: break;  // story 10-9e: FootTapEvents / FootDragEvents'
         }
     }
     const std::string vertical = a.ground_velocity.y != 0.0 ? Format(", vertical %+.2f m/s", a.ground_velocity.y) : "";
@@ -2204,7 +2208,9 @@ std::string PhysicsEventLines(const std::vector<PhysicsEvent>& ev, const std::st
     std::string out;
     for (const PhysicsEvent& e : ev) {
         out += indent + Format("%8.3f s  %s", e.time_s, PhysicsMarkerName(e).c_str());
-        if (e.kind == PhysicsKind::Slide || e.kind == PhysicsKind::Pivot || e.kind == PhysicsKind::HandPivot) out += Format("  (to %.3f s)", e.end_s);
+        if (e.kind == PhysicsKind::Slide || e.kind == PhysicsKind::Pivot || e.kind == PhysicsKind::HandPivot ||
+            e.kind == PhysicsKind::Drag)
+            out += Format("  (to %.3f s)", e.end_s);
         out += "\n";
     }
     return out;

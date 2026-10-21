@@ -26,6 +26,8 @@
 //     toe split (story 10-9a-3): `part_split` on the type row, a combined kind (no role key) and a
 //     heel and a toe kind (role keys "heel", "toe") appended; the Combined / Separate widget, the
 //     settings and the remap of edits follow the row.
+//   - a type whose events stand for another type's near them (Land the steps, Jump the lift-offs,
+//     story 10-9e Tap its foot's steps): `replaces` (and `replaces_own_side`) on its row.
 // Adding a signature to a kind (story 10-9a-2): a new way to recognise the same event, for an
 // edge case the kind's other signatures miss. Append {name, event source, match} to the kind's
 // `sigs` (at most kAutoMaxSignatures, contiguous); its source and match live in the category's
@@ -107,6 +109,13 @@ void AutoLanesJump(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::st
 void AutoLanesLand(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
 std::vector<Role> AutoRolesJump(char side);
 
+// foot_taps.cpp (story 10-9e)
+std::vector<PhysicsEvent> AutoSourceTap(const PhysicsAnalysis& a, const PhysicsParams& p);
+std::vector<PhysicsEvent> AutoSourceDrag(const PhysicsAnalysis& a, const PhysicsParams& p);
+bool AutoMatchTap(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchDrag(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+void AutoLanesDrag(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+
 // auto_types_arms.cpp
 std::vector<PhysicsEvent> AutoSourceHand(const PhysicsAnalysis& a, const PhysicsParams& p);
 std::vector<PhysicsEvent> AutoSourceHandAny(const PhysicsAnalysis& a, const PhysicsParams& p);
@@ -186,12 +195,13 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "both feet off while the body falls freely, right after a hard push off the ground,\n"
      "or into a free fall (a fall on the back). Separate: Jump Heel L / Jump Toe L...\n"
      "With Lift-off ticked, it replaces the lifts there.",
-     "jump", {{&P::jump_min_flight_s, S::Divide}, {&P::jump_impulse_g, S::Divide}}, &AutoPartsJump, false, true, true},
+     "jump", {{&P::jump_min_flight_s, S::Divide}, {&P::jump_impulse_g, S::Divide}}, &AutoPartsJump, false, true, true, false,
+     static_cast<int>(T::LiftOff)},
     {T::Land, "Land", "Land", C::Legs,
      "A marker where a jump lands, on the first foot to touch, at its step (Land L / Land R).\n"
      "Separate: Land Heel L / Land Toe L...\n"
      "With Step ticked, it replaces the steps there.",
-     "land", {{&P::jump_min_flight_s, S::Divide}, {}}, &AutoPartsJump, false, true, true},
+     "land", {{&P::jump_min_flight_s, S::Divide}, {}}, &AutoPartsJump, false, true, true, false, static_cast<int>(T::Step)},
     // Story 10-9g: the gear jolt, Body, sideless; higher sensitivity = softer impacts count.
     {T::Jolt, "Jolt", "Jolt", C::Body,
      "A marker where an impact shakes the gear and cloth (Jolt): a step or a jump's landing\n"
@@ -204,6 +214,17 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "A spin of the whole body (the hips turning about the vertical):\n"
      "Spin where it starts turning, Spin End where it stops (45 deg or more).",
      "spin", {{&P::spin_min_deg, S::Divide}, {}}, &AutoPartsSpin, true, false, false, true},
+    // Story 10-9e: higher sensitivity = longer toe contacts count as taps, and shorter toe
+    // slides (a lower minimum length) as drags.
+    {T::Tap, "Tap", "Tap", C::Legs,
+     "A marker where the toes touch the ground lightly while the other foot carries the body\n"
+     "(a toe contact under 150 ms, the heel up): Tap L / Tap R.\n"
+     "With Step ticked, it replaces that foot's step there.",
+     "tap", {{&P::tap_max_s, S::Times}, {}}, &AutoPartsFootBoth, false, false, false, false, static_cast<int>(T::Step), true},
+    {T::Drag, "Drag", "Drag", C::Legs,
+     "A marker where the toes slide on the ground during a swing, the heel up\n"
+     "(a foot dragged behind, a crawl, a kneel): Drag L / Drag R.",
+     "drag", {{&P::drag_min_s, S::Divide}, {}}, &AutoPartsFootBoth},
 };
 
 // ---- Kinds -------------------------------------------------------------------------------------
@@ -291,6 +312,11 @@ constexpr AutoKindInfo kKindRows[] = {
      {{"hip turn", &AutoSourceSpin, &AutoMatchSpin}}, &AutoMissingSpin, &AutoLanesSpin, &AutoRolesSpin},
     {K::SpinEnd, "spin_end", T::Spin, "Spin End", {0xD29FEE, 0xD29FEE}, kNo, false, true, "", K::SpinEnd,
      {{"hip turn", &AutoSourceSpin, &AutoMatchSpinEnd}}, &AutoMissingSpin, &AutoLanesSpin, &AutoRolesSpin},
+    // Story 10-9e: tap and drag, on the toe (the ball or the tip).
+    {K::Tap, "tap", T::Tap, "Tap", {0x78B4F0, 0xF0B478}, kNo, false, false, "toe", K::Tap,
+     {{"contact", &AutoSourceTap, &AutoMatchTap}}, &AutoMissingHeelOrToe, &AutoLanesToe, &AutoRolesFoot},
+    {K::Drag, "drag", T::Drag, "Drag", {0x8C96B4, 0xB4968C}, kNo, false, false, "toe", K::Drag,
+     {{"drag", &AutoSourceDrag, &AutoMatchDrag}}, &AutoMissingHeelOrToe, &AutoLanesDrag, &AutoRolesFoot},
 };
 
 // One row per enum value, in enum order.

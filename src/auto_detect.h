@@ -25,6 +25,12 @@
 //              the blocks' offsets). Story 10-8r: a Separate one (Land Heel / Land Toe, Jump
 //              Heel / Jump Toe) replaces only its own part's (and the whole-foot kinds'), so a
 //              toe landing keeps the heel slap after it. Strength = the hips' vertical speed (leg/s).
+//   tap        (story 10-9e) a light toe touch while the other foot carries the body: a foot
+//              contact under 150 ms with no heel, the other foot down throughout (Tap L / R),
+//              at that contact's step. With Step ticked too, a Tap replaces that foot's steps
+//              (FS, Toe) within +-30 ms of it.
+//   drag       (story 10-9e) the toe sliding on the ground during a swing, the heel up
+//              (Drag L / R, with its end). See foot_taps.h.
 //   Story 10-9a-3: lift-off, jump and land each have Combined / Separate
 //   (AutoSettings::separate_parts, the types whose row says `part_split`). Separate puts each
 //   event on its part's block: Heel = the heel, Toe = the ball or the toe tip (kinds lift_heel,
@@ -72,6 +78,7 @@
 // grab and release hand_contact_speed x f, hand pivot hand_pivot_min_deg and hand_pivot_rate_dps / f,
 // jump and land jump_min_flight_s / f (story 10-9a: higher sensitivity = shorter flights count),
 // jolt jolt_min_g / f (story 10-9g: higher sensitivity = softer impacts count).
+// tap tap_max_s x f and drag drag_min_s / f (story 10-9e).
 // The arrival speed at the clip end (story 10-8j, 2 x the contact speed) follows contact_speed
 // and hand_contact_speed; the min approaches do not move.
 // The block's offset (ms) is added on top of the physics' own per-part step offsets.
@@ -97,11 +104,11 @@ namespace rav {
 
 // ---- Types and block kinds ---------------------------------------------------------------------
 
-// The types the section ticks.
-enum class AutoType : int { Step = 0, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land, Jolt, Spin };
-constexpr int kAutoTypeCount = 11;  // story 10-9g: Jolt; story 10-9f: Spin (Body, sideless)
+// The types the section ticks (story 10-9e appends Tap and Drag).
+enum class AutoType : int { Step = 0, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land, Jolt, Spin, Tap, Drag };
+constexpr int kAutoTypeCount = 13;  // story 10-9g: Jolt; story 10-9f: Spin (Body, sideless); 10-9e: Tap, Drag
 // "Step", "Lift-off", "Slide scuff", "Pivot scuff", "Grab", "Release", "Pivot scuff" (the hand's),
-// "Jump", "Land", "Jolt" (story 10-9g, Body)
+// "Jump", "Land", "Jolt" (story 10-9g, Body), "Spin" (story 10-9f, Body), "Tap", "Drag"
 const char* AutoTypeLabel(AutoType t);
 
 // Story 10-9-0: every type, category and kind has one descriptor row in auto_types.cpp (labels,
@@ -123,13 +130,14 @@ enum class AutoKind : int {
     Step = 0, Heel, Toe, Lift, Slide, Pivot, Grab, Release, HandPivot, HandPivotAny,
     SlideHeel, SlideToe, PivotHeel, PivotToe, SlideHeelLongest, SlideToeLongest, PivotHeelLongest, PivotToeLongest,
     Jump, Land, LiftHeel, LiftToe, JumpHeel, JumpToe, LandHeel, LandToe, Jolt,
-    Spin, SpinEnd  // story 10-9f: a spin's start ("Spin") and end ("Spin End")
+    Spin, SpinEnd,  // story 10-9f: a spin's start ("Spin") and end ("Spin End")
+    Tap, Drag       // story 10-9e
 };
-constexpr int kAutoKindCount = 29;
+constexpr int kAutoKindCount = 31;
 // "step", "heel", "toe", "lift", "slide", "pivot", "grab", "release", "hand_pivot", "hand_pivot_any",
 // "slide_heel", "slide_toe", "pivot_heel", "pivot_toe", "slide_heel_longest", "slide_toe_longest",
 // "pivot_heel_longest", "pivot_toe_longest", "jump", "land", "lift_heel", "lift_toe", "jump_heel",
-// "jump_toe", "land_heel", "land_toe", "jolt" (story 10-9g)
+// "jump_toe", "land_heel", "land_toe", "jolt" (story 10-9g), "spin", "spin_end" (10-9f), "tap", "drag"
 const char* AutoKindWord(AutoKind k);
 bool AutoKindFromWord(const std::string& w, AutoKind* out);
 AutoType AutoTypeOfKind(AutoKind k);
@@ -362,6 +370,7 @@ bool HasActiveAutoBlocks(const std::vector<Block>& blocks);
 //   lift-off separate (10-9a-3)      the heel; the toe (or the toe end)
 //   jump, land (story 10-9a)         the hips; per side, the heel, toe or toe end (as a lift-off;
 //                                    separate: the heel and the toe or toe end)
+//   tap, drag (story 10-9e)          the heel and the toe (or the toe end), as a pivot
 std::vector<std::string> AutoMissingParts(AutoType t, bool separate, const std::vector<int>& role_to_bone);
 
 // 10-8b fb-1 -- true when a known auto block that is on cannot find its events on this mapping:
@@ -406,7 +415,8 @@ struct AutoLane {
 // part's hspeed vs slide_speed; pivot, |yaw rate| (yaw where valid, else heading where valid, else
 // 0) vs pivot_rate_dps; grab and release, the hand's speed vs hand_contact_speed; hand pivot (both
 // kinds), |heading rate| vs hand_pivot_rate_dps; jump and land (story 10-9a), the hips' vertical
-// speed (no threshold), shaded over the flights both feet are off. Empty for a rule, an unknown
+// speed (no threshold), shaded over the flights both feet are off; tap (story 10-9e) as toe, drag
+// the ball's (else the tip's) hspeed vs drag_speed, shaded where it drags. Empty for a rule, an unknown
 // kind, a failed analysis or an absent part; `why` (optional) then gets the reason ("" for a
 // rule or unknown kind).
 std::vector<AutoLane> AutoBlockLanes(const AutoAnalysis& aa, const Block& b, std::string* why = nullptr);

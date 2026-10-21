@@ -502,6 +502,33 @@ struct PhysicsParams {
     double     spin_end_dps = 5.0;
     double     spin_min_deg = 45.0;
     double     spin_smooth_s = 0.050;
+    // Story 10-9e: foot taps and drags (FootTapEvents, FootDragEvents, foot_taps.h). A tap is a
+    // toe contact (ball or tip) of tap_max_s at most, the heel up (higher above that part than in
+    // the foot's flat pose by tap_heel_rise, leg) and the other foot down the whole time (it
+    // carries the body), its same part at the same support height (within tap_floor_height,
+    // leg: the floor the body stands on). The sensitivity multiplies tap_max_s. Measured on the
+    // fixture dumps (default analysis): no foot contact of 300 ms or less has the other foot down
+    // at any sample (the sprints' toe-only stances, 117-167 ms on Treadmill Running and Two Cycle
+    // Sprint, are single supports), so a walk or a run gives no tap.
+    double     tap_max_s = 0.150;
+    double     tap_heel_rise = 0.03;
+    double     tap_floor_height = 0.03;
+    // A drag is the toe (ball or tip) sliding on its support during a swing: the heel off the
+    // ground, the toe part not in contact (it moves), within drag_height (leg) above or below the
+    // support of its latest contact, at drag_speed to drag_max_speed (leg/s, horizontal, ground
+    // frame), for drag_min_s at least over drag_min_dist (leg) at least; runs drag_gap_s apart or
+    // less (the heel still off) are one. The sensitivity divides drag_min_s. Measured on the
+    // fixture dumps (spec 10-9e): the knee crawl (246 ms), the one-knee kneel (375 ms, its two
+    // runs 100 ms apart joined) and its stand-up (179 ms) drag; no walk or run drags at the
+    // default, the longest such run on one is 79 ms (Walking, Catwalk: found from 67 %). Within
+    // 0.8 cm of the support (drag_height) a swing skims the floor only at toe-off and landing;
+    // past 2 leg/s the toe is swinging.
+    double     drag_height = 0.008;
+    double     drag_speed = 0.5;
+    double     drag_max_speed = 2.0;
+    double     drag_min_s = 0.100;
+    double     drag_min_dist = 0.08;
+    double     drag_gap_s = 0.100;
 };
 
 // One contact of a part, in samples [start, end).
@@ -624,10 +651,11 @@ std::vector<BoneTrack> PhysicsRoleTracks(const std::vector<int>& bone_of_role,
 // hands' rot_world are read (one per sample, else ignored).
 PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& role_tracks, const PhysicsParams& p = {});
 
-enum class PhysicsKind { Step, FootStep, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land, Jolt, Spin, SpinEnd };
+// Story 10-9e appends Tap and Drag (foot_taps.h).
+enum class PhysicsKind { Step, FootStep, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land, Jolt, Spin, SpinEnd, Tap, Drag };
 // Story 10-9f: Spin / SpinEnd, a spin's start / end (side B, start_s / end_s its span, strength =
 // its sweep in degrees; auto_types_spin.cpp).
-constexpr int kPhysicsKindCount = 13;  // story 10-9-0: PhysicsMarkerName's rows follow the enum
+constexpr int kPhysicsKindCount = 15;  // story 10-9-0: PhysicsMarkerName's rows follow the enum
 
 struct PhysicsEvent {
     PhysicsKind kind = PhysicsKind::Step;

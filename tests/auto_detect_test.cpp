@@ -292,11 +292,11 @@ int main()
             CHECK((AutoDefaultColor(static_cast<AutoKind>(k), 'L') != AutoDefaultColor(static_cast<AutoKind>(k), 'R')) !=
                   AutoKindSideless(static_cast<AutoKind>(k)));
         }
-        CHECK(!AutoKindFromWord("tap", nullptr) && !AutoKindFromWord("", nullptr));
+        CHECK(!AutoKindFromWord("future_kind", nullptr) && !AutoKindFromWord("", nullptr));
         Block rule = HeelRule("Step");
         CHECK(!IsAutoBlock(rule) && !AutoBlockKind(rule, nullptr, nullptr));
         Block future;
-        future.auto_type = "tap";  // a type of a newer RAV: an auto block of no known kind
+        future.auto_type = "future_kind";  // a type of a newer RAV: an auto block of no known kind
         CHECK(IsAutoBlock(future) && !AutoBlockKind(future, nullptr, nullptr));
     }
 
@@ -418,7 +418,7 @@ int main()
     // An auto block of an unknown type (a newer RAV's) is kept as it is by Detect.
     {
         Block future;
-        future.auto_type = "tap";
+        future.auto_type = "future_kind";
         future.marker = "Tap L";
         std::vector<Block> blocks = {future};
         const std::vector<int> map = ApplyAutoSettings(blocks, Ticked(false, true, false, false));
@@ -1108,7 +1108,9 @@ int main()
                     case AutoKind::PivotHeel:
                     case AutoKind::PivotToe:
                     case AutoKind::PivotHeelLongest:
-                    case AutoKind::PivotToeLongest: parts = {heel, toe}; break;
+                    case AutoKind::PivotToeLongest: 
+                    case AutoKind::Tap:   // story 10-9e: the heel and the toe, as a pivot
+                    case AutoKind::Drag: parts = {heel, toe}; break;
                     case AutoKind::Step:
                     case AutoKind::Lift:
                     case AutoKind::Slide: parts = {heel, toe, tip}; break;
@@ -1785,11 +1787,11 @@ int main()
             CHECK(changed && Markers(old) == (std::vector<std::string>{"Rule", "Jump L", "Jump R", "Land L", "Land R"}));
             CHECK(map == (std::vector<int>{0, -1, -1}));
             Block future;
-            future.auto_type = "tap";  // an auto type of a newer RAV still stays
+            future.auto_type = "future_kind";  // an auto type of a newer RAV still stays
             future.auto_side = 'B';
             std::vector<Block> keep = {future};
             ApplyAutoSettings(keep, s);
-            CHECK(keep.size() == 5 && keep[0].auto_type == "tap");
+            CHECK(keep.size() == 5 && keep[0].auto_type == "future_kind");
         }
 
         // The record: side=L / R round-trips byte-identical; a pooled copy carries the blocks.

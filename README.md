@@ -25,8 +25,19 @@ ReaAnimViewer is a native REAPER extension (a `.dll`, plus a small video FX that
 
 ---
 
+## What's New in 0.4.0
+
+New since 0.2.2:
+
+- **Auto-Tagging (event markers):** RAV finds footsteps, lift-offs, scuffs, jumps, landings, grabs and releases from the way the bones move, plus any event you describe with your own rules, and writes them as take or project markers. See [Auto-Tagging (Event Markers)](#auto-tagging-event-markers).
+- **Video rendering:** frame camera shots in Video view and render picture + audio with REAPER's own Render dialog. See [Rendering Video](#rendering-video).
+- **Shortcuts window**, the **Model / Skeleton** switch and a clip list, with the viewer options in one tabbed menu.
+
+---
+
 ## Table of Contents
 
+- [What's New in 0.4.0](#whats-new-in-040)
 - [Installation](#installation)
   - [Install with the Demute Reaper Toolkit (easiest)](#install-with-the-demute-reaper-toolkit-easiest)
   - [Install with ReaPack](#install-with-reapack)
@@ -66,8 +77,6 @@ ReaAnimViewer is a native REAPER extension (a `.dll`, plus a small video FX that
   - [Markers](#markers)
   - [Markers follow their item](#markers-follow-their-item)
   - [Editing the markers in REAPER](#editing-the-markers-in-reaper)
-  - [Spreading your sounds onto the markers](#spreading-your-sounds-onto-the-markers)
-  - [Syncing placed sounds with the Library](#syncing-placed-sounds-with-the-library)
   - [Copies of one animation share their tagging](#copies-of-one-animation-share-their-tagging)
   - [Known limits](#known-limits)
 - [Saving and Sharing Projects](#saving-and-sharing-projects)
@@ -294,7 +303,7 @@ Click the **keyboard icon** in the top-right corner of the viewer (left of the F
 
 The window has three parts:
 
-- **Sections** on the left: All, then Viewer, Video, Tagging, Sound Edit (the Library's Edit window), Timelines (scroll and zoom of every RAV timeline) and Mouse. The search field at the top filters the rows by name.
+- **Sections** on the left: All, then Viewer, Video, Tagging, Timelines (scroll and zoom of every RAV timeline) and Mouse. The search field at the top filters the rows by name.
 - **The table**: one line per shortcut. *Action*, *Where* it works, the *Keys* that run it now, what it *Follows* (REAPER or Own), its *Source* (the REAPER action it follows, or "RAV only") and the chain button.
 - **The detail** on the right, for the selected row: its keys, what it follows, its default, and anything in its way (a key another row or window takes). Its buttons: **Record key…**, **Link…** and **Default**.
 
@@ -304,7 +313,7 @@ Double-click a row to record a new key, or for a Timelines row a key or a turn o
 
 Every row is either:
 
-- **REAPER**: it runs on the keys you give its action in REAPER's Actions list, read live. The viewer rows have their own RAV actions ("RAV: Viewer - …", "RAV: Video - …", "RAV: Tagging - …"); REAPER runs them too outside the viewer. The Sound Edit rows follow REAPER's own item actions (split, trims, heal, solo / mute, next / previous item, repeat, set snap offset to cursor, go to previous marker / project start, set take channel mode to normal / mono downmix / left / right for the Sound's Mono, set fade-in / fade-out shape to linear, slight / sharp convex, slight / sharp concave, slight / sharp S-curve on the selected zones): your REAPER keys for them do the same thing in the Sound Edit window while it has the focus. **Exclusive solo selected part** has no REAPER action to follow (REAPER does it with Ctrl+Alt+click on a Solo button): it is a RAV action with no key until you give it one; pressed on the only soloed part it unsolos it. **Left / Right: set Left / set Right / follow rule** (the selected variations' side) are RAV actions with no key until you give them one. Split, Heal and Loop use **B**, **H** and **R** while REAPER gives their action no key. The Timelines rows follow your REAPER bindings of its view actions (scroll and zoom, wheel and keys).
+- **REAPER**: it runs on the keys you give its action in REAPER's Actions list, read live. The viewer rows have their own RAV actions ("RAV: Viewer - …", "RAV: Video - …", "RAV: Tagging - …"); REAPER runs them too outside the viewer. The Timelines rows follow your REAPER bindings of its view actions (scroll and zoom, wheel and keys).
 - **Own**: RAV's own key (or wheel, for the Timelines rows), or a REAPER action you link the row to.
 
 The footer says when `reaper-kb.ini` was last read; RAV reads it again whenever REAPER saves it.
@@ -321,7 +330,7 @@ Each action in the list shows its keys. Click one to check it (its name, and the
 
 ### Find by key
 
-**Find by key** (top bar): click it, then press a key combination or turn the wheel with its modifiers. The window lists every action of REAPER's Main section bound to it (REAPER's defaults included) and every RAV row that runs on it, plus the keys the Sound Edit window keeps for itself (Space, Shift+Space, Esc, E) and, for the plain wheel, the 3D view's fixed Zoom. **Link to…** on a REAPER result links a row to that action at once (the row becomes Own, linked); the footer's **Undo** puts the row back. **Show** selects a RAV row. Esc clears the result.
+**Find by key** (top bar): click it, then press a key combination or turn the wheel with its modifiers. The window lists every action of REAPER's Main section bound to it (REAPER's defaults included) and every RAV row that runs on it and, for the plain wheel, the 3D view's fixed Zoom. **Link to…** on a REAPER result links a row to that action at once (the row becomes Own, linked); the footer's **Undo** puts the row back. **Show** selects a RAV row. Esc clears the result.
 
 ### Default keys
 
@@ -337,10 +346,6 @@ Each action in the list shows its keys. Click one to check it (its name, and the
 | **Ctrl+V** | Paste shot camera | Video view |
 | **E** | Add event at playhead | Tagging view |
 | **Delete** | Suppress / delete event | Tagging view |
-| your REAPER keys | Trims, split (**B**), heal (**H**), solo / mute the selected part, next / previous variation, Loop (**R**), snap offset at the cursor, previous zone start / file start, Mono off / sum / left / right, fade-in / fade-out shapes (also the **Fade in** / **Fade out** buttons above the waveform) | Sound Edit |
-| **Ctrl+Shift+wheel up** | Gain of the selected zones: +1 dB per notch (notches in a row = one undo point) | Sound Edit waveform |
-| **Ctrl+Shift+wheel down** | Gain of the selected zones: -1 dB per notch | Sound Edit waveform |
-| **Ctrl+Alt+drag** along a fade | Its curve, as REAPER: up = convex, down = concave (the small diamond in the fade's middle does the same; double-click it: its shape's own curve). With several zones selected, all their fades on that side follow | Sound Edit waveform |
 | your REAPER bindings | Scroll and zoom (wheel, Alt+wheel, Ctrl+wheel, +, -, Up, Down by default) | Timelines |
 
 A key you bind is taken from REAPER while the viewer has the focus: bind Space, for example, and Space no longer starts or stops playback from the viewer. Hold Ctrl, Shift or Alt with it to keep REAPER's own key free. The key caps and tooltips in the viewer show your keys, custom ones in the accent colour. On AZERTY and other layouts with an AltGr key, Windows treats Ctrl+Alt+key as AltGr+key, so a Ctrl+Alt binding may type a character instead.
@@ -625,65 +630,6 @@ You can also correct events right on REAPER's timeline, with the RAV window open
 - With **Both**, the other marker of the same event follows (drag one, the other moves; delete one, the other goes).
 - After editing a committed marker, the item still reads **markers up to date**: no preview appears. Ctrl+Z undoes the marker edit and the event change together.
 - The items linked to it follow too (see the next section).
-
-### Spreading your sounds onto the markers
-
-Cut a footstep (one item, or a stack of layers) and its variations, then tell RAV "these sounds, on every footstep". It works like **Populate**, except that RAV takes the sounds you selected instead of a library you picked. It works for any marker: a foot, a hand, the body, a knee, your own markers.
-
-1. Select the sound items. Items that overlap in time are one variation and its layers; items apart in time (or touching end to end) are separate variations. An item holding its variations as takes (NVK style) is one Sound whose takes are its variations. A selected NVK folder item is one variation holding its child items: when its layers hold their variations as takes, every placement plays the same take on all its layers.
-2. Click the label of one RAV project marker of the kind you want, for example `FS L`. With several RAV markers selected, the first in time is used and the report says so. With **Markers written** set to **Take** only, there is no project marker to select: the action does nothing and says so.
-3. Run **RAV: Tagging - Attach selected items to selected marker (this animation)** for every item of this animation (the same animation name, linked copies included), or **(all animations with this marker)** for every animation item that has that marker.
-
-**Both sides.** The marker's kind is taken with its sides: selecting an `FS L` marker also gives the sounds to the `FS R` markers, and the reverse. RAV reads the side from the rule that writes the marker, not from its name. A kind with no side (a body marker, or a rule of your own) is that kind alone.
-
-RAV turns your selection into one library per kind, named without its side (`FS`), listed under **Attached** in the Library view: a Random of your variations, a layered variation being a Blend of its layers. Each sound is placed by its snap offset: the snap point lands on the marker, and the other layers keep their place under the top one. The library is given to the rules that write that kind (both sides), then Populate places it: every marker gets a variation drawn at random (avoiding the last two, also from one animation item to the next), takes included. Only those rules are populated: your other libraries are left as they are. The sounds follow the animation item and its markers like any populated sound.
-
-Your first selected variation (with its layers) is not copied: it moves onto the marker you selected, its snap point on it, and stays attached to that marker. It follows the marker, Populate leaves that marker alone, and the copies on the other markers avoid repeating it. The other selected items (and the child items of a selected folder item) move after the end of the project, side by side as you cut them. All of them are the library's sources, so keep them. The result shows at the bottom right of REAPER's window, and Ctrl+Z undoes the whole run (library, assignment, moved items, placed sounds).
-
-- **Run it again.** Run the action again with a new selection on the same kind: the same `FS` library gets the new sounds in place of the old ones, for this animation (every item of it) or for every animation, and those markers are populated again (your hand edits are kept, as with Populate). The sounds an earlier run (or you, by hand) attached to these markers are never deleted: they move after the end of the project with the other sources, and the report counts them. You can edit the library like any other (rename it too: it stays the `FS` library, reshuffle, change a variation).
-- **Variations, takes and tracks.** An item whose take has take markers (2 or more) gets one variation per marker (Detection **Take markers**); an item without them is cut on silence (as a new Sound in the Library: -60 dB, 200 ms gap): each region of sound is a variation, wherever it sits in the file. Either way, each variation's snap point (the S of Sound Edit) is found on its own sound (the Sound's Sync, Attack or Peak), never copied from where your original sits against its marker, and every copy is as long as your original and cut around that snap as your original is around its snap offset, so its snap lands on the marker. The zones show in Sound Edit at once. An NVK folder pile takes its variations the same way from its top item (its take markers, else its regions of sound), but its copies are not cut to your original's length: each layer plays its whole variation of that number. An item with several takes keeps its takes as its variations. The layers of a stack play the same variation number (region or take 2 of one layer goes with 2 of the others), with or without the NVK folder item. The copies land on your source items' own tracks, where you cut them: RAV never makes a track or a folder for them and never moves your items (copies that overlap simply overlap there).
-
-#### Adding a layer (Add to pile)
-
-Cut the new layer's variations and put the first one where you want it against an attached sound (for example 20 ms after the footstep's snap point). Select the new items with the attached sound: the original or any copy RAV placed for it. Several linked instances of that sound may be selected with them: the one nearest the new items is used. Sounds of two different layers (or of two markers that are not linked): RAV refuses and changes nothing. No marker to select. Then run one of:
-
-- **RAV: Tagging - Add selected items to stack (all animations with this marker)**: Add to pile with **Apply to Project** (below): the layer goes on every instance of the kind, in every animation.
-- **RAV: Tagging - Add selected items to stack (this animation)**: Add to pile with **Apply to Anim**: the layer goes on every instance of this animation (every item with the same animation name, linked copies included); the other animations are unchanged.
-
-The layer keeps the offset you gave it (measured between snap points). The new items never include the pile's own sounds (its folder item, the library's sources). The new variation you put against the sound stays there, attached to that marker; the others go after the end of the project with the other sources. Ctrl+Z undoes it in one step.
-
-#### The Attach manager window
-
-**RAV: Attach manager (at mouse)** opens a small window at the mouse pointer, outside RAV's panel (give it a key or a toolbar button in REAPER's Actions window). It opens wholly on screen with the pointer on its title row, stays open and follows REAPER's time selection, item selection and Ctrl+Z; drag its title row to move it, Esc or ✕ closes it. The four actions above keep working; they are its Attach and Add to pile with **Anim** or **Project**.
-
-Every sound Attach or Add to pile places is an **instance**: the copies on the markers and the original you put there alike. Each instance draws its variation (takes, take markers) as Populate does, and has the original's length and window.
-
-- **Apply to**: **Item**, **Anim** or **Project** says how far each gesture goes: **Item** = this instance only; **Anim** = every item of this animation (the same animation name, as RAV shows it, linked copies included); **Project** = every instance of these markers in the project. It is a setting of the project (Anim at first, one undo point when you change it), and it also applies to what you do in REAPER with the window closed (see below).
-- **Marker**: make a time selection over the markers you want. The list holds one entry per marker kind and side in it (`FS L`, `FS R`, `Scuff L`...), each at its first marker in time, plus the marker label you clicked, if any. It picks your choice, else the clicked label, else the first in time. **On** names its animation.
-- **Selection**: **Attach** or **Add to pile**, chosen from the item selection (an attached sound plus new items: Add to pile on that sound's marker; switch back with the two buttons). The line under it says what will happen, and the blue button runs it (**Attach · Anim**): one undo point, the report at the bottom right of REAPER. When it cannot run, it is greyed and the reason shows above it.
-  - **Attach** puts the selected sound on the marker and, with **Anim** or **Project**, on every marker of that kind in scope: L and R together, or only the marker's side once L and R are separated. It replaces the sound those markers had (the previous original goes after the end of the project). With **Item**, only that marker gets it, nothing is copied elsewhere and the library is unchanged.
-  - **Add to pile** adds the new items as a layer to every linked instance in scope, at the same distance from the marker. With **Item**, only that instance gets it.
-  - **Reshuffle** draws the variation of the selected copies again (the copies RAV placed, not your original), as RAV's Reshuffle draws, and leaves every other sound as it is: one undo point. Greyed when no copy is selected.
-- **L and R** says whether the marker's kind plays one sound on both sides (**Together**) or two (**Separate**), in the marker's animation. **Separate L and R** (Anim or Project; greyed with Item): L and R keep the same sound but become two groups: adding to the pile and deleting then reach one side only. **Merge L and R (keep the L sound)**: both sides play the chosen marker's side's sound again; the other side's sounds are replaced.
-
-**In REAPER, with the window open or closed**, deleting an instance deletes its linked instances in **Anim** or **Project** (as **Apply to** says; with **Item**, only that one): its layer is gone from every linked instance and from the library in scope. An original a library still plays from is never lost: it goes after the end of the project with the other sources. Nothing else follows: clicking an instance selects only it, and its volume, fades and position are its own. The delete of the linked instances is one RAV undo point right after yours (Ctrl+Z twice puts both back).
-
-RAV keeps this in the kind's one `FS` library, under Switches it manages: **RAV - FS animations** (one value per animation, shared by all its items, the default value for the others) and **RAV - Side** (L and R, once separated). It never makes a track or a folder, never moves an item other than the sounds concerned, and never touches another marker kind.
-
-### Syncing placed sounds with the Library
-
-Changing a setting in the Library (a node's volume, a Blend offset, a Sound's fades, sync point, zones or level, a variation switched off) never moves anything in the arrange: the sounds already placed keep what they had. The Library shows what is behind:
-
-- At the top of the tree, the **Placed sounds** card says how many changes of the library shown are not yet on its placed sounds ("1 change not yet on 26 placed sounds in 3 items"). Each library has its own card. When everything matches it folds into a green line, **Placed sounds match the library**.
-- The nodes whose placed sounds are behind carry a **↻ N** mark (N placed sounds); hover it for what changed. The node panel says it too, with a **Sync this node…** button.
-
-**Sync…** (or a **↻** mark: the sounds of that node, with every change they are behind on) opens the choice of where: the animation items holding sounds behind, by track, each with its sounds and the nodes they play. Check the items (per item, a whole track, **Selected in REAPER**, **All** / **None**), then **Apply to N items** or **Apply to all**. An item left unchecked keeps the old setting and stays counted on the card.
-
-Sync keeps the draw: each placed sound keeps its variation, track and position, and RAV updates what changed, in place (your take FX and other edits on the item stay). Only a sound whose variation was switched off is drawn again, among the variations still on; with none left on, it is left as it is. A change of structure (a node added, a Switch value, an assignment) is not Sync's: **Populate** handles it. **Repopulate (reset)** does not change: it removes and draws again.
-
-**Sounds you edited by hand.** A placed sound whose volume, fades, position or length you changed in REAPER is listed in a second dialog (the item, its time, what you changed, its node). For each one, or for all of them: **Keep** leaves your change and updates the rest (your volume change stays on top of the library's new volume), **Overwrite** puts the library's settings back (a moved sound goes back to its place). **Don't ask again** remembers the answer when it is the same for all of them (greyed when the choices differ). The rule is per project, in ☰ › Tagging view › Sounds › **Hand-edited placed sounds, on Sync**: Ask each time, Keep my edits, or Overwrite them.
-
-One Sync is one undo point, "RAV: Sync placed sounds" (the remembered rule included); the toast says how many sounds were adjusted, redrawn, kept, overwritten and skipped (left as they are: no variation left on, or a change only Populate makes). Sounds placed by a RAV older than this feature are not counted until their next Populate.
 
 ### Copies of one animation share their tagging
 

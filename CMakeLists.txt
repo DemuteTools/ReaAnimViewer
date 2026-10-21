@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(reaanimviewer
-    VERSION 0.2.2
+    VERSION 0.4.0
     DESCRIPTION "Reaper extension that loads glTF/FBX rigs synced to the transport"
     LANGUAGES CXX
 )
@@ -19,7 +19,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 # the sound code still compiles. The branch's default (ON on dev, OFF on release); -DRAV_WITH_SOUNDS=ON|OFF
 # overrides it for that configure only: like RAV_VERSION below, it is dropped from the cache right away, so a
 # build folder never carries one branch's value into the other.
-set(RAV_WITH_SOUNDS_DEFAULT ON)
+set(RAV_WITH_SOUNDS_DEFAULT OFF)  # branch release: 0.4.0 ships without the sound library (dev: ON)
 if(DEFINED RAV_WITH_SOUNDS AND NOT RAV_WITH_SOUNDS STREQUAL "")
     if(RAV_WITH_SOUNDS)
         set(RAV_WITH_SOUNDS_EFFECTIVE ON)

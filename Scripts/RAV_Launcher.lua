@@ -1,5 +1,5 @@
 -- @description ReaAnimViewer
--- @version 0.2.2
+-- @version 0.4.0
 -- @author Anthony Deneyer
 -- @about
 --   # ReaAnimViewer
@@ -12,7 +12,10 @@
 -- @links
 --   GitHub https://github.com/DemuteTools/ReaAnimViewer
 -- @changelog
---   - Fix: Run said "installed" without installing anything when ReaPack still listed a deleted copy of the extension. It now opens ReaPack and tells you which package to uninstall
+--   New since 0.2.2:
+--   - Auto-Tagging (event markers): footsteps, lift-offs, scuffs, jumps, landings, grabs and releases found from the bones' motion, plus your own rules, written as take or project markers
+--   - Video rendering: frame camera shots in Video view and render picture + audio with REAPER's Render dialog
+--   - Shortcuts window, Model / Skeleton switch and clip list; the viewer options in one tabbed menu
 -- @provides
 --   [nomain] .
 --   [win64 extension] reaper_animviewer.dll https://github.com/DemuteTools/ReaAnimViewer/releases/download/v$version/$path

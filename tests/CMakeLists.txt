@@ -147,6 +147,14 @@ add_executable(auto_types_test auto_types_test.cpp ${RAV_AUTO_SRCS} ../src/motio
 target_include_directories(auto_types_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME auto_types COMMAND auto_types_test)
 
+# Story 10-10e -- the Smart Detection type picker's data: common types, search, presets.
+add_executable(auto_type_picker_test auto_type_picker_test.cpp ../src/auto_type_picker.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/motion_whoosh.cpp ../src/bone_events.cpp ../src/rule_record.cpp ../src/event_list.cpp
+               ../src/tagging_signal.cpp ../src/sound_assign.cpp ../src/sound_auto_assign.cpp ../src/sound_populate_plan.cpp
+               ../src/sound_switch.cpp ../src/sound_draw.cpp ../src/sound_place_plan.cpp ../src/sound_entries.cpp
+               ../src/sound_record.cpp ../src/sound_zones.cpp)
+target_include_directories(auto_type_picker_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME auto_type_picker COMMAND auto_type_picker_test)
+
 # Story 10-9f -- the Spin type (src/auto_types_spin.cpp).
 add_executable(auto_spin_test auto_spin_test.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/motion_whoosh.cpp ../src/bone_events.cpp
                ../src/rule_record.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)

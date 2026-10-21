@@ -23,6 +23,7 @@
 
 #include "auto_detect.h"
 #include "auto_types.h"  // story 10-9-0: the types' and kinds' rows
+#include "auto_type_picker.h"  // story 10-10e: common types, search, presets
 #include "bone_roles.h"
 #include "dash_plan.h"  // freeze audit #1
 #include "event_list.h"
@@ -3796,9 +3797,6 @@ AutoSettings g_auto_ui;
 AutoSettings g_auto_seen;  // the item's own, as last read
 MediaItem*   g_auto_item = nullptr;
 bool         g_auto_init = false;
-// Story 10-8c: the categories the user added (+) on this item in this session. A category is
-// shown when added, or when the item has one of its auto blocks.
-bool g_auto_added[kAutoCategoryCount] = {};
 
 void SyncAutoSettings(const TaggingModel& m)
 {
@@ -3807,7 +3805,6 @@ void SyncAutoSettings(const TaggingModel& m)
         g_auto_ui = g_auto_seen = cur;
         g_auto_item = m.item;
         g_auto_init = true;
-        for (bool& a : g_auto_added) a = false;
         return;
     }
     if (cur == g_auto_seen) return;
@@ -3971,84 +3968,652 @@ const char* AutoTypeHint(AutoType t)
     return AutoTypeRow(t).hint;
 }
 
-// Story 10-8c: a category's fold row, flat (not a card): its chevron and label, how many of its
-// types are ticked, and an x on the right. Returns whether it is open (kept in the window's
-// storage under open_id, open by default); *remove: the x was clicked.
-bool AutoCategoryRow(AutoCategory c, ImGuiID open_id, bool* remove)
+// ---- Story 10-10e: the type picker (mockup maquette-auto-detection-simple-10-10e-v3) ----------------
+// Every type is a two-zone chip (ui::SplitChip, the Assign chips' pill): its name ticks / unticks it,
+// its ⚙ shows its settings in the card under the list (and ticks it when it was not). The user's
+// presets (a named set of ticks, kept on this PC across projects) sit above the search. Only the
+// chip list scrolls, at a fixed height; the settings card keeps one height (the tallest seen at this
+// width), right above Detect, so no clickable moves when a type is ticked, shown or searched.
+
+constexpr char kPrefAutoPresets[] = "tagging.auto_presets";
+
+int  g_auto_sel = -1;           // the type whose settings the card shows (-1: none)
+char g_auto_search[64] = {};    // the search box
+std::vector<AutoPreset> g_auto_presets;
+bool g_auto_presets_loaded = false;
+int  g_preset_edit = -1;        // the preset the ⚙ menu / rename is about (-1: a new one)
+bool g_preset_delete_ask = false;
+bool g_preset_name_focus = false;
+char g_preset_name[64] = {};
+// The settings card's height: one for the panel's width (grown when a type's settings need more).
+float g_card_h = 0.0f, g_card_w = -1.0f, g_card_bottom_h = 0.0f;
+float g_auto_fixed_h = 0.0f;  // the section's height less its chip list, last frame
+float g_auto_sec_h = 0.0f;    // the whole section's height, last frame (the panel lays out from it)
+
+// The presets as stored; a bad value reads as none (never breaks the panel).
+std::vector<AutoPreset>& AutoPresets()
 {
-    ImGuiStorage* st = ImGui::GetStateStorage();
-    bool          open = st->GetBool(open_id, true);
-    const float   fh = ImGui::GetFrameHeight();
-    const ImVec2  p = ImGui::GetCursorScreenPos();
-    const float   w = ImGui::GetContentRegionAvail().x;
-    const float   gap = ui::Dp(4.0f);
-    if (ImGui::InvisibleButton("##fold", ImVec2(std::max(1.0f, w - fh - gap), fh))) {
-        open = !open;
-        st->SetBool(open_id, open);
+    if (!g_auto_presets_loaded) {
+        g_auto_presets_loaded = true;
+        try {
+            g_auto_presets = DecodeAutoPresets(LoadPrefString(kPrefAutoPresets));
+        } catch (...) {
+            g_auto_presets.clear();
+        }
     }
-    const bool  hovered = ImGui::IsItemHovered();
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    // 13-14: the theme's row look under the mouse and its fold triangle (the whole row folds).
-    ui::RowBackground(dl, ImVec2(p.x - gap, p.y), ImVec2(p.x + w - fh - gap, p.y + fh), hovered ? ui::kRowHovered : 0u);
-    ui::DrawFoldTriangle(dl, ImVec2(std::floor(p.x + ui::Dp(5.0f)) + 0.5f, std::floor(p.y + fh * 0.5f) + 0.5f), open,
-                         hovered ? ui::kText : ui::kMuted);
-    const char*  label = AutoCategoryLabel(c);
-    const ImVec2 ts = ImGui::CalcTextSize(label);
-    const float  ty = p.y + (fh - ts.y) * 0.5f;
-    dl->AddText(ImVec2(p.x + ui::Dp(16.0f), ty), ui::kText, label);
-    char count[32];
-    std::snprintf(count, sizeof(count), "%d on", AutoCategoryOnCount(g_auto_ui, c));
-    dl->AddText(ImVec2(p.x + ui::Dp(16.0f) + ts.x + ui::Dp(8.0f), ty), ui::kFaint, count);
-    ImGui::SameLine(0.0f, gap);
-    *remove = ui::IconOnlyButton("##remove", ToolIcon(kToolCrossSmall), nullptr, fh);
-    return open;
+    return g_auto_presets;
 }
 
-void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
+void SaveAutoPresets()
 {
-    SyncAutoSettings(m);
-    const AutoSettings  shown = ReadAutoSettings(rules.blocks);  // the values a drag previews
+    try {
+        SavePrefString(kPrefAutoPresets, EncodeAutoPresets(g_auto_presets));
+    } catch (...) {
+    }
+}
+
+// What the item's blocks say about one type: Detect's raise and the sides that found nothing.
+struct AutoTypeState {
+    std::vector<const Block*> blocks;
+    bool                      differ = false;
+    double                    raised_from = -1.0;
+    std::string               raised_marker;
+    std::string               none_parts;
+};
+
+AutoTypeState ReadAutoTypeState(const TaggingModel& m, const ItemRules& rules, AutoType t)
+{
+    AutoTypeState s;
+    for (const Block& b : rules.blocks) {
+        AutoKind k;
+        if (!AutoBlockKind(b, &k, nullptr) || AutoTypeOfKind(k) != t) continue;
+        if (!s.blocks.empty() && (b.sens != s.blocks[0]->sens || b.offset_ms != s.blocks[0]->offset_ms ||
+                                  b.sens_from != s.blocks[0]->sens_from))
+            s.differ = true;
+        if (s.raised_from < 0.0 && b.sens_from >= 0.0) {
+            s.raised_from = b.sens_from;
+            s.raised_marker = b.marker;
+        }
+        if (AutoSearchedAt(m.auto_none, b)) s.none_parts += (s.none_parts.empty() ? "" : ", ") + b.marker;
+        s.blocks.push_back(&b);
+    }
+    return s;
+}
+
+// A text in at most two lines of `w` (its line breaks read as spaces), the second ellipsized; the
+// whole text as a tooltip when shortened. Always two lines high (the card's slots never move).
+void TwoLineText(const char* text, ImU32 col)
+{
+    std::string s = text ? text : "";
+    for (char& c : s)
+        if (c == '\n') c = ' ';
+    const float  w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    const float  lh = ImGui::GetTextLineHeight();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::Dummy(ImVec2(w, lh * 2.0f + ImGui::GetStyle().ItemSpacing.y * 0.25f));
+    ImFont*     font = ImGui::GetFont();
+    const float fs = ImGui::GetFontSize();
+    const char* b = s.c_str();
+    const char* e = b + s.size();
+    const char* l1 = font->CalcWordWrapPositionA(fs / font->FontSize, b, e, w);
+    if (l1 == b && b < e) l1 = b + 1;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddText(font, fs, p, col, b, l1);
+    while (l1 < e && *l1 == ' ') ++l1;
+    bool cut = false;
+    if (l1 < e) cut = ui::EllipsisText(dl, ImVec2(p.x, p.y + lh), p.x + w, col, std::string(l1, e));
+    if (cut) ui::ItemTipText(text);
+}
+
+// The settings of one type, in fixed slots: the header (its tick, category, hide), its hint (2
+// lines), Sensitivity / Offset (+ Per side), one note line, the per-side rows, the type's own options;
+// pinned at the bottom, Marker name and Sound. Every option comes from the type's row.
+void DrawAutoTypeSettings(const TaggingModel& m, const ItemRules& rules, AutoType t, float card_inner_h)
+{
     const AutoSettings& item = g_auto_seen;
-    ui::Section sec;
-    if (ui::BeginSection(sec, "Smart Detection")) {
-        // Two number columns on the right, under their captions; the type's tick on the left.
-        // Story 10-8h: the columns from the width inside the card (its right padding too), the
-        // fields narrowed on a narrow panel, so the last field and its unit always fit.
-        const float x0 = ImGui::GetCursorPosX();
-        const float avail = std::max(1.0f, ImGui::GetContentRegionAvail().x);
-        const float cap_w = ImGui::CalcTextSize("Sensitivity").x;
-        const float min_label = ui::Dp(90.0f) + ImGui::GetFrameHeight() * 2.0f;  // tick, label, row icon
-        const float col_gap = ui::Dp(10.0f);
-        float       fw = ui::Dp(48.0f);
-        while (fw > ui::Dp(24.0f) &&
-               min_label + std::max(NumberFieldWidth(fw, "%"), cap_w) + col_gap + NumberFieldWidth(fw, "ms") > avail)
-            fw -= ui::Dp(2.0f);
-        const float w_sens = NumberFieldWidth(fw, "%"), w_off = NumberFieldWidth(fw, "ms");
-        const float x_off = x0 + std::max(0.0f, avail - w_off);
-        const float x_sens = std::max(x0, x_off - col_gap - std::max(w_sens, cap_w));
-        const float x_row = x0 + ImGui::GetFrameHeight() + ui::Dp(4.0f);  // a type's rows, under its label
-        // Story 10-8c: the categories shown (added with +, or with a block on the item), and the
-        // fold state of each (the window's storage).
-        bool    cat_shown[kAutoCategoryCount];
-        bool    any_shown = false, any_hidden = false;
-        ImGuiID cat_open_id[kAutoCategoryCount];
-        bool    cat_open[kAutoCategoryCount] = {};
-        // Story 10-9-1 (Antho): a category with no type yet (Body) is not offered by +.
-        bool    cat_offered[kAutoCategoryCount];
-        for (int c = 0; c < kAutoCategoryCount; ++c) {
-            cat_shown[c] = g_auto_added[c] || AutoCategoryInBlocks(rules.blocks, static_cast<AutoCategory>(c));
-            cat_offered[c] = !AutoTypesOf(static_cast<AutoCategory>(c)).empty();
-            if (cat_shown[c])
-                any_shown = true;
-            else if (cat_offered[c])
-                any_hidden = true;
-            ImGui::PushID(c);
-            cat_open_id[c] = ImGui::GetID("##autocatopen");
+    const int           ti = static_cast<int>(t);
+    const AutoTypeInfo& row = AutoTypeRow(t);
+    ImGuiStorage*       storage = ImGui::GetStateStorage();
+    ImGui::PushID(ti);
+    // Header.
+    {
+        bool              on = g_auto_ui.type[ti].on;
+        const std::string lbl = std::string(AutoTypeLabel(t)) + "##cardtick";
+        if (ui::Checkbox(lbl.c_str(), &on)) g_auto_ui.type[ti].on = on;
+        ui::ItemTipText(on ? "Untick: Detect removes this type from the item." : "Tick: Detect adds this type to the item.");
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        ui::Caption(AutoCategoryLabel(row.category));
+        const float fh = ImGui::GetFrameHeight();
+        ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowContentRegionMax().x - fh));
+        if (ui::IconOnlyButton("##hide", ToolIcon(kToolCrossSmall), "Hide the settings", fh)) g_auto_sel = -1;
+    }
+    TwoLineText(AutoTypeHint(t), ui::kMuted);
+    const bool          on = g_auto_ui.type[ti].on;
+    const bool          detected = item.type[ti].on;
+    const AutoTypeState st = ReadAutoTypeState(m, rules, t);
+    // The rows: the item's blocks of the type, or the blocks Detect would create.
+    std::vector<Block> rows;
+    bool               differ = st.differ;
+    if (detected) {
+        for (const Block* b : st.blocks) rows.push_back(*b);
+    } else {
+        AutoSettings one = g_auto_ui;
+        for (AutoTypeSettings& o : one.type) o.on = false;
+        one.type[ti] = g_auto_ui.type[ti];
+        one.type[ti].on = true;
+        rows = AutoBlocks(one);
+        for (size_t i = 1; i < rows.size(); ++i)
+            if (rows[i].sens != rows[0].sens || rows[i].offset_ms != rows[0].offset_ms) differ = true;
+    }
+    const bool    can_split = rows.size() > 1;
+    const ImGuiID split_id = ImGui::GetID("##autosplit");
+    const int     split_state = storage->GetInt(split_id, -1);  // -1: default (open when rows differ)
+    const bool    split = can_split && (split_state < 0 ? differ : split_state == 1);
+    auto row_list = [&rows](bool sens) {
+        std::string out;
+        char        buf[64];
+        for (const Block& b : rows) {
+            std::snprintf(buf, sizeof(buf), sens ? " %.0f %%" : " %.0f ms", sens ? b.sens : b.offset_ms);
+            out += (out.empty() ? "" : ", ") + b.marker + buf;
+        }
+        return out;
+    };
+    const float fw = ui::Dp(40.0f);
+    if (!on) ImGui::BeginDisabled();
+    // Sensitivity / Offset, each caption with its field (a pair wraps as a whole), then Per side.
+    {
+        const double sens_v = rows.empty() ? g_auto_ui.type[ti].sens : rows[0].sens;
+        const double off_v = rows.empty() ? g_auto_ui.type[ti].offset_ms : rows[0].offset_ms;
+        const float  gap = ImGui::GetStyle().ItemSpacing.x;
+        ImGui::AlignTextToFramePadding();
+        ui::Caption("Sensitivity");
+        ImGui::SameLine();
+        if (split) {
+            ui::ToneText("per side", ui::kFaint);
+        } else {
+            AutoValueField("##sens", t, true, detected, sens_v, fw, detected ? st.raised_from : -1.0);
+            if (differ)
+                ui::ItemTip("%s\n%s", row_list(true).c_str(),
+                            st.raised_from >= 0.0 ? "Raised by Detect on a row. An edit sets every row." : "An edit sets every row.");
+            else
+                AutoSensTooltip(detected ? st.raised_from : -1.0);
+        }
+        const float off_w = ui::TextWidth("Offset") + gap + ui::NumberFieldWidth(fw, "ms");
+        if (ui::SameLineIfFits(off_w)) ImGui::SameLine(0.0f, ui::Dp(12.0f));
+        ImGui::AlignTextToFramePadding();
+        ui::Caption("Offset");
+        ImGui::SameLine();
+        if (split) {
+            ui::ToneText("per side", ui::kFaint);
+        } else {
+            AutoValueField("##offset", t, false, detected, off_v, fw);
+            if (differ) ui::ItemTip("%s\nAn edit sets every row.", row_list(false).c_str());
+            else ui::ItemTip("Moves every marker of this type, in ms (+ = later).");
+        }
+        if (can_split) {
+            if (ui::SameLineIfFits(ui::IconButtonWidth("Per side"))) ImGui::SameLine(0.0f, ui::Dp(12.0f));
+            if (ui::IconButton(ToolIcon(split ? kToolFoldOpen : kToolFoldClosed), "Per side##autosplitbtn"))
+                storage->SetInt(split_id, split ? 0 : 1);
+            ui::ItemTipText(split ? "One sensitivity and offset for the whole type (an edit sets every row)."
+                                  : "Sensitivity and offset per side or part.");
+        }
+    }
+    if (!on) ImGui::EndDisabled();
+    // One note line, always there (empty when there is nothing to say).
+    {
+        std::string note;
+        ImU32       col = ui::kFaint;
+        if (!on) {
+            note = "Not ticked: Detect does not place it.";
+        } else if (detected && !st.none_parts.empty()) {
+            note = "No event up to 100 % (" + st.none_parts + ")";
+            col = ui::kWarn;
+        } else if (detected && st.raised_from >= 0.0 && !split) {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), " (from %.0f %%): it found no event there.", st.raised_from);
+            note = "Raised by Detect on " + st.raised_marker + buf;
+            col = ui::kWarn;
+        }
+        if (note.empty()) ImGui::Dummy(ImVec2(1.0f, ImGui::GetTextLineHeight()));
+        else ui::FitText(note, col);
+        if (col == ui::kWarn && !st.none_parts.empty())
+            ui::ItemTip("Detect tried up to 100 %% and found nothing there: the value is unchanged.");
+    }
+    if (!on) ImGui::BeginDisabled();
+    // Per side: one row per block, labelled by its marker.
+    if (split) {
+        const float lcol = ui::Dp(82.0f);
+        for (size_t bi = 0; bi < rows.size(); ++bi) {
+            const Block& b = rows[bi];
+            ImGui::PushID(static_cast<int>(bi));
+            ui::LabelRowText(b.marker, ui::NumberFieldWidth(fw, "%"), lcol, ui::kMuted);
+            for (int f = 0; f < 2; ++f) {
+                const bool sens = f == 0;
+                if (!sens) ImGui::SameLine();
+                if (detected) {
+                    AutoBlockField(sens ? "##bsens" : "##boffset", t, b, sens, fw);
+                } else {
+                    double v = sens ? b.sens : b.offset_ms;
+                    if (ui::DragNumber(sens ? "##bsens" : "##boffset", &v, 1.0, 0, sens ? "%" : "ms", fw) != ui::DragNumberEvent::None)
+                        SetAutoRowValue(g_auto_ui.type[ti], b.auto_type, b.auto_side, sens, ClampAutoValue(sens, v));
+                }
+                if (sens) AutoSensTooltip(b.sens_from);
+                else ui::ItemTip("Moves this row's markers, in ms (+ = later).");
+            }
             ImGui::PopID();
         }
-        ImGuiStorage* storage = ImGui::GetStateStorage();
-        // Story 10-8i: "Is looping" on its own row, first: a setting of the item, not of a
-        // category. One undo point, the events read again at once.
+    }
+    // The type's own options (each waits for Detect).
+    const float lcol = ui::Dp(82.0f);
+    if (t == AutoType::Step) {
+        static const char* const kStepModes[] = {"Combined", "Separate"};
+        ui::LabelRow("Parts", ui::Dp(120.0f), lcol);
+        int sel = g_auto_ui.separate_steps ? 1 : 0;
+        if (ui::Segmented("##stepmode", kStepModes, 2, &sel)) g_auto_ui.separate_steps = sel == 1;
+        ui::ItemTip("Combined: one marker per landing (FS L / FS R).\nSeparate: the heel and the toe "
+                    "each get theirs (Heel L, Toe L...).");
+    }
+    if (row.part_split) {
+        // Story 10-9a-3: lift-off, jump, land, kick: each event on its part's block.
+        static const char* const kPartModes[] = {"Combined", "Separate"};
+        const char*              word = AutoKindRow(AutoKindsOf(t).front()).marker;
+        ui::LabelRow("Parts", ui::Dp(120.0f), lcol);
+        int               sel = g_auto_ui.separate_parts[ti] ? 1 : 0;
+        const std::string id = std::string("##partmode") + std::to_string(ti);
+        if (ui::Segmented(id.c_str(), kPartModes, 2, &sel)) g_auto_ui.separate_parts[ti] = sel == 1;
+        ui::ItemTip("Combined: one marker per event (%s L / %s R).\nSeparate: on the part that %s "
+                    "(%s Heel L, %s Toe L...).",
+                    word, word,
+                    t == AutoType::Land   ? "touches first"
+                    : t == AutoType::Kick ? "is fastest"
+                                          : "leaves last",
+                    word, word);
+    }
+    if (t == AutoType::Slide || t == AutoType::Pivot) {
+        // Story 10-8m: heel / toe separate scuffs, and Each part or Longest part while Separate.
+        static const char* const kScuffModes[] = {"Combined", "Separate"};
+        static const char* const kScuffParts[] = {"Each part", "Longest part"};
+        ScuffParts& mode = t == AutoType::Slide ? g_auto_ui.slide_parts : g_auto_ui.pivot_parts;
+        const char* word = t == AutoType::Slide ? "Slide" : "Pivot";
+        ui::LabelRow("Parts", ui::Dp(120.0f), lcol);
+        int sel = mode == ScuffParts::Combined ? 0 : 1;
+        if (ui::Segmented(t == AutoType::Slide ? "##slidemode" : "##pivotmode", kScuffModes, 2, &sel))
+            mode = sel == 0 ? ScuffParts::Combined : ScuffParts::EachPart;
+        ui::ItemTip("Combined: one marker per scuff (%s L / %s R).\nSeparate: the heel and the toe "
+                    "each get their block (%s Heel L, %s Toe L...).",
+                    word, word, word, word);
+        if (mode != ScuffParts::Combined) {
+            if (ui::SameLineIfFits(ui::Dp(150.0f))) ImGui::SameLine();
+            else ImGui::SetCursorPosX(ImGui::GetCursorPosX() + lcol);
+            int part = mode == ScuffParts::Longest ? 1 : 0;
+            if (ui::Segmented(t == AutoType::Slide ? "##slideparts" : "##pivotparts", kScuffParts, 2, &part))
+                mode = part == 1 ? ScuffParts::Longest : ScuffParts::EachPart;
+            ui::ItemTip("Each part: every part that scuffs gets its event (a whole-foot scuff gives a "
+                        "heel and a toe one).\nLongest part: one event per scuff, on the part that "
+                        "holds longest.");
+        }
+    }
+    if (row.start_option) {
+        // Story 10-9c (10-9j: the scuffs too): the marker at the motion's fastest point, or where it starts.
+        static const char* const kStartModes[] = {"Peak", "Start"};
+        ui::LabelRow("Marker at", ui::Dp(90.0f), lcol);
+        int               sel = g_auto_ui.at_start[ti] ? 1 : 0;
+        const std::string id = std::string("##startmode") + std::to_string(ti);
+        if (ui::Segmented(id.c_str(), kStartModes, 2, &sel)) g_auto_ui.at_start[ti] = sel == 1;
+        ui::ItemTip("Peak: the marker where the motion is fastest.\nStart: where it starts.");
+    }
+    if (t == AutoType::HandPivot) {
+        // Story 10-8e: on, only a hand that came to rest with a grab pivots.
+        bool after_grab = !g_auto_ui.hand_pivot_any;
+        if (ui::Checkbox("Only after a Grab##handpivotgrab", &after_grab)) g_auto_ui.hand_pivot_any = !after_grab;
+    }
+    if (!on) ImGui::EndDisabled();
+    // Pinned at the bottom: Marker name and Sound (the same place for every type).
+    const float top_end = ImGui::GetCursorPosY();
+    const float y_bottom = std::max(top_end, card_inner_h - g_card_bottom_h);
+    ImGui::SetCursorPosY(y_bottom);
+    const float b0 = ImGui::GetCursorPosY();
+    {
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        DashedHLine(ImGui::GetWindowDrawList(), p.x, p.x + ImGui::GetContentRegionAvail().x, std::floor(p.y) + 0.5f, ui::kStroke);
+        ImGui::Dummy(ImVec2(1.0f, ui::Dp(2.0f)));
+    }
+    if (!on) ImGui::BeginDisabled();
+    {
+        // Story 10-10b: the event's strength level in its marker name. On a detected type it
+        // applies at once (one undo point), else Detect gives it to the new blocks.
+        static const char* const kNameModes[] = {"Name only", "+ Soft / Hard", "+ 1 / 2 / 3"};
+        ui::LabelRow("Marker name", ui::Dp(150.0f), lcol);
+        const StrengthName cur_mode = detected ? item.strength_name[ti] : g_auto_ui.strength_name[ti];
+        int                sel = static_cast<int>(cur_mode);
+        const std::string  id = std::string("##strengthname") + std::to_string(ti);
+        if (ui::Segmented(id.c_str(), kNameModes, 3, &sel) && sel != static_cast<int>(cur_mode)) {
+            const StrengthName mode = static_cast<StrengthName>(sel);
+            g_auto_ui.strength_name[ti] = mode;
+            if (detected)
+                Edit(std::string("RAV: Set strength in marker names (") + row.undo_label + ")",
+                     [t, mode](ItemRules& r) { return SetAutoStrengthName(r, t, mode); });
+        }
+        const AutoStrengthCuts& cut = AutoStrengthRow(t);
+        const AutoKind          k0 = AutoKindsOf(t).front();
+        const AutoKindInfo&     kr = AutoKindRow(k0);
+        const char*             unit = kr.strength_unit ? kr.strength_unit : kr.degrees ? "deg" : "leg/s";
+        const std::string       example = AutoMarkerName(k0, 'L');
+        ui::ItemTip("Adds each event's strength to its marker name, to pick a soft or hard layer:\n"
+                    "Soft below %.3g %s, Medium from %.3g, Hard from %.3g (\"%s Hard\", or \"%s 3\").\n"
+                    "A Switch Group named Strength (values Soft, Medium, Hard) gets it at Populate.",
+                    cut.medium, unit, cut.medium, cut.hard, example.c_str(), example.c_str());
+    }
+    // Antho 2026-10-12 (13-8): the type's sound, every row at once (its own "Sound:" row).
+    DrawAutoSoundRow(m.item, rules, AutoSoundKeys(rows));
+    if (!on) ImGui::EndDisabled();
+    g_card_bottom_h = ImGui::GetCursorPosY() - b0;
+    ImGui::PopID();
+}
+
+// The card with no type shown: how to show one.
+void DrawAutoCardEmpty(float card_inner_h)
+{
+    const char* l1 = "No type shown.";
+    const char* l2 = "Click a type's name to tick or untick it.";
+    const char* l3 = "Click its gear to tick it and see its settings here.";
+    const float lh = ImGui::GetTextLineHeightWithSpacing();
+    ImGui::SetCursorPosY(std::max(ImGui::GetCursorPosY(), (card_inner_h - lh * 3.0f) * 0.5f));
+    for (const char* l : {l1, l2, l3}) {
+        const float w = ImGui::GetContentRegionAvail().x;
+        const float tw = ImGui::CalcTextSize(l).x;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (w - tw) * 0.5f));
+        ui::FitText(l, l == l1 ? ui::kMuted : ui::kFaint);
+    }
+}
+
+// The card's first height at this width: the tallest type's settings (Per side open, every option
+// wrapped once on a narrow panel), from the type table; grown later if a type needs more.
+float EstimateAutoCardHeight(float w)
+{
+    static int max_rows = -1;
+    if (max_rows < 0) {
+        max_rows = 0;
+        for (int ti = 0; ti < kAutoTypeCount; ++ti) {
+            AutoSettings one;
+            one.type[ti].on = true;
+            one.separate_steps = true;
+            one.slide_parts = one.pivot_parts = ScuffParts::EachPart;
+            for (bool& s : one.separate_parts) s = true;
+            max_rows = std::max(max_rows, static_cast<int>(AutoBlocks(one).size()));
+        }
+    }
+    const ImGuiStyle& st = ImGui::GetStyle();
+    const float       fh = ImGui::GetFrameHeight() + st.ItemSpacing.y;
+    const float       lh = ImGui::GetTextLineHeight() + st.ItemSpacing.y;
+    const bool        narrow = w < ui::Dp(360.0f);
+    float             h = fh + 2.0f * lh + (narrow ? 2.0f : 1.0f) * fh + lh;  // header, hint, values, note
+    h += static_cast<float>(max_rows) * fh;                                    // per side
+    h += (narrow ? 4.0f : 2.0f) * fh;                                          // Parts (+ its part), Marker at
+    h += ui::Dp(2.0f) + st.ItemSpacing.y + (narrow ? 3.0f : 2.0f) * fh;       // Marker name, Sound
+    return h + 2.0f * ui::Dp(7.0f);
+}
+
+// The presets row: + Preset first (it never moves), then the user's presets.
+void DrawAutoPresetsRow()
+{
+    std::vector<AutoPreset>& presets = AutoPresets();
+    int                      on_count = 0;
+    for (const AutoTypeSettings& t : g_auto_ui.type) on_count += t.on ? 1 : 0;
+    bool open_name = false;
+    if (ui::SolidButton("+ Preset##autonewpreset")) {
+        g_preset_edit = -1;
+        g_preset_name[0] = '\0';
+        open_name = true;
+    }
+    ui::ItemTip("A preset of the %d type%s ticked now: it asks its name.\nYour presets are kept on this "
+                "PC, in every project.",
+                on_count, on_count == 1 ? "" : "s");
+    if (presets.empty()) {
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        ui::FitText("Tick types, then + Preset to keep them as a button.", ui::kFaint);
+    }
+    bool open_gear = false;
+    for (size_t i = 0; i < presets.size(); ++i) {
+        const AutoPreset& p = presets[i];
+        const std::string lbl = p.name + "##autopreset" + std::to_string(i);
+        ui::SameLineIfFits(ui::SplitChipWidth(lbl.c_str()));
+        const ui::SplitChipClick c = ui::SplitChip(lbl.c_str(), ToolIcon(kToolGear), AutoPresetMatches(p, g_auto_ui),
+                                                   g_preset_edit == static_cast<int>(i) && ImGui::IsPopupOpen("##autopresetgear"));
+        if (c.main_hovered) {
+            std::string list;
+            for (AutoType t : p.types) list += (list.empty() ? "" : ", ") + std::string(AutoTypeRow(t).undo_label);
+            if (list.empty()) list = "no type";
+            ui::ItemTip("Ticks exactly: %s\n(unticks the others; Detect places them)", list.c_str());
+        } else if (c.gear_hovered) {
+            ui::ItemTipText("Rename, store the current ticks, delete.");
+        }
+        // A preset is a set of ticks: applying it ticks exactly its types, which wait for Detect
+        // like a tick by hand (Detect writes them in one undo point).
+        if (c.main) ApplyAutoPreset(p, g_auto_ui);
+        if (c.gear) {
+            g_preset_edit = static_cast<int>(i);
+            g_preset_delete_ask = false;
+            open_gear = true;
+        }
+    }
+    if (open_gear) ImGui::OpenPopup("##autopresetgear");
+    if (ui::BeginMenuPopup("##autopresetgear")) {
+        if (g_preset_edit < 0 || g_preset_edit >= static_cast<int>(presets.size())) {
+            ImGui::CloseCurrentPopup();
+        } else if (g_preset_delete_ask) {
+            ui::ToneText("Delete \"" + presets[static_cast<size_t>(g_preset_edit)].name + "\"? (every project)", ui::kText);
+            if (ui::SolidButton("Cancel##presetdelno")) g_preset_delete_ask = false;
+            ImGui::SameLine();
+            if (ui::ConfirmButton("Delete##presetdelyes")) {
+                presets.erase(presets.begin() + g_preset_edit);
+                SaveAutoPresets();
+                g_preset_edit = -1;
+                g_preset_delete_ask = false;
+                ImGui::CloseCurrentPopup();
+            }
+        } else {
+            AutoPreset& p = presets[static_cast<size_t>(g_preset_edit)];
+            char        hint[32];
+            std::snprintf(hint, sizeof(hint), "%d ticked", on_count);
+            if (ui::MenuEntry("Rename...")) {
+                std::snprintf(g_preset_name, sizeof(g_preset_name), "%s", p.name.c_str());
+                open_name = true;
+            }
+            if (ui::MenuEntry("Store current ticks", hint)) {
+                p = AutoPresetFromTicks(p.name, g_auto_ui);
+                SaveAutoPresets();
+            }
+            ImGui::Separator();
+            if (ImGui::Selectable("Delete...", false, ImGuiSelectableFlags_NoAutoClosePopups)) g_preset_delete_ask = true;
+        }
+        ui::EndMenuPopup();
+    }
+    if (open_name) {
+        g_preset_name_focus = true;
+        ImGui::OpenPopup("##autopresetname");
+    }
+    if (ui::BeginMenuPopup("##autopresetname")) {
+        const bool renaming = g_preset_edit >= 0 && g_preset_edit < static_cast<int>(presets.size());
+        char       title[64];
+        if (renaming) std::snprintf(title, sizeof(title), "Rename the preset");
+        else std::snprintf(title, sizeof(title), "New preset: the %d type%s ticked now", on_count, on_count == 1 ? "" : "s");
+        ui::ToneText(title, ui::kFaint);
+        if (g_preset_name_focus) {
+            ImGui::SetKeyboardFocusHere();
+            g_preset_name_focus = false;
+        }
+        const bool enter = ui::RenameField("##presetname", g_preset_name, sizeof(g_preset_name), ui::Dp(200.0f),
+                                           ImGuiInputTextFlags_EnterReturnsTrue, "Name, then Enter");
+        if (ui::SolidButton("Cancel##presetnameno")) ImGui::CloseCurrentPopup();
+        ImGui::SameLine();
+        const std::string name = CleanAutoPresetName(g_preset_name);
+        if (name.empty()) ImGui::BeginDisabled();
+        const bool ok = ui::PrimaryButton(renaming ? "Rename##presetnameok" : "Create##presetnameok");
+        if (name.empty()) ImGui::EndDisabled();
+        if ((ok || enter) && !name.empty()) {
+            if (renaming) {
+                presets[static_cast<size_t>(g_preset_edit)].name = name;
+            } else if (static_cast<int>(presets.size()) < kAutoPresetMax) {
+                presets.push_back(AutoPresetFromTicks(name, g_auto_ui));
+            }
+            SaveAutoPresets();
+            g_preset_edit = -1;
+            ImGui::CloseCurrentPopup();
+        }
+        ui::EndMenuPopup();
+    }
+}
+
+// The search box, its clear button always in place (hidden while empty).
+void DrawAutoSearch()
+{
+    const float fh = ImGui::GetFrameHeight();
+    const float gap = ImGui::GetStyle().ItemSpacing.x;
+    const float w = std::max(ui::Dp(40.0f), ImGui::GetContentRegionAvail().x - fh - gap);
+    ui::TextField("##autosearch", "Search a type (step, clap, pivot...)", g_auto_search, sizeof(g_auto_search), w);
+    ImGui::SameLine();
+    if (g_auto_search[0]) {
+        if (ui::IconOnlyButton("##autosearchclear", ToolIcon(kToolCrossSmall), "Clear the search", fh)) g_auto_search[0] = '\0';
+    } else {
+        ImGui::Dummy(ImVec2(fh, fh));
+    }
+}
+
+// The chip list: per category its caption, ticked count and an untick-all x, then its chips
+// (common types first, in bold). A chip that does not match the search is faded in place.
+void DrawAutoChipList(const TaggingModel& m, const ItemRules& rules, float list_h)
+{
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::kBg);
+    ImGui::PushStyleColor(ImGuiCol_Border, ui::kStroke);
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, ui::Dp(7.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ui::Dp(6.0f), ui::Dp(4.0f)));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ui::Dp(4.0f), ui::Dp(4.0f)));
+    if (ImGui::BeginChild("##autochips", ImVec2(0.0f, list_h), ImGuiChildFlags_Borders)) {
+        const AutoSettings& item = g_auto_seen;
+        for (int c = 0; c < kAutoCategoryCount; ++c) {
+            const AutoCategory          cat = static_cast<AutoCategory>(c);
+            const std::vector<AutoType> types = AutoPickerOrder(cat);
+            if (types.empty()) continue;
+            ImGui::PushID(1000 + c);
+            // Caption row.
+            {
+                const float  fh = ImGui::GetFrameHeight();
+                const ImVec2 p = ImGui::GetCursorScreenPos();
+                const float  w = ImGui::GetContentRegionAvail().x;
+                ImDrawList*  dl = ImGui::GetWindowDrawList();
+                std::string  label = AutoCategoryLabel(cat);
+                for (char& ch : label) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+                const int n = AutoCategoryOnCount(g_auto_ui, cat);
+                char      cnt[32];
+                std::snprintf(cnt, sizeof(cnt), "%d / %d", n, static_cast<int>(types.size()));
+                float x = p.x;
+                {
+                    ui::FontScope f(ui::FontRole::CaptionBold);
+                    const float ty = p.y + (fh - ImGui::GetTextLineHeight()) * 0.5f;
+                    dl->AddText(ImVec2(x, ty), ui::kMuted, label.c_str());
+                    x += ImGui::CalcTextSize(label.c_str()).x + ui::Dp(6.0f);
+                }
+                {
+                    ui::FontScope f(ui::FontRole::Small);
+                    const float ty = p.y + (fh - ImGui::GetTextLineHeight()) * 0.5f;
+                    dl->AddText(ImVec2(x, ty), ui::kFaint, cnt);
+                    x += ImGui::CalcTextSize(cnt).x + ui::Dp(8.0f);
+                }
+                const float rule_end = p.x + w - fh - ui::Dp(6.0f);
+                if (rule_end > x) dl->AddLine(ImVec2(x, std::floor(p.y + fh * 0.5f) + 0.5f), ImVec2(rule_end, std::floor(p.y + fh * 0.5f) + 0.5f), ui::kStroke);
+                ImGui::Dummy(ImVec2(std::max(1.0f, w - fh - ui::Dp(4.0f)), fh));
+                ImGui::SameLine(0.0f, ui::Dp(4.0f));
+                if (n == 0) ImGui::BeginDisabled();
+                std::string tip = std::string("Untick every ") + AutoCategoryLabel(cat) + " type (Detect removes them).";
+                if (ui::IconOnlyButton("##untick", ToolIcon(kToolCrossSmall), tip.c_str(), fh)) UntickAutoCategory(g_auto_ui, cat);
+                if (n == 0) ImGui::EndDisabled();
+            }
+            for (size_t i = 0; i < types.size(); ++i) {
+                const AutoType t = types[i];
+                const int      ti = static_cast<int>(t);
+                const bool     on = g_auto_ui.type[ti].on;
+                const bool     common = AutoTypeCommon(t);
+                const bool     match = AutoTypeMatches(t, g_auto_search);
+                // Detect raised its sensitivity, or found nothing up to 100 % (an amber dot on the ⚙).
+                bool flag = false;
+                if (item.type[ti].on && on) {
+                    const AutoTypeState st = ReadAutoTypeState(m, rules, t);
+                    flag = st.raised_from >= 0.0 || !st.none_parts.empty();
+                }
+                const std::string lbl = std::string(AutoTypeLabel(t)) + "##chip" + std::to_string(ti);
+                if (i > 0) ui::SameLineIfFits(ui::SplitChipWidth(lbl.c_str(), common));
+                if (!match) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.28f);
+                const ui::SplitChipClick ck = ui::SplitChip(lbl.c_str(), ToolIcon(kToolGear), on, g_auto_sel == ti, flag, common);
+                if (!match) ImGui::PopStyleVar();
+                if (ck.main_hovered) {
+                    ui::ItemTip("%s\n%s", AutoTypeHint(t), on ? "Click: untick (Detect removes it)." : "Click: tick (Detect adds it).");
+                } else if (ck.gear_hovered) {
+                    ui::ItemTip("%s%s", g_auto_sel == ti ? "Its settings are shown below (click to hide)."
+                                        : on            ? "Show its settings below."
+                                                        : "Tick it and show its settings below.",
+                                flag ? "\nDetect raised its sensitivity or found nothing up to 100 %." : "");
+                }
+                if (ck.main) g_auto_ui.type[ti].on = !on;
+                if (ck.gear) {
+                    // Antho 2026-10-21: the ⚙ of an unticked type ticks it too.
+                    if (!on) {
+                        g_auto_ui.type[ti].on = true;
+                        g_auto_sel = ti;
+                    } else {
+                        g_auto_sel = g_auto_sel == ti ? -1 : ti;
+                    }
+                }
+            }
+            ImGui::PopID();
+        }
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(2);
+}
+
+// The messages about the ticked types (bones missing, nothing detected): in the panel's scrolling
+// part, so the Smart Detection section keeps its layout.
+void DrawAutoMessages(const TaggingModel& m)
+{
+    if (m.file_loaded && !m.bone_names.empty()) {
+        std::vector<std::string> miss;
+        for (int ti = 0; ti < kAutoTypeCount; ++ti) {
+            if (!g_auto_ui.type[ti].on) continue;
+            // Story 10-8m: `separate` is the type's own mode.
+            const bool separate = AutoTypeSeparate(static_cast<AutoType>(ti), g_auto_ui);
+            for (const std::string& r : AutoMissingParts(static_cast<AutoType>(ti), separate, m.role_to_bone))
+                if (std::find(miss.begin(), miss.end(), r) == miss.end()) miss.push_back(r);
+        }
+        if (!miss.empty()) {
+            std::string line = "Smart Detection: no bone for ";
+            for (size_t i = 0; i < miss.size(); ++i) line += (i ? ", " : "") + miss[i];
+            line += ". Their events are skipped: map them in Roles.";
+            ui::ToneText(line, ui::kBadInk, /*wrap=*/true);
+        }
+    }
+    if (!m.auto_error.empty()) ui::ToneText("Nothing detected: " + m.auto_error + ".", ui::kMuted, /*wrap=*/true);
+}
+
+// `room`: the height left for the section above Detect and the footer. The chip list takes what
+// the rest of the section leaves of it, at most its own height and never under about two chip rows.
+void DrawAutoSection(const TaggingModel& m, const ItemRules& rules, float room)
+{
+    SyncAutoSettings(m);
+    const float y0 = ImGui::GetCursorPosY();
+    int         n_on = 0;
+    for (const AutoTypeSettings& t : g_auto_ui.type) n_on += t.on ? 1 : 0;
+    char suffix[32];
+    std::snprintf(suffix, sizeof(suffix), "\xC2\xB7 %d type%s on", n_on, n_on == 1 ? "" : "s");
+    ui::SectionOpts opts;
+    opts.suffix = suffix;
+    ui::Section sec;
+    float       list_h = 0.0f;
+    if (ui::BeginSection(sec, "Smart Detection", opts)) {
+        // Story 10-8i: "Is looping", first: a setting of the item. One undo point.
         {
             bool loop = rules.clip.loop;
             if (ui::Checkbox("Is looping##autoloop", &loop))
@@ -4057,277 +4622,40 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
                         "motion as a cycle, so a contact, step, grab or release\nthat crosses the loop point "
                         "is found whole. Saved on the item.");
         }
-        // + (the categories not shown) on the left, the column captions on the right.
-        if (any_hidden) {
-            if (ui::IconOnlyButton("##autoaddcat", ToolIcon(kToolPlus), nullptr, ImGui::GetFrameHeight()))
-                ImGui::OpenPopup("##autocats");
-            ui::ItemTip("Add a category of event types.");
-            if (ui::BeginMenuPopup("##autocats")) {
-                for (int c = 0; c < kAutoCategoryCount; ++c)
-                    if (!cat_shown[c] && cat_offered[c] && ImGui::Selectable(AutoCategoryLabel(static_cast<AutoCategory>(c)))) {
-                        g_auto_added[c] = true;
-                        storage->SetBool(cat_open_id[c], true);
-                    }
-                ui::EndMenuPopup();
-            }
-            if (any_shown) ImGui::SameLine();
+        DrawAutoPresetsRow();
+        DrawAutoSearch();
+        const float fh = ImGui::GetFrameHeight();
+        const float min_h = 3.0f * fh + ui::Dp(16.0f);  // a caption and two chip rows
+        list_h = std::floor(std::max(min_h, std::min(ui::Dp(168.0f), room - g_auto_fixed_h)));
+        DrawAutoChipList(m, rules, list_h);
+        // The settings card.
+        const float w = ImGui::GetContentRegionAvail().x;
+        if (std::fabs(w - g_card_w) > 0.5f) {
+            g_card_w = w;
+            g_card_h = EstimateAutoCardHeight(w);
         }
-        if (any_shown) {
-            ImGui::SetCursorPosX(std::max(x_sens, ImGui::GetCursorPosX()));
-            ImGui::AlignTextToFramePadding();
-            ui::Caption("Sensitivity");
-            ImGui::SameLine(x_off);
-            ui::Caption("Offset");
+        if (g_auto_sel >= kAutoTypeCount) g_auto_sel = -1;
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::kRaised);
+        ImGui::PushStyleColor(ImGuiCol_Border, ui::kStrokeStrong);
+        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, ui::Dp(7.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ui::Dp(8.0f), ui::Dp(7.0f)));
+        const float card_h = g_card_h;
+        if (ImGui::BeginChild("##autocard", ImVec2(0.0f, card_h), ImGuiChildFlags_Borders,
+                              ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+            const float inner_h = card_h - ui::Dp(7.0f);
+            if (g_auto_sel >= 0) DrawAutoTypeSettings(m, rules, static_cast<AutoType>(g_auto_sel), inner_h);
+            else DrawAutoCardEmpty(inner_h);
+            // A type that needs more room grows the card once (for this width).
+            const float need = ImGui::GetCursorPosY() + ui::Dp(7.0f) - ImGui::GetStyle().ItemSpacing.y;
+            if (need > g_card_h + 0.5f) g_card_h = std::ceil(need);
         }
-        // Per category, its types in enum order (story 10-9-0: a type appended to the enum joins
-        // its category's rows).
-        std::vector<AutoType> row_types;
-        for (int c = 0; c < kAutoCategoryCount; ++c)
-            for (AutoType t : AutoTypesOf(static_cast<AutoCategory>(c))) row_types.push_back(t);
-        for (size_t ri = 0; ri < row_types.size(); ++ri) {
-            const AutoType t = row_types[ri];
-            const int      ti = static_cast<int>(t);
-            const int      c = static_cast<int>(AutoCategoryOf(t));
-            if (!cat_shown[c]) continue;
-            // The category's fold row before its first type.
-            const bool first = ri == 0 || AutoCategoryOf(row_types[ri - 1]) != AutoCategoryOf(t);
-            if (first) {
-                ImGui::PushID(1000 + c);
-                bool       remove = false;
-                const bool open = AutoCategoryRow(static_cast<AutoCategory>(c), cat_open_id[c], &remove);
-                ImGui::PopID();
-                if (remove) {
-                    UntickAutoCategory(g_auto_ui, static_cast<AutoCategory>(c));
-                    g_auto_added[c] = false;
-                }
-                cat_open[c] = open;
-            }
-            if (!cat_open[c]) continue;
-            ImGui::PushID(ti);
-            bool on = g_auto_ui.type[ti].on;
-            if (ui::Checkbox(AutoTypeLabel(t), &on)) g_auto_ui.type[ti].on = on;
-            ui::ItemTipText(AutoTypeHint(t));
-            const bool detected = item.type[ti].on;
-            // Story 10-8h: the type's blocks (one per side or part) on the item, whether their
-            // values differ, Detect's raise, and the blocks that found no event up to 100 %.
-            std::vector<const Block*> tblocks;
-            bool                      differ = false;
-            double                    raised_from = -1.0;
-            std::string               none_parts;
-            for (const Block& b : rules.blocks) {
-                AutoKind k;
-                if (!AutoBlockKind(b, &k, nullptr) || AutoTypeOfKind(k) != t) continue;
-                if (!tblocks.empty() && (b.sens != tblocks[0]->sens || b.offset_ms != tblocks[0]->offset_ms ||
-                                         b.sens_from != tblocks[0]->sens_from))
-                    differ = true;
-                if (raised_from < 0.0 && b.sens_from >= 0.0) raised_from = b.sens_from;
-                if (AutoSearchedAt(m.auto_none, b))
-                    none_parts += (none_parts.empty() ? "" : ", ") + b.marker;
-                tblocks.push_back(&b);
-            }
-            // The rows: the item's blocks of the type, or the blocks Detect would create (the
-            // section's settings, with their per-row values).
-            std::vector<Block> rows;
-            if (detected) {
-                for (const Block* b : tblocks) rows.push_back(*b);
-            } else {
-                AutoSettings one = g_auto_ui;
-                for (AutoTypeSettings& o : one.type) o.on = false;
-                one.type[ti] = g_auto_ui.type[ti];
-                one.type[ti].on = true;
-                rows = AutoBlocks(one);
-                for (size_t i = 1; i < rows.size(); ++i)
-                    if (rows[i].sens != rows[0].sens || rows[i].offset_ms != rows[0].offset_ms) differ = true;
-            }
-            const bool    can_split = rows.size() > 1;
-            const ImGuiID split_id = ImGui::GetID("##autosplit");
-            const int     split_state = storage->GetInt(split_id, -1);  // -1: default (open when rows differ)
-            const bool    split = can_split && (split_state < 0 ? differ : split_state == 1);
-            // Collapsed while the rows differ: the tooltip lists them.
-            auto row_list = [&rows](bool sens) {
-                std::string out;
-                char        buf[64];
-                for (const Block& b : rows) {
-                    std::snprintf(buf, sizeof(buf), sens ? " %.0f %%" : " %.0f ms", sens ? b.sens : b.offset_ms);
-                    out += (out.empty() ? "" : ", ") + b.marker + buf;
-                }
-                return out;
-            };
-            if (can_split) {
-                const float fh = ImGui::GetFrameHeight();
-                ImGui::SameLine(x_sens - fh - ui::Dp(4.0f));
-                if (ui::Chevron("##autosplitbtn", split, fh)) storage->SetInt(split_id, split ? 0 : 1);
-                ui::ItemTipText(split ? "Fold the rows: one sensitivity and offset for the whole type (an edit sets every row)."
-                                      : "Unfold: sensitivity and offset per row.");
-            }
-            if (!on) ImGui::BeginDisabled();
-            if (!split) {
-                const double sens_v = rows.empty() ? g_auto_ui.type[ti].sens : rows[0].sens;
-                const double off_v = rows.empty() ? g_auto_ui.type[ti].offset_ms : rows[0].offset_ms;
-                ImGui::SameLine(x_sens);
-                AutoValueField("##sens", t, true, detected, sens_v, fw, detected ? raised_from : -1.0);
-                if (differ)
-                    ui::ItemTip("%s\n%s", row_list(true).c_str(),
-                                raised_from >= 0.0 ? "Raised by Detect on a row. An edit sets every row."
-                                                   : "An edit sets every row.");
-                else
-                    AutoSensTooltip(detected ? raised_from : -1.0);
-                ImGui::SameLine(x_off);
-                AutoValueField("##offset", t, false, detected, off_v, fw);
-                if (differ) ui::ItemTip("%s\nAn edit sets every row.", row_list(false).c_str());
-                else ui::ItemTip("Moves every marker of this type, in ms (+ = later).");
-                // Antho 2026-10-12 (13-8): the type's sound, every row at once.
-                ImGui::SetCursorPosX(x_row);
-                DrawAutoSoundRow(m.item, rules, AutoSoundKeys(rows));
-            } else {
-                // One row per block, labelled by its marker.
-                for (size_t bi = 0; bi < rows.size(); ++bi) {
-                    const Block& b = rows[bi];
-                    ImGui::PushID(static_cast<int>(bi));
-                    ImGui::SetCursorPosX(x_row);
-                    ImGui::AlignTextToFramePadding();
-                    ui::Caption(b.marker.c_str());
-                    for (int f = 0; f < 2; ++f) {
-                        const bool sens = f == 0;
-                        ImGui::SameLine(sens ? x_sens : x_off);
-                        if (detected) {
-                            AutoBlockField(sens ? "##bsens" : "##boffset", t, b, sens, fw);
-                        } else {
-                            double v = sens ? b.sens : b.offset_ms;
-                            if (ui::DragNumber(sens ? "##bsens" : "##boffset", &v, 1.0, 0, sens ? "%" : "ms", fw) !=
-                                ui::DragNumberEvent::None)
-                                SetAutoRowValue(g_auto_ui.type[ti], b.auto_type, b.auto_side, sens, ClampAutoValue(sens, v));
-                        }
-                        if (sens) AutoSensTooltip(b.sens_from);
-                        else
-                            ui::ItemTip("Moves this row's markers, in ms (+ = later).");
-                    }
-                    // Antho 2026-10-12 (13-8): this row's sound.
-                    ImGui::SetCursorPosX(x_row);
-                    DrawAutoSoundRow(m.item, rules, AutoSoundKeys({b}));
-                    ImGui::PopID();
-                }
-            }
-            if (detected && !none_parts.empty()) {
-                ImGui::SetCursorPosX(x_row);
-                ui::ToneText("No event up to 100 % (" + none_parts + ")", ui::kWarn);
-                ui::ItemTip("Detect tried up to 100 %% and found nothing there: the value is unchanged.");
-            }
-            if (t == AutoType::Step) {
-                static const char* const kStepModes[] = {"Combined", "Separate"};
-                ImGui::SetCursorPosX(x_row);
-                int sel = g_auto_ui.separate_steps ? 1 : 0;
-                if (ui::Segmented("##stepmode", kStepModes, 2, &sel)) g_auto_ui.separate_steps = sel == 1;
-                ui::ItemTip("Combined: one marker per landing (FS L / FS R).\nSeparate: the heel and the toe "
-                            "each get theirs (Heel L, Toe L...).");
-            }
-            if (AutoTypeRow(t).part_split) {
-                // Story 10-9a-3: lift-off, jump and land: each event on its part's block (the heel,
-                // or the toe: the ball or the tip). Waits for Detect, as the step mode.
-                static const char* const kPartModes[] = {"Combined", "Separate"};
-                const char*              word = AutoKindRow(AutoKindsOf(t).front()).marker;
-                ImGui::SetCursorPosX(x_row);
-                int sel = g_auto_ui.separate_parts[ti] ? 1 : 0;
-                const std::string id = std::string("##partmode") + std::to_string(ti);
-                if (ui::Segmented(id.c_str(), kPartModes, 2, &sel)) g_auto_ui.separate_parts[ti] = sel == 1;
-                ui::ItemTip("Combined: one marker per event (%s L / %s R).\nSeparate: on the part that %s "
-                            "(%s Heel L, %s Toe L...).",
-                            word, word,
-                            t == AutoType::Land   ? "touches first"
-                            : t == AutoType::Kick ? "is fastest"
-                                                  : "leaves last",
-                            word, word);
-            }
-            if (AutoTypeRow(t).start_option) {
-                // Story 10-9c: kick, swing, punch: the marker at the motion's fastest point, or
-                // where it starts. Waits for Detect, as the step mode.
-                static const char* const kStartModes[] = {"Peak", "Start"};
-                ImGui::SetCursorPosX(x_row);
-                int               sel = g_auto_ui.at_start[ti] ? 1 : 0;
-                const std::string id = std::string("##startmode") + std::to_string(ti);
-                if (ui::Segmented(id.c_str(), kStartModes, 2, &sel)) g_auto_ui.at_start[ti] = sel == 1;
-                ui::ItemTip("Peak: the marker where the motion is fastest.\nStart: where it starts (the "
-                            "whoosh's onset).");
-            }
-            {
-                // Story 10-10b: the event's strength level in its marker name, for picking a soft or
-                // hard layer. Every type; on a detected type it applies at once (one undo point),
-                // else Detect gives it to the new blocks.
-                static const char* const kNameModes[] = {"Name only", "+ Soft / Hard", "+ 1 / 2 / 3"};
-                ImGui::SetCursorPosX(x_row);
-                const StrengthName cur_mode = detected ? item.strength_name[ti] : g_auto_ui.strength_name[ti];
-                int                sel = static_cast<int>(cur_mode);
-                const std::string  id = std::string("##strengthname") + std::to_string(ti);
-                if (ui::Segmented(id.c_str(), kNameModes, 3, &sel) && sel != static_cast<int>(cur_mode)) {
-                    const StrengthName mode = static_cast<StrengthName>(sel);
-                    g_auto_ui.strength_name[ti] = mode;
-                    if (detected)
-                        Edit(std::string("RAV: Set strength in marker names (") + AutoTypeRow(t).undo_label + ")",
-                             [t, mode](ItemRules& r) { return SetAutoStrengthName(r, t, mode); });
-                }
-                const AutoStrengthCuts& cut = AutoStrengthRow(t);
-                const AutoKind          k0 = AutoKindsOf(t).front();
-                const AutoKindInfo&     kr = AutoKindRow(k0);
-                const char*             unit = kr.strength_unit ? kr.strength_unit : kr.degrees ? "deg" : "leg/s";
-                const std::string       example = AutoMarkerName(k0, 'L');
-                ui::ItemTip("Adds each event's strength to its marker name, to pick a soft or hard layer:\n"
-                            "Soft below %.3g %s, Medium from %.3g, Hard from %.3g (\"%s Hard\", or \"%s 3\").\n"
-                            "A Switch Group named Strength (values Soft, Medium, Hard) gets it at Populate.",
-                            cut.medium, unit, cut.medium, cut.hard, example.c_str(), example.c_str());
-            }
-            if (t == AutoType::Slide || t == AutoType::Pivot) {
-                // Story 10-8m: heel / toe separate scuffs, and Each part or Longest part while
-                // Separate. Both wait for Detect, as the step mode.
-                static const char* const kScuffModes[] = {"Combined", "Separate"};
-                static const char* const kScuffParts[] = {"Each part", "Longest part"};
-                ScuffParts& mode = t == AutoType::Slide ? g_auto_ui.slide_parts : g_auto_ui.pivot_parts;
-                const char* word = t == AutoType::Slide ? "Slide" : "Pivot";
-                ImGui::SetCursorPosX(x_row);
-                int sel = mode == ScuffParts::Combined ? 0 : 1;
-                if (ui::Segmented(t == AutoType::Slide ? "##slidemode" : "##pivotmode", kScuffModes, 2, &sel))
-                    mode = sel == 0 ? ScuffParts::Combined : ScuffParts::EachPart;
-                ui::ItemTip("Combined: one marker per scuff (%s L / %s R).\nSeparate: the heel and the toe "
-                            "each get their block (%s Heel L, %s Toe L...).",
-                            word, word, word, word);
-                if (mode != ScuffParts::Combined) {
-                    ImGui::SetCursorPosX(x_row);
-                    int part = mode == ScuffParts::Longest ? 1 : 0;
-                    if (ui::Segmented(t == AutoType::Slide ? "##slideparts" : "##pivotparts", kScuffParts, 2, &part))
-                        mode = part == 1 ? ScuffParts::Longest : ScuffParts::EachPart;
-                    ui::ItemTip("Each part: every part that scuffs gets its event (a whole-foot scuff gives a "
-                                "heel and a toe one).\nLongest part: one event per scuff, on the part that "
-                                "holds longest.");
-                }
-            }
-            if (t == AutoType::HandPivot) {
-                // Story 10-8e: on, only a hand that came to rest with a grab pivots.
-                ImGui::SetCursorPosX(x_row);
-                bool after_grab = !g_auto_ui.hand_pivot_any;
-                if (ui::Checkbox("Only after a Grab##handpivotgrab", &after_grab)) g_auto_ui.hand_pivot_any = !after_grab;
-            }
-            if (!on) ImGui::EndDisabled();
-            ImGui::PopID();
-        }
-        // The parts a ticked type misses on this skeleton (its events on that foot are skipped).
-        if (m.file_loaded && !m.bone_names.empty()) {
-            std::vector<std::string> miss;
-            for (int ti = 0; ti < kAutoTypeCount; ++ti) {
-                if (!g_auto_ui.type[ti].on) continue;
-                // Story 10-8m: `separate` is the type's own mode.
-                const bool separate = AutoTypeSeparate(static_cast<AutoType>(ti), g_auto_ui);
-                for (const std::string& r : AutoMissingParts(static_cast<AutoType>(ti), separate, m.role_to_bone))
-                    if (std::find(miss.begin(), miss.end(), r) == miss.end()) miss.push_back(r);
-            }
-            if (!miss.empty()) {
-                std::string line = "No bone for: ";
-                for (size_t i = 0; i < miss.size(); ++i) line += (i ? ", " : "") + miss[i];
-                line += ". Their events are skipped: map them in Roles.";
-                ui::ToneText(line, ui::kBadInk, /*wrap=*/true);
-            }
-        }
-        if (!m.auto_error.empty()) ui::ToneText("Nothing detected: " + m.auto_error + ".", ui::kMuted, /*wrap=*/true);
+        ImGui::EndChild();
+        ImGui::PopStyleVar(2);
+        ImGui::PopStyleColor(2);
     }
     ui::EndSection(sec);
+    g_auto_sec_h = ImGui::GetCursorPosY() - y0;
+    if (list_h > 0.0f) g_auto_fixed_h = g_auto_sec_h - list_h;
 }
 
 // Detect, under the inspector's scroll area so it stays in reach (only the settings scroll).
@@ -4890,10 +5218,14 @@ void DrawTaggingPanel(float x, float y, float w, float h)
             const float footer_h = ImGui::GetFrameHeightWithSpacing() * 3.0f + ImGui::GetTextLineHeightWithSpacing() * 3.0f + ui::Dp(12.0f) +
                                    SoundFooterHeight(SoundContextOf(m, rules, g_sel)) +  // Epic 13 (13-8)
                                    ClearItemRowHeight(m);  // 13-26
-            const float body_h = std::max(ui::Dp(40.0f), ImGui::GetContentRegionAvail().y - footer_h);
+            // Story 10-10e: Smart Detection sits right above Detect, never scrolled (only its chip
+            // list scrolls); the rules and the inspector scroll above it, in the height it leaves
+            // (its height from the last frame).
+            const float auto_h = g_auto_sec_h > 0.0f ? g_auto_sec_h : ui::Dp(520.0f);
+            const float body_h = std::max(ui::Dp(40.0f), ImGui::GetContentRegionAvail().y - footer_h - auto_h);
             // The theme's ChildBg is the panel grey (kSurface) already.
             if (ImGui::BeginChild("##taginspector", ImVec2(0.0f, body_h), ImGuiChildFlags_None)) {
-                DrawAutoSection(m, rules);  // story 10-8b
+                DrawAutoMessages(m);  // story 10-10e: out of the fixed section
                 if (m.missing_count > 0) {
                     // 10-8b fb-1: only the rules reading them are skipped, unless nothing else can run.
                     char line[320];
@@ -4914,6 +5246,7 @@ void DrawTaggingPanel(float x, float y, float w, float h)
                 DrawInspector(rules);
             }
             ImGui::EndChild();
+            DrawAutoSection(m, rules, ImGui::GetContentRegionAvail().y - footer_h);  // story 10-8b, 10-10e
             ImGui::Dummy(ImVec2(0.0f, ui::Dp(2.0f)));
             DrawAutoDetect(m, rules);
             DrawFooter(m);

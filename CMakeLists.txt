@@ -194,6 +194,7 @@ if(WIN32)
             src/motion_whoosh.cpp  # 10-9c
             src/auto_detect.cpp
             src/auto_types.cpp  # 10-9-0
+            src/auto_type_picker.cpp  # 10-10e
             src/auto_types_legs.cpp
             src/auto_types_arms.cpp
             src/auto_types_jolt.cpp  # 10-9g

@@ -722,6 +722,32 @@ bool AddButton(const char* label, const ImVec2& size, const char* key, bool pill
     return clicked;
 }
 
+namespace {
+
+// The chip's pill (ChipButton, SplitChip): r = h / 2, kBg / kHover / accent-soft fill and its edge.
+void DrawChipPill(ImDrawList* dl, ImVec2 a, ImVec2 b, bool on, bool hovered)
+{
+    const float r = (b.y - a.y) * 0.5f;
+    dl->AddRectFilled(a, b, Ink(on ? kAccentSoft : (hovered ? kHover : kBg)), r);
+    dl->AddRect(a, b, Ink(on ? kAccentLine : (hovered ? kStrokeStrong : kStroke)), r);
+}
+
+ImU32 ChipInk(bool on, bool hovered, bool dis)
+{
+    return dis ? kFaint : (on ? kAccentText : (hovered ? kText : kMuted));
+}
+
+// The check mark of Checkbox, in a `box` square at b0 (SplitChip's tick slot too).
+void DrawTick(ImDrawList* dl, ImVec2 b0, float box, ImU32 col)
+{
+    const float  k = box / 14.0f;
+    const ImVec2 tick[3] = {ImVec2(b0.x + 3.2f * k, b0.y + 7.2f * k), ImVec2(b0.x + 5.9f * k, b0.y + 9.9f * k),
+                            ImVec2(b0.x + 10.8f * k, b0.y + 4.2f * k)};
+    dl->AddPolyline(tick, 3, col, ImDrawFlags_None, std::max(1.5f, 1.8f * k));
+}
+
+}  // namespace
+
 bool ChipButton(const char* label, const ImVec2& size, bool on)
 {
     const float pad = Dp(7.0f);
@@ -739,10 +765,8 @@ bool ChipButton(const char* label, const ImVec2& size, bool on)
     const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
     ImDrawList*  dl = ImGui::GetWindowDrawList();
     const bool   crisp = PushCrisp();
-    const float  r = h * 0.5f;
-    dl->AddRectFilled(a, b, Ink(on ? kAccentSoft : (hovered ? kHover : kBg)), r);
-    dl->AddRect(a, b, Ink(on ? kAccentLine : (hovered ? kStrokeStrong : kStroke)), r);
-    const ImU32       ink = Ink(dis ? kFaint : (on ? kAccentText : (hovered ? kText : kMuted)));
+    DrawChipPill(dl, a, b, on, hovered);
+    const ImU32       ink = Ink(ChipInk(on, hovered, dis));
     const float       ty = a.y + (h - ImGui::GetTextLineHeight()) * 0.5f;
     // 13-30: a label that fits (with or without the padding) or a lone glyph is drawn whole, centred.
     bool cut = false;
@@ -753,6 +777,88 @@ bool ChipButton(const char* label, const ImVec2& size, bool on)
     PopCrisp(crisp);
     if (cut && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ShowTip(text.c_str());
     return clicked;
+}
+
+// Story 10-10e: the two-zone chip. Metrics: 6 px left pad, an 11 px tick slot, 4 px, the label,
+// 6 px, a 1 px divider, then the ⚙ zone ControlH() wide.
+float SplitChipWidth(const char* label, bool bold)
+{
+    float tw;
+    if (bold) {
+        FontScope f(FontRole::Semibold);
+        tw = TextWidth(label);
+    } else {
+        tw = TextWidth(label);
+    }
+    return Dp(6.0f) + Dp(11.0f) + Dp(4.0f) + tw + Dp(6.0f) + ControlH();
+}
+
+SplitChipClick SplitChip(const char* id_label, const Icon& gear, bool on, bool selected, bool flag, bool bold)
+{
+    SplitChipClick out;
+    const float h = ControlH();
+    const float gw = h;
+    const float avail = ImGui::GetContentRegionAvail().x;
+    float       w = SplitChipWidth(id_label, bold);
+    if (!WindowAutoSizes() && w > avail) w = std::max(gw + h, avail);
+    const ImVec2 a = ImGui::GetCursorScreenPos();
+    const float  main_w = std::max(1.0f, w - gw);
+    ImGui::PushID(id_label);
+    ImGui::BeginGroup();
+    out.main = ImGui::InvisibleButton("##main", ImVec2(main_w, h));
+    out.main_hovered = ImGui::IsItemHovered();
+    ImGui::SameLine(0.0f, 0.0f);
+    out.gear = ImGui::InvisibleButton("##gear", ImVec2(gw, h));
+    out.gear_hovered = ImGui::IsItemHovered();
+    ImGui::EndGroup();
+    ImGui::PopID();
+    const bool   dis = ItemDisabled();
+    const ImVec2 b(a.x + w, a.y + h);
+    const ImVec2 split(a.x + main_w, a.y);
+    ImDrawList*  dl = ImGui::GetWindowDrawList();
+    const bool   crisp = PushCrisp();
+    const float  r = h * 0.5f;
+    DrawChipPill(dl, a, b, on, false);
+    // Each zone's hover fill, clipped to its half of the pill.
+    const ImU32 hov = on ? IM_COL32(0x5B, 0x8C, 0xFF, 0x40) : kHover;
+    if (out.main_hovered) dl->AddRectFilled(a, ImVec2(split.x, b.y), Ink(hov), r, ImDrawFlags_RoundCornersLeft);
+    if (selected)
+        dl->AddRectFilled(split, b, Ink(kAccent), r, ImDrawFlags_RoundCornersRight);
+    else if (out.gear_hovered)
+        dl->AddRectFilled(split, b, Ink(hov), r, ImDrawFlags_RoundCornersRight);
+    dl->AddLine(ImVec2(split.x + 0.5f, a.y + 1.0f), ImVec2(split.x + 0.5f, b.y - 1.0f),
+                Ink(selected ? kAccent : (on ? kAccentLine : kStroke)));
+    if (selected) dl->AddRect(ImVec2(a.x - 1.5f, a.y - 1.5f), ImVec2(b.x + 1.5f, b.y + 1.5f), Ink(kAccent), r + 1.5f, 0, Dp(1.5f));
+    const ImU32 ink = Ink(ChipInk(on, out.main_hovered, dis));
+    // The tick slot: always reserved, ticked when on.
+    const float box = Dp(11.0f);
+    if (on) DrawTick(dl, ImVec2(a.x + Dp(6.0f), a.y + (h - box) * 0.5f), box, ink);
+    const std::string text(id_label, LabelEnd(id_label));
+    const float       tx = a.x + Dp(6.0f) + box + Dp(4.0f);
+    bool              cut = false;
+    {
+        ImFont*     font = bold ? Font(FontRole::Semibold) : ImGui::GetFont();
+        const float fs = bold ? font->FontSize : ImGui::GetFontSize();
+        const float ty = a.y + (h - fs) * 0.5f;
+        const float max_x = split.x - Dp(6.0f);
+        const float tw = font->CalcTextSizeA(fs, 1e9f, 0.0f, text.c_str()).x;
+        if (tx + tw <= max_x + 0.5f) {
+            dl->AddText(font, fs, ImVec2(tx, ty), ink, text.c_str());
+        } else if (bold) {
+            FontScope f(FontRole::Semibold);
+            cut = EllipsisText(dl, ImVec2(tx, ty), max_x, ink, text);
+        } else {
+            cut = EllipsisText(dl, ImVec2(tx, ty), max_x, ink, text);
+        }
+    }
+    // The ⚙ zone.
+    Icon g = gear;
+    g.col = selected ? kWhite : (out.gear_hovered ? kText : (on ? kAccentInk : kFaint));
+    PaintIconAt(dl, g, split.x + (gw - IconPx()) * 0.5f, a.y, h);
+    if (flag) dl->AddCircleFilled(ImVec2(b.x - Dp(6.0f), a.y + Dp(5.0f)), Dp(2.5f), Ink(kWarn));
+    PopCrisp(crisp);
+    if (cut && out.main_hovered) ShowTip(text.c_str());
+    return out;
 }
 
 bool HelpMark(const char* id, const char* tip, float line_h)
@@ -1983,10 +2089,7 @@ bool Checkbox(const char* label, bool* v)
     const float  r = Dp(3.0f);
     if (*v) {
         dl->AddRectFilled(b0, b1, Ink(hovered ? kPrimaryHover : kAccent), r);
-        const float  k = box / 14.0f;
-        const ImVec2 tick[3] = {ImVec2(b0.x + 3.2f * k, b0.y + 7.2f * k), ImVec2(b0.x + 5.9f * k, b0.y + 9.9f * k),
-                                ImVec2(b0.x + 10.8f * k, b0.y + 4.2f * k)};
-        dl->AddPolyline(tick, 3, Ink(kWhite), ImDrawFlags_None, std::max(1.5f, 1.8f * k));
+        DrawTick(dl, b0, box, Ink(kWhite));
     } else {
         dl->AddRectFilled(b0, b1, Ink(kBg), r);
         dl->AddRect(b0, b1, Ink(hovered ? kFrameHover : kStrokeStrong), r);

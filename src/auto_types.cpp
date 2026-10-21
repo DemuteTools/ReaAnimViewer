@@ -229,8 +229,9 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "land", {{&P::jump_min_flight_s, S::Divide}, {}}, &AutoPartsJump, false, true, true, false, static_cast<int>(T::Step)},
     // Story 10-9g: the gear jolt, Body, sideless; higher sensitivity = softer impacts count.
     {T::Jolt, "Jolt", "Jolt", C::Body,
-     "A marker where an impact shakes the gear and cloth (Jolt): a step or a jump's landing\n"
-     "where the body's acceleration peaks above the sensitivity's threshold.\n"
+     "A marker where an impact shakes the gear and cloth (Jolt): a step, a jump's landing,\n"
+     "a knee coming down, a sit or a fall, where the body's acceleration peaks above the\n"
+     "sensitivity's threshold.\n"
      "Raise the sensitivity for softer steps, lower it for only the hard impacts.",
      "jolt", {{&P::jolt_min_g, S::Divide}, {}}, &AutoPartsJolt, true, false, false, true},
     // Story 10-9f: the Body's first type, sideless (a turn of the whole body has no foot).

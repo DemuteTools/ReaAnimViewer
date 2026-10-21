@@ -6,9 +6,10 @@
 //
 // The impacts it reads are the other types' events (their own detection, at the default
 // constants): the foot steps (FootEvents' combined FootStep, either foot) and the jumps' landings
-// (JumpEvents' Land). Each impact's jolt is the centre of mass's acceleration peak around it (the
-// hips standing for the centre of mass, as the jumps' push-off does). Body contacts (knees, sit,
-// fall: story 10-9b) are one more impact source: see kImpactSources.
+// (JumpEvents' Land), and the body's contacts with the ground (story 10-9b BodyContactEvents: a
+// knee coming down, the body sitting down, a fall landing). Each impact's jolt is the centre of
+// mass's acceleration peak around it (the hips standing for the centre of mass, as the jumps'
+// push-off does).
 
 #include <algorithm>
 #include <cmath>
@@ -25,12 +26,7 @@ constexpr char kSides[2] = {'L', 'R'};
 // ---- Impact sources ----------------------------------------------------------------------------
 // One impact = a clip time. Each source lists the impacts of one other type's events, at that
 // type's default constants (only the Jolt constants of `p` differ from them).
-//
-// Story 10-9b hook (deferred until 10-9b is merged): its body contacts (Knee, Sit, Fall) are
-// impacts too. Add one function here returning their landing times (its event source filtered on
-// its contact kinds) and append it to kImpactSources; nothing else changes (the merge, the window
-// and the threshold apply to every source alike). Then raise AutoMissingJolt's "a foot" to "a foot
-// or a body contact part" if its contacts do without the feet, and update the hint and the README.
+// The merge, the window and the threshold apply to every source alike.
 
 using ImpactSourceFn = void (*)(const PhysicsAnalysis& a, const PhysicsParams& p, std::vector<double>& out);
 
@@ -48,7 +44,17 @@ void LandImpacts(const PhysicsAnalysis& a, const PhysicsParams& p, std::vector<d
         if (e.kind == PhysicsKind::Land) out.push_back(e.time_s);
 }
 
-constexpr ImpactSourceFn kImpactSources[] = {&FootStepImpacts, &LandImpacts};
+// Story 10-9b: the body's contacts with the ground: a knee coming down, the body sitting down, a
+// fall landing on the hips or the back (BodyContactEvents' Knee, Sit, Fall; an elbow resting is
+// no impact). They find the floor from the feet, which Jolt needs already (AutoMissingJolt).
+void BodyContactImpacts(const PhysicsAnalysis& a, const PhysicsParams& p, std::vector<double>& out)
+{
+    for (const PhysicsEvent& e : BodyContactEvents(a, p))
+        if (e.kind == PhysicsKind::Knee || e.kind == PhysicsKind::Sit || e.kind == PhysicsKind::Fall)
+            out.push_back(e.time_s);
+}
+
+constexpr ImpactSourceFn kImpactSources[] = {&FootStepImpacts, &LandImpacts, &BodyContactImpacts};
 
 // A clip time's analysed sample (looping: the middle cycle), clamped to the track.
 long SampleOf(const PhysicsAnalysis& a, double clip_t)
@@ -185,8 +191,9 @@ void AutoLanesJolt(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::st
     l.above = true;
     char buf[256];
     std::snprintf(buf, sizeof(buf),
-                  "Shaded: a foot is on the ground. A jolt is a step or a landing where this curve\n"
-                  "peaks above the line within %.0f ms before to %.0f ms after the contact.",
+                  "Shaded: a foot is on the ground. A jolt is a step, a landing, a knee, a sit or a\n"
+                  "fall where this curve peaks above the line within %.0f ms before to %.0f ms after\n"
+                  "the contact.",
                   args.p->jolt_before_s * 1000.0, args.p->jolt_after_s * 1000.0);
     l.shade_note = buf;
     out.push_back(std::move(l));

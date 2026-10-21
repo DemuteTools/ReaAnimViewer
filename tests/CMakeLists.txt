@@ -111,7 +111,9 @@ target_include_directories(bone_events_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/
 add_test(NAME bone_events COMMAND bone_events_test)
 
 # Spike 10-8a -- foot events from body physics (src/motion_physics.h).
-add_executable(motion_physics_test motion_physics_test.cpp ../src/motion_physics.cpp ../src/body_contacts.cpp ../src/bone_events.cpp)
+# Story 10-9g: and the auto types (the Jolt test of a fall: JoltEvents, auto_types_jolt.cpp).
+add_executable(motion_physics_test motion_physics_test.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/bone_events.cpp
+               ../src/rule_record.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
 target_include_directories(motion_physics_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME motion_physics COMMAND motion_physics_test)
 

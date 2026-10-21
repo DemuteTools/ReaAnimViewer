@@ -2488,6 +2488,20 @@ int main()
             CHECK(f.size() == 1);
             const double land = t0 + std::sqrt(2.0 * (0.92 - 0.10) / 9.81);
             if (f.size() == 1) CHECK(std::fabs(f[0].time_s - land) < 0.05 && f[0].strength > 2.0);
+            // Story 10-9g: the fall is a Jolt impact (the feet stay planted: no step, no landing,
+            // so the body contacts are its only impacts), its peak far above the default 1 g. The
+            // jolt takes the earliest impact of its group (the trunk coming to rest low reads as a
+            // Sit 4 ms before the Fall here).
+            {
+                const std::vector<PhysicsEvent> j = JoltEvents(a, dp);
+                CHECK(j.size() == 1);
+                for (const PhysicsEvent& e : FootEvents(a, dp)) CHECK(e.kind != PhysicsKind::FootStep);
+                for (const PhysicsEvent& e : JumpEvents(a, dp)) CHECK(e.kind != PhysicsKind::Land);
+                if (j.size() == 1 && f.size() == 1)
+                    CHECK(j[0].kind == PhysicsKind::Jolt && j[0].side == 'B' && j[0].time_s <= f[0].time_s &&
+                          f[0].time_s - j[0].time_s < dp.jolt_merge_s &&
+                          j[0].strength > dp.jolt_min_g);
+            }
             // Lying down in 1.6 s (eased: 0.7 leg/s down over the 0.3 s before it stops): no fall;
             // with the Fall sensitivity at 100 % (fall_min_speed / 2) it is one.
             const PhysicsAnalysis b = AnalyseMotion(body(nullptr, move(Vec3d{0.0, 0.92, -0.14}, Vec3d{0.0, 0.10, -0.6}, 1.0, 1.6),

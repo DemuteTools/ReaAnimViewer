@@ -655,7 +655,8 @@ std::vector<double> JoltAccelerationG(const PhysicsAnalysis& a, const PhysicsPar
 // Story 10-9g: the gear jolts (Kind Jolt, side 'B', part -1), by time: an impact (a foot step or a
 // jump's landing; body contacts once 10-9b lands) whose JoltAccelerationG peak within
 // [-p.jolt_before_s, +p.jolt_after_s] of it reaches p.jolt_min_g, at the impact's time; impacts
-// within p.jolt_merge_s of each other make one. Strength = the peak (g).
+// within p.jolt_merge_s of each other make one (on a loop, through the seam too). Strength = the
+// peak (g).
 std::vector<PhysicsEvent> JoltEvents(const PhysicsAnalysis& a, const PhysicsParams& p = {});
 
 // The separate step times of one part (side 'L' / 'R'), by `timing` plus `offset_s`.

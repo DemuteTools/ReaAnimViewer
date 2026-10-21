@@ -189,7 +189,7 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "A marker where an impact shakes the gear and cloth (Jolt): a step or a jump's landing\n"
      "where the body's acceleration peaks above the sensitivity's threshold.\n"
      "Raise the sensitivity for softer steps, lower it for only the hard impacts.",
-     "jolt", {{&P::jolt_min_g, S::Divide}, {}}, &AutoPartsJolt, true},
+     "jolt", {{&P::jolt_min_g, S::Divide}, {}}, &AutoPartsJolt, true, false, false, true},
 };
 
 // ---- Kinds -------------------------------------------------------------------------------------

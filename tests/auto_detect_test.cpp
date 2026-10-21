@@ -2281,6 +2281,49 @@ int main()
             CHECK(lanes.size() == 1);
             if (lanes.size() == 1) CHECK(lanes[0].unit == "g" && lanes[0].above && lanes[0].threshold == 1.0);
         }
+        // Review: Detect never raises Jolt: a walk with no jolt is searched (Detect not lit for it),
+        // neither raised nor "none up to 100 %", its sensitivity unchanged.
+        {
+            Options wo;
+            wo.dur = 4.3;
+            const std::vector<BoneTrack> walk =
+                Rig(StepsAndJump(-0.1, {0.3, 2.9}, 10.0, 0.5), StepsAndJump(0.1, {0.8, 3.4}, 10.0, 0.5), wo);
+            CHECK(DetectAutoEvents(jb, walk, nullptr, false).empty());
+            std::vector<int> full(static_cast<size_t>(Role::Count), -1);
+            for (int r = 0; r < static_cast<int>(Role::Count); ++r) full[static_cast<size_t>(r)] = r;
+            const std::vector<AutoSensResult> sr = SearchAutoSensitivity(jb, walk, {0}, full, false);
+            CHECK(sr.size() == 1);
+            if (sr.size() == 1) CHECK(sr[0].searched && !sr[0].raised && !sr[0].none && sr[0].sens == jb[0].sens);
+            CHECK(AutoTypeRow(AutoType::Jolt).no_sens_raise);
+            for (int t = 0; t <= static_cast<int>(AutoType::Land); ++t)  // the Legs and Arms types still raise
+                CHECK(!AutoTypeRow(static_cast<AutoType>(t)).no_sens_raise);
+        }
+        // Review: on a loop, a landing just before the seam and the other foot's just after it
+        // (100 ms apart through the seam) make one jolt, at the earlier one (before the seam).
+        {
+            Options lo;
+            lo.dur = 2.0;
+            auto cyc = [](double x, double t0) {
+                return FootFn([=](double t) {
+                    FootPose     f;
+                    const double u = std::fmod(t - t0 + 4.0, 2.0);
+                    f.ball = Vec3d{x, 0.02, 0.0};
+                    if (u > 0.0 && u < 0.5) f.ball.y += 9.81 * 0.5 / 2.0 * u - 0.5 * 9.81 * u * u;
+                    return f;
+                });
+            };
+            const std::vector<BoneTrack> rig2 = Rig(cyc(-0.1, 1.45), cyc(0.1, 1.55), lo);
+            PhysicsParams                lp = AutoPhysicsParams(AutoType::Jolt, kAutoDefaultSens, true);
+            lp.jolt_min_g = 0.0;
+            const PhysicsAnalysis la = AnalyseMotion(rig2, lp);
+            CHECK(la.ok && la.looping);
+            int steps = 0;
+            for (const PhysicsEvent& e : FootEvents(la, lp)) steps += e.kind == PhysicsKind::FootStep;
+            CHECK(steps == 2);  // 0.05 and 1.95 s
+            const std::vector<PhysicsEvent> lj = JoltEvents(la, lp);
+            CHECK(lj.size() == 1);
+            if (lj.size() == 1) CHECK(lj[0].time_s > 1.9 && lj[0].time_s < 2.0);
+        }
     }
 
     if (g_fails) std::printf("%d check(s) failed\n", g_fails);

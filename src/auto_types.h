@@ -67,6 +67,11 @@ struct AutoTypeInfo {
     // foot that names it): Detect's sensitivity search skips a block when a block of the type on
     // either side has the event.
     bool            shared_sides = false;
+    // Story 10-9f: Detect's sensitivity search never raises this type's silent blocks (a motion
+    // most clips never hold, a spin: a raise would turn a clip's sway or twist into one). The
+    // user's own sensitivity still applies. Story 10-9g: Jolt too (a walk or a climb has no jolt;
+    // a raise would make its softest step one); the block counts as searched (Detect not lit).
+    bool            no_sens_raise = false;
 };
 
 // An event source: the physics events of one analysis a kind reads (FootEvents, HandEvents...).

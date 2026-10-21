@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <utility>
 
 #include "auto_types.h"
 
@@ -91,17 +92,30 @@ std::vector<PhysicsEvent> JoltEvents(const PhysicsAnalysis& a, const PhysicsPara
     };
     // Impacts within jolt_merge_s of the group's first make one jolt (the first's time, the highest
     // peak): a landing and its step, both feet landing together.
+    std::vector<std::pair<double, double>> groups;  // (time, peak)
     for (size_t i = 0; i < impacts.size();) {
         const double t0 = impacts[i];
         double       pk = 0.0;
         for (; i < impacts.size() && impacts[i] - t0 <= p.jolt_merge_s + 1e-9; ++i) pk = std::max(pk, peak_at(impacts[i]));
-        if (!(pk >= p.jolt_min_g)) continue;
+        groups.push_back({t0, pk});
+    }
+    // A loop: the last group and the first merge through the seam (period T) when the first comes
+    // within jolt_merge_s of the last; the last one is the earlier in the motion and gives the time.
+    if (a.looping && a.window_samples > 1 && groups.size() > 1) {
+        const double T = static_cast<double>(a.window_samples - 1) / a.rate_hz;
+        if (groups.front().first + T - groups.back().first <= p.jolt_merge_s + 1e-9) {
+            groups.back().second = std::max(groups.back().second, groups.front().second);
+            groups.erase(groups.begin());
+        }
+    }
+    for (const auto& g : groups) {
+        if (!(g.second >= p.jolt_min_g)) continue;
         PhysicsEvent e;
         e.kind = PhysicsKind::Jolt;
         e.side = 'B';
         e.part = -1;
-        e.time_s = e.start_s = e.end_s = t0;
-        e.strength = pk;
+        e.time_s = e.start_s = e.end_s = g.first;
+        e.strength = g.second;
         ev.push_back(e);
     }
     return ev;

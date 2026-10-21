@@ -21,8 +21,9 @@
 //           least punch_radial_frac of its speed: a straight thrust; any other hand peak is a
 //           swing. One peak is one or the other.
 // Looping clips: read on the unrolled track as the other events, kept when the peak lies in the
-// clip (its start wrapped into [0, T)). Not looping, a peak on the first or last sample (the
-// motion cut by the clip) is no whoosh.
+// clip (its start wrapped into [0, T)). Not looping, a peak on the first or last sample, or a
+// whoosh already under way on the clip's first sample (its speed there at whoosh_edge_frac of the
+// peak or more: the motion started before the clip, its start is not in it), is no whoosh.
 //
 // Pure C++17, deterministic. Host-tested (tests/motion_physics_test.cpp).
 
@@ -110,6 +111,7 @@ struct WhooshRun {
     int    start = 0;
     int    end = 0;
     double speed = 0.0;
+    bool   cut_start = false;  // the speed still at the edge share of the peak on the first sample
 };
 
 // The runs above `thr` (dips above kWhooshMergeFrac x thr joined), each with its peak and span.
@@ -152,6 +154,7 @@ std::vector<WhooshRun> FindRuns(const std::vector<double>& v, double thr, double
         auto         at = [&](int j) { return v[static_cast<size_t>(j)]; };
         w.start = w.peak;
         while (w.start > 0 && at(w.start) >= edge && !(at(w.start) < dip && at(w.start - 1) > at(w.start))) --w.start;
+        w.cut_start = w.start == 0 && at(0) >= edge;
         w.end = w.peak;
         while (w.end + 1 < n && at(w.end) >= edge && !(at(w.end) < dip && at(w.end + 1) > at(w.end))) ++w.end;
         out.push_back(w);
@@ -289,6 +292,7 @@ std::vector<PhysicsEvent> WhooshEvents(const PhysicsAnalysis& a, const PhysicsPa
         PhysicsEvent e;
         double       tp;
         if (!clip_peak(r.peak, &tp)) return;
+        if (!a.looping && r.cut_start) return;  // review 10-9c: started before the clip
         e.kind = k;
         e.side = side;
         e.part = part;

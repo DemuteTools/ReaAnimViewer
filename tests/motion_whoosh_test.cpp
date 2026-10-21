@@ -63,6 +63,8 @@ struct Body {
     bool   punch = false;   // right hand: a straight thrust at 1.2 s
     bool   kick = false;    // left leg: a straight-leg front kick at 1.6 s
     bool   fold = false;    // right shank: a fast heel kick-up behind (a running stride's fold) at 0.4 s
+    bool   pump = false;    // right hand: a running arm pump, the elbow straightening as it swings forward
+    double swing_t0 = 0.5;  // the swing's start (s)
     bool   torso = true;    // false: no chest, spine nor hips
 };
 
@@ -93,12 +95,22 @@ std::vector<BoneTrack> MakeBody(const Body& b)
         put(Role::RightShoulder, shr);
         // Left hand: hangs 0.6 m under the shoulder; the swing lifts it forward 150 deg in 0.3 s.
         double sw = 0.0;
-        if (b.swing) sw = 150.0 * kPi / 180.0 * Smoothstep((t - 0.5) / 0.3);
+        if (b.swing) sw = 150.0 * kPi / 180.0 * Smoothstep((t - b.swing_t0) / 0.3);
         put(Role::LeftHand, AboutX(Plus(shl, V(0.0, -0.6, 0.0)), shl, sw));
         // Right hand: guard at the chest, then a straight thrust 0.55 m forward in 0.08 s.
         const Vec3d guard = Plus(shr, V(0.0, -0.1, 0.15));
-        put(Role::RightHand, b.punch ? Plus(guard, V(0.0, 0.1 * Smoothstep((t - 1.2) / 0.08), 0.55 * Smoothstep((t - 1.2) / 0.08)))
-                                     : guard);
+        if (b.pump) {
+            // Review 10-9c: +-60 deg about the shoulder at 2 Hz (8 leg/s at the bottom, a sprint's
+            // arms swing hard), the hand 0.35 m from the shoulder behind, 0.6 m in front (the
+            // elbow opening as it drives forward).
+            const double ph = 2.0 * kPi * 2.0 * t, ang = 60.0 * kPi / 180.0 * std::sin(ph);
+            const double reach = 0.475 + 0.125 * std::sin(ph);
+            put(Role::RightHand, AboutX(Plus(shr, V(0.0, -reach, 0.0)), shr, ang));
+        } else {
+            put(Role::RightHand,
+                b.punch ? Plus(guard, V(0.0, 0.1 * Smoothstep((t - 1.2) / 0.08), 0.55 * Smoothstep((t - 1.2) / 0.08)))
+                        : guard);
+        }
         for (int s = 0; s < 2; ++s) {
             const double x = s ? -0.1 : 0.1;
             const Vec3d  up = V(x, 0.95, 0.0);
@@ -203,6 +215,40 @@ void TestPhysics()
     CHECK(Count(WhooshEvents(a, low, false), PhysicsKind::Kick) == 0);
     CHECK(WhooshSummary(a, ev) == "whooshes: kicks 1, swings 1, punches 1");
 
+    // Review 10-9c: a running arm pump driving forward while the elbow opens is fast (a swing),
+    // never a punch: its speed along the shoulder -> hand line stays far under the thrust's share
+    // (0.7; the fixtures' runs, sprints and strafes: 0.54 at most).
+    {
+        Body pump;
+        pump.pump = true;
+        const PhysicsAnalysis pa = AnalyseMotion(MakeBody(pump), p);
+        const std::vector<PhysicsEvent> pe = WhooshEvents(pa, p, false);
+        CHECK(pa.ok && Count(pe, PhysicsKind::Swing) >= 3 && Count(pe, PhysicsKind::Punch) == 0);
+        double share = 0.0;
+        for (const PhysicsEvent& e : pe) {
+            const size_t i = static_cast<size_t>(std::lround(e.time_s * kRate));
+            share = std::max(share, pa.whoosh_hand[1].radial[i] / pa.whoosh_hand[1].speed[i]);
+        }
+        CHECK(share < 0.5);
+        // The pump's arcs at the punch's own sensitivity 100 (half its speed): still no punch.
+        PhysicsParams soft = p;
+        soft.punch_speed /= 2.0;
+        CHECK(Count(WhooshEvents(pa, soft, false), PhysicsKind::Punch) == 0);
+    }
+    // Review 10-9c: a swing already under way on the clip's first sample (it started before the
+    // clip: peak at 0.05 s) is none, Peak or Start.
+    {
+        Body cut;
+        cut.swing = true;
+        cut.swing_t0 = -0.1;
+        const PhysicsAnalysis ca = AnalyseMotion(MakeBody(cut), p);
+        CHECK(ca.ok && ca.whoosh_hand[0].speed[1] > p.whoosh_edge_frac * p.swing_speed);
+        CHECK(WhooshEvents(ca, p, false).empty() && WhooshEvents(ca, p, true).empty());
+        Body late = cut;
+        late.swing_t0 = 0.05;  // its start in the clip
+        CHECK(Count(WhooshEvents(AnalyseMotion(MakeBody(late), p), p, false), PhysicsKind::Swing) == 1);
+    }
+
     // Still body: nothing.
     const PhysicsAnalysis still = AnalyseMotion(MakeBody(Body{}), p);
     CHECK(still.ok && WhooshEvents(still, p, false).empty());
@@ -280,6 +326,21 @@ void TestTypes()
             const AutoSettings s = WhooshOn(st, sep);
             CHECK(ReadAutoSettings(AutoBlocks(s)) == s);
         }
+    // Review 10-9c: a project saved before the whooshes (steps, separate jumps, grabs) reads back
+    // with no Start anywhere, and re-applying what it reads changes nothing.
+    {
+        AutoSettings old;
+        for (AutoType t : {AutoType::Step, AutoType::Jump, AutoType::Land, AutoType::Grab}) old.type[static_cast<int>(t)].on = true;
+        old.separate_parts[static_cast<int>(AutoType::Jump)] = true;
+        std::vector<Block>       saved = AutoBlocks(old);
+        const std::vector<Block> before = saved;
+        const AutoSettings       read = ReadAutoSettings(saved);
+        CHECK(read == old);
+        for (int t = 0; t < kAutoTypeCount; ++t) CHECK(!read.at_start[t]);
+        bool ch = true;
+        ApplyAutoSettings(saved, read, &ch);
+        CHECK(!ch && Words(saved) == Words(before) && !AutoPending(read, read));
+    }
     CHECK(AutoPending(WhooshOn(true, false), WhooshOn(false, false)));
     CHECK(!AutoPending(WhooshOn(false, false), WhooshOn(false, false)));
 
@@ -331,7 +392,14 @@ void TestDetect()
     std::vector<int> counts(blocks.size(), 0);
     for (const Event& e : ev)
         if (e.block >= 0 && static_cast<size_t>(e.block) < counts.size()) ++counts[static_cast<size_t>(e.block)];
-    for (const AutoSensResult& r : SearchAutoSensitivity(blocks, rt, counts, map, false)) CHECK(!r.raised);  // (searched: no_sens_raise)
+    // Review 10-9c: such a block counts as searched (Detect is not left lit for it).
+    const std::vector<AutoSensResult> sr = SearchAutoSensitivity(blocks, rt, counts, map, false);
+    CHECK(sr.size() == blocks.size());
+    for (size_t i = 0; i < sr.size(); ++i) {
+        CHECK(!sr[i].raised && !sr[i].none && sr[i].sens == blocks[i].sens);
+        // (a silent kick part whose sibling part holds the kick is left alone, as any part type's)
+        if (counts[i] == 0 && blocks[i].auto_type.rfind("kick", 0) != 0) CHECK(sr[i].searched);
+    }
 
     // Lanes: the speed vs torso against the type's speed.
     AutoAnalysis aa;

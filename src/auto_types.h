@@ -72,7 +72,7 @@ struct AutoTypeInfo {
     // user's own sensitivity still applies. Story 10-9g: Jolt too (a walk or a climb has no jolt;
     // a raise would make its softest step one); the block counts as searched (Detect not lit).
     // Story 10-9e: Tap and Drag too (a walk's toe skims drag from 67 %). Story 10-9d: Clap and
-    // Hand on body too.
+    // Hand on body too. Story 10-9c: Kick, Swing and Punch too.
     bool            no_sens_raise = false;
     // Story 10-9c: Peak / Start (AutoSettings::at_start): each kind has a twin whose row says
     // `at_start` (same type, marker, colour, role key; its sound key the peak kind), Start making

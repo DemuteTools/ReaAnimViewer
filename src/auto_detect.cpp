@@ -823,17 +823,22 @@ double AutoConfidenceOfSteps(int kept_steps)
     return std::clamp(static_cast<double>(kept_steps) / kAutoConfidenceSteps, 0.0, 1.0);
 }
 
-void RateAutoEvents(std::vector<Event>& events, const std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
-                    std::vector<AutoAnalysis>* cache, bool looping)
+namespace {
+
+// RateAutoEvents. `analyse` false (review of 10-10a, a drag's preview): rates only when every
+// probe it needs is in `cache` already; false, `events` untouched, when one is missing.
+bool RateImpl(std::vector<Event>& events, const std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
+              std::vector<AutoAnalysis>* cache, bool looping, bool analyse)
 {
     std::vector<size_t> rated;  // the auto events, by index into `events`
     for (size_t i = 0; i < events.size(); ++i) {
         const int b = events[i].block;
         if (b < 0 || b >= static_cast<int>(blocks.size()) || !IsActiveAutoBlock(blocks[static_cast<size_t>(b)])) continue;
-        events[i].confidence = 1.0;
         rated.push_back(i);
     }
-    if (rated.empty()) return;
+    if (rated.empty()) return true;
+    if (!analyse && !cache) return false;
+    std::vector<double> conf(rated.size(), 1.0);  // written to `events` once rated
     std::vector<AutoAnalysis>  local;
     std::vector<AutoAnalysis>& runs = cache ? *cache : local;
     std::vector<PhysicsParams> used;  // every probe's parameter sets (kept in the cache)
@@ -845,6 +850,7 @@ void RateAutoEvents(std::vector<Event>& events, const std::vector<Block>& blocks
             bool have = false;
             for (const AutoAnalysis& r : runs) have = have || SameAutoAnalysis(r.params, p);
             if (have) continue;
+            if (!analyse) return false;  // a probe the cache does not hold: no analysis here
             AutoAnalysis r;
             r.params = p;
             r.analysis = AnalyseMotion(role_tracks, p);
@@ -854,32 +860,45 @@ void RateAutoEvents(std::vector<Event>& events, const std::vector<Block>& blocks
         // threshold only).
         const std::vector<Event> probe = AutoEventsImpl(runs, blocks, looping, false, shift);
         const double             period = AnalysesLoopPeriod(runs, looping);
-        bool                     any = false;
+        // Review of 10-10a: one probe event survives one event at most, the nearest pairs first, so
+        // a neighbour (the next step of a fast run) never keeps an event that is gone alive.
+        struct Pair {
+            double d;
+            size_t j, q;
+        };
+        std::vector<Pair> pairs;
         for (size_t j = 0; j < rated.size(); ++j) {
             if (!alive[j]) continue;
-            Event& ev = events[rated[j]];
-            bool   found = false;
-            for (const Event& q : probe) {
-                if (q.block != ev.block) continue;
-                double d = std::fabs(q.time_s - ev.time_s);
+            const Event& ev = events[rated[j]];
+            for (size_t q = 0; q < probe.size(); ++q) {
+                if (probe[q].block != ev.block) continue;
+                double d = std::fabs(probe[q].time_s - ev.time_s);
                 if (period > 0.0) {
                     d = std::fmod(d, period);
                     d = std::min(d, period - d);
                 }
-                if (d <= kAutoConfidenceTolS + 1e-9) {
-                    found = true;
-                    break;
-                }
+                if (d <= kAutoConfidenceTolS + 1e-9) pairs.push_back({d, j, q});
             }
-            if (found) {
+        }
+        std::stable_sort(pairs.begin(), pairs.end(), [](const Pair& a, const Pair& b) { return a.d < b.d; });
+        std::vector<char> found(rated.size(), 0), taken(probe.size(), 0);
+        for (const Pair& pr : pairs) {
+            if (found[pr.j] || taken[pr.q]) continue;
+            found[pr.j] = taken[pr.q] = 1;
+        }
+        bool any = false;
+        for (size_t j = 0; j < rated.size(); ++j) {
+            if (!alive[j]) continue;
+            if (found[j]) {
                 any = true;
                 continue;
             }
             alive[j] = 0;
-            ev.confidence = AutoConfidenceOfSteps(k - 1);
+            conf[j] = AutoConfidenceOfSteps(k - 1);
         }
         if (!any) break;
     }
+    for (size_t j = 0; j < rated.size(); ++j) events[rated[j]].confidence = conf[j];
     // A cache keeps the probes' analyses and a few others.
     if (cache) {
         for (size_t i = 0; i < runs.size() && runs.size() > std::max(kMaxCachedAnalyses, used.size());) {
@@ -889,6 +908,21 @@ void RateAutoEvents(std::vector<Event>& events, const std::vector<Block>& blocks
             else runs.erase(runs.begin() + static_cast<std::ptrdiff_t>(i));
         }
     }
+    return true;
+}
+
+}  // namespace
+
+void RateAutoEvents(std::vector<Event>& events, const std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
+                    std::vector<AutoAnalysis>* cache, bool looping)
+{
+    RateImpl(events, blocks, role_tracks, cache, looping, true);
+}
+
+bool RateAutoEventsFromCache(std::vector<Event>& events, const std::vector<Block>& blocks,
+                             const std::vector<BoneTrack>& role_tracks, std::vector<AutoAnalysis>* cache, bool looping)
+{
+    return RateImpl(events, blocks, role_tracks, cache, looping, false);
 }
 
 std::vector<Event> DetectRatedAutoEvents(const std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,

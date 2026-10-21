@@ -2591,6 +2591,17 @@ int main()
         CHECK(probes.size() == n);
         CHECK(ev2.size() == ev3.size());
         for (size_t i = 0; i < ev2.size() && i < ev3.size(); ++i) CHECK(ev2[i].confidence == ev3[i].confidence);
+        // Review of 10-10a: a drag's preview rates from the cache only. An empty cache: false,
+        // nothing changed, no analysis run; the filled one: the same confidences, no new analysis.
+        std::vector<Event> ev4 = DetectAutoEvents(blocks, rig, nullptr, false);
+        for (Event& e : ev4) e.confidence = 0.5;
+        std::vector<AutoAnalysis> none;
+        CHECK(!RateAutoEventsFromCache(ev4, blocks, rig, &none, false) && none.empty());
+        CHECK(!RateAutoEventsFromCache(ev4, blocks, rig, nullptr, false));
+        for (const Event& e : ev4) CHECK(e.confidence == 0.5);
+        CHECK(RateAutoEventsFromCache(ev4, blocks, rig, &probes, false) && probes.size() == n);
+        CHECK(ev4.size() == ev2.size());
+        for (size_t i = 0; i < ev2.size() && i < ev4.size(); ++i) CHECK(ev2[i].confidence == ev4[i].confidence);
     }
     // A clear walk: its steps and lift-offs rated, each 0..1, the steps of a firm walk confident.
     {

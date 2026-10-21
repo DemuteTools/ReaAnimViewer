@@ -355,10 +355,11 @@ std::vector<Event> DetectAutoEvents(const std::vector<Block>& blocks, const std:
 // peak in g...) ARE its thresholds. The block runs again with them made stricter, step by step
 // (kAutoConfidenceStepSens sensitivity points each, kAutoConfidenceSteps steps: the last one
 // halves the sensitivity factor, 2^(-50/50)); the confidence is the share of steps the event
-// survives in a row (an event of the block within kAutoConfidenceTolS of its time, no Land /
-// Jump replacement). 1 = still found with every threshold twice as strict; 0 = gone at the first
-// step (only just over a threshold). Relative to the block's own sensitivity (Detect's raise
-// included: an event that only appears after a raise reads low). A type needs no code of its own:
+// survives in a row (an event of the block within kAutoConfidenceTolS of its time, each probe
+// event matched to one event at most, nearest pairs first; no Land / Jump replacement). 1 = still
+// found with every threshold twice as strict; 0 = gone at the first step (only just over a
+// threshold). Relative to the block's own sensitivity (Detect's raise included: an event that
+// only appears after a raise reads low). A type needs no code of its own:
 // a new row's `sens` fields give its confidence (its `conf_probe` may leave out a field that is a
 // tolerance, not a margin: Clap / Hand on body's reach). What it cannot see: a constant no sensitivity
 // moves (a knee's height over the floor, a clap's stop), and an event that is physically sound but
@@ -376,6 +377,11 @@ double AutoConfidenceOfSteps(int kept_steps);
 // the two evict each other's).
 void RateAutoEvents(std::vector<Event>& events, const std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
                     std::vector<AutoAnalysis>* cache, bool looping);
+// Review of 10-10a: RateAutoEvents with no new analysis (a sensitivity drag's preview, every frame):
+// rates only when every probe analysis it needs is in `cache` already. False (`events` untouched)
+// when one is missing.
+bool RateAutoEventsFromCache(std::vector<Event>& events, const std::vector<Block>& blocks,
+                             const std::vector<BoneTrack>& role_tracks, std::vector<AutoAnalysis>* cache, bool looping);
 // DetectAutoEvents then RateAutoEvents (what the Tagging view and Commit run).
 std::vector<Event> DetectRatedAutoEvents(const std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
                                          std::vector<AutoAnalysis>* cache, std::vector<AutoAnalysis>* probe_cache,

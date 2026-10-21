@@ -187,7 +187,8 @@
 // (L), at its own last part to leave / its own step: one event. Story 10-9m: at a landing, the
 // other foot touching more than jump_land_apart_s after the first (jump_land_apart_max_s at most:
 // later, it is a step after a one-foot landing) lands apart, a second Land on that foot at its
-// own step (its first part to touch). A take-off keeps one Jump (the last foot to leave): the
+// own step (its first part to touch); together (jump_land_apart_s at most), the Land's span
+// [start_s, end_s] reaches the other foot's step (Land replaces the steps over it). A take-off keeps one Jump (the last foot to leave): the
 // staggered take-offs' first foot is a lift-off. Looping clips: as the other events.
 //
 // Running strides (story 10-9a-4): a run's flights (both feet off each stride, longer as it
@@ -453,7 +454,12 @@ struct PhysicsParams {
     // (AirPunch's 1.54 s, Antho: two impacts); one-foot landings whose other foot steps after
     // 115 ms (Jumping Down_Calm, a confirmed step) to 186-234 ms (the running jumps). Take-offs
     // keep one Jump: a staggered take-off's first foot is a confirmed lift-off (Standing Jump02
-    // 64 ms, Jumping Down 25 ms). Not moved by the sensitivity.
+    // 64 ms, Jumping Down 25 ms). Not moved by the sensitivity. Review 10-9m: the upper bound is a
+    // time, not the hips (Jumping Down_Calm's confirmed step lands with the hips still falling at
+    // 96 % of their landing speed and the first foot down, as AirPunch's second foot, 75 %): a
+    // running stride after a landing comes 179 ms or more later, the first foot leaving before it
+    // (a stride's flight); a step under 90 ms would be over 11 steps a second. Arms Land reads
+    // jump_land_apart_max_s too (one Arms Land per landing).
     double     jump_land_apart_s = 0.040;
     double     jump_land_apart_max_s = 0.090;
     // Story 10-9a-4: a running stride's flight is no jump (see "Running strides" above): a

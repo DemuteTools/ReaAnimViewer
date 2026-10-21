@@ -63,22 +63,30 @@ ArmWindow LandWindow(const PhysicsParams& p)
     return {p.arm_land_speed, p.arm_land_before_s, p.arm_land_after_s, false};
 }
 
+double LoopPeriod(const PhysicsAnalysis& a);
+
 // The take-offs (every Jump signature's) or the landings, clip times, sorted.
 std::vector<double> JumpTimes(const PhysicsAnalysis& a, const PhysicsParams& p, bool land)
 {
     std::vector<double> out;
     if (land) {
         // Story 10-9m: a landing on both feet apart gives two Lands (one per foot); the arms come
-        // down once: the first foot's Land only (the second is the other foot's, apart from it by
-        // jump_land_apart_max_s at most).
-        double last = 0.0;
-        bool   have = false;
-        for (const PhysicsEvent& e : AutoSourceJump(a, p)) {
-            if (e.kind != PhysicsKind::Land) continue;
-            if (have && e.time_s - last >= 0.0 && e.time_s - last <= p.jump_land_apart_max_s + 1e-6) continue;
-            out.push_back(e.time_s);
-            last = e.time_s;
-            have = true;
+        // down once: the first foot's Land only. A Land jump_land_apart_max_s at most after
+        // another is that landing's second foot (two flights are never that close); looping,
+        // through the seam too (review 10-9m: the first foot just before the clip's end, the
+        // second just after its start).
+        std::vector<double> lands;
+        for (const PhysicsEvent& e : AutoSourceJump(a, p))
+            if (e.kind == PhysicsKind::Land) lands.push_back(e.time_s);
+        const double T = LoopPeriod(a);
+        for (double t : lands) {
+            bool second = false;
+            for (double u : lands) {
+                double d = t - u;
+                if (T > 0.0) d = std::fmod(std::fmod(d, T) + T, T);
+                second = second || (d > 1e-6 && d <= p.jump_land_apart_max_s + 1e-6);
+            }
+            if (!second) out.push_back(t);
         }
     } else {
         for (auto src : {&AutoSourceJump, &AutoSourceJumpPushOff, &AutoSourceJumpFreeFall})

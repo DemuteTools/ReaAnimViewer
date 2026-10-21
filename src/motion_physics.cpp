@@ -2040,6 +2040,14 @@ std::vector<PhysicsEvent> JumpEvents(const PhysicsAnalysis& a, const PhysicsPara
                 const int o = land.side == 'L' ? 1 : 0;  // the other foot
                 if (foot_have[o]) {
                     const double gap = foot_land[o].time_s - land.time_s;
+                    // Review 10-9m: together (jump_land_apart_s at most), the Land's span reaches
+                    // the other foot's step, which it replaces (Land replaces the steps over its
+                    // span, +-30 ms): one landing, one sound, with no gap between the 30 ms of the
+                    // replacement and jump_land_apart_s (a second foot 35 ms late is no step).
+                    if (gap <= p.jump_land_apart_s + kTieS) {
+                        ev.back().start_s = std::min(land.time_s, foot_land[o].time_s);
+                        ev.back().end_s = std::max(land.time_s, foot_land[o].time_s);
+                    }
                     if (gap > p.jump_land_apart_s + kTieS && gap <= p.jump_land_apart_max_s + kTieS) {
                         PhysicsEvent second = foot_land[o];
                         second.kind = PhysicsKind::Land;

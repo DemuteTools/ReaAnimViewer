@@ -307,7 +307,8 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "A marker where a jump lands, on the first foot to touch, at its step (Land L / Land R).\n"
      "Separate: Land Heel L / Land Toe L...\n"
      "With Step ticked, it replaces the steps there.",
-     "land", {{&P::jump_min_flight_s, S::Divide}, {}}, &AutoPartsJump, false, true, true, false, false, static_cast<int>(T::Step)},
+     "land", {{&P::jump_min_flight_s, S::Divide}, {}}, &AutoPartsJump, false, true, true, false, false, static_cast<int>(T::Step),
+     static_cast<int>(T::Step)},  // review 10-9m: over its span too (a landing together: up to the other foot's step)
     // Story 10-9g: the gear jolt, Body, sideless; higher sensitivity = softer impacts count.
     {T::Jolt, "Jolt", "Jolt", C::Body,
      "A marker where an impact shakes the gear and cloth (Jolt): a step, a jump's landing,\n"

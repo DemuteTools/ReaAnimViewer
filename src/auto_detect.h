@@ -20,8 +20,9 @@
 //              (Jump L / R).
 //   land       (story 10-9a) its landing: the first foot touching after it, timed as that foot's
 //              step (Land L / R); story 10-9m: the other foot touching 40-90 ms after it
-//              (PhysicsParams::jump_land_apart_s / _max_s) gets its own Land. With Step ticked too, Land replaces the steps (FS / Heel / Toe,
-//              either foot) within +-30 ms of it; with Lift-off ticked too, Jump replaces the
+//              (PhysicsParams::jump_land_apart_s / _max_s) gets its own Land. With Step ticked
+//              too, Land replaces the steps (FS / Heel / Toe, either foot) within +-30 ms of it
+//              (of its span: a landing together reaches the other foot's step, review 10-9m); with Lift-off ticked too, Jump replaces the
 //              lift-offs (either foot, any part) within +-30 ms of it (their physics times, before
 //              the blocks' offsets). Story 10-8r: a Separate one (Land Heel / Land Toe, Jump
 //              Heel / Jump Toe) replaces only its own part's (and the whole-foot kinds'), so a

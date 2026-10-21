@@ -1950,6 +1950,14 @@ int main()
             CHECK(count(ev_ap, "Jump L") + count(ev_ap, "Jump R") == 1);
             const std::vector<Event> ev_ap_off = DetectAutoEvents(land_off, apart, nullptr, false);
             CHECK(count(ev_ap_off, "FS L") == 1 && count(ev_ap_off, "FS R") == 1 && count(ev_ap_off, "Land R") == 0);
+            // Review 10-9m: 36 ms late (past the 30 ms replacement, under jump_land_apart_s):
+            // together, one Land, and the right foot's step goes too (no step beside the Land).
+            const std::vector<BoneTrack> near = Rig(JumpFoot(-0.1, 1.0, 0.5), JumpFoot(0.1, 1.0, 0.536), o);
+            const std::vector<Event>     ev_nr = DetectAutoEvents(r.blocks, near, nullptr, false);
+            CHECK(count(ev_nr, "Land L") == 1 && count(ev_nr, "Land R") == 0 && count(ev_nr, "FS L") == 0 &&
+                  count(ev_nr, "FS R") == 0);
+            const std::vector<Event> ev_nr_off = DetectAutoEvents(land_off, near, nullptr, false);
+            CHECK(count(ev_nr_off, "FS L") == 1 && count(ev_nr_off, "FS R") == 1);
         }
         // Walking steps before and after the jump: only the steps and lifts of the jump go.
         {

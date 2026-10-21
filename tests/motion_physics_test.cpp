@@ -2070,6 +2070,13 @@ int main()
         together.jump_land_apart_s = 0.080;
         CHECK(Of(JumpEvents(a6, together), PhysicsKind::Land).size() == 1 &&
               Of(JumpEvents(a6, together), PhysicsKind::Land, 'L').size() == 1);
+        // Review 10-9m: 36 ms after (together): one Land whose span reaches the right foot's step.
+        const PhysicsAnalysis a8 = AnalyseMotion(Rig(JumpFoot(-0.1, 1.0, 0.5), JumpFoot(0.1, 1.0, 0.536), o), SpeedTiming());
+        const std::vector<PhysicsEvent> ev8 = Of(JumpEvents(a8, SpeedTiming()), PhysicsKind::Land);
+        const std::vector<PhysicsEvent> fs8 = Of(FootEvents(a8, SpeedTiming()), PhysicsKind::FootStep, 'R');
+        CHECK(ev8.size() == 1 && ev8[0].side == 'L' && fs8.size() == 1);
+        if (ev8.size() == 1 && fs8.size() == 1)
+            CHECK(ev8[0].start_s == ev8[0].time_s && ev8[0].end_s == fs8[0].time_s && fs8[0].time_s - ev8[0].time_s > 0.030);
         // 150 ms after (past jump_land_apart_max_s): a one-foot landing and a step, one Land (L).
         const PhysicsAnalysis a7 = AnalyseMotion(Rig(JumpFoot(-0.1, 1.0, 0.5), JumpFoot(0.1, 1.0, 0.65), o), SpeedTiming());
         CHECK(Of(JumpEvents(a7, SpeedTiming()), PhysicsKind::Land).size() == 1 &&

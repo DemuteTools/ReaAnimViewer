@@ -141,24 +141,6 @@ EffectiveAssign ResolveAssignFor(const SoundStore& store, const ItemSounds& item
 // The same for a block (its part and type read from it).
 EffectiveAssign ResolveBlock(const SoundStore& store, const ItemSounds& item, const SoundCharacter* ch, const Block& b);
 
-// ---- Story 10-10b: an auto event's strength level as a Switch value ---------------------------------
-//
-// A Switch Group named "Strength" (SwitchNameKey: case, '_', '-' and spaces ignored; never a RAV-owned group) is
-// filled by RAV per event: an auto event's strength level (auto_types.h AutoStrengthLevel of its type: Soft /
-// Medium / Hard) picks the group's value named after it ("Soft", "Medium", "Hard", or "1", "2", "3"). It goes in
-// the event layer only when no layer (Project, Character, item, rule, event) sets the group, so a value the user
-// sets anywhere wins; a level with no value of that name, or an event with no strength (a user event placed by
-// hand), leaves the group to its default. One rule for Populate and the event's Sound card (what plays).
-constexpr const char kStrengthGroupName[] = "Strength";
-// The project's Strength group (the first one, in store order), or null.
-const SwitchGroup* FindStrengthGroup(const SoundStore& store);
-// The uid of the group's value for a level (1 Soft, 2 Medium, 3 Hard), by name: the level's word or its number;
-// "" when none.
-std::string StrengthValueOf(const SwitchGroup& g, int level);
-// Adds the event's level to `layers.event` (see above) for an event of block `b` with this strength. True when
-// it added one.
-bool AddStrengthLayer(const SoundStore& store, ValueLayers& layers, const Block& b, double strength);
-
 // A rule whose library the store no longer has goes back to inherit (2026-10-21: a deleted Attached library left the
 // item rules pointing to it). Returns how many rules / Project / Character keys changed.
 int ResetStaleRuleLibraries(ItemSounds& item, const SoundStore& store);

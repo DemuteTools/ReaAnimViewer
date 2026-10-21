@@ -51,10 +51,6 @@ struct FollowEvent {
     // Fix C 2026-10-12: its rule is enabled. A disabled rule's events are paused, not gone:
     // Populate places nothing on them, the follow keeps their sounds muted (FollowInput::disabled_rids).
     bool enabled = true;
-    // Story 10-10b: its rule (index into the blocks; -1 = unknown) and its strength (the event list's), for its
-    // strength level as a Switch value (AddStrengthLayer, sound_assign.h). SoundEventsOf fills them.
-    int    block = -1;
-    double strength = 0.0;
 };
 
 // The events sounds are placed on (13-8 Populate) and followed on (13-9), from the item's live

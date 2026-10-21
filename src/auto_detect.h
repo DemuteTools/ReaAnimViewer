@@ -248,10 +248,6 @@ struct AutoSettings {
     // ignored for the others. Default: the type's own (AutoStartDefault: Peak for kick, swing and
     // punch, Start for the scuffs).
     bool             at_start[kAutoTypeCount] = {};
-    // Story 10-10b: how the type's marker names carry their strength level (Block::strength_name),
-    // by AutoType: its first block's (ReadAutoSettings), given to new blocks (AutoBlocks). Unlike
-    // the modes above it never waits for Detect: on a detected type it is written to the blocks.
-    StrengthName     strength_name[kAutoTypeCount] = {};
     AutoSettings();  // every type off, its modes the defaults (at_start: AutoStartDefault)
 };
 // Story 10-9j: whether a `start_option` type's markers sit at the start by default: the flavour of

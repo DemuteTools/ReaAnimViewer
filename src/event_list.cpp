@@ -5,7 +5,7 @@
 #include "event_list.h"
 
 #include "auto_detect.h"  // story 10-10b: AutoBlockKind, AutoTypeOfKind
-#include "auto_types.h"   // story 10-10b: AutoStrengthLevel
+#include "auto_types.h"   // StrengthLevelName (10-10b names read back)
 
 #include <algorithm>
 #include <cmath>
@@ -408,34 +408,21 @@ std::vector<EchoStep> PlanLoopEchoes(const std::vector<ProjectMarkerRef>& refs, 
     return out;
 }
 
-namespace {
-
-// Story 10-10b: a level's suffix in that mode ("" for Off or level 0).
-std::string LevelSuffix(StrengthName mode, int level)
+std::string EventMarkerName(const Block& b)
 {
-    if (level <= 0 || mode == StrengthName::Off) return std::string();
-    if (mode == StrengthName::Number) return " " + std::to_string(level);
-    return std::string(" ") + StrengthLevelName(level);
-}
-
-}  // namespace
-
-std::string EventMarkerName(const Block& b, double strength)
-{
-    std::string name = OneLine(b.marker);
-    AutoKind    k = AutoKind::Step;
-    if (b.strength_name == StrengthName::Off || !AutoBlockKind(b, &k, nullptr)) return name;
-    return name + LevelSuffix(b.strength_name, AutoStrengthLevel(AutoTypeOfKind(k), strength));
+    return OneLine(b.marker);
 }
 
 std::vector<std::string> BlockMarkerNames(const Block& b)
 {
     std::vector<std::string> out = {OneLine(b.marker)};
     if (!AutoBlockKind(b, nullptr, nullptr)) return out;
-    // Review 10-10b: both modes' names, whatever the block's mode now: the markers written before
-    // the option was switched (they stay until Commit) are still read back to their rule.
-    for (StrengthName mode : {StrengthName::Word, StrengthName::Number})
-        for (int lv = kStrengthSoft; lv <= kStrengthHard; ++lv) out.push_back(out.front() + LevelSuffix(mode, lv));
+    // Story 10-10f: the names 10-10b's option wrote on a dev project ("FS L Hard", "FS L 3") are
+    // still read back to their rule, so the next Commit replaces them.
+    for (int lv = kStrengthSoft; lv <= kStrengthHard; ++lv) {
+        out.push_back(out.front() + " " + StrengthLevelName(lv));
+        out.push_back(out.front() + " " + std::to_string(lv));
+    }
     return out;
 }
 
@@ -456,7 +443,7 @@ std::vector<PlannedMarker> PlanMarkers(const std::vector<ShownEvent>& list, cons
         m.project_t = pt;
         m.in_item = in;
         m.block = e.block;
-        m.name = EventMarkerName(b, e.strength);  // story 10-10b
+        m.name = EventMarkerName(b);
         m.color = b.color;
         m.user = e.kind == ShownKind::User;
         m.strength = e.strength;

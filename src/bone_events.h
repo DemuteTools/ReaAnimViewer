@@ -177,9 +177,6 @@ struct Condition {
 
 enum class Landing { Crossing, PeakOf };
 
-// Story 10-10b: how an auto block's marker names carry their event's strength level.
-enum class StrengthName : int { Off = 0, Word, Number };
-
 struct Block {
     // The rule's on/off switch (story 10-3): an off rule never fires (Detect skips it).
     bool                   enabled = true;
@@ -216,10 +213,6 @@ struct Block {
     // Story 10-8h -- the sensitivity Detect raised this block from (it found no event there):
     // < 0 = not raised. Cleared when the user edits the sensitivity.
     double                 sens_from = -1.0;
-    // Story 10-10b -- an auto block's markers carry their event's strength level (auto_types.h
-    // AutoStrengthLevel): Off (the marker alone), Word ("FS L Hard") or Number ("FS L 3": 1 Soft,
-    // 2 Medium, 3 Hard). Saved `lvl=word` / `lvl=num` (absent = Off); ignored on a rule.
-    StrengthName           strength_name = StrengthName::Off;
     // Epic 13 (D20, D3) -- the rule's identity for its sounds: 16 lowercase hex digits, "" = none
     // yet. Set lazily by EnsureRuleIds (rule_record.h); detection and BlocksEqual ignore it.
     std::string            rid;

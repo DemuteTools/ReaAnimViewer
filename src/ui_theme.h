@@ -858,6 +858,13 @@ struct ConfirmBand {
 };
 void BeginConfirmBand(ConfirmBand& b, float width = 0.0f, bool warn = false);
 void EndConfirmBand(ConfirmBand& b);
+// Story 10-10f (the mockup's .bubble): an amber confirm bubble over the button it confirms, so nothing
+// under it moves: a popup opened with ImGui::OpenPopup(id), its bottom-right corner 6 px above `anchor`
+// (the button's top-right; pulled back inside the viewport), `width` wide (0 = 300 px): a dark amber
+// fill, the amber edge, r7, the shadow, pad 10 8, the theme's metrics inside. Esc or a click outside
+// closes it. Call EndConfirmBubble only when it returned true.
+bool BeginConfirmBubble(const char* id, ImVec2 anchor, float width = 0.0f);
+void EndConfirmBubble();
 
 // 13-14 (G-12): a colour swatch (ControlH() square, r5, the colour, stroke-strong edge, kFrameHover
 // under the mouse) that opens a themed colour picker (a panel popup) on click. True while `rgb`

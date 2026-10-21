@@ -334,36 +334,6 @@ int main()
         CHECK(!changed && BlocksEqual(again, blocks));
     }
 
-    // Story 10-10b: the strength in the marker names: given to new blocks, read back from the
-    // first block, never pending (it applies at once), kept by a kept block and carried to the
-    // blocks replacing a dropped one (combined -> separate).
-    {
-        AutoSettings s = Ticked(true, true, false, false);
-        s.strength_name[static_cast<int>(AutoType::Step)] = StrengthName::Word;
-        std::vector<Block> blocks;
-        ApplyAutoSettings(blocks, s);
-        CHECK(blocks.size() == 4 && blocks[0].strength_name == StrengthName::Word && blocks[1].strength_name == StrengthName::Word &&
-              blocks[2].strength_name == StrengthName::Off);
-        CHECK(ReadAutoSettings(blocks) == s);
-        AutoSettings ui = ReadAutoSettings(blocks);
-        ui.strength_name[static_cast<int>(AutoType::Step)] = StrengthName::Number;
-        CHECK(!AutoPending(ui, ReadAutoSettings(blocks)));
-        // Detect again: the kept blocks keep their own.
-        std::vector<Block> again = blocks;
-        ApplyAutoSettings(again, ReadAutoSettings(blocks));
-        CHECK(BlocksEqual(again, blocks));
-        // Steps switched to Separate: the heel and toe blocks take the dropped FS block's.
-        AutoSettings sep = ReadAutoSettings(blocks);
-        sep.separate_steps = true;
-        sep.strength_name[static_cast<int>(AutoType::Step)] = StrengthName::Off;  // a stale UI value: the block's wins
-        std::vector<Block> split = blocks;
-        ApplyAutoSettings(split, sep);
-        int heel_word = 0;
-        for (const Block& b : split)
-            if ((b.auto_type == "heel" || b.auto_type == "toe") && b.strength_name == StrengthName::Word) ++heel_word;
-        CHECK(heel_word == 4);
-    }
-
     // Separate steps: Heel L / R and Toe L / R rows.
     {
         std::vector<Block> blocks = AutoBlocks(Ticked(true, false, false, false, true));

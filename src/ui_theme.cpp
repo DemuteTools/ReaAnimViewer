@@ -2633,6 +2633,34 @@ void EndConfirmBand(ConfirmBand& b)
     ImGui::Dummy(ImVec2(b.w, 0.0f));
 }
 
+bool BeginConfirmBubble(const char* id, ImVec2 anchor, float width)
+{
+    const float          w = width > 0.0f ? width : Dp(300.0f);
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    // Its right edge on the anchor's, never past the viewport's left edge.
+    const float x = std::max(vp->Pos.x + w + Dp(4.0f), anchor.x);
+    ImGui::SetNextWindowPos(ImVec2(x, anchor.y - Dp(6.0f)), ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+    ImGui::SetNextWindowSize(ImVec2(w, 0.0f), ImGuiCond_Always);
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, Col(IM_COL32(0x2A, 0x24, 0x12, 0xFF)));  // .bubble's fill
+    ImGui::PushStyleColor(ImGuiCol_Border, Col(kConfirmLine));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Dp(10.0f), Dp(8.0f)));
+    ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, Dp(7.0f));
+    const bool open = ImGui::BeginPopup(id, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::PopStyleVar(2);  // read when the window begins
+    ImGui::PopStyleColor(2);
+    if (open) {
+        WindowShadow();
+        PushThemeMetrics();
+    }
+    return open;
+}
+
+void EndConfirmBubble()
+{
+    PopThemeMetrics();
+    ImGui::EndPopup();
+}
+
 // ---- colours (13-14 G-12) -------------------------------------------------------------------
 
 bool ColorSwatchButton(const char* id, float rgb[3], const char* tip)

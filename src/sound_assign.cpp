@@ -493,43 +493,6 @@ EffectiveAssign ResolveAssignFor(const SoundStore& store, const ItemSounds& item
     return ResolveAssignAt(store, item, ch, rid, part, type, ev ? &ev->overrides : nullptr);
 }
 
-const SwitchGroup* FindStrengthGroup(const SoundStore& store)
-{
-    const std::string key = SwitchNameKey(kStrengthGroupName);
-    for (const SwitchGroup& g : store.groups)
-        if (!g.rav_owned && SwitchNameKey(g.name) == key) return &g;
-    return nullptr;
-}
-
-std::string StrengthValueOf(const SwitchGroup& g, int level)
-{
-    if (level < kStrengthSoft || level > kStrengthHard) return std::string();
-    const std::string word = SwitchNameKey(StrengthLevelName(level)), num = std::to_string(level);
-    for (const SwitchValue& v : g.values) {
-        const std::string k = SwitchNameKey(v.name);
-        if (k == word || k == num) return v.uid;
-    }
-    return std::string();
-}
-
-bool AddStrengthLayer(const SoundStore& store, ValueLayers& layers, const Block& b, double strength)
-{
-    AutoKind k = AutoKind::Step;
-    if (!AutoBlockKind(b, &k, nullptr)) return false;
-    const SwitchGroup* g = FindStrengthGroup(store);
-    if (!g) return false;
-    for (const std::vector<ValueSet>* layer : {&layers.item, &layers.rule, &layers.event})
-        for (const ValueSet& v : *layer)
-            if (v.group_uid == g->uid && !v.value_uid.empty()) return false;  // the user's own value wins
-    const std::string value = StrengthValueOf(*g, AutoStrengthLevel(AutoTypeOfKind(k), strength));
-    if (value.empty()) return false;
-    ValueSet v;
-    v.group_uid = g->uid;
-    v.value_uid = value;
-    layers.event.push_back(v);
-    return true;
-}
-
 EffectiveAssign ResolveBlock(const SoundStore& store, const ItemSounds& item, const SoundCharacter* ch, const Block& b)
 {
     std::string part, type;

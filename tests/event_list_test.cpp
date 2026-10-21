@@ -8,8 +8,8 @@
 #include "event_list.h"
 
 #include "auto_detect.h"  // fb-1: KeepUnrunnableEvents
-#include "auto_types.h"   // story 10-10b: AutoStrengthRow
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <map>
@@ -1812,89 +1812,50 @@ int main()
         }
     }
 
-    // ---- Story 10-10b: the strength level in the marker names ------------------------------
+    // ---- Story 10-10f: no strength level in the marker names any more ------------------------
+    // (10-10b's option is gone). A dev project's "FS L Hard" / "FS L 3" markers are still read
+    // back to their rule, so the next Commit replaces them with "FS L".
     {
         Block fs = Rule("FS L");
         fs.auto_type = "step";
         fs.auto_side = 'L';
         Block sword = Rule("Sword");
-        sword.strength_name = StrengthName::Word;  // ignored on a rule
         const std::vector<Block> blocks = {fs, sword};
-        const AutoStrengthCuts&  cut = AutoStrengthRow(AutoType::Step);
-        CHECK(EventMarkerName(fs, cut.hard) == "FS L");  // Off: the marker alone
-        Block word = fs;
-        word.strength_name = StrengthName::Word;
-        Block num = fs;
-        num.strength_name = StrengthName::Number;
-        CHECK(EventMarkerName(word, cut.medium * 0.5) == "FS L Soft");
-        CHECK(EventMarkerName(word, cut.medium) == "FS L Medium");
-        CHECK(EventMarkerName(word, cut.hard) == "FS L Hard");
-        CHECK(EventMarkerName(num, cut.medium * 0.5) == "FS L 1" && EventMarkerName(num, cut.hard * 2.0) == "FS L 3");
-        CHECK(EventMarkerName(word, 0.0) == "FS L" && EventMarkerName(word, std::nan("")) == "FS L");  // no strength
-        CHECK(EventMarkerName(sword, 5.0) == "Sword");
-        CHECK(BlockMarkerNames(sword).size() == 1 && BlockMarkerNames(fs).size() == 7 && BlockMarkerNames(word)[3] == "FS L Hard" &&
-              BlockMarkerNames(fs)[6] == "FS L 3");
+        CHECK(EventMarkerName(fs) == "FS L" && EventMarkerName(sword) == "Sword");
+        const std::vector<std::string> names = BlockMarkerNames(fs);
+        CHECK(BlockMarkerNames(sword).size() == 1 && names.size() == 7 && names[0] == "FS L");
+        CHECK(std::find(names.begin(), names.end(), "FS L Hard") != names.end() &&
+              std::find(names.begin(), names.end(), "FS L 3") != names.end());
 
-        // PlanMarkers names each event; a user event dragged from a detection keeps its level, one
-        // placed by hand (no strength) writes the marker alone; the signature follows the names.
         ItemClipMap map;
         map.item_pos = 0.0;
         map.item_len = 5.0;
         map.clip_len = 5.0;
-        std::vector<Block> wb = {word, sword};
         ItemRules r;
-        r.blocks = wb;
+        r.blocks = blocks;
         r.events.push_back(MakeUserEvent(0, 3.0, 0.0, 0.0));
-        r.events.push_back(MakeUserEvent(0, 4.0, cut.hard, 0.0));
-        const std::vector<Event> det = {Det(0, 0.5, cut.medium * 0.5), Det(0, 1.5, cut.hard), Det(1, 2.0, 9.0)};
-        const std::vector<PlannedMarker> plan = PlanMarkers(BuildEventList(det, r.events, wb.size()), wb, map);
-        CHECK(plan.size() == 5);
-        if (plan.size() == 5) {
-            CHECK(plan[0].name == "FS L Soft" && plan[1].name == "FS L Hard" && plan[2].name == "Sword");
-            CHECK(plan[3].name == "FS L" && plan[4].name == "FS L Hard");
+        const std::vector<Event> det = {Det(0, 0.5, 0.2), Det(0, 1.5, 50.0), Det(1, 2.0, 9.0)};
+        const std::vector<PlannedMarker> plan = PlanMarkers(BuildEventList(det, r.events, blocks.size()), blocks, map);
+        CHECK(plan.size() == 4);
+        if (plan.size() == 4) {
+            CHECK(plan[0].name == "FS L" && plan[1].name == "FS L" && plan[2].name == "Sword" && plan[3].name == "FS L");
         }
-        const std::vector<PlannedMarker> plain = PlanMarkers(BuildEventList(det, r.events, blocks.size()), blocks, map);
-        CHECK(MarkerSignature(plan, MarkerMode::Both) != MarkerSignature(plain, MarkerMode::Both));
 
-        // 10-4c: a REAPER edit of a named marker (committed or preview) finds its rule.
+        // A REAPER edit of a dev project's level-named marker (committed or preview) finds its rule.
         MarkerEdit e;
         e.kind = MarkerEditKind::Drag;
         e.c = 1.5;
         e.new_c = 1.7;
         e.name = "FS L Hard";
         CHECK(MarkerEditBlock(r, e) == 0);
-        e.name = PreviewMarkerName("FS L Medium");
+        e.name = PreviewMarkerName("FS L 2");
         e.preview = true;
         CHECK(MarkerEditBlock(r, e) == 0);
         e.preview = false;
         e.name = "FS L Loud";  // not a name the rule writes
         CHECK(MarkerEditBlock(r, e) == -1);
-        e.name = "FS L Hard hit";  // a user's own name: never read as a level
+        e.name = "FS L Hard hit";  // a user's own name
         CHECK(MarkerEditBlock(r, e) == -1);
-        // Review: the option switched to Off (or to numbers) before Commit: a committed "FS L Hard"
-        // is still its rule's.
-        {
-            ItemRules off_r = r;
-            off_r.blocks[0].strength_name = StrengthName::Off;
-            e.name = "FS L Hard";
-            CHECK(MarkerEditBlock(off_r, e) == 0);
-            off_r.blocks[0].strength_name = StrengthName::Number;
-            CHECK(MarkerEditBlock(off_r, e) == 0);
-        }
-        // The drag: suppressed there, a user event with the detection's strength (its level stays).
-        e.name = "FS L Hard";
-        RecordApplied(r, plan, MarkerMode::Both);
-        const ItemRules dragged = ApplyMarkerEdits(r, {e}, &det);
-        const std::vector<PlannedMarker> after = PlanMarkers(BuildEventList(det, dragged.events, wb.size()), wb, map);
-        bool kept = false;
-        for (const PlannedMarker& m : after)
-            if (m.user && Near(m.clip_t, 1.7) && m.name == "FS L Hard") kept = true;
-        CHECK(kept);
-        // A re-detect giving the same events writes the same names: the markers stay up to date.
-        CHECK(MarkersUpToDate(r, PlanMarkers(BuildEventList(det, r.events, wb.size()), wb, map), MarkerMode::Both));
-        // The option switched off: other names, the markers are rewritten (one per event, no duplicate).
-        const std::vector<PlannedMarker> off = PlanMarkers(BuildEventList(det, r.events, blocks.size()), blocks, map);
-        CHECK(!MarkersUpToDate(r, off, MarkerMode::Both) && off.size() == plan.size());
     }
 
     // ---- Story 10-10a: doubtful events in amber -------------------------------------------------

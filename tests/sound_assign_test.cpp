@@ -13,7 +13,6 @@
 #include <string>
 #include <vector>
 
-#include "auto_types.h"  // story 10-10b: AutoStrengthRow
 #include "sound_auto_assign.h"
 #include "sound_record.h"
 
@@ -794,90 +793,9 @@ static void TestStaleLibrary()
     CHECK(FindAssign(st.project, "legs")->library == "PL");
 }
 
-// Story 10-10b: an auto event's strength level picks its value of the Strength Switch Group.
-static void TestStrengthLayer()
-{
-    SoundStore store;
-    SwitchGroup mat;
-    mat.uid = "gmat";
-    mat.name = "Material";
-    mat.values = {{"vcon", "Concrete", {}, {}}};
-    store.groups.push_back(mat);
-    SwitchGroup g;
-    g.uid = "gstr";
-    g.name = "strength";  // matched as Switch names are (case ignored)
-    g.values = {{"vsoft", "Soft", {}, {}}, {"vmed", "medium", {}, {}}, {"vhard", "3", {}, {}}};
-    store.groups.push_back(g);
-    CHECK(FindStrengthGroup(store) && FindStrengthGroup(store)->uid == "gstr");
-    CHECK(StrengthValueOf(g, kStrengthSoft) == "vsoft" && StrengthValueOf(g, kStrengthMedium) == "vmed" &&
-          StrengthValueOf(g, kStrengthHard) == "vhard" && StrengthValueOf(g, 0).empty());
-
-    // A library: Switch on Strength, a Sound per value.
-    SoundLibrary lib;
-    lib.uid = "L";
-    lib.root = "sw";
-    SoundNode sw;
-    sw.uid = "sw";
-    sw.type = SoundNodeType::Switch;
-    sw.group_uid = "gstr";
-    sw.cases = {{"vsoft", "ssoft", {}}, {"vmed", "smed", {}}, {"vhard", "shard", {}}};
-    lib.nodes.push_back(sw);
-    for (const char* u : {"ssoft", "smed", "shard"}) {
-        SoundNode s;
-        s.uid = u;
-        s.parent = "sw";
-        s.type = SoundNodeType::Sound;
-        lib.nodes.push_back(s);
-    }
-    const Block fs = AutoB(AutoKind::Step, 'L', "r1");
-    const AutoStrengthCuts& cut = AutoStrengthRow(AutoType::Step);
-    auto plays = [&](const ValueLayers& l) {
-        const Resolution r = ResolveEvent(store, lib, l, ResolveHooks());
-        return r.sounds.empty() ? std::string() : r.sounds.front().node;
-    };
-    ValueLayers l;
-    CHECK(AddStrengthLayer(store, l, fs, cut.medium * 0.5) && plays(l) == "ssoft");
-    l = ValueLayers();
-    CHECK(AddStrengthLayer(store, l, fs, cut.medium) && plays(l) == "smed");
-    l = ValueLayers();
-    CHECK(AddStrengthLayer(store, l, fs, cut.hard) && plays(l) == "shard");
-    // No strength (a user event placed by hand): the default (the group's first value).
-    l = ValueLayers();
-    CHECK(!AddStrengthLayer(store, l, fs, 0.0) && l.event.empty() && plays(l) == "ssoft");
-    // A value the user set at any layer wins.
-    for (int layer = 0; layer < 3; ++layer) {
-        l = ValueLayers();
-        (layer == 0 ? l.item : layer == 1 ? l.rule : l.event).push_back({"gstr", "vmed", {}});
-        CHECK(!AddStrengthLayer(store, l, fs, cut.hard) && plays(l) == "smed");
-    }
-    // Another group's value does not stop it; an unset value (inherit) does not either.
-    l = ValueLayers();
-    l.rule.push_back({"gmat", "vcon", {}});
-    l.event.push_back({"gstr", "", {}});
-    CHECK(AddStrengthLayer(store, l, fs, cut.hard) && plays(l) == "shard");
-    // A bone rule (no auto type): nothing.
-    Block rule = RuleB("r2", {0});
-    l = ValueLayers();
-    CHECK(!AddStrengthLayer(store, l, rule, 99.0) && l.event.empty());
-    // A level with no value of its name: the default.
-    SoundStore two = store;
-    two.groups[1].values.pop_back();  // no Hard
-    l = ValueLayers();
-    CHECK(!AddStrengthLayer(two, l, fs, cut.hard) && l.event.empty());
-    // No group named Strength, or only RAV's own: nothing.
-    SoundStore none = store;
-    none.groups[1].name = "Weight";
-    l = ValueLayers();
-    CHECK(!FindStrengthGroup(none) && !AddStrengthLayer(none, l, fs, cut.hard));
-    none.groups[1].name = "Strength";
-    none.groups[1].rav_owned = true;
-    CHECK(!FindStrengthGroup(none));
-}
-
 int main()
 {
     TestTable();
-    TestStrengthLayer();
     TestPartOfBlock();
     TestEventRoleKey();
     TestRoleMenuKeys();

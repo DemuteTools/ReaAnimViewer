@@ -156,15 +156,11 @@ struct PlannedMarker {
     double      confidence = 1.0; // story 10-10a: a detection's (doubtful: `color` is kDoubtColor); 1 for a user event
 };
 
-// Story 10-10b: the marker name an event of rule b writes: the rule's marker (on one line,
-// trimmed), then, on an auto block that asks for it (Block::strength_name), the event's strength
-// level (auto_types.h AutoStrengthLevel of its type): "FS L Hard" (Word) or "FS L 3" (Number:
-// 1 Soft, 2 Medium, 3 Hard). An event with no strength (level 0: a user event placed by hand)
-// writes the marker alone. A Detected event and a user event dragged from it (10-4c: it keeps the
-// detection's strength) write the same name.
-std::string EventMarkerName(const Block& b, double strength);
-// Every name rule b may write (the marker alone, then, on an auto block, each level's in both modes,
-// whatever its mode now: a marker written before the option was switched), for reading a marker back.
+// The marker name an event of rule b writes: the rule's marker (on one line, trimmed). Story
+// 10-10f: the strength level 10-10b could add to it is gone (parked until the intensity module).
+std::string EventMarkerName(const Block& b);
+// Every name rule b may be read back from: the marker alone, then, on an auto block, the names a
+// dev project's 10-10b option wrote ("FS L Hard", "FS L 3"), so a Commit replaces them.
 std::vector<std::string> BlockMarkerNames(const Block& b);
 
 // What Apply writes for this list: its Detected and User events whose rule exists and is on,

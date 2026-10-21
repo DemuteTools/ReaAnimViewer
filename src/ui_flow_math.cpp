@@ -292,5 +292,34 @@ void ShadowLayerAlphas(float peak, int bands, float* out)
     for (int j = 0; j < bands; ++j) out[j] = 1.0f - (1.0f - f(j)) / (1.0f - f(j + 1));
 }
 
+std::vector<bool> FitSegments(const std::vector<float>& widths, const std::vector<int>& priority, float sep_w,
+                              float avail)
+{
+    const size_t      n = widths.size();
+    std::vector<bool> keep(n, true);
+    if (n == 0) return keep;
+    auto prio = [&](size_t i) { return i < priority.size() ? priority[i] : 0; };
+    size_t top = 0;  // the segment always kept
+    for (size_t i = 1; i < n; ++i)
+        if (prio(i) > prio(top)) top = i;
+    for (;;) {
+        float  total = 0.0f;
+        int    kept = 0;
+        for (size_t i = 0; i < n; ++i)
+            if (keep[i]) {
+                total += widths[i] + (kept > 0 ? sep_w : 0.0f);
+                ++kept;
+            }
+        if (total <= avail || kept <= 1) break;
+        // The lowest priority among the kept ones (never `top`), the later one on a tie.
+        size_t drop = n;
+        for (size_t i = 0; i < n; ++i)
+            if (keep[i] && i != top && (drop == n || prio(i) <= prio(drop))) drop = i;
+        if (drop == n) break;
+        keep[drop] = false;
+    }
+    return keep;
+}
+
 }  // namespace flow
 }  // namespace rav

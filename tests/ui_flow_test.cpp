@@ -42,6 +42,25 @@ int main()
 {
     const MeasureFn m = Measure;
 
+    // ---- Story 10-10f: FitSegments (the Tagging footer's status line) ----
+    {
+        const std::vector<float> w = {60.0f, 100.0f, 80.0f, 50.0f};
+        const std::vector<int>   p = {9, 5, 7, 5};
+        // Everything fits: 60 + 100 + 80 + 50 + 3 separators of 10 = 320.
+        CHECK(FitSegments(w, p, 10.0f, 320.0f) == std::vector<bool>({true, true, true, true}));
+        // 319: the lowest priority goes, the later one on a tie (the 50).
+        CHECK(FitSegments(w, p, 10.0f, 319.0f) == std::vector<bool>({true, true, true, false}));
+        // 259: then the 100 (priority 5): 60 + 80 + 10 = 150.
+        CHECK(FitSegments(w, p, 10.0f, 259.0f) == std::vector<bool>({true, false, true, false}));
+        // 149: then the 80; the top one stays even when it does not fit alone.
+        CHECK(FitSegments(w, p, 10.0f, 149.0f) == std::vector<bool>({true, false, false, false}));
+        CHECK(FitSegments(w, p, 10.0f, 10.0f) == std::vector<bool>({true, false, false, false}));
+        // The top is the highest priority wherever it is; a missing priority reads as 0.
+        CHECK(FitSegments({50.0f, 50.0f}, {1, 3}, 0.0f, 60.0f) == std::vector<bool>({false, true}));
+        CHECK(FitSegments({50.0f, 50.0f}, {1}, 0.0f, 60.0f) == std::vector<bool>({true, false}));
+        CHECK(FitSegments({}, {}, 4.0f, 100.0f).empty());
+    }
+
     // ---- Ellipsize ----
     {
         bool cut = true;

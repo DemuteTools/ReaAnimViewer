@@ -42,10 +42,27 @@ void PickSoundGesture(std::function<SoundReport()> gesture);
 bool SoundFooterVisible(const TaggingSoundContext& ctx);
 // The extra footer height (px) the sound rows take, 0 when hidden.
 float SoundFooterHeight(const TaggingSoundContext& ctx);
-// Populate (the one primary button), leaving `attach_w` px on its right for Attach.
+// Populate (the one primary button), Reshuffle and Repopulate (story 10-10f: moved from Options > Sounds; its
+// orange confirm bubble opens over it), leaving `attach_w` px on its right for Attach. Narrow, Populate's label
+// shortens to "Populate · 9".
 void DrawPopulateRow(const TaggingSoundContext& ctx, float attach_w);
-// The last Populate's report, one line.
-void DrawSoundReportLine(const TaggingSoundContext& ctx);
+// Story 10-10f: one part of the Tagging footer's status line ("1 selected", "preview not committed", "not
+// populated yet"...): `col` its ink (an ImU32), `priority` how long it stays when the line is short (higher =
+// longer), `click` set = a link (run when clicked), `tip` its own tooltip.
+struct FooterSegment {
+    std::string           text;
+    unsigned int          col = 0;
+    int                   priority = 0;
+    std::function<void()> click;
+    std::string           tip;
+};
+// The sound part of that line: "not populated yet" or the last Populate's report (a link to its details), and
+// "Restore N" (a link) while sounds deleted by hand wait. Nothing while the sound footer is hidden.
+void SoundStatusSegments(const TaggingSoundContext& ctx, std::vector<FooterSegment>* out);
+// After the status line, in the same window: the sounds' (?) (the strip glyphs' legend) and the report's details
+// popup (opened by its segment).
+void DrawSoundHelpMark(const TaggingSoundContext& ctx);
+void DrawSoundReportPopup();
 // 13-19: the Populate button and the report line's Restore only queue their run (it cannot draw from inside
 // the ImGui frame). RAV's window procedure runs it (RunPendingPopulate), outside any frame, with a painter
 // for its progress frames (one undo point, as before); the pointers are checked then. Dropped with the viewer.

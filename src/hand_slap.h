@@ -10,14 +10,17 @@
 // the positions PhysicsAnalysis::role_pos keeps (roles LeftKnuckle / LeftFingertip...: the middle
 // finger, else the index, else the ring finger; bone_roles.h). 0 = the finger straight in line with
 // the hand, about 90 = bent at a right angle, 150-180 = a fist. A contact is a slap when
-//   the hand's fingers move in the clip     (the curl's range over the analysed track is at least
-//                                            kSlapMovingDeg: a rig whose fingers are not animated,
-//                                            frozen open or closed, cannot tell a slap from a grab)
+//   the hand's fingers move near the contact (the curl's range over the kSlapNearS before and
+//                                            after the contact is at least kSlapMovingDeg: a rig
+//                                            whose fingers are not animated, frozen open or closed,
+//                                            or animated only elsewhere in the clip, cannot tell a
+//                                            slap from a grab there)
 //   the fingers are open at the contact     (curl <= kSlapOpenMaxDeg)
 //   and they do not close after it          (over the kSlapAfterS after the contact the curl never
 //                                            rises more than kSlapCloseRiseDeg above its value at
-//                                            the contact; a window running past the end of a clip
-//                                            that does not loop is not seen: no slap)
+//                                            the contact; near the end of a clip that does not
+//                                            loop, over what is left of it, at least
+//                                            kSlapAfterMinS, else no slap)
 // A fist is closed before the contact (a punch, a guard: curl 130-180), so it is never a slap.
 //
 // Why these, measured 2026-10-21 on the fixtures' hand contacts (Grab and Hand on body at the
@@ -29,7 +32,11 @@
 // a rise over 15 deg in 0.25 s (the rungs rise 18-30 by 0.15 s). Fingers not animated: Hip Hop
 // Dancing (0 deg throughout), Climbing_Armored (26 / 12: a climb whose grabs would all read as
 // slaps), Climbing_Large_Normal, Jumping, the punches; a 10 deg range sets them apart from the
-// least moving animated hand (Crawl_Low Crawl R, 16 deg).
+// least moving animated hand (Crawl_Low Crawl R, 16 deg). Near the contact (review): over +-0.5 s
+// the slaps' fingers move 15-164 deg (Crawl_Low R 15), while Climbing's last grab (R, 3.68 s, curl
+// 34 and frozen within +-1 s, the hand's fingers moving 67 deg elsewhere) moves 0. The rungs
+// close by +18-30 deg within 0.15 s (+14 within 0.10 s): the window after a contact may shrink to
+// 0.15 s at the end of a clip.
 //
 // Pure C++17, deterministic. Host-tested (tests/hand_slap_test.cpp).
 
@@ -46,6 +53,8 @@ constexpr double kSlapOpenMaxDeg = 45.0;
 constexpr double kSlapCloseRiseDeg = 15.0;
 constexpr double kSlapAfterS = 0.25;
 constexpr double kSlapMovingDeg = 10.0;
+constexpr double kSlapNearS = 0.5;
+constexpr double kSlapAfterMinS = 0.15;
 
 // The finger curl of hand `side` ('L' / 'R') per analysed sample (degrees), as above. Empty when
 // the hand, its knuckle or its fingertip has no bone (or the analysis failed).

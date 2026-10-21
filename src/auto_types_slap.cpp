@@ -100,8 +100,15 @@ bool SlapAt(const PhysicsAnalysis& a, char side, double t, std::string* why)
     const auto mm = std::minmax_element(curl.begin(), curl.end());
     if (*mm.second - *mm.first < kSlapMovingDeg) return no("the fingers do not move in this clip");
     const long i = SlapSampleOf(a, t);
-    const long after = std::lround(kSlapAfterS * a.rate_hz);
-    if (i + after >= static_cast<long>(a.samples)) return no("the clip ends before the fingers can be seen after the contact");
+    const long last = static_cast<long>(a.samples) - 1;
+    // The fingers move around this contact (not only elsewhere in the clip).
+    const long reach = std::lround(kSlapNearS * a.rate_hz);
+    const auto lm = std::minmax_element(curl.begin() + std::max(0L, i - reach), curl.begin() + std::min(last, i + reach) + 1);
+    if (*lm.second - *lm.first < kSlapMovingDeg) return no("the fingers do not move near the contact");
+    // The window after the contact, shortened to the clip's end (not under kSlapAfterMinS).
+    const long after = std::min(std::lround(kSlapAfterS * a.rate_hz), last - i);
+    if (after < std::lround(kSlapAfterMinS * a.rate_hz))
+        return no("the clip ends before the fingers can be seen after the contact");
     const double at = curl[static_cast<size_t>(i)];
     if (at > kSlapOpenMaxDeg + 1e-9) return no("the fingers are bent at the contact");
     double hi = at;

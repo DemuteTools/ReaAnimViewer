@@ -472,9 +472,10 @@ constexpr AutoStrengthCuts kStrengthRows[] = {
     // 15 on 9 clips: wp33 4.0, wp67 5.07 leg/s; Standing Jump02's arms coming down 3.1-3.3 Soft,
     // Jump Attack's strike on landing 8.0 and the vault's 9.2 Hard.
     {T::ArmLand, 4.0, 5.1},
-    // Story 10-9l: 7 on 5 clips (the crawls' hands 1.04-1.44, Standing Jump02 1.9, the AirPunch's
-    // landing on the hands 2.97 and 8.21 leg/s; the hand's approach, as Grab): wp33 1.44, wp67 2.97.
-    {T::Slap, 1.4, 3.0},
+    // Story 10-9l: 8 on 5 clips (the crawls' hands 1.04-1.44, Standing Jump02 1.29 and 1.9, the
+    // AirPunch's landing on the hands 2.97 and 8.21 leg/s; the hand's approach, as Grab): wp33 1.42,
+    // wp67 2.61.
+    {T::Slap, 1.4, 2.6},
 };
 
 // ---- Kinds -------------------------------------------------------------------------------------

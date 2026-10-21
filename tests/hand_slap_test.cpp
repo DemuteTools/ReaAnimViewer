@@ -182,9 +182,20 @@ void TestSlapAt()
 
     CHECK(!SlapAt(AnalyseMotion(Rig(&CurlSlap, 1.0, 1.6, 2.5, false)), 'R', 1.0, &why) && why == "no finger bones");
 
-    // A contact closer to the end of the clip than kSlapAfterS: not seen after it, no slap.
-    const PhysicsAnalysis late = AnalyseMotion(Rig(&CurlSlap, 1.0, 1.6, 1.15));
+    // A contact closer to the end of the clip than kSlapAfterMinS: not seen after it, no slap;
+    // between kSlapAfterMinS and kSlapAfterS, read over what is left.
+    const PhysicsAnalysis late = AnalyseMotion(Rig(&CurlSlap, 1.0, 1.6, 1.10));
     CHECK(!SlapAt(late, 'R', 1.0, &why) && why == "the clip ends before the fingers can be seen after the contact");
+    const PhysicsAnalysis end_slap = AnalyseMotion(Rig(&CurlSlap, 1.0, 1.6, 1.20));
+    CHECK(SlapAt(end_slap, 'R', 1.0, &why) && why.empty());
+    // A grab closing at the end of the clip, seen over 0.18 s: still a grab.
+    const PhysicsAnalysis end_grab = AnalyseMotion(Rig(&CurlGrab, 1.0, 1.6, 1.18));
+    CHECK(!SlapAt(end_grab, 'R', 1.0, &why) && why == "the fingers close after the contact");
+
+    // Fingers that move only far from the contact (at 0.2-0.5 s, frozen open from then on, the
+    // contact at 2.0 s): no slap there.
+    const PhysicsAnalysis far_only = AnalyseMotion(Rig([](double t) { return Ramp(t, 0.2, 0.5, 60.0, 10.0); }, 2.0, 2.6, 3.5));
+    CHECK(!SlapAt(far_only, 'R', 2.0, &why) && why == "the fingers do not move near the contact");
 }
 
 // Through Detect: a slap replaces the grab of its contact, only with both ticked; a grab stays.

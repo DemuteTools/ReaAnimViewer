@@ -138,8 +138,18 @@ struct PlannedMarker {
     bool        in_item = true;   // 10-4b: the event shows on the item's first pass (else no project marker is written)
 };
 
+// Story 10-10b: the marker name an event of rule b writes: the rule's marker (on one line,
+// trimmed), then, on an auto block that asks for it (Block::strength_name), the event's strength
+// level (auto_types.h AutoStrengthLevel of its type): "FS L Hard" (Word) or "FS L 3" (Number:
+// 1 Soft, 2 Medium, 3 Hard). An event with no strength (level 0: a user event placed by hand)
+// writes the marker alone. A Detected event and a user event dragged from it (10-4c: it keeps the
+// detection's strength) write the same name.
+std::string EventMarkerName(const Block& b, double strength);
+// Every name rule b may write (the marker alone, then each level's), for reading a marker back.
+std::vector<std::string> BlockMarkerNames(const Block& b);
+
 // What Apply writes for this list: its Detected and User events whose rule exists and is on,
-// sorted by time. 10-4b: an event outside the item's first pass is kept with `in_item` false
+// sorted by time. Story 10-10b: each marker's name is EventMarkerName. 10-4b: an event outside the item's first pass is kept with `in_item` false
 // (it gets a take marker, in source time, and a hidden project ref the mirror shows again when
 // the item is extended).
 std::vector<PlannedMarker> PlanMarkers(const std::vector<ShownEvent>& list, const std::vector<Block>& blocks,
@@ -394,7 +404,7 @@ struct MarkerEdit {
 };
 
 // The rule a marker belongs to (by its name, then its colour; a rule with an event at its clip
-// time first), or -1.
+// time first), or -1. Story 10-10b: any name the rule writes (BlockMarkerNames).
 int MarkerEditBlock(const ItemRules& rules, const MarkerEdit& e);
 
 // The record's event list with the edits applied, with the Tagging view's Move / Delete

@@ -780,6 +780,9 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
         };
         ValueLayers layers = ea.layers;
         if (const auto ro = role_of.find(rid); ro != role_of.end()) layers.role = ro->second;  // 13-23: picks the part
+        // Story 10-10b: an auto event's strength level picks its value of the Strength Switch Group (unless set).
+        if (e.block >= 0 && static_cast<size_t>(e.block) < blocks.size())
+            AddStrengthLayer(store, layers, blocks[static_cast<size_t>(e.block)], e.strength);
         const Resolution res = ResolveEvent(store, *lib, layers, MakeDrawHooks(st, ed, is_missing));
         std::vector<SoundDraw> draws = ed.out;
         for (const SoundDraw& d : prev) {  // a hand pick on a branch not walked now is kept

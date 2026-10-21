@@ -325,6 +325,7 @@ void DrawEventSoundSection(const TaggingSoundContext& ctx, const ShownEvent& e)
         PartOfBlock(blk, &part, &type);
         ValueLayers layers = ResolveAssignFor(store, rec, ch, rid, part, type, t).layers;
         layers.role = EventRoleKey(blk);  // 13-23 (D1): the part a divided Sound plays, as Populate
+        AddStrengthLayer(store, layers, blk, e.strength);  // story 10-10b: its Strength value, as Populate
         const Resolution res = ResolveEvent(store, *lib, layers, MakeDrawHooks(st, ed, nullptr));
         ui::SubText(res.blocked ? ("Blocked: " + res.reason).c_str() : res.path_text.c_str());
         if (!res.blocked && !res.gap.empty()) ui::ToneText("Nothing placed: " + res.gap, ui::kWarn, true);

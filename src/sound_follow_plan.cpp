@@ -605,6 +605,8 @@ std::vector<FollowEvent> SoundEventsOf(const std::vector<ShownEvent>& shown, con
         fe.t = e.t;
         fe.user = e.kind == ShownKind::User;
         fe.enabled = blocks[static_cast<size_t>(e.block)].enabled;
+        fe.block = e.block;        // story 10-10b
+        fe.strength = e.strength;  // story 10-10b
         fe.passes = FollowPassesOf(map, e.t);
         fe.in_item = !fe.passes.empty();
         fe.project_t = fe.in_item ? fe.passes.front().project_t : 0.0;

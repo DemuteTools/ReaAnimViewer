@@ -148,6 +148,24 @@ struct AutoKindInfo {
     bool              at_start = false;
 };
 
+// Story 10-10b: a type's strength levels for layering (Soft / Medium / Hard), in the strength unit
+// of its kinds (leg/s, degrees, g: AutoKindInfo::degrees / strength_unit): Medium from `medium`,
+// Hard from `hard` (medium < hard). One row per AutoType, in enum order (kStrengthRows, next to
+// the type table); the cuts were measured on the fixtures (tools/bench, its STRENGTH block).
+struct AutoStrengthCuts {
+    AutoType type;
+    double   medium;
+    double   hard;
+};
+// The levels, 1-based (0 = none: no strength).
+constexpr int kStrengthSoft = 1, kStrengthMedium = 2, kStrengthHard = 3;
+const AutoStrengthCuts& AutoStrengthRow(AutoType t);
+// The level of a strength of type t: Soft below `medium`, Medium below `hard`, Hard from it; 0 for
+// a strength that is not finite or not above 0 (a user event on an auto row has none).
+int AutoStrengthLevel(AutoType t, double strength);
+// "Soft", "Medium", "Hard"; "" for 0 or out of range.
+const char* StrengthLevelName(int level);
+
 // The rows, by enum (a value out of range reads the first row).
 const AutoCategoryInfo& AutoCategoryRow(AutoCategory c);
 const AutoTypeInfo&     AutoTypeRow(AutoType t);

@@ -221,6 +221,8 @@ struct Found {
     std::string target;
     char        side = 'L';
     double      t = 0.0;
+    double      strength = 0.0;  // story 10-10b: the event's strength (its type's unit)
+    AutoType    type = AutoType::Step;
 };
 
 struct Raised {
@@ -242,7 +244,9 @@ ConfigRun RunConfig(BenchConfig cfg, const std::vector<BoneTrack>& role_tracks, 
     for (const Event& e : DetectAutoEvents(blocks, role_tracks, &cache, false)) {
         if (e.block < 0 || static_cast<size_t>(e.block) >= blocks.size()) continue;
         const Block& b = blocks[static_cast<size_t>(e.block)];
-        r.found.push_back({FoundTarget(b.auto_type), b.auto_side, e.time_s});
+        AutoKind     k = AutoKind::Step;
+        AutoBlockKind(b, &k, nullptr);
+        r.found.push_back({FoundTarget(b.auto_type), b.auto_side, e.time_s, e.strength, AutoTypeOfKind(k)});
     }
     // Detect's raise, on a copy.
     std::vector<Block>          copy = blocks;
@@ -587,6 +591,78 @@ int main(int argc, char** argv)
     for (const char* k : {"jump", "land"}) std::printf(" %s %d / %d,", k, false_events[k], false_blocks[k]);
     std::printf(" every kind %d / %d\n", [&] { int n = 0; for (const auto& kv : false_events) n += kv.second; return n; }(),
                 [&] { int n = 0; for (const auto& kv : false_blocks) n += kv.second; return n; }());
+
+    // Story 10-10b: the strength of every event (default matrix), per type over every clip (its
+    // distribution, and where the level cuts of the type table fall), then per clip.
+    {
+        std::printf("\n--- STRENGTH (default matrix, every clip; levels Soft < medium <= Medium < hard <= Hard) ---\n");
+        std::map<int, std::vector<double>> all;
+        // Each clip weighs the same in the clip-weighted cuts (wp33 / wp67): a long treadmill run
+        // does not set a type's levels alone.
+        std::map<int, std::vector<std::pair<double, double>>> weighted;
+        for (const ClipResult& c : clips) {
+            if (!c.read) continue;
+            std::map<int, int> n;
+            for (const Found& f : c.run[0].found) ++n[static_cast<int>(f.type)];
+            for (const Found& f : c.run[0].found) {
+                all[static_cast<int>(f.type)].push_back(f.strength);
+                weighted[static_cast<int>(f.type)].push_back({f.strength, 1.0 / n[static_cast<int>(f.type)]});
+            }
+        }
+        const auto wpct = [](std::vector<std::pair<double, double>> v, double q) {
+            if (v.empty()) return 0.0;
+            std::sort(v.begin(), v.end());
+            double total = 0.0, acc = 0.0;
+            for (const auto& x : v) total += x.second;
+            for (const auto& x : v) {
+                acc += x.second;
+                if (acc >= q * total - 1e-12) return x.first;
+            }
+            return v.back().first;
+        };
+        const auto pct = [](std::vector<double> v, double q) {
+            if (v.empty()) return 0.0;
+            std::sort(v.begin(), v.end());
+            const double x = q * static_cast<double>(v.size() - 1);
+            const size_t i = static_cast<size_t>(x);
+            const double f = x - static_cast<double>(i);
+            return i + 1 < v.size() ? v[i] * (1.0 - f) + v[i + 1] * f : v[i];
+        };
+        std::printf("  %-12s %4s %8s %8s %8s %8s %8s %8s %8s %8s %8s | %8s %8s | %5s %5s %5s\n", "type", "n", "min", "p10",
+                    "p33", "p50", "p67", "p90", "max", "wp33", "wp67", "medium", "hard", "soft", "med", "hard");
+        for (int t = 0; t < kAutoTypeCount; ++t) {
+            const auto it = all.find(t);
+            const AutoStrengthCuts& cut = AutoStrengthRow(static_cast<AutoType>(t));
+            const char* word = AutoTypeRow(static_cast<AutoType>(t)).sound_word;
+            if (it == all.end()) {
+                std::printf("  %-12s %4d %80s | %8.3g %8.3g |\n", word, 0, "(no event on the fixtures)", cut.medium, cut.hard);
+                continue;
+            }
+            const std::vector<double>& v = it->second;
+            int lv[4] = {};
+            for (double x : v) ++lv[AutoStrengthLevel(static_cast<AutoType>(t), x)];
+            const auto& w = weighted[t];
+            std::printf("  %-12s %4zu %8.3g %8.3g %8.3g %8.3g %8.3g %8.3g %8.3g %8.3g %8.3g | %8.3g %8.3g | %5d %5d %5d%s\n",
+                        word, v.size(), pct(v, 0.0), pct(v, 0.10), pct(v, 1.0 / 3.0), pct(v, 0.5), pct(v, 2.0 / 3.0),
+                        pct(v, 0.90), pct(v, 1.0), wpct(w, 1.0 / 3.0), wpct(w, 2.0 / 3.0), cut.medium, cut.hard, lv[1], lv[2],
+                        lv[3], lv[0] ? "  (some with no strength)" : "");
+        }
+        std::printf("Per clip (type: n, min / median / max, Soft / Medium / Hard):\n");
+        for (const ClipResult& c : clips) {
+            if (!c.read) continue;
+            std::map<int, std::vector<double>> by;
+            for (const Found& f : c.run[0].found) by[static_cast<int>(f.type)].push_back(f.strength);
+            if (by.empty()) continue;
+            std::printf("  %s\n", c.src.id.c_str());
+            for (const auto& kv : by) {
+                int lv[4] = {};
+                for (double x : kv.second) ++lv[AutoStrengthLevel(static_cast<AutoType>(kv.first), x)];
+                std::printf("    %-12s %3zu  %7.3g / %7.3g / %7.3g   %d / %d / %d\n",
+                            AutoTypeRow(static_cast<AutoType>(kv.first)).sound_word, kv.second.size(), pct(kv.second, 0.0),
+                            pct(kv.second, 0.5), pct(kv.second, 1.0), lv[1], lv[2], lv[3]);
+            }
+        }
+    }
 
     std::printf("\n--- Not benched ---\n");
     bool any_fail = false;

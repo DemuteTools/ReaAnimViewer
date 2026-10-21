@@ -4,6 +4,9 @@
 
 #include "event_list.h"
 
+#include "auto_detect.h"  // story 10-10b: AutoBlockKind, AutoTypeOfKind
+#include "auto_types.h"   // story 10-10b: AutoStrengthLevel
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -403,6 +406,34 @@ std::vector<EchoStep> PlanLoopEchoes(const std::vector<ProjectMarkerRef>& refs, 
     return out;
 }
 
+namespace {
+
+// Story 10-10b: a level's suffix in that mode ("" for Off or level 0).
+std::string LevelSuffix(StrengthName mode, int level)
+{
+    if (level <= 0 || mode == StrengthName::Off) return std::string();
+    if (mode == StrengthName::Number) return " " + std::to_string(level);
+    return std::string(" ") + StrengthLevelName(level);
+}
+
+}  // namespace
+
+std::string EventMarkerName(const Block& b, double strength)
+{
+    std::string name = OneLine(b.marker);
+    AutoKind    k = AutoKind::Step;
+    if (b.strength_name == StrengthName::Off || !AutoBlockKind(b, &k, nullptr)) return name;
+    return name + LevelSuffix(b.strength_name, AutoStrengthLevel(AutoTypeOfKind(k), strength));
+}
+
+std::vector<std::string> BlockMarkerNames(const Block& b)
+{
+    std::vector<std::string> out = {OneLine(b.marker)};
+    if (b.strength_name == StrengthName::Off || !AutoBlockKind(b, nullptr, nullptr)) return out;
+    for (int lv = kStrengthSoft; lv <= kStrengthHard; ++lv) out.push_back(out.front() + LevelSuffix(b.strength_name, lv));
+    return out;
+}
+
 std::vector<PlannedMarker> PlanMarkers(const std::vector<ShownEvent>& list, const std::vector<Block>& blocks,
                                        const ItemClipMap& map)
 {
@@ -420,7 +451,7 @@ std::vector<PlannedMarker> PlanMarkers(const std::vector<ShownEvent>& list, cons
         m.project_t = pt;
         m.in_item = in;
         m.block = e.block;
-        m.name = OneLine(b.marker);
+        m.name = EventMarkerName(b, e.strength);  // story 10-10b
         m.color = b.color;
         m.user = e.kind == ShownKind::User;
         m.strength = e.strength;
@@ -766,11 +797,13 @@ namespace {
 
 constexpr double kEditMatchTolS = 1e-5;  // an entry this close to a marker's clip time is its event
 
-// The marker name a rule writes, committed or preview.
-std::string EditNameOf(const Block& b, bool preview)
+// Whether a marker of this name was written by the rule, committed or preview (story 10-10b: with
+// any of its strength levels).
+bool WritesName(const Block& b, bool preview, const std::string& name)
 {
-    const std::string n = OneLine(b.marker);
-    return preview ? PreviewMarkerName(n) : n;
+    for (const std::string& n : BlockMarkerNames(b))
+        if ((preview ? PreviewMarkerName(n) : n) == name) return true;
+    return false;
 }
 
 int FindEntryNear(const std::vector<EventEntry>& entries, EventKind kind, int block, double t, double tol)
@@ -795,7 +828,7 @@ int MarkerEditBlock(const ItemRules& rules, const MarkerEdit& e)
 {
     std::vector<int> cand;
     for (size_t i = 0; i < rules.blocks.size(); ++i)
-        if (EditNameOf(rules.blocks[i], e.preview) == e.name) cand.push_back(static_cast<int>(i));
+        if (WritesName(rules.blocks[i], e.preview, e.name)) cand.push_back(static_cast<int>(i));
     if (e.has_color && cand.size() > 1) {
         std::vector<int> col;
         for (int b : cand) {

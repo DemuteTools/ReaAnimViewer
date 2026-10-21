@@ -230,6 +230,10 @@ struct AutoSettings {
     // Story 10-9c: the marker at the motion's start, not its peak, for the types whose row says
     // `start_option` (kick, swing, punch), by AutoType; ignored for the others.
     bool             at_start[kAutoTypeCount] = {};
+    // Story 10-10b: how the type's marker names carry their strength level (Block::strength_name),
+    // by AutoType: its first block's (ReadAutoSettings), given to new blocks (AutoBlocks). Unlike
+    // the modes above it never waits for Detect: on a detected type it is written to the blocks.
+    StrengthName     strength_name[kAutoTypeCount] = {};
 };
 bool operator==(const AutoTypeSettings& a, const AutoTypeSettings& b);
 bool operator==(const AutoSettings& a, const AutoSettings& b);

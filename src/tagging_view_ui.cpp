@@ -3794,6 +3794,10 @@ void SyncAutoSettings(const TaggingModel& m)
         if (AutoTypeRow(static_cast<AutoType>(t)).start_option && cur.type[t].on &&
             (!g_auto_seen.type[t].on || cur.at_start[t] != g_auto_seen.at_start[t]))
             g_auto_ui.at_start[t] = cur.at_start[t];
+    // Story 10-10b: the strength in the marker names of a detected type (written to its blocks at once).
+    for (int t = 0; t < kAutoTypeCount; ++t)
+        if (cur.type[t].on && (!g_auto_seen.type[t].on || cur.strength_name[t] != g_auto_seen.strength_name[t]))
+            g_auto_ui.strength_name[t] = cur.strength_name[t];
     g_auto_seen = cur;
 }
 
@@ -3820,6 +3824,19 @@ bool SetAutoBlockValue(ItemRules& r, const std::string& auto_type, char side, bo
         if (b.auto_type != auto_type || b.auto_side != side || !AutoBlockKind(b, nullptr, nullptr)) continue;
         (sens ? b.sens : b.offset_ms) = v;
         if (sens) b.sens_from = -1.0;
+        any = true;
+    }
+    return any;
+}
+
+// Story 10-10b: the strength in the marker names of every block of type t.
+bool SetAutoStrengthName(ItemRules& r, AutoType t, StrengthName mode)
+{
+    bool any = false;
+    for (Block& b : r.blocks) {
+        AutoKind k;
+        if (!AutoBlockKind(b, &k, nullptr) || AutoTypeOfKind(k) != t || b.strength_name == mode) continue;
+        b.strength_name = mode;
         any = true;
     }
     return any;
@@ -4186,6 +4203,32 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
                 if (ui::Segmented(id.c_str(), kStartModes, 2, &sel)) g_auto_ui.at_start[ti] = sel == 1;
                 ui::ItemTip("Peak: the marker where the motion is fastest.\nStart: where it starts (the "
                             "whoosh's onset).");
+            }
+            {
+                // Story 10-10b: the event's strength level in its marker name, for picking a soft or
+                // hard layer. Every type; on a detected type it applies at once (one undo point),
+                // else Detect gives it to the new blocks.
+                static const char* const kNameModes[] = {"Name only", "+ Soft / Hard", "+ 1 / 2 / 3"};
+                ImGui::SetCursorPosX(x_row);
+                const StrengthName cur_mode = detected ? item.strength_name[ti] : g_auto_ui.strength_name[ti];
+                int                sel = static_cast<int>(cur_mode);
+                const std::string  id = std::string("##strengthname") + std::to_string(ti);
+                if (ui::Segmented(id.c_str(), kNameModes, 3, &sel) && sel != static_cast<int>(cur_mode)) {
+                    const StrengthName mode = static_cast<StrengthName>(sel);
+                    g_auto_ui.strength_name[ti] = mode;
+                    if (detected)
+                        Edit(std::string("RAV: Set strength in marker names (") + AutoTypeRow(t).undo_label + ")",
+                             [t, mode](ItemRules& r) { return SetAutoStrengthName(r, t, mode); });
+                }
+                const AutoStrengthCuts& cut = AutoStrengthRow(t);
+                const AutoKind          k0 = AutoKindsOf(t).front();
+                const AutoKindInfo&     kr = AutoKindRow(k0);
+                const char*             unit = kr.strength_unit ? kr.strength_unit : kr.degrees ? "deg" : "leg/s";
+                const std::string       example = AutoMarkerName(k0, 'L');
+                ui::ItemTip("Adds each event's strength to its marker name, to pick a soft or hard layer:\n"
+                            "Soft below %.3g %s, Medium from %.3g, Hard from %.3g (\"%s Hard\", or \"%s 3\").\n"
+                            "A Switch Group named Strength (values Soft, Medium, Hard) gets it at Populate.",
+                            cut.medium, unit, cut.medium, cut.hard, example.c_str(), example.c_str());
             }
             if (t == AutoType::Slide || t == AutoType::Pivot) {
                 // Story 10-8m: heel / toe separate scuffs, and Each part or Longest part while

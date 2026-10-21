@@ -608,6 +608,7 @@ int main()
         std::vector<Event> dets(1);
         dets[0].time_s = 0.25;
         dets[0].block = 0;
+        dets[0].strength = 2.5;  // story 10-10b: carried to the sounds' events
         ItemClipMap m;  // loops a 1 s clip three times from 10 s
         m.item_pos = 10.0;
         m.item_len = 3.0;
@@ -622,6 +623,7 @@ int main()
                 CHECK(e.passes[k].id == static_cast<long long>(k) && Near(e.passes[k].project_t, pt[k]));
         }
         CHECK(ev.size() == 2 && ev[0].rid == "a" && !ev[0].user && ev[1].user);
+        CHECK(ev.size() == 2 && ev[0].block == 0 && ev[0].strength == 2.5 && ev[1].block == 0);  // story 10-10b
 
         // The record as Populate wrote it: a node with a 30 ms Blend offset, placed at pass + 30 ms.
         FollowInput in;

@@ -242,7 +242,8 @@ bool operator==(const AutoTypeSettings& a, const AutoTypeSettings& b)
 bool operator==(const AutoSettings& a, const AutoSettings& b)
 {
     for (int t = 0; t < kAutoTypeCount; ++t)
-        if (!(a.type[t] == b.type[t]) || a.separate_parts[t] != b.separate_parts[t] || a.at_start[t] != b.at_start[t])
+        if (!(a.type[t] == b.type[t]) || a.separate_parts[t] != b.separate_parts[t] || a.at_start[t] != b.at_start[t] ||
+            a.strength_name[t] != b.strength_name[t])
             return false;
     return a.separate_steps == b.separate_steps && a.hand_pivot_any == b.hand_pivot_any &&
            a.slide_parts == b.slide_parts && a.pivot_parts == b.pivot_parts;
@@ -314,6 +315,7 @@ std::vector<Block> AutoBlocks(const AutoSettings& s)
                 const char          side = *sp;
                 const AutoRowValue* row = FindAutoRow(ts, AutoKindWord(k), side);
                 out.push_back(MakeAutoBlock(k, side, row ? row->sens : ts.sens, row ? row->offset_ms : ts.offset_ms));
+                out.back().strength_name = s.strength_name[t];  // story 10-10b
             }
     }
     return out;
@@ -334,6 +336,7 @@ AutoSettings ReadAutoSettings(const std::vector<Block>& blocks)
             s.type[t].on = true;
             s.type[t].sens = b.sens;
             s.type[t].offset_ms = b.offset_ms;
+            s.strength_name[t] = b.strength_name;  // story 10-10b
         }
         if (k == AutoKind::Step) combined = true;
         if (k == AutoKind::Heel || k == AutoKind::Toe) separate = true;
@@ -447,6 +450,7 @@ std::vector<int> ApplyAutoSettings(std::vector<Block>& blocks, const AutoSetting
             nb.sens = old[i].sens_from >= 0.0 ? old[i].sens_from : old[i].sens;
             nb.offset_ms = old[i].offset_ms;
             nb.sens_from = -1.0;
+            nb.strength_name = old[i].strength_name;  // story 10-10b
             break;
         }
         // Decision 2026-10-12 (13-2 option A): it also keeps the dropped block's rule id (its

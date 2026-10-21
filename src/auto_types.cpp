@@ -8,7 +8,8 @@
 //      raise kAutoTypeCount / kAutoKindCount.
 //   2. Here: append one row per enum value to kTypeRows / kKindRows (the rows follow enum order:
 //      static_assert below; every type row needs a hint), and declare its functions in the block
-//      below.
+//      below. Story 10-10b: also one kStrengthRows row (its Soft / Medium / Hard cuts in its
+//      strength unit), measured with tools/bench (the bench's STRENGTH block) on the fixtures.
 //   3. Its functions (event source, match, part missing, lanes, roles, type parts) in its
 //      category's file (auto_types_<category>.cpp), reusing the shared ones where they fit.
 //   4. CMakeLists.txt: a new .cpp next to auto_types.cpp; tests/CMakeLists.txt: add it to
@@ -335,6 +336,47 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "punch", {{&P::punch_speed, S::Divide}, {}}, &AutoPartsWhooshHand, false, false, false, true, true},
 };
 
+// ---- Strength levels (story 10-10b) ------------------------------------------------------------
+// Per type: Medium from the first cut, Hard from the second, in the strength unit of its kinds
+// (leg/s; degrees for the pivots and the spin; g for the jolt). Measured 2026-10-21 on the 61
+// fixture clips' default matrix (trigger_bench, its STRENGTH block): a type with events on several
+// clips takes the clip-weighted 33rd and 67th percentiles (each clip weighs the same, so the
+// 26 steps of a treadmill run do not set the levels alone), rounded. A type with few or no
+// events borrows the cuts of the type that measures the same thing (named on its row).
+// Steps, for scale: climbing and crawling Soft, walking Medium, running Hard; claps: the 4 claps
+// of Clap_Normal Medium, the 7 of Clap_Hard Hard.
+
+constexpr AutoStrengthCuts kStrengthRows[] = {
+    {T::Step, 1.2, 4.0},        // 121 steps on 46 clips: wp33 1.23, wp67 4.14 leg/s (the foot's approach)
+    {T::LiftOff, 2.0, 4.5},     // 118 on 46 clips: wp33 2.15, wp67 4.57 leg/s
+    {T::Slide, 0.5, 0.7},       // 13 on 8 clips: wp33 0.49, wp67 0.71 leg/s (horizontal)
+    {T::Pivot, 30.0, 85.0},     // 19 on 8 clips: wp33 31, wp67 86 deg
+    {T::Grab, 1.3, 1.6},        // 22 on 14 clips: wp33 1.35, wp67 1.54 leg/s
+    {T::Release, 1.5, 2.3},     // 17 on 14 clips: wp33 1.50, wp67 2.26 leg/s
+    {T::HandPivot, 30.0, 85.0}, // 1 event (26 deg): the foot pivot's cuts (the same sweep)
+    {T::Jump, 2.0, 3.3},        // 13 on 13 clips: wp33 2.08, wp67 3.34 leg/s (the hips' vertical speed)
+    {T::Land, 2.7, 4.4},        // 10 on 10 clips: wp33 2.69, wp67 4.38 leg/s (the same)
+    {T::Jolt, 1.35, 2.1},       // 61 on 24 clips: wp33 1.35, wp67 2.11 g
+    // 28 (start and end) on 10 clips: wp33 75, wp67 178 deg (the sweep); the second cut sits
+    // between a quarter and a half turn (135), so a 90 or 180 deg turn never falls on a cut.
+    {T::Spin, 75.0, 135.0},
+    {T::Tap, 1.2, 4.0},         // no event: the step's cuts (the toe's approach)
+    {T::Drag, 1.5, 1.8},        // 5 on 4 clips: wp33 1.54, wp67 1.85 leg/s (the toe's peak slide)
+    {T::Knee, 0.55, 0.75},      // 4 on 3 clips: wp33 0.54, wp67 0.76 leg/s (the descent)
+    {T::Elbow, 0.55, 0.75},     // no event: the knee's cuts (the same contact segmentation)
+    // 2 events (1.0, 1.3 leg/s, both on the clap clips: doubtful sits), no real sit clip yet:
+    // a sit at about 1 leg/s Medium, a drop onto the seat from 1.6 Hard. Unmeasured.
+    {T::Sit, 0.8, 1.6},
+    {T::Fall, 2.7, 4.4},        // 1 event (3.4): the land's cuts (the hips coming down)
+    // 12 on 3 clips: Clap_Normal 2.0 to 2.95, Clap_Hard 8.1 to 11.1 leg/s (the closing speed):
+    // Hard from 5 (between the two), Medium from 2.
+    {T::Clap, 2.0, 5.0},
+    {T::HandOnBody, 2.0, 5.0},  // 2 events (1.5, 2.8): the clap's cuts (the same closing speed)
+    {T::Kick, 9.0, 15.0},       // 2 events (10.5, 20, the dance clips): unmeasured beyond them
+    {T::Swing, 7.4, 8.0},       // 10 on 6 clips: wp33 7.37, wp67 8.03 leg/s (the hand's peak speed)
+    {T::Punch, 7.4, 8.0},       // no event: the swing's cuts (the same threshold, 7 leg/s)
+};
+
 // ---- Kinds -------------------------------------------------------------------------------------
 // Default colours: left in a cool hue, right in a warm one (the Footsteps presets' blue and orange
 // for steps); a separate toe block a shade lighter than its heel's.
@@ -507,6 +549,16 @@ constexpr bool KindSignaturesValid()
     }
     return true;
 }
+constexpr bool StrengthRowsValid()
+{
+    for (int i = 0; i < kAutoTypeCount; ++i)
+        if (static_cast<int>(kStrengthRows[i].type) != i || !(kStrengthRows[i].medium > 0.0) ||
+            !(kStrengthRows[i].hard > kStrengthRows[i].medium))
+            return false;
+    return true;
+}
+static_assert(sizeof(kStrengthRows) / sizeof(kStrengthRows[0]) == kAutoTypeCount, "one strength row per AutoType");
+static_assert(StrengthRowsValid(), "strength rows follow the AutoType order, 0 < medium < hard");
 static_assert(CategoryRowsInOrder(), "category rows follow the AutoCategory order");
 static_assert(KindSignaturesValid(), "every kind: a first signature, used slots contiguous and named");
 static_assert(TypeRowsInOrder(), "type rows follow the AutoType order");
@@ -532,6 +584,28 @@ const AutoTypeInfo& AutoTypeRow(AutoType t)
 const AutoKindInfo& AutoKindRow(AutoKind k)
 {
     return kKindRows[RowIndex(static_cast<int>(k), kAutoKindCount)];
+}
+
+const AutoStrengthCuts& AutoStrengthRow(AutoType t)
+{
+    return kStrengthRows[RowIndex(static_cast<int>(t), kAutoTypeCount)];
+}
+
+int AutoStrengthLevel(AutoType t, double strength)
+{
+    if (!std::isfinite(strength) || !(strength > 0.0)) return 0;
+    const AutoStrengthCuts& c = AutoStrengthRow(t);
+    return strength >= c.hard ? kStrengthHard : strength >= c.medium ? kStrengthMedium : kStrengthSoft;
+}
+
+const char* StrengthLevelName(int level)
+{
+    switch (level) {
+    case kStrengthSoft: return "Soft";
+    case kStrengthMedium: return "Medium";
+    case kStrengthHard: return "Hard";
+    default: return "";
+    }
 }
 
 int AutoSignatureCount(const AutoKindInfo& row)

@@ -10,7 +10,9 @@
 #include "sound_assign.h"
 #include "sound_auto_assign.h"  // story 10-9g: AutoSoundKey
 
+#include <cmath>
 #include <cstdio>
+#include <limits>
 #include <cstring>
 #include <set>
 #include <string>
@@ -361,11 +363,36 @@ void TestRowInvariants()
     }
 }
 
+// Story 10-10b: every type's strength levels (the row follows the type: a static_assert checks
+// the order and 0 < medium < hard).
+void TestStrengthLevels()
+{
+    for (int t = 0; t < kAutoTypeCount; ++t) {
+        const AutoType          ty = static_cast<AutoType>(t);
+        const AutoStrengthCuts& c = AutoStrengthRow(ty);
+        CHECK(c.type == ty);
+        CHECK(AutoStrengthLevel(ty, c.medium * 0.99) == kStrengthSoft);
+        CHECK(AutoStrengthLevel(ty, c.medium) == kStrengthMedium);
+        CHECK(AutoStrengthLevel(ty, c.hard * 0.999) == kStrengthMedium);
+        CHECK(AutoStrengthLevel(ty, c.hard) == kStrengthHard);
+        CHECK(AutoStrengthLevel(ty, 0.0) == 0 && AutoStrengthLevel(ty, -1.0) == 0 && AutoStrengthLevel(ty, std::nan("")) == 0);
+        CHECK(AutoStrengthLevel(ty, std::numeric_limits<double>::infinity()) == 0);
+    }
+    // Steps, for scale (measured on the fixtures): a climb Soft, a walk Medium, a run Hard.
+    CHECK(AutoStrengthLevel(AutoType::Step, 0.9) == kStrengthSoft);
+    CHECK(AutoStrengthLevel(AutoType::Step, 2.6) == kStrengthMedium);
+    CHECK(AutoStrengthLevel(AutoType::Step, 8.0) == kStrengthHard);
+    CHECK(std::string(StrengthLevelName(kStrengthSoft)) == "Soft" && std::string(StrengthLevelName(kStrengthMedium)) == "Medium" &&
+          std::string(StrengthLevelName(kStrengthHard)) == "Hard" && std::string(StrengthLevelName(0)) == "" &&
+          std::string(StrengthLevelName(4)) == "");
+}
+
 }  // namespace
 
 int main()
 {
     TestOrder();
+    TestStrengthLevels();
     TestUniqueWords();
     TestRowsComplete();
     TestCategoryTypes();

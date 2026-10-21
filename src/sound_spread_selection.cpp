@@ -133,12 +133,23 @@ std::vector<char> BlocksOfType(const ItemRules& rules, const std::string& key)
     return out;
 }
 
-// The kind of a marker named `name` on an item with these rules (its rule's, RuleOfMarker), and that rule's index.
-SpreadKind KindOfRuleMarker(const ItemRules& rules, const std::string& name, int* block)
+// The rule that wrote a marker named `name` (RuleOfMarker on the rules' markers; story 10-10b: else on the names
+// with a strength level an auto rule writes, "FS L Hard"), or -1.
+int RuleOfWrittenMarker(const std::vector<Block>& blocks, const std::string& name)
 {
     std::vector<std::string> markers;
-    for (const Block& b : rules.blocks) markers.push_back(b.marker);
-    *block = RuleOfMarker(markers, name);
+    for (const Block& b : blocks) markers.push_back(b.marker);
+    const int exact = RuleOfMarker(markers, name);
+    if (exact >= 0) return exact;
+    for (size_t i = 0; i < blocks.size(); ++i)
+        if (RuleOfMarker(BlockMarkerNames(blocks[i]), name) >= 0) return static_cast<int>(i);
+    return -1;
+}
+
+// The kind of a marker named `name` on an item with these rules (its rule's, RuleOfWrittenMarker), and that rule's index.
+SpreadKind KindOfRuleMarker(const ItemRules& rules, const std::string& name, int* block)
+{
+    *block = RuleOfWrittenMarker(rules.blocks, name);
     return *block >= 0 ? KindOfBlock(rules.blocks[static_cast<size_t>(*block)]) : SpreadKind();
 }
 
@@ -1257,8 +1268,6 @@ void ReadManager(AttachManagerState* out)
         s.anims.push_back(an);
         ItemRulesRead rr;
         if (!ReadItemRules(it, &rr) || !rr.valid) continue;
-        std::vector<std::string> names;
-        for (const Block& bl : rr.rules.blocks) names.push_back(bl.marker);
         // Its RAV project markers (committed and previews): in the time selection, or clicked.
         bool any_ref = false;
         for (const std::vector<ProjectMarkerRef>* refs : {&rr.rules.pmarkers, &rr.rules.ppmarkers})
@@ -1270,7 +1279,7 @@ void ReadManager(AttachManagerState* out)
                 const bool clicked = ProjectMarkerSelected(r.guid, &pos);
                 const bool in = s.has_time_sel && pos >= a - 1e-9 && pos <= b + 1e-9;
                 if (!clicked && !in) continue;
-                const int blk = RuleOfMarker(names, r.name);
+                const int blk = RuleOfWrittenMarker(rr.rules.blocks, r.name);  // story 10-10b: with its strength level
                 if (blk < 0 || !rr.rules.blocks[static_cast<size_t>(blk)].enabled) continue;
                 const Block&     bl = rr.rules.blocks[static_cast<size_t>(blk)];
                 const SpreadKind k = KindOfBlock(bl);

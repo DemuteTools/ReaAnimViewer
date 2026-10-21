@@ -758,6 +758,9 @@ Fields BlockFields(const Block& b, bool with_rid = true)
         f.push_back({"sens", FormatNumber(b.sens)});
         // Story 10-8h: written only when Detect raised the sensitivity (absent = not raised).
         if (b.sens_from >= 0.0) f.push_back({"sens_from", FormatNumber(b.sens_from)});
+        // Story 10-10b: written only when on (absent = Off).
+        if (b.strength_name == StrengthName::Word) f.push_back({"lvl", "word"});
+        if (b.strength_name == StrengthName::Number) f.push_back({"lvl", "num"});
     }
     Fields rest = {{"color", FormatColor(b.color)},
             {"hold_ms", FormatNumber(b.min_hold_ms)},
@@ -789,6 +792,13 @@ Set SetBlock(Block& b, const std::string& k, const std::string& v)
         double x = 0.0;
         if (!ReadNumber(v, &x) || x < 0.0 || x > 100.0) return Set::Bad;
         b.sens_from = x;
+        return Set::Ok;
+    }
+    if (k == "lvl") {  // story 10-10b
+        if (b.auto_type.empty()) return Set::Unknown;
+        if (v == "word") b.strength_name = StrengthName::Word;
+        else if (v == "num") b.strength_name = StrengthName::Number;
+        else return Set::Unknown;  // a later version's mode: kept as read
         return Set::Ok;
     }
     if (k == "color") return R(ReadColor(v, &b.color));
@@ -1690,7 +1700,8 @@ bool ConditionsEqual(const Condition& a, const Condition& b)
 
 bool BlockEqual(const Block& a, const Block& b)
 {
-    if (a.auto_type != b.auto_type || (IsAutoBlock(a) && (a.auto_side != b.auto_side || a.sens != b.sens || a.sens_from != b.sens_from)))
+    if (a.auto_type != b.auto_type || (IsAutoBlock(a) && (a.auto_side != b.auto_side || a.sens != b.sens || a.sens_from != b.sens_from ||
+                                                          a.strength_name != b.strength_name)))
         return false;
     if (a.enabled != b.enabled || a.marker != b.marker || a.color != b.color || a.min_hold_ms != b.min_hold_ms || a.cooldown_ms != b.cooldown_ms ||
         a.offset_ms != b.offset_ms || !SignalsEqual(a.strength_signal, b.strength_signal) ||

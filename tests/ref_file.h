@@ -104,7 +104,9 @@ inline bool NormaliseRefKind(const std::string& kind, const std::string& part, s
                  kind == "knee" || kind == "elbow" || kind == "sit" || kind == "fall" ||
                  // story 10-9h: the other wave-3 kinds (jolt, spin, spin_end: side B)
                  kind == "kick" || kind == "swing" || kind == "punch" || kind == "clap" || kind == "hand_body" ||
-                 kind == "tap" || kind == "drag" || kind == "jolt" || kind == "spin" || kind == "spin_end")) {
+                 kind == "tap" || kind == "drag" || kind == "jolt" || kind == "spin" || kind == "spin_end" ||
+                 // story 10-9i: a heel tap (side L / R, part heel), one row in both configurations
+                 kind == "heel_tap")) {
         return false;
     }
     if (base) *base = b;

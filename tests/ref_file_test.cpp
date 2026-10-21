@@ -96,6 +96,11 @@ int main()
               RefTarget(r, BenchConfig::Parts) == "kick_toe");
         CHECK(ParseRefLine("kick_heel\tR\tany\t1\tdraft\tmotion", &r, &e) && RefTarget(r, BenchConfig::Parts) == "kick_heel");
         CHECK(ParseRefLine("spin_end\tB\tany\t1.55\tdraft\tmotion", &r, &e) && RefTarget(r, BenchConfig::Default) == "spin_end");
+        // Story 10-9i: a heel tap (Hip Hop's heel drops), side L / R, scored in both configurations.
+        CHECK(ParseRefLine("heel_tap\tL\theel\t0.7625\tconfirmed\tclaude", &r, &e) && r.kind == "heel_tap" && r.part == "heel" &&
+              RefTarget(r, BenchConfig::Default) == "heel_tap" && RefTarget(r, BenchConfig::Parts) == "heel_tap");
+        CHECK(FoundTarget("heel_tap") == "heel_tap");
+        CHECK(!ParseRefLine("heel_tap\tB\theel\t1\tdraft\tmotion", nullptr, &e));
     }
 
     // ---- Configuration targets.

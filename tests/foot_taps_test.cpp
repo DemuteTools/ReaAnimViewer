@@ -168,6 +168,30 @@ FootFn Walk(double first, double x)
     };
 }
 
+// A sprint: each foot on its ball only (the heel up) for `stance` s of each 0.8 s cycle, then a
+// swing 1.6 m forward with a 15 cm lift; the feet half a cycle apart, so both are in the air
+// between the stances (a flight): the toe-only stances of Treadmill Running / Two Cycle Sprint.
+FootFn Sprint(double first, double x, double stance)
+{
+    return [first, x, stance](double t) {
+        const double rel = t - first;
+        const int    k = static_cast<int>(std::floor(rel / 0.8));
+        const double in = rel - 0.8 * k;
+        Foot         f;
+        f.ball.x = x;
+        f.pitch = 0.6;
+        if (in < stance) {
+            f.ball.z = 1.6 * k;
+            f.ball.y = 0.02;
+        } else {
+            const double u = (in - stance) / (0.8 - stance);
+            f.ball.z = 1.6 * (k + Ease(u));
+            f.ball.y = 0.02 + 0.15 * std::sin(kPi * u);
+        }
+        return f;
+    };
+}
+
 std::vector<PhysicsEvent> Side(const std::vector<PhysicsEvent>& ev, char side)
 {
     std::vector<PhysicsEvent> out;
@@ -206,6 +230,33 @@ void TestTap()
         return f;
     };
     CHECK(FootTapEvents(AnalyseMotion(Rig(lifted, Tapping(1.2, 0.1), 3.0))).empty());
+    // A sprint's toe-only stances (130 ms, the heel up, both feet in the air between them): single
+    // supports, no tap, even at 100 % (300 ms).
+    const PhysicsAnalysis sprint = AnalyseMotion(Rig(Sprint(0.0, -0.1, 0.13), Sprint(0.4, 0.1, 0.13), 4.0));
+    CHECK(sprint.ok);
+    {
+        int toe_steps = 0;
+        for (const PhysicsEvent& e : FootEvents(sprint)) toe_steps += e.kind == PhysicsKind::FootStep;
+        CHECK(toe_steps >= 6);  // the stances are contacts (the test sees them)
+    }
+    CHECK(FootTapEvents(sprint).empty());
+    CHECK(FootTapEvents(sprint, AutoPhysicsParams(AutoType::Tap, 100.0, false)).empty());
+    // The same touch while the other foot stands, the other foot's toe also on its ball (both on
+    // tiptoe): still a tap (the other foot carries the body, on the same floor).
+    FootFn tiptoe = [](double) {
+        Foot f;
+        f.ball = Vec3d{-0.2, 0.02, 0.0};
+        f.pitch = 0.3;
+        return f;
+    };
+    CHECK(FootTapEvents(AnalyseMotion(Rig(tiptoe, Tapping(1.2, 0.1), 3.0))).size() == 1);
+    // The other foot on a step 20 cm higher: not the same floor, no tap.
+    FootFn stair = [](double) {
+        Foot f;
+        f.ball = Vec3d{-0.2, 0.22, 0.0};
+        return f;
+    };
+    CHECK(FootTapEvents(AnalyseMotion(Rig(stair, Tapping(1.2, 0.1), 3.0))).empty());
     // A walk: no tap, no drag.
     const PhysicsAnalysis walk = AnalyseMotion(Rig(Walk(0.4, -0.1), Walk(-0.1, 0.1), 4.0));
     CHECK(walk.ok);
@@ -296,6 +347,41 @@ void TestDetect()
         if (e.marker == "FS R") CHECK(std::fabs(e.time_s - tap) > kAutoReplaceS);
     // The left foot's steps are never the Tap's (none here: it is planted from the start).
     CHECK(count(ev, "FS L") == count(ev_steps, "FS L"));
+    // With Lift-off ticked too, the Tap also replaces the lift that ends its touch (a tap is one
+    // sound); the right foot's other lifts stay.
+    AutoSettings l;
+    l.type[static_cast<int>(AutoType::Step)].on = true;
+    l.type[static_cast<int>(AutoType::LiftOff)].on = true;
+    const std::vector<Event> ev_lifts = DetectAutoEvents(AutoBlocks(l), rt, nullptr, false);
+    l.type[static_cast<int>(AutoType::Tap)].on = true;
+    const std::vector<Event> ev_tap = DetectAutoEvents(AutoBlocks(l), rt, nullptr, false);
+    CHECK(count(ev_tap, "Tap R") == 1);
+    CHECK(count(ev_lifts, "Lift R") >= 1);
+    CHECK(count(ev_tap, "Lift R") == count(ev_lifts, "Lift R") - 1);
+    for (const Event& e : ev_tap)
+        if (e.marker == "Lift R") CHECK(e.time_s < tap - kAutoReplaceS || e.time_s > tap + 0.2);
+    CHECK(count(ev_tap, "Lift L") == count(ev_lifts, "Lift L"));
+}
+
+// Detect's sensitivity search never raises a silent Tap or Drag block (a walk's toe skims drag
+// from 67 %): searched, not raised, its value unchanged.
+void TestNoRaise()
+{
+    const std::vector<BoneTrack> rt = Rig(Walk(0.4, -0.1), Walk(-0.1, 0.1), 4.0);
+    AutoSettings                 s;
+    s.type[static_cast<int>(AutoType::Tap)].on = true;
+    s.type[static_cast<int>(AutoType::Drag)].on = true;
+    std::vector<Block>     blocks = AutoBlocks(s);
+    const std::vector<int> counts(blocks.size(), 0);
+    const std::vector<int> bones(static_cast<size_t>(Role::Count), 0);
+    CHECK(AutoTypeRow(AutoType::Tap).no_sens_raise && AutoTypeRow(AutoType::Drag).no_sens_raise);
+    CHECK(!AutoTypeRow(AutoType::Step).no_sens_raise && !AutoTypeRow(AutoType::Land).no_sens_raise);
+    const std::vector<AutoSensResult> r = SearchAutoSensitivity(blocks, rt, counts, bones, false);
+    CHECK(r.size() == blocks.size() && !blocks.empty());
+    for (size_t i = 0; i < r.size() && i < blocks.size(); ++i) {
+        CHECK(r[i].searched && !r[i].raised && !r[i].none);
+        CHECK(r[i].sens == blocks[i].sens);
+    }
 }
 
 }  // namespace
@@ -306,6 +392,7 @@ int main()
     TestDrag();
     TestRows();
     TestDetect();
+    TestNoRaise();
     if (g_fails) {
         std::printf("%d check(s) failed\n", g_fails);
         return 1;

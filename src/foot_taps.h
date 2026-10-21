@@ -5,12 +5,12 @@
 //   tap    a light toe touch while the other foot carries the body: a toe contact (the ball's or
 //          the tip's, the segmentation's, merged) of tap_max_s at most, never cut by the clip
 //          start or end, where at every sample the heel is up (above that part by tap_heel_rise
-//          more than in the foot's flat pose: the median while both are in contact) and the other
+//          more than in the foot's flat pose: the 10th percentile while both are in contact) and the other
 //          foot is down, its same part resting at the same support height (tap_floor_height) when
 //          the toe touches. Timed and named as a step of its first forefoot part to touch (step
-//          timing and offsets), so a Tap sits on the foot step it is; with Step ticked it
-//          replaces that foot's steps within kAutoReplaceS (auto_detect.h). Strength = its
-//          approach speed (leg/s).
+//          timing and offsets), so a Tap sits on the foot step it is, its end = the touch's end;
+//          with Step / Lift-off ticked it replaces that foot's steps within kAutoReplaceS and
+//          its lift-offs over the touch (auto_detect.h). Strength = its approach speed (leg/s).
 //   drag   the toe sliding on its support during a swing: per sample, the heel is off the ground
 //          and a forefoot part (ball or tip) is not in contact, within drag_height of the support
 //          of its latest contact (the first one before it), moving at drag_speed to

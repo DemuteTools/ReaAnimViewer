@@ -147,6 +147,7 @@ std::vector<PhysicsEvent> FootTapEvents(const PhysicsAnalysis& a, const PhysicsP
                 }
             }
             if (!bc) continue;
+            best.end_s = std::max(best.time_s, static_cast<double>(ue) / rate);  // the touch's end
             const int        q = best.part;
             const PartTrack& pt = f.part[q];
             // On the floor the body stands on: the other foot's same part down at the touch, at

@@ -219,12 +219,13 @@ constexpr AutoTypeInfo kTypeRows[] = {
     {T::Tap, "Tap", "Tap", C::Legs,
      "A marker where the toes touch the ground lightly while the other foot carries the body\n"
      "(a toe contact under 150 ms, the heel up): Tap L / Tap R.\n"
-     "With Step ticked, it replaces that foot's step there.",
-     "tap", {{&P::tap_max_s, S::Times}, {}}, &AutoPartsFootBoth, false, false, false, false, static_cast<int>(T::Step), true},
+     "With Step / Lift-off ticked, it replaces that foot's step / lift-off there.",
+     "tap", {{&P::tap_max_s, S::Times}, {}}, &AutoPartsFootBoth, false, false, false, true, static_cast<int>(T::Step),
+     static_cast<int>(T::LiftOff), true},
     {T::Drag, "Drag", "Drag", C::Legs,
      "A marker where the toes slide on the ground during a swing, the heel up\n"
      "(a foot dragged behind, a crawl, a kneel): Drag L / Drag R.",
-     "drag", {{&P::drag_min_s, S::Divide}, {}}, &AutoPartsFootBoth},
+     "drag", {{&P::drag_min_s, S::Divide}, {}}, &AutoPartsFootBoth, false, false, false, true},
 };
 
 // ---- Kinds -------------------------------------------------------------------------------------

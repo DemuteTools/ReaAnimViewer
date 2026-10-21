@@ -28,7 +28,7 @@
 //   tap        (story 10-9e) a light toe touch while the other foot carries the body: a foot
 //              contact under 150 ms with no heel, the other foot down throughout (Tap L / R),
 //              at that contact's step. With Step ticked too, a Tap replaces that foot's steps
-//              (FS, Toe) within +-30 ms of it.
+//              (FS, Toe) within +-30 ms of it; with Lift-off, its lift-offs over the touch.
 //   drag       (story 10-9e) the toe sliding on the ground during a swing, the heel up
 //              (Drag L / R, with its end). See foot_taps.h.
 //   Story 10-9a-3: lift-off, jump and land each have Combined / Separate

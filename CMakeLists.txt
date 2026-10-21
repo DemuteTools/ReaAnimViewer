@@ -207,6 +207,7 @@ if(WIN32)
             src/heel_taps.cpp  # 10-9i
             src/auto_types_arm_jump.cpp  # 10-9k
             src/scuff_peak.cpp  # 10-9j
+            src/auto_types_slap.cpp  # 10-9l
             src/detection_measure.cpp
             src/rule_record.cpp
             src/preset_store.cpp

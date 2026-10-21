@@ -266,9 +266,11 @@ void TestKnownValues()
     CHECK(AutoKindRow(AutoKind::Jump).sigs[0].source == AutoKindRow(AutoKind::Land).sigs[0].source);
     for (int k = 0; k < kAutoKindCount; ++k) {
         const AutoKind kk = static_cast<AutoKind>(k);
-        if (kk != AutoKind::Jump && kk != AutoKind::JumpHeel && kk != AutoKind::JumpToe)
+        if (kk != AutoKind::Jump && kk != AutoKind::JumpHeel && kk != AutoKind::JumpToe && kk != AutoKind::Slap)
             CHECK(AutoSignatureCount(AutoKindRow(kk)) == 1);
     }
+    // Story 10-9l: Slap, Grab's contacts then Hand on body's touches.
+    CHECK(AutoSignatureCount(AutoKindRow(AutoKind::Slap)) == 2);
     CHECK(j.jump_impulse_g == d.jump_impulse_g / 2.0 && l.jump_impulse_g == d.jump_impulse_g);
     PhysicsParams q = d;
     q.jump_impulse_g = d.jump_impulse_g / 2.0;
@@ -350,6 +352,9 @@ void TestRoles()
                 want = {Role::Hips, Role::LeftUpLeg, Role::RightUpLeg};
             } else if (side == 'B') {
                 continue;  // a sided kind has no B block
+            } else if (r.type == AutoType::Slap) {  // story 10-9l: its hand, then its finger
+                want = side == 'R' ? std::vector<Role>{Role::RightHand, Role::RightKnuckle, Role::RightFingertip}
+                                   : std::vector<Role>{Role::LeftHand, Role::LeftKnuckle, Role::LeftFingertip};
             } else if (r.type == AutoType::Clap) {  // story 10-9d: its hand, then the other
                 want = side == 'R' ? std::vector<Role>{Role::RightHand, Role::LeftHand}
                                    : std::vector<Role>{Role::LeftHand, Role::RightHand};

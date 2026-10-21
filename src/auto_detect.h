@@ -55,6 +55,11 @@
 //   Arms
 //   grab       the hand lands on something (Grab L / R).
 //   release    the hand leaves its support (Release L / R).
+//   slap       (story 10-9l) a flat hand hitting something (the floor, a wall, the body), the
+//              fingers staying extended through and after the contact (Slap L / R): a grab's
+//              contact or a hand on body whose fingers do not close. With Grab / Hand on body
+//              ticked too, it replaces that hand's grab / hand on body there. Needs finger bones
+//              that move in the clip (roles knuckle and fingertip); see hand_slap.h.
 //   pivot      the planted hand turns (Hand Pivot L / R): only after a grab (a hand that came to
 //              rest with a grab's approach, or at rest from the clip start; kind hand_pivot, the
 //              default), or any resting hand (kind hand_pivot_any).
@@ -126,14 +131,14 @@ namespace rav {
 // ---- Types and block kinds ---------------------------------------------------------------------
 
 // The types the section ticks (story 10-9e appends Tap and Drag, story 10-9b Knee, Elbow, Sit, Fall,
-// story 10-9d Clap and Hand on body, story 10-9c Kick, Swing and Punch).
+// story 10-9d Clap and Hand on body, story 10-9c Kick, Swing and Punch, story 10-9l Slap).
 enum class AutoType : int { Step = 0, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land, Jolt, Spin, Tap, Drag,
-                            Knee, Elbow, Sit, Fall, Clap, HandOnBody, Kick, Swing, Punch, HeelTap, ArmJump, ArmLand };
-constexpr int kAutoTypeCount = 25;  // story 10-9g: Jolt; 10-9f: Spin (Body, sideless); 10-9e: Tap, Drag; 10-9b; 10-9d; 10-9c; 10-9i: Heel Tap; 10-9k: Arms Jump, Land
+                            Knee, Elbow, Sit, Fall, Clap, HandOnBody, Kick, Swing, Punch, HeelTap, ArmJump, ArmLand, Slap };
+constexpr int kAutoTypeCount = 26;  // story 10-9g: Jolt; 10-9f: Spin (Body, sideless); 10-9e: Tap, Drag; 10-9b; 10-9d; 10-9c; 10-9i: Heel Tap; 10-9k: Arms Jump, Land; 10-9l: Slap
 // "Step", "Lift-off", "Slide scuff", "Pivot scuff", "Grab", "Release", "Pivot scuff" (the hand's),
 // "Jump", "Land", "Jolt" (story 10-9g, Body), "Spin" (story 10-9f, Body), "Tap", "Drag";
 // story 10-9b: "Knee", "Elbow", "Sit", "Fall"; story 10-9d: "Clap", "Hand on body"; story 10-9c:
-// "Kick", "Swing", "Punch"; story 10-9i: "Heel Tap"; story 10-9k: "Jump", "Land" (Arms)
+// "Kick", "Swing", "Punch"; story 10-9i: "Heel Tap"; story 10-9k: "Jump", "Land" (Arms); story 10-9l: "Slap"
 const char* AutoTypeLabel(AutoType t);
 
 // Story 10-9-0: every type, category and kind has one descriptor row in auto_types.cpp (labels,
@@ -168,9 +173,10 @@ enum class AutoKind : int {
     SlidePeak, SlideHeelPeak, SlideToePeak, SlideHeelLongestPeak, SlideToeLongestPeak,
     PivotPeak, PivotHeelPeak, PivotToePeak, PivotHeelLongestPeak, PivotToeLongestPeak,
     HandPivotPeak, HandPivotAnyPeak,
-    ArmJump, ArmLand  // story 10-9k
+    ArmJump, ArmLand,  // story 10-9k
+    Slap  // story 10-9l
 };
-constexpr int kAutoKindCount = 62;
+constexpr int kAutoKindCount = 63;
 // "step", "heel", "toe", "lift", "slide", "pivot", "grab", "release", "hand_pivot", "hand_pivot_any",
 // "slide_heel", "slide_toe", "pivot_heel", "pivot_toe", "slide_heel_longest", "slide_toe_longest",
 // "pivot_heel_longest", "pivot_toe_longest", "jump", "land", "lift_heel", "lift_toe", "jump_heel",
@@ -179,7 +185,7 @@ constexpr int kAutoKindCount = 62;
 // "kick_start", "kick_heel_start", "kick_toe_start", "swing", "swing_start", "punch", "punch_start" (10-9c), "heel_tap" (10-9i),
 // "slide_peak", "slide_heel_peak", "slide_toe_peak", "slide_heel_longest_peak", "slide_toe_longest_peak",
 // "pivot_peak", "pivot_heel_peak", "pivot_toe_peak", "pivot_heel_longest_peak", "pivot_toe_longest_peak",
-// "hand_pivot_peak", "hand_pivot_any_peak" (10-9j), "arm_jump", "arm_land" (10-9k)
+// "hand_pivot_peak", "hand_pivot_any_peak" (10-9j), "arm_jump", "arm_land" (10-9k), "slap" (10-9l)
 const char* AutoKindWord(AutoKind k);
 bool AutoKindFromWord(const std::string& w, AutoKind* out);
 AutoType AutoTypeOfKind(AutoKind k);

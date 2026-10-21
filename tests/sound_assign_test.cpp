@@ -62,7 +62,7 @@ static void TestTable()
     CHECK(parts.size() == 4);
     // Story 10-9a: Legs > Jump / Land, assigned like any type (story 10-9e: and Tap / Drag). Story
     // 10-9b: Legs > Knee, Arms > Elbow, Body > Sit / Fall. Story 10-9d: Arms > Clap, Hand on body.
-    // Story 10-9c: Legs > Kick, Arms > Swing / Punch. Story 10-9i: Legs > Heel Tap.
+    // Story 10-9c: Legs > Kick, Arms > Swing / Punch. Story 10-9i: Legs > Heel Tap. Story 10-9l: Arms > Slap.
     CHECK(parts[0].id == "legs" && parts[0].label == "Legs" && parts[0].types.size() == 12);
     if (parts[0].types.size() == 12)
         CHECK(parts[0].types[0].word == "step" && parts[0].types[1].word == "lift" && parts[0].types[2].word == "slide" &&
@@ -70,14 +70,14 @@ static void TestTable()
               parts[0].types[6].word == "tap" && parts[0].types[7].word == "drag" && parts[0].types[8].word == "knee" &&
               parts[0].types[9].word == "kick" && parts[0].types[10].word == "heel_tap" &&
               parts[0].types[11].word == "rules");
-    // Story 10-9k: Arms > Jump, Land (the arms of a jump).
-    CHECK(parts[1].id == "arms" && parts[1].types.size() == 11);
-    if (parts[1].types.size() == 11)
+    // Story 10-9k: Arms > Jump, Land (the arms of a jump); story 10-9l: Arms > Slap.
+    CHECK(parts[1].id == "arms" && parts[1].types.size() == 12);
+    if (parts[1].types.size() == 12)
         CHECK(parts[1].types[2].word == "hand_pivot" && parts[1].types[3].word == "elbow" &&
               parts[1].types[4].word == "clap" && parts[1].types[5].word == "hand_body" &&
               parts[1].types[6].word == "swing" && parts[1].types[7].word == "punch" &&
               parts[1].types[8].word == "arm_jump" && parts[1].types[9].word == "arm_land" &&
-              parts[1].types[10].word == "rules");
+              parts[1].types[10].word == "slap" && parts[1].types[11].word == "rules");
     CHECK(TypeLabel("arms", "arm_jump") == "Jump" && TypeLabel("arms", "arm_land") == "Land");
     CHECK(parts[2].id == "body" && parts[2].label == "Body" && parts[2].has_category &&
           parts[2].category == AutoCategory::Body && parts[2].types.size() == 5);
@@ -124,7 +124,7 @@ static void TestEventRoleKey()
                                         "",     "heel", "toe",  "heel", "toe",               // slide
                                         "",     "heel", "toe",  "heel", "toe",               // pivot
                                         "hand", "hand",                                  // hand pivot
-                                        "hand", "hand"};                                 // 10-9k: arms jump, land
+                                        "hand", "hand", "hand"};                         // 10-9k: arms jump, land; 10-9l: slap
     for (int k = 0; k < kAutoKindCount; ++k)
         for (char side : {'L', 'R'}) CHECK(EventRoleKey(AutoB(static_cast<AutoKind>(k), side, "x")) == want[k]);
     Block unknown = AutoB(AutoKind::Heel, 'L', "x");
@@ -196,7 +196,8 @@ static void TestPartOfBlock()
                                         "legs.slide", "legs.slide", "legs.slide", "legs.slide", "legs.slide",
                                         "legs.pivot", "legs.pivot", "legs.pivot", "legs.pivot", "legs.pivot",
                                         "arms.hand_pivot", "arms.hand_pivot",
-                                        "arms.arm_jump", "arms.arm_land"};  // story 10-9k
+                                        "arms.arm_jump", "arms.arm_land",
+                                        "arms.slap"};  // story 10-9k, 10-9l
     for (int k = 0; k < kAutoKindCount; ++k) {
         const Block b = AutoB(static_cast<AutoKind>(k), 'L', "x");
         CHECK(PartOf(b) == want[k]);
@@ -752,7 +753,7 @@ static void TestMigration()
 static void TestRoleMenuKeys()
 {
     const std::vector<std::string> k = RoleMenuKeys({"ball", "left_paw", "right_paw", "left_heel", "left_up_leg", "toe", ""});
-    CHECK(k.size() == 16 && k[0] == "heel" && k[2] == "toe_end" && k[13] == "head" && k[14] == "ball" && k[15] == "paw");
+    CHECK(k.size() == 18 && k[0] == "heel" && k[2] == "toe_end" && k[15] == "head" && k[16] == "ball" && k[17] == "paw");
     CHECK(RoleKeyLabel("toe_end") == "toe end" && RoleKeyLabel("heel") == "heel");
     // The built-in list is exactly the keys events carry (RoleFamilyKey of every role).
     const std::vector<std::string> b = RoleMenuKeys({});

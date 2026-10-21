@@ -790,7 +790,10 @@ const std::vector<Role>& PhysicsRoles()
                                              // Story 10-9b: the body contacts' elbows and chest (or spine);
                                              // story 10-9d: the trunk and head (touches).
                                              Role::LeftElbow, Role::RightElbow, Role::Spine, Role::Chest, Role::Neck,
-                                             Role::Head};
+                                             Role::Head,
+                                             // Story 10-9l: the finger curl (Arms > Slap).
+                                             Role::LeftKnuckle, Role::RightKnuckle, Role::LeftFingertip,
+                                             Role::RightFingertip};
     return kRoles;
 }
 

@@ -17,7 +17,8 @@ set(RAV_AUTO_SRCS ../src/auto_detect.cpp ../src/auto_types.cpp ../src/auto_types
                   ../src/auto_types_whoosh.cpp  # 10-9c
                   ../src/heel_taps.cpp  # 10-9i
                   ../src/auto_types_arm_jump.cpp  # 10-9k
-                  ../src/scuff_peak.cpp)  # 10-9j
+                  ../src/scuff_peak.cpp  # 10-9j
+                  ../src/auto_types_slap.cpp)  # 10-9l
 
 enable_testing()
 
@@ -176,6 +177,12 @@ add_executable(arm_jump_test arm_jump_test.cpp ${RAV_AUTO_SRCS} ../src/motion_ph
                ../src/rule_record.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
 target_include_directories(arm_jump_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME arm_jump COMMAND arm_jump_test)
+
+# Story 10-9l -- slaps (src/hand_slap.h, auto_types_slap.cpp): the finger curl and the Slap type.
+add_executable(hand_slap_test hand_slap_test.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/motion_whoosh.cpp ../src/bone_events.cpp
+               ../src/rule_record.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
+target_include_directories(hand_slap_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME hand_slap COMMAND hand_slap_test)
 
 add_executable(bone_roles_test bone_roles_test.cpp ../src/bone_events.cpp)
 target_include_directories(bone_roles_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)

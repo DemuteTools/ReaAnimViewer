@@ -34,6 +34,9 @@ enum class Role : int {
     // The toe tips, the arms, the spine and the head.
     LeftToeEnd, RightToeEnd, LeftClavicle, RightClavicle, LeftShoulder, RightShoulder, LeftElbow, RightElbow,
     LeftHand, RightHand, Spine, Chest, Neck, Head,
+    // Story 10-9l: one finger per hand (the middle, else the index, else the ring finger): its
+    // knuckle (the base of the finger) and its tip, for the finger curl (Arms > Slap).
+    LeftKnuckle, RightKnuckle, LeftFingertip, RightFingertip,
     Count
 };
 
@@ -63,6 +66,10 @@ inline const char* RoleName(Role r)
     case Role::Chest: return "chest";
     case Role::Neck: return "neck";
     case Role::Head: return "head";
+    case Role::LeftKnuckle: return "left knuckle (finger base)";
+    case Role::RightKnuckle: return "right knuckle (finger base)";
+    case Role::LeftFingertip: return "left fingertip";
+    case Role::RightFingertip: return "right fingertip";
     default: return "?";
     }
 }
@@ -96,6 +103,10 @@ inline const char* RoleKey(Role r)
     case Role::Chest: return "chest";
     case Role::Neck: return "neck";
     case Role::Head: return "head";
+    case Role::LeftKnuckle: return "left_knuckle";
+    case Role::RightKnuckle: return "right_knuckle";
+    case Role::LeftFingertip: return "left_fingertip";
+    case Role::RightFingertip: return "right_fingertip";
     default: return "";
     }
 }
@@ -148,9 +159,11 @@ inline char RoleSide(Role r)
 {
     switch (r) {
     case Role::LeftHeel: case Role::LeftToe: case Role::LeftKnee: case Role::LeftUpLeg: case Role::LeftToeEnd:
-    case Role::LeftClavicle: case Role::LeftShoulder: case Role::LeftElbow: case Role::LeftHand: return 'L';
+    case Role::LeftClavicle: case Role::LeftShoulder: case Role::LeftElbow: case Role::LeftHand:
+    case Role::LeftKnuckle: case Role::LeftFingertip: return 'L';
     case Role::RightHeel: case Role::RightToe: case Role::RightKnee: case Role::RightUpLeg: case Role::RightToeEnd:
-    case Role::RightClavicle: case Role::RightShoulder: case Role::RightElbow: case Role::RightHand: return 'R';
+    case Role::RightClavicle: case Role::RightShoulder: case Role::RightElbow: case Role::RightHand:
+    case Role::RightKnuckle: case Role::RightFingertip: return 'R';
     default: return 0;
     }
 }
@@ -173,6 +186,8 @@ inline const char* RolePart(Role r)
     case Role::Chest: return "chest";
     case Role::Neck: return "neck";
     case Role::Head: return "head";
+    case Role::LeftKnuckle: case Role::RightKnuckle: return "knuckle";
+    case Role::LeftFingertip: case Role::RightFingertip: return "fingertip";
     default: return "?";
     }
 }
@@ -184,7 +199,9 @@ inline RoleGroup RoleGroupOf(Role r)
 {
     switch (r) {
     case Role::LeftClavicle: case Role::RightClavicle: case Role::LeftShoulder: case Role::RightShoulder:
-    case Role::LeftElbow: case Role::RightElbow: case Role::LeftHand: case Role::RightHand: return RoleGroup::Arms;
+    case Role::LeftElbow: case Role::RightElbow: case Role::LeftHand: case Role::RightHand:
+    case Role::LeftKnuckle: case Role::RightKnuckle: case Role::LeftFingertip: case Role::RightFingertip:
+        return RoleGroup::Arms;
     case Role::Hips: case Role::Spine: case Role::Chest: case Role::Neck: case Role::Head: return RoleGroup::Body;
     default: return RoleGroup::Legs;
     }
@@ -207,6 +224,7 @@ inline const std::vector<Role>& RolesInListOrder()
     static const std::vector<Role> kOrder = {
         Role::LeftHeel, Role::LeftToe, Role::LeftToeEnd, Role::RightHeel, Role::RightToe, Role::RightToeEnd,
         Role::LeftKnee, Role::RightKnee, Role::LeftUpLeg, Role::RightUpLeg,
+        Role::LeftFingertip, Role::RightFingertip, Role::LeftKnuckle, Role::RightKnuckle,  // story 10-9l
         Role::LeftHand, Role::RightHand, Role::LeftElbow, Role::RightElbow, Role::LeftShoulder, Role::RightShoulder,
         Role::LeftClavicle, Role::RightClavicle,
         Role::Hips, Role::Spine, Role::Chest, Role::Neck, Role::Head,
@@ -284,6 +302,22 @@ inline const std::vector<std::vector<RoleCandidate>>& RoleCandidates()
          {"spine_04", kNear}, {"spine_02", kNear}, {"spine_01", kNear}},
         {{"neck", kOwn}, {"neck_01", kOwn}},              // Neck
         {{"head", kOwn}},                                 // Head
+        // Story 10-9l: the middle finger's base (Mixamo LeftHandMiddle1, Unreal middle_01_l), else
+        // the index's, else the ring finger's; its tip (Mixamo's end bone LeftHandMiddle4; Unreal
+        // has none: its last joint middle_03_l stands in), else a nearer joint of the same finger,
+        // then the same for the index and the ring finger.
+        {{"lefthandmiddle1", kOwn}, {"middle_01_l", kOwn}, {"lefthandindex1", kNear}, {"index_01_l", kNear},
+         {"lefthandring1", kNear}, {"ring_01_l", kNear}},  // LeftKnuckle
+        {{"righthandmiddle1", kOwn}, {"middle_01_r", kOwn}, {"righthandindex1", kNear}, {"index_01_r", kNear},
+         {"righthandring1", kNear}, {"ring_01_r", kNear}},  // RightKnuckle
+        {{"lefthandmiddle4", kOwn}, {"lefthandmiddle3", kNear}, {"middle_03_l", kNear}, {"lefthandmiddle2", kNear},
+         {"middle_02_l", kNear}, {"lefthandindex4", kNear}, {"lefthandindex3", kNear}, {"index_03_l", kNear},
+         {"lefthandindex2", kNear}, {"index_02_l", kNear}, {"lefthandring4", kNear}, {"lefthandring3", kNear},
+         {"ring_03_l", kNear}, {"lefthandring2", kNear}, {"ring_02_l", kNear}},  // LeftFingertip
+        {{"righthandmiddle4", kOwn}, {"righthandmiddle3", kNear}, {"middle_03_r", kNear}, {"righthandmiddle2", kNear},
+         {"middle_02_r", kNear}, {"righthandindex4", kNear}, {"righthandindex3", kNear}, {"index_03_r", kNear},
+         {"righthandindex2", kNear}, {"index_02_r", kNear}, {"righthandring4", kNear}, {"righthandring3", kNear},
+         {"ring_03_r", kNear}, {"righthandring2", kNear}, {"ring_02_r", kNear}},  // RightFingertip
     };
     return kTable;
 }

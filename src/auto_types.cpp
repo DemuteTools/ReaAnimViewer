@@ -207,6 +207,16 @@ void AutoLanesHandOnBody(const AutoLaneArgs& args, std::vector<AutoLane>& out, s
 std::vector<Role> AutoRolesClap(char side);
 std::vector<Role> AutoRolesHandOnBody(char side);
 
+// auto_types_slap.cpp (story 10-9l)
+std::vector<PhysicsEvent> AutoSourceSlapContact(const PhysicsAnalysis& a, const PhysicsParams& p);
+std::vector<PhysicsEvent> AutoSourceSlapBody(const PhysicsAnalysis& a, const PhysicsParams& p);
+void AutoPartsSlap(bool separate, const std::vector<int>& role_to_bone, std::vector<std::string>& out);
+bool AutoMatchSlapContact(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchSlapBody(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMissingSlap(char side, const std::vector<int>& role_to_bone);
+void AutoLanesSlap(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+std::vector<Role> AutoRolesSlap(char side);
+
 // auto_types_whoosh.cpp (story 10-9c: kick, swing, punch)
 std::vector<PhysicsEvent> AutoSourceWhoosh(const PhysicsAnalysis& a, const PhysicsParams& p);
 std::vector<PhysicsEvent> AutoSourceWhooshStart(const PhysicsAnalysis& a, const PhysicsParams& p);
@@ -390,6 +400,20 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "finds (ticked or not). With Swing ticked, it replaces that hand's Swing there.",
      "arm_land", {{&P::arm_land_speed, S::Divide}, {}}, &AutoPartsArmJump, false, false, false, true, false, -1,
      static_cast<int>(T::Swing), true, 0u, 0.5},  // conf_scale: the hand to the floor 3.7-3.9 over 3.0
+    // Story 10-9l: a hand contact (Grab's) or a touch on the body (Hand on body's) whose fingers
+    // stay extended (hand_slap.h). Higher sensitivity = the slower contacts and touches count, as
+    // Grab's and Hand on body's (so a slap and the grab / touch it replaces line up). It replaces
+    // that hand's Grab (`replaces`) and Hand on body (`replaces_in_span`: its span is its time) at
+    // the same contact. Never raised by Detect: most clips hold no slap, a raise would turn a
+    // slow resting hand into one.
+    {T::Slap, "Slap", "Slap", C::Arms,
+     "A marker where a flat hand hits something (the floor, a wall, the body) and the fingers\n"
+     "stay extended: Slap L / Slap R. A hand whose fingers close after the contact is a Grab.\n"
+     "With Grab or Hand on body ticked, it replaces that hand's grab or hand on body there.\n"
+     "Needs finger bones that move in the clip (a knuckle and a fingertip per hand):\n"
+     "without them, a slap cannot be told apart and the contacts stay Grabs.",
+     "slap", {{&P::hand_contact_speed, S::Times}, {&P::body_min_speed, S::Divide}}, &AutoPartsSlap, false, false, false,
+     true, false, static_cast<int>(T::Grab), static_cast<int>(T::HandOnBody), true},
 };
 
 // ---- Strength levels (story 10-10b) ------------------------------------------------------------
@@ -448,6 +472,9 @@ constexpr AutoStrengthCuts kStrengthRows[] = {
     // 15 on 9 clips: wp33 4.0, wp67 5.07 leg/s; Standing Jump02's arms coming down 3.1-3.3 Soft,
     // Jump Attack's strike on landing 8.0 and the vault's 9.2 Hard.
     {T::ArmLand, 4.0, 5.1},
+    // Story 10-9l: 7 on 5 clips (the crawls' hands 1.04-1.44, Standing Jump02 1.9, the AirPunch's
+    // landing on the hands 2.97 and 8.21 leg/s; the hand's approach, as Grab): wp33 1.44, wp67 2.97.
+    {T::Slap, 1.4, 3.0},
 };
 
 // ---- Kinds -------------------------------------------------------------------------------------
@@ -651,6 +678,10 @@ constexpr AutoKindInfo kKindRows[] = {
     {K::ArmLand, "arm_land", T::ArmLand, "Arms Land", {0x2E6EA0, 0xA06E2E}, kNo, false, false, "hand", K::ArmLand,
      {{"landing arm", &AutoSourceArmLand, &AutoMatchSwing}}, &AutoMissingArmJump, &AutoLanesArmLand,
      &AutoRolesWhooshHand},
+    // Story 10-9l: the slap, on the hand (sky blue / copper).
+    {K::Slap, "slap", T::Slap, "Slap", {0x46B4DC, 0xDC7846}, kNo, false, false, "hand", K::Slap,
+     {{"contact", &AutoSourceSlapContact, &AutoMatchSlapContact}, {"on body", &AutoSourceSlapBody, &AutoMatchSlapBody}},
+     &AutoMissingSlap, &AutoLanesSlap, &AutoRolesSlap},
 };
 
 // One row per enum value, in enum order.

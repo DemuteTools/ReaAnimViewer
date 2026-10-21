@@ -1140,6 +1140,36 @@ PhysicsAnalysis AnalyseTrack(const std::vector<BoneTrack>& rt, const PhysicsPara
     } else {
         a.hips_missing = std::string("no bone for ") + RoleName(Role::Hips);
     }
+    // Story 10-9f: the hip line's yaw (left up leg -> right up leg, seen from above), for the
+    // spins. Unwrapped, not smoothed (SpinEvents smooths it after a loop's seams are joined).
+    {
+        const BoneTrack* l = track(Role::LeftUpLeg);
+        const BoneTrack* r = track(Role::RightUpLeg);
+        if (l && r) {
+            a.hips_yaw_deg.assign(n, 0.0);
+            a.hips_yaw_valid.assign(n, 0);
+            double prev = 0.0, prev_raw = 0.0;
+            bool   have = false;
+            for (size_t i = 0; i < n; ++i) {
+                const double dx = r->pos[i].x - l->pos[i].x, dy = r->pos[i].y - l->pos[i].y,
+                             dz = r->pos[i].z - l->pos[i].z;
+                const double h = std::hypot(dx, dz);
+                if (h > 0.0 && h >= 0.5 * std::sqrt(h * h + dy * dy)) {
+                    const double raw = std::atan2(-dz, dx) * 180.0 / kPi;
+                    double       d = have ? raw - prev_raw : 0.0;
+                    while (d > 180.0) d -= 360.0;
+                    while (d < -180.0) d += 360.0;
+                    prev = have ? prev + d : raw;
+                    prev_raw = raw;
+                    have = true;
+                    a.hips_yaw_valid[i] = 1;
+                }
+                a.hips_yaw_deg[i] = prev;
+            }
+        } else {
+            a.spin_missing = std::string("no bone for ") + RoleName(l ? Role::RightUpLeg : Role::LeftUpLeg);
+        }
+    }
 
     for (int s = 0; s < 2; ++s) {
         FootTrack& f = a.foot[s];
@@ -2040,6 +2070,8 @@ constexpr PhysicsKindRow kPhysicsKindRows[] = {
     {PhysicsKind::Jump, "jump", PhyPart::None, false, false},
     {PhysicsKind::Land, "land", PhyPart::None, false, false},
     {PhysicsKind::Jolt, "jolt", PhyPart::None, false, false},  // story 10-9g: "PHY B jolt 1.4" (g)
+    {PhysicsKind::Spin, "spin", PhyPart::None, true, true},  // story 10-9f
+    {PhysicsKind::SpinEnd, "spin end", PhyPart::None, true, true},
 };
 constexpr bool PhysicsKindRowsInOrder()
 {
@@ -2098,6 +2130,8 @@ std::string PhysicsSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEv
         case PhysicsKind::Jump:
         case PhysicsKind::Land: break;  // JumpSummary's
         case PhysicsKind::Jolt: break;  // story 10-9g: not a foot event
+        case PhysicsKind::Spin:
+        case PhysicsKind::SpinEnd: break;  // story 10-9f: the Spin type's (auto_types_spin.cpp)
         }
     }
     const std::string vertical = a.ground_velocity.y != 0.0 ? Format(", vertical %+.2f m/s", a.ground_velocity.y) : "";

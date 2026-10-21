@@ -109,7 +109,7 @@ void TestRowsComplete()
 }
 
 // The categories' types: each type once, under its category, in enum order; the sound parts list
-// the same types. Story 10-9-1 / 10-9g: every category has types (Body: Jolt).
+// the same types. Story 10-9-1: every category has types (Body: Jolt, story 10-9g; Spin, story 10-9f).
 void TestCategoryTypes()
 {
     std::vector<int> seen(kAutoTypeCount, 0);
@@ -153,17 +153,18 @@ void TestKnownValues()
     CHECK(std::string(AutoTypeRow(AutoType::HandPivot).undo_label) == "Arms Pivot scuff");
     CHECK(std::string(AutoTypeWord(AutoType::LiftOff)) == "lift");
     CHECK(std::string(AutoCategoryLabel(AutoCategory::Arms)) == "Arms");
-    // Story 10-9-1: the categories' labels and sound parts; story 10-9g: Body holds Jolt.
+    // Story 10-9-1: the categories' labels and sound parts; Body holds Jolt (10-9g) and Spin (10-9f).
     CHECK(std::string(AutoCategoryLabel(AutoCategory::Legs)) == "Legs");
     CHECK(std::string(AutoCategoryRow(AutoCategory::Legs).sound_part) == "legs");
     CHECK(std::string(AutoCategoryRow(AutoCategory::Arms).sound_part) == "arms");
     CHECK(std::string(AutoCategoryLabel(AutoCategory::Body)) == "Body");
     CHECK(std::string(AutoCategoryRow(AutoCategory::Body).sound_part) == "body");
-    CHECK(AutoTypesOf(AutoCategory::Body) == std::vector<AutoType>({AutoType::Jolt}));
+    CHECK(AutoTypesOf(AutoCategory::Body) == std::vector<AutoType>({AutoType::Jolt, AutoType::Spin}));
     {
         const BodyPart* body = FindBodyPart("body");
         CHECK(body && body->has_category && body->category == AutoCategory::Body && body->label == "Body" &&
-              body->types.size() == 2 && body->types[0].word == "jolt" && body->types[1].word == "rules");
+              body->types.size() == 3 && body->types[0].word == "jolt" && body->types[1].word == "spin" &&
+              body->types[2].word == "rules");
     }
     CHECK(AutoKindRow(AutoKind::PivotHeel).degrees && !AutoKindRow(AutoKind::SlideHeel).degrees);
     CHECK(AutoKindRow(AutoKind::SlideToeLongest).scuff == ScuffParts::Longest && !AutoKindRow(AutoKind::SlideToeLongest).scuff_heel);
@@ -175,7 +176,7 @@ void TestKnownValues()
     // 10-9a-3: on the foot (no type is sideless), Combined / Separate on lift-off, jump and land.
     for (int t = 0; t < kAutoTypeCount; ++t) {
         const AutoType tt = static_cast<AutoType>(t);
-        CHECK(AutoTypeRow(tt).sideless == (tt == AutoType::Jolt));  // story 10-9g
+        CHECK(AutoTypeRow(tt).sideless == (tt == AutoType::Jolt || tt == AutoType::Spin));  // stories 10-9g, 10-9f
         CHECK(AutoTypeRow(tt).part_split == (tt == AutoType::LiftOff || tt == AutoType::Jump || tt == AutoType::Land));
     }
     CHECK(AutoCategoryOf(AutoType::Jump) == AutoCategory::Legs && AutoCategoryOf(AutoType::Land) == AutoCategory::Legs);
@@ -279,6 +280,8 @@ void TestRoles()
                 want.push_back(Role::Hips);
                 for (char fs : {'L', 'R'})
                     for (int q = 0; q < kFootPartCount; ++q) want.push_back(FootPartRole(fs, q));
+            } else if (r.type == AutoType::Spin) {  // story 10-9f: the hips and the hip line
+                want = {Role::Hips, Role::LeftUpLeg, Role::RightUpLeg};
             } else if (side == 'B') {
                 continue;  // a sided kind has no B block
             } else if (AutoCategoryOf(r.type) == AutoCategory::Arms) {
@@ -298,7 +301,7 @@ void TestRowInvariants()
         const AutoKindInfo& r = AutoKindRow(static_cast<AutoKind>(k));
         if (r.scuff_heel) CHECK(r.scuff != ScuffParts::Combined);
         if (r.scuff != ScuffParts::Combined) CHECK(r.type == AutoType::Slide || r.type == AutoType::Pivot);
-        CHECK(r.degrees == (r.type == AutoType::Pivot || r.type == AutoType::HandPivot));
+        CHECK(r.degrees == (r.type == AutoType::Pivot || r.type == AutoType::HandPivot || r.type == AutoType::Spin));
         CHECK((std::string(r.role_key) == "hand") == (AutoCategoryOf(r.type) == AutoCategory::Arms));
         // Story 10-9a: a sideless kind has one colour and no role key (no foot, no hand).
         if (AutoTypeRow(r.type).sideless) CHECK(r.color[0] == r.color[1] && std::string(r.role_key).empty());

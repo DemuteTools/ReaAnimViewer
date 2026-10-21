@@ -10,7 +10,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_compile_definitions(RAV_HOST_TEST)
 # Story 10-9-0: the auto detection and its types' table (src/auto_types*.cpp), linked together.
 set(RAV_AUTO_SRCS ../src/auto_detect.cpp ../src/auto_types.cpp ../src/auto_types_legs.cpp ../src/auto_types_arms.cpp
-                  ../src/auto_types_jolt.cpp)
+                  ../src/auto_types_jolt.cpp ../src/auto_types_spin.cpp)
 
 enable_testing()
 
@@ -126,6 +126,12 @@ add_executable(auto_types_test auto_types_test.cpp ${RAV_AUTO_SRCS} ../src/motio
                ../src/sound_record.cpp ../src/sound_zones.cpp)
 target_include_directories(auto_types_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME auto_types COMMAND auto_types_test)
+
+# Story 10-9f -- the Spin type (src/auto_types_spin.cpp).
+add_executable(auto_spin_test auto_spin_test.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/bone_events.cpp
+               ../src/rule_record.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
+target_include_directories(auto_spin_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME auto_spin COMMAND auto_spin_test)
 
 add_executable(bone_roles_test bone_roles_test.cpp ../src/bone_events.cpp)
 target_include_directories(bone_roles_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)

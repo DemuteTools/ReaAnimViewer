@@ -54,6 +54,10 @@
 //              landing where the centre of mass's acceleration peaks above the sensitivity's
 //              threshold (motion_physics.h JoltEvents). Sideless ("Jolt", side B). Strength = the
 //              peak in g.
+//   spin       (story 10-9f) the body turns about the vertical: the hip line's yaw rate above
+//              15 deg/s starts it, below 5 deg/s (or turning back) ends it, kept when it sweeps
+//              45 deg at least. Sideless: two blocks, "Spin" at its start (kind spin) and
+//              "Spin End" at its end (kind spin_end). Strength = the sweep (degrees).
 // Each ticked type x side is one block of the item (Block::auto_type, auto_side, sens), with no
 // condition: the rule engine never fires it. Story 10-9a: a sideless type (its type row's
 // `sideless`; none since story 10-9a-3, kept for the Body types) has one block per kind, saved
@@ -94,8 +98,8 @@ namespace rav {
 // ---- Types and block kinds ---------------------------------------------------------------------
 
 // The types the section ticks.
-enum class AutoType : int { Step = 0, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land, Jolt };
-constexpr int kAutoTypeCount = 10;
+enum class AutoType : int { Step = 0, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land, Jolt, Spin };
+constexpr int kAutoTypeCount = 11;  // story 10-9g: Jolt; story 10-9f: Spin (Body, sideless)
 // "Step", "Lift-off", "Slide scuff", "Pivot scuff", "Grab", "Release", "Pivot scuff" (the hand's),
 // "Jump", "Land", "Jolt" (story 10-9g, Body)
 const char* AutoTypeLabel(AutoType t);
@@ -118,9 +122,10 @@ const char*  AutoCategoryLabel(AutoCategory c);       // "Legs", "Arms", "Body"
 enum class AutoKind : int {
     Step = 0, Heel, Toe, Lift, Slide, Pivot, Grab, Release, HandPivot, HandPivotAny,
     SlideHeel, SlideToe, PivotHeel, PivotToe, SlideHeelLongest, SlideToeLongest, PivotHeelLongest, PivotToeLongest,
-    Jump, Land, LiftHeel, LiftToe, JumpHeel, JumpToe, LandHeel, LandToe, Jolt
+    Jump, Land, LiftHeel, LiftToe, JumpHeel, JumpToe, LandHeel, LandToe, Jolt,
+    Spin, SpinEnd  // story 10-9f: a spin's start ("Spin") and end ("Spin End")
 };
-constexpr int kAutoKindCount = 27;
+constexpr int kAutoKindCount = 29;
 // "step", "heel", "toe", "lift", "slide", "pivot", "grab", "release", "hand_pivot", "hand_pivot_any",
 // "slide_heel", "slide_toe", "pivot_heel", "pivot_toe", "slide_heel_longest", "slide_toe_longest",
 // "pivot_heel_longest", "pivot_toe_longest", "jump", "land", "lift_heel", "lift_toe", "jump_heel",

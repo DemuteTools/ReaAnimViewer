@@ -430,7 +430,7 @@ static void TestScopes()
     CHECK(OtherKitsServing(st, "legs", "hero").size() == 1 && OtherKitsServing(st, "legs", "hero")[0]->uid == "cr" &&
           OtherKitsServing(st, "arms", "").empty());
     CHECK(KitPartWhat("legs").find("and the bone rules on foot roles") != std::string::npos);
-    CHECK(KitPartWhat("body") == "Jolt and the bone rules on hips and spine roles");  // story 10-9g
+    CHECK(KitPartWhat("body") == "Jolt and Spin and the bone rules on hips and spine roles");  // stories 10-9g, 10-9f
     // The kit offer: only the parts free at the Project level, and once.
     st.libraries.back().kit = {"legs", "body"};
     CHECK(KitOfferParts(st, st.libraries.back()) == std::vector<std::string>({"body"}));

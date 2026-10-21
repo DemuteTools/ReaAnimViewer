@@ -126,6 +126,14 @@ bool AutoMatchJolt(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
 bool AutoMissingJolt(char side, const std::vector<int>& role_to_bone);
 void AutoLanesJolt(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
 std::vector<Role> AutoRolesJolt(char side);
+// auto_types_spin.cpp (story 10-9f)
+std::vector<PhysicsEvent> AutoSourceSpin(const PhysicsAnalysis& a, const PhysicsParams& p);
+void AutoPartsSpin(bool separate, const std::vector<int>& role_to_bone, std::vector<std::string>& out);
+bool AutoMatchSpin(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchSpinEnd(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMissingSpin(char side, const std::vector<int>& role_to_bone);
+void AutoLanesSpin(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+std::vector<Role> AutoRolesSpin(char side);
 
 namespace {
 
@@ -190,6 +198,12 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "where the body's acceleration peaks above the sensitivity's threshold.\n"
      "Raise the sensitivity for softer steps, lower it for only the hard impacts.",
      "jolt", {{&P::jolt_min_g, S::Divide}, {}}, &AutoPartsJolt, true, false, false, true},
+    // Story 10-9f: the Body's first type, sideless (a turn of the whole body has no foot).
+    // Higher sensitivity = a smaller turn counts (the sweep / f).
+    {T::Spin, "Spin", "Spin", C::Body,
+     "A spin of the whole body (the hips turning about the vertical):\n"
+     "Spin where it starts turning, Spin End where it stops (45 deg or more).",
+     "spin", {{&P::spin_min_deg, S::Divide}, {}}, &AutoPartsSpin, true},
 };
 
 // ---- Kinds -------------------------------------------------------------------------------------
@@ -272,6 +286,11 @@ constexpr AutoKindInfo kKindRows[] = {
     // Story 10-9g: the gear jolt (one colour, no role key), strength in g.
     {K::Jolt, "jolt", T::Jolt, "Jolt", {0xC88C3C, 0xC88C3C}, kNo, false, false, "", K::Jolt,
      {{"impact", &AutoSourceJolt, &AutoMatchJolt}}, &AutoMissingJolt, &AutoLanesJolt, &AutoRolesJolt, "g"},
+    // Story 10-9f: a spin's start and its end (sideless: color[0]; the end a shade lighter).
+    {K::Spin, "spin", T::Spin, "Spin", {0xB45FDD, 0xB45FDD}, kNo, false, true, "", K::Spin,
+     {{"hip turn", &AutoSourceSpin, &AutoMatchSpin}}, &AutoMissingSpin, &AutoLanesSpin, &AutoRolesSpin},
+    {K::SpinEnd, "spin_end", T::Spin, "Spin End", {0xD29FEE, 0xD29FEE}, kNo, false, true, "", K::SpinEnd,
+     {{"hip turn", &AutoSourceSpin, &AutoMatchSpinEnd}}, &AutoMissingSpin, &AutoLanesSpin, &AutoRolesSpin},
 };
 
 // One row per enum value, in enum order.

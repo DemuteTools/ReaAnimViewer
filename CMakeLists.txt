@@ -196,6 +196,7 @@ if(WIN32)
             src/auto_types_legs.cpp
             src/auto_types_arms.cpp
             src/auto_types_jolt.cpp  # 10-9g
+            src/auto_types_spin.cpp  # 10-9f
             src/detection_measure.cpp
             src/rule_record.cpp
             src/preset_store.cpp

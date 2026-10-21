@@ -878,7 +878,7 @@ int main()
         for (int t = 0; t < kAutoTypeCount; ++t) {
             const bool hand = t == static_cast<int>(AutoType::Grab) || t == static_cast<int>(AutoType::Release) ||
                               t == static_cast<int>(AutoType::HandPivot);
-            const bool body = t == static_cast<int>(AutoType::Jolt);  // story 10-9g
+            const bool body = t == static_cast<int>(AutoType::Jolt) || t == static_cast<int>(AutoType::Spin);  // 10-9g, 10-9f
             CHECK(AutoCategoryOf(static_cast<AutoType>(t)) ==
                   (hand ? AutoCategory::Arms : body ? AutoCategory::Body : AutoCategory::Legs));
         }

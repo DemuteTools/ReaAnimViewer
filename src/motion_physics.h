@@ -491,6 +491,17 @@ struct PhysicsParams {
     double     jolt_after_s = 0.150;
     double     jolt_smooth_s = 0.020;
     double     jolt_merge_s = 0.150;
+    // Story 10-9f: the body spins (auto_types_spin.cpp). The turn segmentation of gait studies
+    // (R[1][12]): the hip line's yaw rate above spin_start_dps starts a spin, it runs while the
+    // rate stays at spin_end_dps or more in the same direction, and it is kept when it sweeps
+    // spin_min_deg at least (the sensitivity divides the start rate and the sweep). The yaw is
+    // smoothed over spin_smooth_s (Gaussian sigma) first: measured on the fixtures, 50 ms keeps
+    // the timing of Hip Hop Dancing's four turns (98-111 deg) and drops Climbing Up Wall's 46 deg
+    // pelvis twist (no smoothing: 46 deg); a walk's hip sway sweeps 21 deg at most.
+    double     spin_start_dps = 15.0;
+    double     spin_end_dps = 5.0;
+    double     spin_min_deg = 45.0;
+    double     spin_smooth_s = 0.050;
 };
 
 // One contact of a part, in samples [start, end).
@@ -583,6 +594,13 @@ struct PhysicsAnalysis {
     // push-off jumps' running check. Empty with hips_vy.
     std::vector<double>      hips_vh;
     std::string              hips_missing;
+    // Story 10-9f: the hip line's yaw (left up leg -> right up leg seen from above, degrees,
+    // unwrapped, not smoothed; a sample where that line is under half its length from above holds
+    // the previous yaw and is flagged invalid), for the spins. Empty without both up legs
+    // (spin_missing says why).
+    std::vector<double>      hips_yaw_deg;
+    std::vector<char>        hips_yaw_valid;
+    std::string              spin_missing;
     // The clip inside the analysed track (story 10-8i): looping, the track is three cycles and
     // the clip is its samples [window_first, window_first + window_samples); otherwise 0 and
     // `samples`. Per-sample data (PartTrack...) is indexed in the analysed track; the event
@@ -606,8 +624,10 @@ std::vector<BoneTrack> PhysicsRoleTracks(const std::vector<int>& bone_of_role,
 // hands' rot_world are read (one per sample, else ignored).
 PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& role_tracks, const PhysicsParams& p = {});
 
-enum class PhysicsKind { Step, FootStep, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land, Jolt };
-constexpr int kPhysicsKindCount = 11;  // story 10-9-0: PhysicsMarkerName's rows follow the enum
+enum class PhysicsKind { Step, FootStep, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land, Jolt, Spin, SpinEnd };
+// Story 10-9f: Spin / SpinEnd, a spin's start / end (side B, start_s / end_s its span, strength =
+// its sweep in degrees; auto_types_spin.cpp).
+constexpr int kPhysicsKindCount = 13;  // story 10-9-0: PhysicsMarkerName's rows follow the enum
 
 struct PhysicsEvent {
     PhysicsKind kind = PhysicsKind::Step;

@@ -74,6 +74,11 @@ struct AutoTypeInfo {
     // Story 10-9e: Tap and Drag too (a walk's toe skims drag from 67 %). Story 10-9d: Clap and
     // Hand on body too.
     bool            no_sens_raise = false;
+    // Story 10-9c: Peak / Start (AutoSettings::at_start): each kind has a twin whose row says
+    // `at_start` (same type, marker, colour, role key; its sound key the peak kind), Start making
+    // the twins (kick, swing, punch). The Peak / Start widget, the settings and the block kept
+    // across a switch follow the row.
+    bool            start_option = false;
     // Story 10-9e: the type whose events this type's events replace within kAutoReplaceS when both
     // are ticked (AutoEvents; story 10-9a: Land the steps, Jump the lift-offs), as an AutoType
     // value; -1 = none. `replaces_in_span`: another type replaced anywhere over the event's span
@@ -138,6 +143,9 @@ struct AutoKindInfo {
     // Story 10-9g: the strength's unit when it is neither leg/s nor degrees ("g": a jolt); its
     // speed is then 0 (no m/s). Null for the others.
     const char*       strength_unit = nullptr;
+    // Story 10-9c: a `start_option` type's kind that marks the motion's start (its sound key is
+    // its peak twin).
+    bool              at_start = false;
 };
 
 // The rows, by enum (a value out of range reads the first row).

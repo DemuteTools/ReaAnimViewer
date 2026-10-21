@@ -59,6 +59,8 @@
 //              (hand_touch.h): one marker, on the faster hand (Clap L / R).
 //   hand on body (story 10-9d) a hand lands at speed on the trunk, the head or a thigh, on that
 //              hand (Hand on body L / R). Strength = the closing speed (leg/s), both.
+//   swing      (story 10-9c) a hand's speed peak relative to the torso (Swing L / R).
+//   punch      (story 10-9c) the same, a straight thrust away from the shoulder (Punch L / R).
 //   Body
 //   jolt       (story 10-9g) an impact that shakes the gear and cloth: a foot step, a jump's
 //              landing or a body contact (a knee, a sit, a fall: 10-9b) where the centre of
@@ -68,6 +70,12 @@
 //              15 deg/s starts it, below 5 deg/s (or turning back) ends it, kept when it sweeps
 //              45 deg at least. Sideless: two blocks, "Spin" at its start (kind spin) and
 //              "Spin End" at its end (kind spin_end). Strength = the sweep (degrees).
+//   Story 10-9c: kick (Legs) is a foot's speed peak relative to the torso, raised off the ground
+//   (Kick L / R; Separate: on the part fastest at the peak, Kick Heel L / Kick Toe L). Kick, swing
+//   and punch put their marker at the peak, or at the motion's start (AutoSettings::at_start, the
+//   types whose row says `start_option`: kinds kick_start, swing_start... sharing the peak kind's
+//   marker, colour and sound key; a block switched between them keeps its place, marker and
+//   edits). Strength = the peak speed (leg/s); see WhooshEvents (motion_physics.h).
 // Each ticked type x side is one block of the item (Block::auto_type, auto_side, sens), with no
 // condition: the rule engine never fires it. Story 10-9a: a sideless type (its type row's
 // `sideless`; none since story 10-9a-3, kept for the Body types) has one block per kind, saved
@@ -111,13 +119,14 @@ namespace rav {
 // ---- Types and block kinds ---------------------------------------------------------------------
 
 // The types the section ticks (story 10-9e appends Tap and Drag, story 10-9b Knee, Elbow, Sit, Fall,
-// story 10-9d Clap and Hand on body).
+// story 10-9d Clap and Hand on body, story 10-9c Kick, Swing and Punch).
 enum class AutoType : int { Step = 0, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land, Jolt, Spin, Tap, Drag,
-                            Knee, Elbow, Sit, Fall, Clap, HandOnBody };
-constexpr int kAutoTypeCount = 19;  // story 10-9g: Jolt; 10-9f: Spin (Body, sideless); 10-9e: Tap, Drag; 10-9b; 10-9d
+                            Knee, Elbow, Sit, Fall, Clap, HandOnBody, Kick, Swing, Punch };
+constexpr int kAutoTypeCount = 22;  // story 10-9g: Jolt; 10-9f: Spin (Body, sideless); 10-9e: Tap, Drag; 10-9b; 10-9d; 10-9c
 // "Step", "Lift-off", "Slide scuff", "Pivot scuff", "Grab", "Release", "Pivot scuff" (the hand's),
 // "Jump", "Land", "Jolt" (story 10-9g, Body), "Spin" (story 10-9f, Body), "Tap", "Drag";
-// story 10-9b: "Knee", "Elbow", "Sit", "Fall"; story 10-9d: "Clap", "Hand on body"
+// story 10-9b: "Knee", "Elbow", "Sit", "Fall"; story 10-9d: "Clap", "Hand on body"; story 10-9c:
+// "Kick", "Swing", "Punch"
 const char* AutoTypeLabel(AutoType t);
 
 // Story 10-9-0: every type, category and kind has one descriptor row in auto_types.cpp (labels,
@@ -143,14 +152,17 @@ enum class AutoKind : int {
     Spin, SpinEnd,  // story 10-9f: a spin's start ("Spin") and end ("Spin End")
     Tap, Drag,      // story 10-9e
     Knee, Elbow, Sit, Fall,  // story 10-9b
-    Clap, HandOnBody         // story 10-9d
+    Clap, HandOnBody,        // story 10-9d
+    // Story 10-9c: kick (combined, heel, toe), then the same at the start; swing, punch and theirs.
+    Kick, KickHeel, KickToe, KickStart, KickHeelStart, KickToeStart, Swing, SwingStart, Punch, PunchStart
 };
-constexpr int kAutoKindCount = 37;
+constexpr int kAutoKindCount = 47;
 // "step", "heel", "toe", "lift", "slide", "pivot", "grab", "release", "hand_pivot", "hand_pivot_any",
 // "slide_heel", "slide_toe", "pivot_heel", "pivot_toe", "slide_heel_longest", "slide_toe_longest",
 // "pivot_heel_longest", "pivot_toe_longest", "jump", "land", "lift_heel", "lift_toe", "jump_heel",
 // "jump_toe", "land_heel", "land_toe", "jolt" (story 10-9g), "spin", "spin_end" (10-9f), "tap", "drag",
-// "knee", "elbow", "sit", "fall" (10-9b), "clap", "hand_body" (10-9d)
+// "knee", "elbow", "sit", "fall" (10-9b), "clap", "hand_body" (10-9d), "kick", "kick_heel", "kick_toe",
+// "kick_start", "kick_heel_start", "kick_toe_start", "swing", "swing_start", "punch", "punch_start" (10-9c)
 const char* AutoKindWord(AutoKind k);
 bool AutoKindFromWord(const std::string& w, AutoKind* out);
 AutoType AutoTypeOfKind(AutoKind k);
@@ -215,6 +227,9 @@ struct AutoSettings {
     // Story 10-9a-3: Separate (heel / toe blocks) for the types whose row says `part_split`
     // (lift-off, jump, land), by AutoType; ignored for the others.
     bool             separate_parts[kAutoTypeCount] = {};
+    // Story 10-9c: the marker at the motion's start, not its peak, for the types whose row says
+    // `start_option` (kick, swing, punch), by AutoType; ignored for the others.
+    bool             at_start[kAutoTypeCount] = {};
 };
 bool operator==(const AutoTypeSettings& a, const AutoTypeSettings& b);
 bool operator==(const AutoSettings& a, const AutoSettings& b);

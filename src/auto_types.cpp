@@ -28,6 +28,11 @@
 //     settings and the remap of edits follow the row.
 //   - a type whose events stand for another type's near them (Land the steps, Jump the lift-offs,
 //     story 10-9e Tap its foot's steps): `replaces` (and `replaces_own_side`) on its row.
+//   - a Peak / Start choice (story 10-9c):
+//     `start_option` on the type row and, per kind, a twin appended with `at_start` (same marker,
+//     colour and role key, its sound key the peak kind); the widget, the settings and the block
+//     kept across a switch follow the row. `no_sens_raise` keeps Detect from raising a silent block
+//     of a type most clips do not have.
 // Adding a signature to a kind (story 10-9a-2): a new way to recognise the same event, for an
 // edge case the kind's other signatures miss. Append {name, event source, match} to the kind's
 // `sigs` (at most kAutoMaxSignatures, contiguous); its source and match live in the category's
@@ -183,6 +188,26 @@ void AutoLanesHandOnBody(const AutoLaneArgs& args, std::vector<AutoLane>& out, s
 std::vector<Role> AutoRolesClap(char side);
 std::vector<Role> AutoRolesHandOnBody(char side);
 
+// auto_types_whoosh.cpp (story 10-9c: kick, swing, punch)
+std::vector<PhysicsEvent> AutoSourceWhoosh(const PhysicsAnalysis& a, const PhysicsParams& p);
+std::vector<PhysicsEvent> AutoSourceWhooshStart(const PhysicsAnalysis& a, const PhysicsParams& p);
+void AutoPartsKick(bool separate, const std::vector<int>& role_to_bone, std::vector<std::string>& out);
+void AutoPartsWhooshHand(bool separate, const std::vector<int>& role_to_bone, std::vector<std::string>& out);
+bool AutoMatchKick(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchKickHeel(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchKickToe(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchSwing(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchPunch(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMissingKick(char side, const std::vector<int>& role_to_bone);
+bool AutoMissingKickHeel(char side, const std::vector<int>& role_to_bone);
+bool AutoMissingKickToe(char side, const std::vector<int>& role_to_bone);
+bool AutoMissingWhooshHand(char side, const std::vector<int>& role_to_bone);
+void AutoLanesKick(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+void AutoLanesSwing(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+void AutoLanesPunch(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+std::vector<Role> AutoRolesKick(char side);
+std::vector<Role> AutoRolesWhooshHand(char side);
+
 namespace {
 
 using C = AutoCategory;
@@ -234,13 +259,13 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "both feet off while the body falls freely, right after a hard push off the ground,\n"
      "or into a free fall (a fall on the back). Separate: Jump Heel L / Jump Toe L...\n"
      "With Lift-off ticked, it replaces the lifts there.",
-     "jump", {{&P::jump_min_flight_s, S::Divide}, {&P::jump_impulse_g, S::Divide}}, &AutoPartsJump, false, true, true, false,
+     "jump", {{&P::jump_min_flight_s, S::Divide}, {&P::jump_impulse_g, S::Divide}}, &AutoPartsJump, false, true, true, false, false,
      static_cast<int>(T::LiftOff)},
     {T::Land, "Land", "Land", C::Legs,
      "A marker where a jump lands, on the first foot to touch, at its step (Land L / Land R).\n"
      "Separate: Land Heel L / Land Toe L...\n"
      "With Step ticked, it replaces the steps there.",
-     "land", {{&P::jump_min_flight_s, S::Divide}, {}}, &AutoPartsJump, false, true, true, false, static_cast<int>(T::Step)},
+     "land", {{&P::jump_min_flight_s, S::Divide}, {}}, &AutoPartsJump, false, true, true, false, false, static_cast<int>(T::Step)},
     // Story 10-9g: the gear jolt, Body, sideless; higher sensitivity = softer impacts count.
     {T::Jolt, "Jolt", "Jolt", C::Body,
      "A marker where an impact shakes the gear and cloth (Jolt): a step, a jump's landing,\n"
@@ -260,7 +285,7 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "A marker where the toes touch the ground lightly while the other foot carries the body\n"
      "(a toe contact under 150 ms, the heel up): Tap L / Tap R.\n"
      "With Step / Lift-off ticked, it replaces that foot's step / lift-off there.",
-     "tap", {{&P::tap_max_s, S::Times}, {}}, &AutoPartsFootBoth, false, false, false, true, static_cast<int>(T::Step),
+     "tap", {{&P::tap_max_s, S::Times}, {}}, &AutoPartsFootBoth, false, false, false, true, false, static_cast<int>(T::Step),
      static_cast<int>(T::LiftOff), true},
     {T::Drag, "Drag", "Drag", C::Legs,
      "A marker where the toes slide on the ground during a swing, the heel up\n"
@@ -294,6 +319,20 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "Hand on body L / Hand on body R.",
      "hand_body", {{&P::body_min_speed, S::Divide}, {&P::body_reach, S::Times}}, &AutoPartsHandOnBody, false, false,
      false, true},
+    // Story 10-9c: the whooshes; higher sensitivity = slower motions count (their speed / f).
+    {T::Kick, "Kick", "Kick", C::Legs,
+     "A marker where a foot whips through the air, raised off the ground (Kick L / Kick R),\n"
+     "at its fastest, or where the motion starts (Start). Separate: on the part fastest\n"
+     "at the peak (Kick Heel L / Kick Toe L...).",
+     "kick", {{&P::kick_speed, S::Divide}, {}}, &AutoPartsKick, false, true, false, true, true},
+    {T::Swing, "Swing", "Swing", C::Arms,
+     "A marker where a hand whips through the air (Swing L / Swing R), at its fastest,\n"
+     "or where the motion starts (Start). A straight thrust is a Punch.",
+     "swing", {{&P::swing_speed, S::Divide}, {}}, &AutoPartsWhooshHand, false, false, false, true, true},
+    {T::Punch, "Punch", "Punch", C::Arms,
+     "A marker where a hand thrusts straight out from the shoulder (Punch L / Punch R),\n"
+     "at its fastest, or where the motion starts (Start).",
+     "punch", {{&P::punch_speed, S::Divide}, {}}, &AutoPartsWhooshHand, false, false, false, true, true},
 };
 
 // ---- Kinds -------------------------------------------------------------------------------------
@@ -402,6 +441,34 @@ constexpr AutoKindInfo kKindRows[] = {
      K::HandOnBody,
      {{"touch", &AutoSourceHandOnBody, &AutoMatchHandOnBody}}, &AutoMissingHandOnBody, &AutoLanesHandOnBody,
      &AutoRolesHandOnBody},
+    // Story 10-9c: kick (combined, heel, toe), swing and punch, at the peak; then each at the
+    // start (`at_start`: the same marker and colour, the peak kind's sound key).
+    {K::Kick, "kick", T::Kick, "Kick", {0x7850DD, 0xDD7850}, kNo, false, false, "", K::Kick,
+     {{"speed peak", &AutoSourceWhoosh, &AutoMatchKick}}, &AutoMissingKick, &AutoLanesKick, &AutoRolesKick},
+    {K::KickHeel, "kick_heel", T::Kick, "Kick Heel", {0x7850DD, 0xDD7850}, kNo, false, false, "heel", K::KickHeel,
+     {{"speed peak", &AutoSourceWhoosh, &AutoMatchKickHeel}}, &AutoMissingKickHeel, &AutoLanesKick, &AutoRolesKick},
+    {K::KickToe, "kick_toe", T::Kick, "Kick Toe", {0xA896EE, 0xEEA896}, kNo, false, false, "toe", K::KickToe,
+     {{"speed peak", &AutoSourceWhoosh, &AutoMatchKickToe}}, &AutoMissingKickToe, &AutoLanesKick, &AutoRolesKick},
+    {K::KickStart, "kick_start", T::Kick, "Kick", {0x7850DD, 0xDD7850}, kNo, false, false, "", K::Kick,
+     {{"start", &AutoSourceWhooshStart, &AutoMatchKick}}, &AutoMissingKick, &AutoLanesKick, &AutoRolesKick, nullptr, true},
+    {K::KickHeelStart, "kick_heel_start", T::Kick, "Kick Heel", {0x7850DD, 0xDD7850}, kNo, false, false, "heel",
+     K::KickHeel,
+     {{"start", &AutoSourceWhooshStart, &AutoMatchKickHeel}}, &AutoMissingKickHeel, &AutoLanesKick, &AutoRolesKick, nullptr, true},
+    {K::KickToeStart, "kick_toe_start", T::Kick, "Kick Toe", {0xA896EE, 0xEEA896}, kNo, false, false, "toe",
+     K::KickToe,
+     {{"start", &AutoSourceWhooshStart, &AutoMatchKickToe}}, &AutoMissingKickToe, &AutoLanesKick, &AutoRolesKick, nullptr, true},
+    {K::Swing, "swing", T::Swing, "Swing", {0x3CA0DD, 0xDD3CA0}, kNo, false, false, "hand", K::Swing,
+     {{"speed peak", &AutoSourceWhoosh, &AutoMatchSwing}}, &AutoMissingWhooshHand, &AutoLanesSwing,
+     &AutoRolesWhooshHand},
+    {K::SwingStart, "swing_start", T::Swing, "Swing", {0x3CA0DD, 0xDD3CA0}, kNo, false, false, "hand", K::Swing,
+     {{"start", &AutoSourceWhooshStart, &AutoMatchSwing}}, &AutoMissingWhooshHand, &AutoLanesSwing,
+     &AutoRolesWhooshHand, nullptr, true},
+    {K::Punch, "punch", T::Punch, "Punch", {0xDD503C, 0x3CDD8C}, kNo, false, false, "hand", K::Punch,
+     {{"speed peak", &AutoSourceWhoosh, &AutoMatchPunch}}, &AutoMissingWhooshHand, &AutoLanesPunch,
+     &AutoRolesWhooshHand},
+    {K::PunchStart, "punch_start", T::Punch, "Punch", {0xDD503C, 0x3CDD8C}, kNo, false, false, "hand", K::Punch,
+     {{"start", &AutoSourceWhooshStart, &AutoMatchPunch}}, &AutoMissingWhooshHand, &AutoLanesPunch,
+     &AutoRolesWhooshHand, nullptr, true},
 };
 
 // One row per enum value, in enum order.

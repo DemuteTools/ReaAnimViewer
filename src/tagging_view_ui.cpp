@@ -3789,6 +3789,11 @@ void SyncAutoSettings(const TaggingModel& m)
         if (AutoTypeRow(static_cast<AutoType>(t)).part_split && cur.type[t].on &&
             (!g_auto_seen.type[t].on || cur.separate_parts[t] != g_auto_seen.separate_parts[t]))
             g_auto_ui.separate_parts[t] = cur.separate_parts[t];
+    // Story 10-9c: Peak / Start of kick, swing and punch, as the steps' mode.
+    for (int t = 0; t < kAutoTypeCount; ++t)
+        if (AutoTypeRow(static_cast<AutoType>(t)).start_option && cur.type[t].on &&
+            (!g_auto_seen.type[t].on || cur.at_start[t] != g_auto_seen.at_start[t]))
+            g_auto_ui.at_start[t] = cur.at_start[t];
     g_auto_seen = cur;
 }
 
@@ -4165,7 +4170,22 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
                 if (ui::Segmented(id.c_str(), kPartModes, 2, &sel)) g_auto_ui.separate_parts[ti] = sel == 1;
                 ui::ItemTip("Combined: one marker per event (%s L / %s R).\nSeparate: on the part that %s "
                             "(%s Heel L, %s Toe L...).",
-                            word, word, t == AutoType::Land ? "touches first" : "leaves last", word, word);
+                            word, word,
+                            t == AutoType::Land   ? "touches first"
+                            : t == AutoType::Kick ? "is fastest"
+                                                  : "leaves last",
+                            word, word);
+            }
+            if (AutoTypeRow(t).start_option) {
+                // Story 10-9c: kick, swing, punch: the marker at the motion's fastest point, or
+                // where it starts. Waits for Detect, as the step mode.
+                static const char* const kStartModes[] = {"Peak", "Start"};
+                ImGui::SetCursorPosX(x_row);
+                int               sel = g_auto_ui.at_start[ti] ? 1 : 0;
+                const std::string id = std::string("##startmode") + std::to_string(ti);
+                if (ui::Segmented(id.c_str(), kStartModes, 2, &sel)) g_auto_ui.at_start[ti] = sel == 1;
+                ui::ItemTip("Peak: the marker where the motion is fastest.\nStart: where it starts (the "
+                            "whoosh's onset).");
             }
             if (t == AutoType::Slide || t == AutoType::Pivot) {
                 // Story 10-8m: heel / toe separate scuffs, and Each part or Longest part while

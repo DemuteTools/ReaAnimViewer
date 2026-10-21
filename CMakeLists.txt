@@ -191,6 +191,7 @@ if(WIN32)
             src/bone_sampling.cpp
             src/footstep_measure.cpp
             src/motion_physics.cpp
+            src/motion_whoosh.cpp  # 10-9c
             src/auto_detect.cpp
             src/auto_types.cpp  # 10-9-0
             src/auto_types_legs.cpp
@@ -201,6 +202,7 @@ if(WIN32)
             src/auto_types_body.cpp  # 10-9b
             src/body_contacts.cpp
             src/hand_touch.cpp  # 10-9d
+            src/auto_types_whoosh.cpp  # 10-9c
             src/detection_measure.cpp
             src/rule_record.cpp
             src/preset_store.cpp

@@ -39,27 +39,41 @@ bool PartSplitKind(AutoKind k)
     return AutoTypeRow(AutoKindRow(k).type).part_split && AutoKindRow(k).role_key[0] != '\0';
 }
 
-// The kind of a `part_split` type: its combined one (part = false), else its heel one.
-AutoKind PartSplitKindOf(AutoType t, bool heel_part)
+// The kind of a `part_split` type: its combined one (part = false), else its heel one (story
+// 10-9c: of a `start_option` type, the one at the start when `at_start`).
+AutoKind PartSplitKindOf(AutoType t, bool heel_part, bool at_start = false)
 {
     for (AutoKind k : AutoKindsOf(t)) {
         const std::string key = AutoKindRow(k).role_key;
+        if (AutoTypeRow(t).start_option && AutoKindRow(k).at_start != at_start) continue;
         if (heel_part ? key == "heel" : key.empty()) return k;
     }
     return AutoKindsOf(t).front();
 }
 
+// Story 10-9c: a `start_option` type's kinds, Peak or Start (all kinds of another type).
+std::vector<AutoKind> StartFiltered(AutoType t, const AutoSettings& s, std::vector<AutoKind> kinds)
+{
+    if (!InRangeType(t) || !AutoTypeRow(t).start_option) return kinds;
+    std::vector<AutoKind> out;
+    for (AutoKind k : kinds)
+        if (AutoKindRow(k).at_start == s.at_start[static_cast<int>(t)]) out.push_back(k);
+    return out;
+}
+
 // The kinds a ticked type makes, in block order. The modes of steps, slides, pivots and hand
 // pivots pick among their kinds, and Combined / Separate among a `part_split` type's (story
-// 10-9a-3); a type with no mode makes all its kinds (story 10-9-0).
+// 10-9a-3), Peak / Start among a `start_option` type's (story 10-9c); a type with no mode makes
+// all its kinds (story 10-9-0).
 std::vector<AutoKind> KindsOf(AutoType t, const AutoSettings& s)
 {
     if (InRangeType(t) && AutoTypeRow(t).part_split) {
         std::vector<AutoKind> out;
         for (AutoKind k : AutoKindsOf(t))
             if (PartSplitKind(k) == s.separate_parts[static_cast<int>(t)]) out.push_back(k);
-        return out;
+        return StartFiltered(t, s, out);
     }
+    if (InRangeType(t) && AutoTypeRow(t).start_option) return StartFiltered(t, s, AutoKindsOf(t));
     switch (t) {
     case AutoType::Step:
         return s.separate_steps ? std::vector<AutoKind>{AutoKind::Heel, AutoKind::Toe} : std::vector<AutoKind>{AutoKind::Step};
@@ -99,6 +113,8 @@ bool ScuffHeel(AutoKind k)
 // pivots, and each slide / pivot part across Each part / Longest part. 0 = none.
 int SwapGroup(AutoKind k)
 {
+    // Story 10-9c: a `start_option` kind and its twin (Peak / Start), by the peak kind.
+    if (AutoTypeRow(AutoKindRow(k).type).start_option) return 100 + static_cast<int>(AutoKindRow(k).sound_key);
     if (k == AutoKind::HandPivot || k == AutoKind::HandPivotAny) return 1;
     if (ScuffMode(k) == ScuffParts::Combined) return 0;
     return 2 + (AutoTypeOfKind(k) == AutoType::Pivot ? 2 : 0) + (ScuffHeel(k) ? 0 : 1);
@@ -226,7 +242,8 @@ bool operator==(const AutoTypeSettings& a, const AutoTypeSettings& b)
 bool operator==(const AutoSettings& a, const AutoSettings& b)
 {
     for (int t = 0; t < kAutoTypeCount; ++t)
-        if (!(a.type[t] == b.type[t]) || a.separate_parts[t] != b.separate_parts[t]) return false;
+        if (!(a.type[t] == b.type[t]) || a.separate_parts[t] != b.separate_parts[t] || a.at_start[t] != b.at_start[t])
+            return false;
     return a.separate_steps == b.separate_steps && a.hand_pivot_any == b.hand_pivot_any &&
            a.slide_parts == b.slide_parts && a.pivot_parts == b.pivot_parts;
 }
@@ -261,6 +278,10 @@ bool AutoPending(const AutoSettings& ui, const AutoSettings& item)
         // Story 10-9a-3: a `part_split` type switched between Combined and Separate.
         if (AutoTypeRow(static_cast<AutoType>(t)).part_split && ui.type[t].on && item.type[t].on &&
             ui.separate_parts[t] != item.separate_parts[t])
+            return true;
+        // Story 10-9c: a `start_option` type switched between Peak and Start.
+        if (AutoTypeRow(static_cast<AutoType>(t)).start_option && ui.type[t].on && item.type[t].on &&
+            ui.at_start[t] != item.at_start[t])
             return true;
     }
     const int step = static_cast<int>(AutoType::Step), hp = static_cast<int>(AutoType::HandPivot);
@@ -304,6 +325,7 @@ AutoSettings ReadAutoSettings(const std::vector<Block>& blocks)
     bool combined = false, separate = false, strict = false, any = false;
     bool scuff_mode[2][3] = {};  // story 10-8m: per scuff type (slide, pivot), the modes its blocks say
     bool split[kAutoTypeCount][2] = {};  // story 10-9a-3: per part_split type, combined / part blocks seen
+    bool start[kAutoTypeCount][2] = {};  // story 10-9c: per start_option type, peak / start blocks seen
     for (const Block& b : blocks) {
         AutoKind k;
         if (!AutoBlockKind(b, &k, nullptr)) continue;
@@ -318,6 +340,7 @@ AutoSettings ReadAutoSettings(const std::vector<Block>& blocks)
         if (k == AutoKind::HandPivot) strict = true;
         if (k == AutoKind::HandPivotAny) any = true;
         if (AutoTypeRow(AutoTypeOfKind(k)).part_split) split[t][PartSplitKind(k) ? 1 : 0] = true;
+        if (AutoTypeRow(AutoTypeOfKind(k)).start_option) start[t][AutoKindRow(k).at_start ? 1 : 0] = true;
         if (t == static_cast<int>(AutoType::Slide) || t == static_cast<int>(AutoType::Pivot))
             scuff_mode[t == static_cast<int>(AutoType::Pivot) ? 1 : 0][static_cast<int>(ScuffMode(k))] = true;
     }
@@ -331,7 +354,10 @@ AutoSettings ReadAutoSettings(const std::vector<Block>& blocks)
     }
     s.separate_steps = separate && !combined;
     s.hand_pivot_any = any && !strict;
-    for (int t = 0; t < kAutoTypeCount; ++t) s.separate_parts[t] = split[t][1] && !split[t][0];
+    for (int t = 0; t < kAutoTypeCount; ++t) {
+        s.separate_parts[t] = split[t][1] && !split[t][0];
+        s.at_start[t] = start[t][1] && !start[t][0];
+    }
     return s;
 }
 
@@ -466,7 +492,9 @@ std::vector<int> ApplyAutoSettings(std::vector<Block>& blocks, const AutoSetting
             map[i] = find_new(AutoTypeOfKind(k) == AutoType::Slide ? AutoKind::Slide : AutoKind::Pivot, side);
         // Story 10-9a-3: a lift-off, jump or land switched between combined and separate, as steps.
         else if (AutoTypeRow(AutoTypeOfKind(k)).part_split)
-            map[i] = find_new(PartSplitKindOf(AutoTypeOfKind(k), !PartSplitKind(k)), side);
+            map[i] = find_new(PartSplitKindOf(AutoTypeOfKind(k), !PartSplitKind(k),
+                                              s.at_start[static_cast<int>(AutoTypeOfKind(k))]),
+                              side);
     }
     if (changed) *changed = !BlocksEqual(old, out);
     blocks = std::move(out);
@@ -799,7 +827,7 @@ std::vector<AutoSensResult> SearchAutoSensitivity(const std::vector<Block>& bloc
         if (i >= event_counts.size() || event_counts[i] != 0) continue;  // has events (or unknown): untouched
         if (GroupHasEvents(blocks, event_counts, i)) continue;  // story 10-9a-3: its sibling holds the event
         {  // story 10-9f / 10-9g / 10-9e / 10-9d: a type its row keeps out of the search (Spin, Jolt,
-           // Tap, Drag, Clap, Hand on body): counted as searched (Detect is not lit for it), neither
+           // Tap, Drag, Clap, Hand on body; story 10-9c: Kick, Swing, Punch): counted as searched (Detect is not lit for it), neither
            // raised nor none
             AutoKind k;
             if (AutoBlockKind(b, &k, nullptr) && AutoTypeRow(AutoTypeOfKind(k)).no_sens_raise) {

@@ -13,7 +13,8 @@ set(RAV_AUTO_SRCS ../src/auto_detect.cpp ../src/auto_types.cpp ../src/auto_types
                   ../src/auto_types_jolt.cpp ../src/auto_types_spin.cpp
                   ../src/foot_taps.cpp  # story 10-9e
                   ../src/auto_types_body.cpp ../src/body_contacts.cpp  # 10-9b: Body, body contacts
-                  ../src/hand_touch.cpp)  # 10-9d
+                  ../src/hand_touch.cpp  # 10-9d
+                  ../src/auto_types_whoosh.cpp)  # 10-9c
 
 enable_testing()
 
@@ -113,19 +114,25 @@ add_test(NAME bone_events COMMAND bone_events_test)
 
 # Spike 10-8a -- foot events from body physics (src/motion_physics.h).
 # Story 10-9g: and the auto types (the Jolt test of a fall: JoltEvents, auto_types_jolt.cpp).
-add_executable(motion_physics_test motion_physics_test.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/bone_events.cpp
+add_executable(motion_physics_test motion_physics_test.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/motion_whoosh.cpp ../src/bone_events.cpp
                ../src/rule_record.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
 target_include_directories(motion_physics_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME motion_physics COMMAND motion_physics_test)
 
+# Story 10-9c -- swings, kicks and punches (src/motion_whoosh.cpp) and their auto types.
+add_executable(motion_whoosh_test motion_whoosh_test.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/motion_whoosh.cpp
+               ../src/bone_events.cpp ../src/rule_record.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
+target_include_directories(motion_whoosh_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME motion_whoosh COMMAND motion_whoosh_test)
+
 # Story 10-8b -- auto detection: foot events from the physics as blocks of the item (src/auto_detect.h).
-add_executable(auto_detect_test auto_detect_test.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/bone_events.cpp
+add_executable(auto_detect_test auto_detect_test.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/motion_whoosh.cpp ../src/bone_events.cpp
                ../src/rule_record.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
 target_include_directories(auto_detect_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME auto_detect COMMAND auto_detect_test)
 
 # Story 10-9-0 -- the auto event types' table (src/auto_types.h).
-add_executable(auto_types_test auto_types_test.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/bone_events.cpp ../src/rule_record.cpp ../src/event_list.cpp
+add_executable(auto_types_test auto_types_test.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/motion_whoosh.cpp ../src/bone_events.cpp ../src/rule_record.cpp ../src/event_list.cpp
                ../src/tagging_signal.cpp ../src/sound_assign.cpp ../src/sound_auto_assign.cpp ../src/sound_populate_plan.cpp
                ../src/sound_switch.cpp ../src/sound_draw.cpp ../src/sound_place_plan.cpp ../src/sound_entries.cpp
                ../src/sound_record.cpp ../src/sound_zones.cpp)
@@ -133,12 +140,12 @@ target_include_directories(auto_types_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/.
 add_test(NAME auto_types COMMAND auto_types_test)
 
 # Story 10-9f -- the Spin type (src/auto_types_spin.cpp).
-add_executable(auto_spin_test auto_spin_test.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/bone_events.cpp
+add_executable(auto_spin_test auto_spin_test.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/motion_whoosh.cpp ../src/bone_events.cpp
                ../src/rule_record.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
 target_include_directories(auto_spin_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME auto_spin COMMAND auto_spin_test)
 # Story 10-9e -- foot taps and drags (src/foot_taps.h), and their Tap / Drag rows through Detect.
-add_executable(foot_taps_test foot_taps_test.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/bone_events.cpp
+add_executable(foot_taps_test foot_taps_test.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/motion_whoosh.cpp ../src/bone_events.cpp
                ../src/rule_record.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
 target_include_directories(foot_taps_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME foot_taps COMMAND foot_taps_test)
@@ -165,13 +172,13 @@ add_test(NAME event_bias COMMAND event_bias_test)
 # Spike 10-8a: --physics scores the foot events of motion_physics.h against the labelled REFs.
 # Deferred 10-9a-2: the jump / land REFs are scored on the Detect path's merged signatures (auto sources).
 add_executable(detection_eval detection_eval.cpp ${RAV_AUTO_SRCS} ../src/bone_events.cpp ../src/footstep_measure.cpp
-               ../src/tagging_signal.cpp ../src/motion_physics.cpp ../src/rule_record.cpp ../src/event_list.cpp)
+               ../src/tagging_signal.cpp ../src/motion_physics.cpp ../src/motion_whoosh.cpp ../src/rule_record.cpp ../src/event_list.cpp)
 target_include_directories(detection_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 
 # Story 10-8o -- the all-trigger bench (a tool, not a test): every auto type ticked, through Detect
 # (DetectAutoEvents), on every fixture, scored against the reference files (tests/ref_file.h):
 #   trigger_bench [--fixtures=<dir>] [--fbx-dump=<exe>] [--out=<dir>]   (tools/bench/run.sh runs it)
-add_executable(trigger_bench trigger_bench.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/bone_events.cpp
+add_executable(trigger_bench trigger_bench.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/motion_whoosh.cpp ../src/bone_events.cpp
                ../src/rule_record.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
 target_include_directories(trigger_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 
@@ -212,7 +219,7 @@ add_test(NAME tagging_signal COMMAND tagging_signal_test)
 # Story 10-4 -- the item's event list, Apply's plan, the first pass (src/event_list.h).
 # fb-1 (10-8b): the keep step lives in auto_detect (KeepUnrunnableEvents), with the physics it needs.
 add_executable(event_list_test event_list_test.cpp ../src/event_list.cpp ../src/rule_record.cpp ../src/tagging_signal.cpp
-               ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/bone_events.cpp)
+               ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/motion_whoosh.cpp ../src/bone_events.cpp)
 target_include_directories(event_list_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME event_list COMMAND event_list_test)
 
@@ -281,14 +288,14 @@ add_test(NAME attach_manager_plan COMMAND attach_manager_plan_test)
 # Story 13-8 -- src/sound_populate_plan.h
 add_executable(sound_populate_plan_test sound_populate_plan_test.cpp ../src/sound_populate_plan.cpp ../src/sound_switch.cpp
                ../src/sound_draw.cpp ../src/sound_place_plan.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp
-               ../src/sound_assign.cpp ../src/sound_auto_assign.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp
+               ../src/sound_assign.cpp ../src/sound_auto_assign.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/motion_whoosh.cpp
                ../src/bone_events.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
 target_include_directories(sound_populate_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_populate_plan COMMAND sound_populate_plan_test)
 # Story 13-8, Antho 2026-10-12 -- src/sound_auto_assign.h (each auto marker type's sound)
 add_executable(sound_auto_assign_test sound_auto_assign_test.cpp ../src/sound_auto_assign.cpp ../src/sound_assign.cpp ../src/sound_populate_plan.cpp
                ../src/sound_switch.cpp ../src/sound_draw.cpp ../src/sound_place_plan.cpp ../src/sound_entries.cpp
-               ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp
+               ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/motion_whoosh.cpp
                ../src/bone_events.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
 target_include_directories(sound_auto_assign_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_auto_assign COMMAND sound_auto_assign_test)
@@ -296,11 +303,11 @@ add_test(NAME sound_auto_assign COMMAND sound_auto_assign_test)
 add_executable(sound_assign_test sound_assign_test.cpp ../src/sound_assign.cpp ../src/sound_auto_assign.cpp
                ../src/sound_populate_plan.cpp ../src/sound_switch.cpp ../src/sound_draw.cpp ../src/sound_place_plan.cpp
                ../src/sound_entries.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp ${RAV_AUTO_SRCS}
-               ../src/motion_physics.cpp ../src/bone_events.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
+               ../src/motion_physics.cpp ../src/motion_whoosh.cpp ../src/bone_events.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
 target_include_directories(sound_assign_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_assign COMMAND sound_assign_test)
 # Story 13-9 -- src/sound_follow_plan.h
-add_executable(sound_follow_plan_test sound_follow_plan_test.cpp ../src/sound_follow_plan.cpp ../src/reaper_item_read.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp ../src/sound_draw.cpp ../src/sound_entries.cpp ../src/event_list.cpp ../src/tagging_signal.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/bone_events.cpp)
+add_executable(sound_follow_plan_test sound_follow_plan_test.cpp ../src/sound_follow_plan.cpp ../src/reaper_item_read.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp ../src/sound_draw.cpp ../src/sound_entries.cpp ../src/event_list.cpp ../src/tagging_signal.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/motion_whoosh.cpp ../src/bone_events.cpp)
 target_include_directories(sound_follow_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_follow_plan COMMAND sound_follow_plan_test)
 # Story 13-11 -- src/ravlib.h
@@ -372,7 +379,7 @@ add_test(NAME ui_flow COMMAND ui_flow_test)
 add_executable(assign_view_model_test assign_view_model_test.cpp ../src/assign_view_model.cpp ../src/sound_assign.cpp
                ../src/sound_auto_assign.cpp ../src/sound_populate_plan.cpp ../src/sound_switch.cpp ../src/sound_draw.cpp
                ../src/sound_place_plan.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp
-               ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/bone_events.cpp ../src/event_list.cpp
+               ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/motion_whoosh.cpp ../src/bone_events.cpp ../src/event_list.cpp
                ../src/tagging_signal.cpp)
 target_include_directories(assign_view_model_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME assign_view_model COMMAND assign_view_model_test)

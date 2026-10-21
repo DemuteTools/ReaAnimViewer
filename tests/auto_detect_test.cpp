@@ -879,7 +879,8 @@ int main()
         for (int t = 0; t < kAutoTypeCount; ++t) {
             const bool hand = t == static_cast<int>(AutoType::Grab) || t == static_cast<int>(AutoType::Release) ||
                               t == static_cast<int>(AutoType::HandPivot) || t == static_cast<int>(AutoType::Clap) ||
-                              t == static_cast<int>(AutoType::HandOnBody);  // story 10-9d
+                              t == static_cast<int>(AutoType::HandOnBody) ||  // story 10-9d
+                              t == static_cast<int>(AutoType::Swing) || t == static_cast<int>(AutoType::Punch);  // 10-9c
             // Story 10-9b: Elbow in Arms, Sit and Fall in Body.
             const bool arms = hand || t == static_cast<int>(AutoType::Elbow);
             const bool body = t == static_cast<int>(AutoType::Jolt) || t == static_cast<int>(AutoType::Spin) ||  // 10-9g, 10-9f
@@ -905,6 +906,10 @@ int main()
                 // Story 10-9a-3: a lift-off / jump / land heel block takes its type's colour.
                 if ((kk == AutoKind::Lift && jk == AutoKind::LiftHeel) || (kk == AutoKind::Jump && jk == AutoKind::JumpHeel) ||
                     (kk == AutoKind::Land && jk == AutoKind::LandHeel))
+                    continue;
+                // Story 10-9c: a Start kind shares its Peak twin's colour; a kick heel block the kick's.
+                const AutoKind pk = AutoKindRow(kk).sound_key, pj = AutoKindRow(jk).sound_key;
+                if (pk == pj || (pk == AutoKind::Kick && pj == AutoKind::KickHeel) || (pk == AutoKind::KickHeel && pj == AutoKind::Kick))
                     continue;
                 for (char side : {'L', 'R'})
                     CHECK(AutoDefaultColor(static_cast<AutoKind>(k), side) != AutoDefaultColor(static_cast<AutoKind>(j), side));
@@ -1038,7 +1043,7 @@ int main()
         Block off = blk(AutoKind::Step, 'R');
         off.enabled = false;
         Block unknown = blk(AutoKind::Step, 'R');
-        unknown.auto_type = "kick";
+        unknown.auto_type = "future_kind";
         CHECK(!AutoBlockPartMissing(off, map) && !AutoBlockPartMissing(Block{}, map) && !AutoBlockPartMissing(unknown, map));
         CHECK((AutoBlocksPartMissing({Block{}, blk(AutoKind::Step, 'R'), blk(AutoKind::Step, 'L')}, map) ==
                std::vector<char>{0, 1, 0}));
@@ -1097,7 +1102,9 @@ int main()
                 const AutoKind k = static_cast<AutoKind>(ki);
                 const bool     sep = k == AutoKind::Heel || k == AutoKind::Toe || k == AutoKind::SlideHeel ||
                                k == AutoKind::SlideToe || k == AutoKind::SlideHeelLongest || k == AutoKind::SlideToeLongest ||
-                               (k >= AutoKind::LiftHeel && k <= AutoKind::LandToe);  // story 10-9a-3: the lift-off / jump / land parts
+                               (k >= AutoKind::LiftHeel && k <= AutoKind::LandToe) ||  // story 10-9a-3: the lift-off / jump / land parts
+                               k == AutoKind::KickHeel || k == AutoKind::KickToe ||  // story 10-9c: the kick parts
+                               k == AutoKind::KickHeelStart || k == AutoKind::KickToeStart;
                 const std::vector<std::string> listed = AutoMissingParts(AutoTypeOfKind(k), sep, map);
                 for (char side : {'L', 'R'}) {
                     std::vector<Role> parts;
@@ -1145,6 +1152,18 @@ int main()
                     // Story 10-9d: a clap needs both hands, a hand on body its hand (and a body
                     // segment, below).
                     case AutoKind::Clap: parts = {Role::LeftHand, Role::RightHand}; break;
+                    // Story 10-9c: the whooshes: the torso (listed as the chest), then the kick's
+                    // foot parts as a step's, or the hand.
+                    case AutoKind::Kick:
+                    case AutoKind::KickStart: parts = {Role::Chest, heel, toe, tip}; break;
+                    case AutoKind::KickHeel:
+                    case AutoKind::KickHeelStart: parts = {Role::Chest, heel}; break;
+                    case AutoKind::KickToe:
+                    case AutoKind::KickToeStart: parts = {Role::Chest, toe}; break;
+                    case AutoKind::Swing:
+                    case AutoKind::SwingStart:
+                    case AutoKind::Punch:
+                    case AutoKind::PunchStart: parts = {Role::Chest, side == 'R' ? Role::RightHand : Role::LeftHand}; break;
                     default: parts = {side == 'R' ? Role::RightHand : Role::LeftHand}; break;
                     }
                     auto is_listed = [&](Role r) {

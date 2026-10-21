@@ -783,7 +783,9 @@ const std::vector<Role>& PhysicsRoles()
 {
     static const std::vector<Role> kRoles = {Role::LeftHeel,  Role::LeftToe,    Role::RightHeel,  Role::RightToe,
                                              Role::LeftKnee,  Role::RightKnee,  Role::LeftUpLeg,  Role::RightUpLeg,
-                                             Role::Hips,      Role::LeftToeEnd, Role::RightToeEnd, Role::LeftHand,
+                                             Role::Hips,      Role::LeftToeEnd, Role::RightToeEnd,
+                                             // Story 10-9c: the whooshes' anchors and torso.
+                                             Role::LeftShoulder, Role::RightShoulder, Role::LeftHand,
                                              Role::RightHand,
                                              // Story 10-9b: the body contacts' elbows and chest (or spine);
                                              // story 10-9d: the trunk and head (touches).
@@ -1470,6 +1472,7 @@ PhysicsAnalysis AnalyseTrack(const std::vector<BoneTrack>& rt, const PhysicsPara
             for (PartTrack& pt : f.part) AddArrival(pt, rate, p, p.arrival_min_approach);
         for (HandTrack& h : a.hand) AddArrival(h.part, rate, hp, p.hand_min_approach);
     }
+    AnalyseWhooshTracks(rt, p, a);  // story 10-9c
     a.ok = true;
     a.window_samples = a.samples;
     return a;
@@ -2195,6 +2198,10 @@ constexpr PhysicsKindRow kPhysicsKindRows[] = {
     {PhysicsKind::Fall, "fall", PhyPart::None, false, false},
     {PhysicsKind::Clap, "clap", PhyPart::None, false, false},             // story 10-9d
     {PhysicsKind::HandOnBody, "hand on body", PhyPart::None, false, false},
+    // Story 10-9c: the whooshes (their span: start to end).
+    {PhysicsKind::Kick, "kick", PhyPart::Foot, false, true},
+    {PhysicsKind::Swing, "swing", PhyPart::None, false, true},
+    {PhysicsKind::Punch, "punch", PhyPart::None, false, true},
 };
 constexpr bool PhysicsKindRowsInOrder()
 {
@@ -2263,6 +2270,9 @@ std::string PhysicsSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEv
         case PhysicsKind::Fall: break;  // BodyContactSummary's (story 10-9b)
         case PhysicsKind::Clap:
         case PhysicsKind::HandOnBody: break;  // story 10-9d: TouchSummary's
+        case PhysicsKind::Kick:
+        case PhysicsKind::Swing:
+        case PhysicsKind::Punch: break;  // WhooshSummary's (story 10-9c)
         }
     }
     const std::string vertical = a.ground_velocity.y != 0.0 ? Format(", vertical %+.2f m/s", a.ground_velocity.y) : "";

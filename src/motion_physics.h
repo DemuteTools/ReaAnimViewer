@@ -590,6 +590,26 @@ struct PhysicsParams {
     // pull: Climbing_Large's hand 0.2 leg/s, the closing 2.5) is no touch; a slap's hand moves
     // at 1.1-1.7 x the closing speed (Hip Hop Dancing 1.74 / 1.54, Pistol Equip 4.6 / 2.8).
     double     body_hand_frac = 0.5;
+    // Story 10-9c: swings, kicks and punches (WhooshEvents, motion_whoosh.cpp). The peak speed of
+    // a hand or foot relative to the torso (leg/s) a whoosh must reach, per type (the sensitivity
+    // divides it); the share of the peak that bounds its start and end; the relative speed's
+    // smoothing (Gaussian sigma, s); a kick's foot at the peak: its height above the other foot
+    // and its distance from the up leg (leg: raised on an extended leg); a punch's share of its
+    // speed along the shoulder -> hand line, extending. Measured on the fixtures (57 clips, spec
+    // 10-9c): hands relative to the torso reach 1-2.5 leg/s walking and climbing, 4-5.7 running
+    // and sprinting (Sword And Shield Run 5.72), 5-7.6 swinging the arms into a jump (Standing
+    // Jump 7.59), Jump Attack's strike 8.03; 7.0 keeps every run. Running feet whip at 8-14 leg/s
+    // relative to the torso, folded (up leg -> foot 0.56-0.94 leg when 0.4 leg up or more) or low
+    // (0.20-0.30 leg up when extended to 1.0-1.06): a raised extended foot is a kick. No fixture
+    // holds a kick or a punch (the radial share peaks at 0.42 there).
+    double     kick_speed = 6.0;
+    double     swing_speed = 7.0;
+    double     punch_speed = 7.0;
+    double     whoosh_edge_frac = 0.25;
+    double     whoosh_smooth_s = 0.020;
+    double     kick_min_height = 0.5;
+    double     kick_min_reach = 1.0;
+    double     punch_radial_frac = 0.7;
 };
 
 // One contact of a part, in samples [start, end).
@@ -676,6 +696,22 @@ struct BodyTrack {
     std::vector<double> hips_feet;          // per sample: the hips' horizontal distance to the feet's middle (leg); empty without
 };
 
+// Story 10-9c: one limb's motion relative to the torso, per analysed sample (empty when not
+// present): its speed relative to the torso (leg/s; a foot: its fastest present part's, `part`
+// names it), its speed along the anchor -> limb line (leg/s, + = extending; a hand only), the
+// anchor -> limb distance (leg; the anchor is the shoulder for a hand, the up leg for a foot,
+// else the torso), and a foot's height above the other foot's lowest present part (leg; 0
+// without the other foot).
+struct WhooshTrack {
+    bool                present = false;
+    std::string         missing;
+    std::vector<double> speed;
+    std::vector<double> radial;
+    std::vector<double> reach;   // the anchor -> limb distance (leg; a foot: its fastest part's)
+    std::vector<double> height;
+    std::vector<int>    part;
+};
+
 struct PhysicsAnalysis {
     bool                     ok = false;
     std::string              error;          // !ok: why
@@ -709,6 +745,11 @@ struct PhysicsAnalysis {
     // Story 10-9d: every physics role's position (m, smoothed as the parts; indexed by Role, empty =
     // no bone), for the touches (hand_touch.h). Analysed track samples.
     std::vector<std::vector<Vec3d>> role_pos;
+    // Story 10-9c: the whooshes' limbs (WhooshTrack), hands L / R and feet L / R, and why the
+    // torso is missing ("" = found: the chest, else the spine, else the hips).
+    WhooshTrack              whoosh_hand[2];
+    WhooshTrack              whoosh_foot[2];
+    std::string              torso_missing;
     // The clip inside the analysed track (story 10-8i): looping, the track is three cycles and
     // the clip is its samples [window_first, window_first + window_samples); otherwise 0 and
     // `samples`. Per-sample data (PartTrack...) is indexed in the analysed track; the event
@@ -733,12 +774,13 @@ std::vector<BoneTrack> PhysicsRoleTracks(const std::vector<int>& bone_of_role,
 PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& role_tracks, const PhysicsParams& p = {});
 
 // Story 10-9e appends Tap and Drag (foot_taps.h); story 10-9b Knee, Elbow (side L / R), Sit, Fall
-// (side 'B': the body); story 10-9d Clap, HandOnBody (hand_touch.h).
+// (side 'B': the body); story 10-9d Clap, HandOnBody (hand_touch.h); story 10-9c Kick, Swing, Punch
+// (motion_whoosh.cpp).
 enum class PhysicsKind { Step, FootStep, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land, Jolt, Spin, SpinEnd, Tap, Drag,
-                         Knee, Elbow, Sit, Fall, Clap, HandOnBody };
+                         Knee, Elbow, Sit, Fall, Clap, HandOnBody, Kick, Swing, Punch };
 // Story 10-9f: Spin / SpinEnd, a spin's start / end (side B, start_s / end_s its span, strength =
 // its sweep in degrees; auto_types_spin.cpp).
-constexpr int kPhysicsKindCount = 21;  // story 10-9-0: PhysicsMarkerName's rows follow the enum
+constexpr int kPhysicsKindCount = 24;  // story 10-9-0: PhysicsMarkerName's rows follow the enum
 
 struct PhysicsEvent {
     PhysicsKind kind = PhysicsKind::Step;
@@ -842,6 +884,16 @@ std::string JumpSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEvent
 std::string JumpPushOffSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEvent>& ev);
 // Story 10-9a-3: the free-fall jumps' report: "jumps (free fall): 1", as JumpPushOffSummary.
 std::string JumpFreeFallSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEvent>& ev);
+
+// Story 10-9c (motion_whoosh.cpp): fills the analysis' whoosh tracks from the role tracks it
+// analyses (AnalyseMotion calls it; looping, the unrolled ones).
+void AnalyseWhooshTracks(const std::vector<BoneTrack>& role_tracks, const PhysicsParams& p, PhysicsAnalysis& a);
+// Story 10-9c: the kicks, swings and punches (Kind Kick / Swing / Punch), by time: time_s = the
+// peak (`at_start`: the start), start_s / end_s the span. Kicks above p.kick_speed, swings above
+// p.swing_speed, punches above p.punch_speed. Strength = the peak speed (leg/s).
+std::vector<PhysicsEvent> WhooshEvents(const PhysicsAnalysis& a, const PhysicsParams& p, bool at_start);
+// "whooshes: kicks 1, swings 2, punches 0" plus "; missing: ..." ("whooshes: skipped: <error>").
+std::string WhooshSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEvent>& ev);
 // One line per event ("   1.234 s  PHY L heel 1.8", a scuff or hand pivot "... (to 1.456 s)"), each with
 // `indent` in front and '\n' after.
 std::string PhysicsEventLines(const std::vector<PhysicsEvent>& ev, const std::string& indent);

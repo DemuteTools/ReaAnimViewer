@@ -195,7 +195,12 @@ void TestKnownValues()
         const AutoType tt = static_cast<AutoType>(t);
         CHECK(AutoTypeRow(tt).sideless == (tt == AutoType::Jolt || tt == AutoType::Spin || tt == AutoType::Sit ||
                                            tt == AutoType::Fall));  // stories 10-9g, 10-9f, 10-9b
-        CHECK(AutoTypeRow(tt).part_split == (tt == AutoType::LiftOff || tt == AutoType::Jump || tt == AutoType::Land));
+        CHECK(AutoTypeRow(tt).part_split ==
+              (tt == AutoType::LiftOff || tt == AutoType::Jump || tt == AutoType::Land || tt == AutoType::Kick));
+        // Story 10-9c: Peak / Start on the whooshes only, and Detect never raises them.
+        const bool whoosh = tt == AutoType::Kick || tt == AutoType::Swing || tt == AutoType::Punch;
+        CHECK(AutoTypeRow(tt).start_option == whoosh);
+        if (whoosh) CHECK(AutoTypeRow(tt).no_sens_raise);
     }
     CHECK(AutoCategoryOf(AutoType::Jump) == AutoCategory::Legs && AutoCategoryOf(AutoType::Land) == AutoCategory::Legs);
     CHECK(std::string(AutoKindWord(AutoKind::Jump)) == "jump" && std::string(AutoKindWord(AutoKind::Land)) == "land");
@@ -343,7 +348,8 @@ void TestRowInvariants()
             if (j == k || o.type != r.type || o.scuff != r.scuff) continue;
             const bool hand_pivot_pair = (r.kind == AutoKind::HandPivot && o.kind == AutoKind::HandPivotAny) ||
                                          (r.kind == AutoKind::HandPivotAny && o.kind == AutoKind::HandPivot);
-            if (hand_pivot_pair) CHECK(r.sigs[0].source != o.sigs[0].source);
+            // Story 10-9c: a Peak kind and its Start twin read their own source.
+            if (hand_pivot_pair || r.at_start != o.at_start) CHECK(r.sigs[0].source != o.sigs[0].source);
             else CHECK(r.sigs[0].source == o.sigs[0].source);
         }
         if (r.scuff != ScuffParts::Combined) {

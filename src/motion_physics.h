@@ -569,6 +569,22 @@ struct PhysicsParams {
     double     fall_min_speed = 1.0;         // leg/s, downwards
     double     fall_window_s = 0.300;
     double     fall_stop_speed = 0.25;       // leg/s: the descent has stopped (vertical speed above -this)
+    // Story 10-9d: claps and hand on body (hand_touch.h, "Touches"). A touch is a hand coming
+    // within reach of the other hand (clap) or of a body bone's segment (hand on body) at speed,
+    // then stopping against it. Reach (leg lengths, from the hand bone's origin, the wrist, to the
+    // other wrist / the segment's axis), the approach (the peak closing speed, leg/s, the
+    // sensitivity divides it), the stop (the relative speed falls to touch_stop_frac x that peak)
+    // and its abruptness (the stop within this long of the braking's start, s). See hand_touch.h
+    // for the values measured on the fixtures. Not moved by the sensitivity: the stop and the
+    // window.
+    double     clap_reach = 0.15;
+    double     clap_min_speed = 1.5;
+    double     clap_stop_s = 0.150;
+    double     body_reach = 0.22;
+    double     body_min_speed = 1.5;
+    double     body_stop_s = 0.100;
+    double     touch_stop_frac = 0.25;
+    double     touch_window_s = 0.300;  // the approach's peak is searched this far before the stop
 };
 
 // One contact of a part, in samples [start, end).
@@ -685,6 +701,9 @@ struct PhysicsAnalysis {
     std::vector<char>        hips_yaw_valid;
     std::string              spin_missing;
     BodyTrack                body;           // story 10-9b
+    // Story 10-9d: every physics role's position (m, smoothed as the parts; indexed by Role, empty =
+    // no bone), for the touches (hand_touch.h). Analysed track samples.
+    std::vector<std::vector<Vec3d>> role_pos;
     // The clip inside the analysed track (story 10-8i): looping, the track is three cycles and
     // the clip is its samples [window_first, window_first + window_samples); otherwise 0 and
     // `samples`. Per-sample data (PartTrack...) is indexed in the analysed track; the event
@@ -709,12 +728,12 @@ std::vector<BoneTrack> PhysicsRoleTracks(const std::vector<int>& bone_of_role,
 PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& role_tracks, const PhysicsParams& p = {});
 
 // Story 10-9e appends Tap and Drag (foot_taps.h); story 10-9b Knee, Elbow (side L / R), Sit, Fall
-// (side 'B': the body).
+// (side 'B': the body); story 10-9d Clap, HandOnBody (hand_touch.h).
 enum class PhysicsKind { Step, FootStep, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land, Jolt, Spin, SpinEnd, Tap, Drag,
-                         Knee, Elbow, Sit, Fall };
+                         Knee, Elbow, Sit, Fall, Clap, HandOnBody };
 // Story 10-9f: Spin / SpinEnd, a spin's start / end (side B, start_s / end_s its span, strength =
 // its sweep in degrees; auto_types_spin.cpp).
-constexpr int kPhysicsKindCount = 19;  // story 10-9-0: PhysicsMarkerName's rows follow the enum
+constexpr int kPhysicsKindCount = 21;  // story 10-9-0: PhysicsMarkerName's rows follow the enum
 
 struct PhysicsEvent {
     PhysicsKind kind = PhysicsKind::Step;

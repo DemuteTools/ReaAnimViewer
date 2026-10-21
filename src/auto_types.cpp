@@ -169,6 +169,20 @@ bool AutoMissingSpin(char side, const std::vector<int>& role_to_bone);
 void AutoLanesSpin(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
 std::vector<Role> AutoRolesSpin(char side);
 
+// hand_touch.cpp (story 10-9d: clap and hand on body)
+std::vector<PhysicsEvent> AutoSourceClap(const PhysicsAnalysis& a, const PhysicsParams& p);
+std::vector<PhysicsEvent> AutoSourceHandOnBody(const PhysicsAnalysis& a, const PhysicsParams& p);
+void AutoPartsClap(bool separate, const std::vector<int>& role_to_bone, std::vector<std::string>& out);
+void AutoPartsHandOnBody(bool separate, const std::vector<int>& role_to_bone, std::vector<std::string>& out);
+bool AutoMatchClap(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchHandOnBody(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMissingClap(char side, const std::vector<int>& role_to_bone);
+bool AutoMissingHandOnBody(char side, const std::vector<int>& role_to_bone);
+void AutoLanesClap(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+void AutoLanesHandOnBody(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+std::vector<Role> AutoRolesClap(char side);
+std::vector<Role> AutoRolesHandOnBody(char side);
+
 namespace {
 
 using C = AutoCategory;
@@ -268,6 +282,16 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "A marker where the body lands on the ground (hips or back) after a fall,\n"
      "such as a fall on the back after a free fall.",
      "fall", {{&P::fall_min_speed, S::Divide}, {}}, &AutoPartsFall, true},
+    // Story 10-9d: touches (hand_touch.h). Higher sensitivity = slower touches count and the reach
+    // grows. Clap: one event for both hands, on the faster one (shared_sides).
+    {T::Clap, "Clap", "Clap", C::Arms,
+     "A marker where the two hands meet at speed and stop against each other,\n"
+     "on the faster hand (Clap L / Clap R).",
+     "clap", {{&P::clap_min_speed, S::Divide}, {&P::clap_reach, S::Times}}, &AutoPartsClap, false, false, true},
+    {T::HandOnBody, "Hand on body", "Hand on body", C::Arms,
+     "A marker where a hand lands at speed on the body (trunk, head or thigh) and stops there:\n"
+     "Hand on body L / Hand on body R.",
+     "hand_body", {{&P::body_min_speed, S::Divide}, {&P::body_reach, S::Times}}, &AutoPartsHandOnBody},
 };
 
 // ---- Kinds -------------------------------------------------------------------------------------
@@ -369,6 +393,13 @@ constexpr AutoKindInfo kKindRows[] = {
      {{"contact", &AutoSourceBody, &AutoMatchSit}}, &AutoMissingSit, &AutoLanesSit, &AutoRolesSit},
     {K::Fall, "fall", T::Fall, "Fall", {0xDC5A8C, 0xDC5A8C}, kNo, false, false, "", K::Fall,
      {{"landing", &AutoSourceBody, &AutoMatchFall}}, &AutoMissingFall, &AutoLanesFall, &AutoRolesFall},
+    // Story 10-9d: clap and hand on body.
+    {K::Clap, "clap", T::Clap, "Clap", {0x3C8CDD, 0xDD8C3C}, kNo, false, false, "hand", K::Clap,
+     {{"touch", &AutoSourceClap, &AutoMatchClap}}, &AutoMissingClap, &AutoLanesClap, &AutoRolesClap},
+    {K::HandOnBody, "hand_body", T::HandOnBody, "Hand on body", {0x8C8CDD, 0xDDA08C}, kNo, false, false, "hand",
+     K::HandOnBody,
+     {{"touch", &AutoSourceHandOnBody, &AutoMatchHandOnBody}}, &AutoMissingHandOnBody, &AutoLanesHandOnBody,
+     &AutoRolesHandOnBody},
 };
 
 // One row per enum value, in enum order.

@@ -314,6 +314,9 @@ void TestRoles()
                 want = {Role::Hips, Role::LeftUpLeg, Role::RightUpLeg};
             } else if (side == 'B') {
                 continue;  // a sided kind has no B block
+            } else if (r.type == AutoType::Clap) {  // story 10-9d: its hand, then the other
+                want = side == 'R' ? std::vector<Role>{Role::RightHand, Role::LeftHand}
+                                   : std::vector<Role>{Role::LeftHand, Role::RightHand};
             } else if (AutoCategoryOf(r.type) == AutoCategory::Arms) {
                 want.push_back(side == 'R' ? Role::RightHand : Role::LeftHand);
             } else {

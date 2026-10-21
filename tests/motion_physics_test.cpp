@@ -1315,7 +1315,7 @@ int main()
         // Role tracks from a bone mapping and a sampler: only the physics roles are sampled.
         std::vector<int> bone_of_role(static_cast<size_t>(Role::Count), -1);
         bone_of_role[static_cast<size_t>(Role::LeftHeel)] = 7;
-        bone_of_role[static_cast<size_t>(Role::Head)] = 3;
+        bone_of_role[static_cast<size_t>(Role::LeftClavicle)] = 3;  // not a physics role (10-9b, 10-9d: elbows, head)
         std::vector<int>             asked;
         const std::vector<BoneTrack> t = PhysicsRoleTracks(bone_of_role, [&](const std::vector<int>& b) {
             asked = b;
@@ -1325,7 +1325,7 @@ int main()
         });
         CHECK(asked == std::vector<int>{7});
         CHECK(t.size() == static_cast<size_t>(Role::Count) && t[static_cast<size_t>(Role::LeftHeel)].pos.size() == 1);
-        CHECK(t[static_cast<size_t>(Role::Head)].pos.empty());
+        CHECK(t[static_cast<size_t>(Role::LeftClavicle)].pos.empty());
         CHECK(PhysicsRoleTracks(bone_of_role, [](const std::vector<int>&) { return std::vector<BoneTrack>(); }).empty());
     }
     {

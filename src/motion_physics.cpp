@@ -785,8 +785,10 @@ const std::vector<Role>& PhysicsRoles()
                                              Role::LeftKnee,  Role::RightKnee,  Role::LeftUpLeg,  Role::RightUpLeg,
                                              Role::Hips,      Role::LeftToeEnd, Role::RightToeEnd, Role::LeftHand,
                                              Role::RightHand,
-                                             // Story 10-9b: the body contacts' elbows and chest (or spine).
-                                             Role::LeftElbow, Role::RightElbow, Role::Spine, Role::Chest};
+                                             // Story 10-9b: the body contacts' elbows and chest (or spine);
+                                             // story 10-9d: the trunk and head (touches).
+                                             Role::LeftElbow, Role::RightElbow, Role::Spine, Role::Chest, Role::Neck,
+                                             Role::Head};
     return kRoles;
 }
 
@@ -990,6 +992,10 @@ PhysicsAnalysis AnalyseTrack(const std::vector<BoneTrack>& rt, const PhysicsPara
     if (sides == 1) a.scale_note = "one leg";
     if (hips) a.scale_note += std::string(a.scale_note.empty() ? "" : ", ") + "hips for the up leg";
     if (thigh) a.scale_note += std::string(a.scale_note.empty() ? "" : ", ") + "thigh x2";
+    // Story 10-9d: every role's smoothed position (the touches).
+    a.role_pos.assign(static_cast<size_t>(Role::Count), {});
+    for (Role r : PhysicsRoles())
+        if (const BoneTrack* t = track(r)) a.role_pos[static_cast<size_t>(r)] = Smooth(t->pos, p.smooth_ms / 1000.0, rate);
 
     // Parts present, smoothed, their velocities.
     std::vector<Vec3d> sm[2][kFootPartCount], vel[2][kFootPartCount];
@@ -2187,6 +2193,8 @@ constexpr PhysicsKindRow kPhysicsKindRows[] = {
     {PhysicsKind::Elbow, "elbow", PhyPart::None, false, false},
     {PhysicsKind::Sit, "sit", PhyPart::None, false, false},
     {PhysicsKind::Fall, "fall", PhyPart::None, false, false},
+    {PhysicsKind::Clap, "clap", PhyPart::None, false, false},             // story 10-9d
+    {PhysicsKind::HandOnBody, "hand on body", PhyPart::None, false, false},
 };
 constexpr bool PhysicsKindRowsInOrder()
 {
@@ -2253,6 +2261,8 @@ std::string PhysicsSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEv
         case PhysicsKind::Elbow:
         case PhysicsKind::Sit:
         case PhysicsKind::Fall: break;  // BodyContactSummary's (story 10-9b)
+        case PhysicsKind::Clap:
+        case PhysicsKind::HandOnBody: break;  // story 10-9d: TouchSummary's
         }
     }
     const std::string vertical = a.ground_velocity.y != 0.0 ? Format(", vertical %+.2f m/s", a.ground_velocity.y) : "";

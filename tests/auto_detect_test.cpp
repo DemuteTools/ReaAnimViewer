@@ -10,6 +10,7 @@
 #include "auto_types.h"
 #include "bone_roles.h"
 #include "event_list.h"
+#include "hand_touch.h"
 #include "motion_physics.h"
 #include "rule_record.h"
 
@@ -877,7 +878,8 @@ int main()
         CHECK(AutoTypeOfKind(AutoKind::Grab) == AutoType::Grab && AutoTypeOfKind(AutoKind::Release) == AutoType::Release);
         for (int t = 0; t < kAutoTypeCount; ++t) {
             const bool hand = t == static_cast<int>(AutoType::Grab) || t == static_cast<int>(AutoType::Release) ||
-                              t == static_cast<int>(AutoType::HandPivot);
+                              t == static_cast<int>(AutoType::HandPivot) || t == static_cast<int>(AutoType::Clap) ||
+                              t == static_cast<int>(AutoType::HandOnBody);  // story 10-9d
             // Story 10-9b: Elbow in Arms, Sit and Fall in Body.
             const bool arms = hand || t == static_cast<int>(AutoType::Elbow);
             const bool body = t == static_cast<int>(AutoType::Jolt) || t == static_cast<int>(AutoType::Spin) ||  // 10-9g, 10-9f
@@ -924,7 +926,7 @@ int main()
         CHECK(ReadAutoSettings(blocks) == ui && !AutoPending(ui, ReadAutoSettings(blocks)));
         // An auto block of an unknown type belongs to no category.
         Block future;
-        future.auto_type = "clap";
+        future.auto_type = "future_type";
         CHECK(!AutoCategoryInBlocks({future}, AutoCategory::Arms) && !AutoCategoryInBlocks({future}, AutoCategory::Legs));
     }
 
@@ -1140,12 +1142,15 @@ int main()
                         break;
                     case AutoKind::Sit: parts = {Role::Hips, Role::Chest, Role::LeftHeel, Role::RightHeel}; break;
                     case AutoKind::Fall: parts = {Role::Hips, Role::LeftHeel, Role::RightHeel}; break;
+                    // Story 10-9d: a clap needs both hands, a hand on body its hand (and a body
+                    // segment, below).
+                    case AutoKind::Clap: parts = {Role::LeftHand, Role::RightHand}; break;
                     default: parts = {side == 'R' ? Role::RightHand : Role::LeftHand}; break;
                     }
                     auto is_listed = [&](Role r) {
                         return std::find(listed.begin(), listed.end(), RoleName(r)) != listed.end();
                     };
-                    bool expect = no_scale;
+                    bool expect = no_scale || (k == AutoKind::HandOnBody && !HasBodySegment(map));
                     for (Role r : parts)
                         if (is_listed(r)) expect = true;
                     if (k == AutoKind::JumpHeel || k == AutoKind::JumpToe || k == AutoKind::LandHeel || k == AutoKind::LandToe)
@@ -2339,6 +2344,110 @@ int main()
             CHECK(lj.size() == 1);
             if (lj.size() == 1) CHECK(lj[0].time_s > 1.9 && lj[0].time_s < 2.0);
         }
+    }
+    // Story 10-9d: claps and hand on body (hand_touch.h), standing still. Leg 0.87 m; the left
+    // thigh's axis runs x -0.1, z -0.14, y 0.50 -> 0.95.
+    {
+        // A hand moving straight from `from` to `to` at `speed` m/s from t0, then at rest there.
+        const auto toward = [](Vec3d from, Vec3d to, double t0, double speed) {
+            return [=](double t) {
+                const Vec3d  d{to.x - from.x, to.y - from.y, to.z - from.z};
+                const double len = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+                const double u = std::clamp((t - t0) * speed / len, 0.0, 1.0);
+                return Vec3d{from.x + d.x * u, from.y + d.y * u, from.z + d.z * u};
+            };
+        };
+        const Vec3d far_r{0.6, 1.2, 0.35}, meet_r{0.045, 1.2, 0.35}, still_l{-0.045, 1.2, 0.35};
+        Options o;
+        o.dur = 4.0;
+        o.hand[0] = [=](double) { return still_l; };
+        // The right hand claps on the still left one at 0.722 s, leaves slowly from 1.2 s, claps
+        // again at 2.722 s.
+        const HandFn in1 = toward(far_r, meet_r, 0.5, 2.5), out = toward(meet_r, far_r, 1.2, 1.0),
+                     in2 = toward(far_r, meet_r, 2.5, 2.5);
+        o.hand[1] = [=](double t) { return t < 1.2 ? in1(t) : t < 2.5 ? out(t) : in2(t); };
+        const std::vector<BoneTrack> rig = Rig(Planted(-0.1, 0.0), Planted(0.1, 0.0), o);
+        const PhysicsAnalysis        a = AnalyseMotion(rig);
+        CHECK(a.ok && a.role_pos.size() == static_cast<size_t>(Role::Count));
+        const std::vector<PhysicsEvent> claps = ClapEvents(a);
+        CHECK(claps.size() == 2);
+        if (claps.size() == 2) {
+            CHECK(claps[0].kind == PhysicsKind::Clap && claps[0].side == 'R' && claps[0].part == -1);
+            CHECK(std::fabs(claps[0].time_s - 0.722) < 0.03 && std::fabs(claps[1].time_s - 2.722) < 0.03);
+            CHECK(claps[0].strength > 2.0 && claps[0].strength < 3.2);  // 2.5 m/s / 0.87 m = 2.9 leg/s
+        }
+        CHECK(HandOnBodyEvents(a).empty());  // both hands stay far from the body
+        CHECK(TouchSummary(a, claps) == "touches: claps 2, hand on body 0");
+        CHECK(PhysicsMarkerName(claps.empty() ? PhysicsEvent{} : claps[0]).rfind("PHY R clap ", 0) == 0);
+        const std::vector<double> hd = HandsDistance(a);
+        CHECK(hd.size() == a.samples && std::fabs(hd[static_cast<size_t>(0.722 * 240.0) + 24] - 0.09 / 0.87) < 0.01);
+        // Through Detect: one Clap block per side, the right one marked.
+        AutoSettings s;
+        s.type[static_cast<int>(AutoType::Clap)].on = true;
+        const std::vector<Block> blocks = AutoBlocks(s);
+        CHECK(Markers(blocks) == (std::vector<std::string>{"Clap L", "Clap R"}));
+        const std::vector<Event> ev = DetectAutoEvents(blocks, rig, nullptr, false);
+        CHECK(ev.size() == 2 && ev[0].marker == "Clap R" && ev[1].marker == "Clap R");
+        // A slow clap (1 m/s, 1.15 leg/s): none at the default sensitivity, found at 100 %.
+        Options slow = o;
+        slow.hand[1] = toward(far_r, meet_r, 0.5, 1.0);
+        const std::vector<BoneTrack> srig = Rig(Planted(-0.1, 0.0), Planted(0.1, 0.0), slow);
+        CHECK(ClapEvents(AnalyseMotion(srig)).empty());
+        const PhysicsParams hi = AutoPhysicsParams(AutoType::Clap, 100.0, false);
+        CHECK(ClapEvents(AnalyseMotion(srig, hi), hi).size() == 1);
+        // Hands passing each other at speed, never stopping: no clap.
+        Options pass = o;
+        pass.hand[1] = toward(Vec3d{0.045, 1.2, 1.0}, Vec3d{0.045, 1.2, -0.3}, 0.5, 2.5);
+        CHECK(ClapEvents(AnalyseMotion(Rig(Planted(-0.1, 0.0), Planted(0.1, 0.0), pass))).empty());
+        // One hand missing: no clap, and the block says so.
+        Options one = o;
+        one.hand[1] = nullptr;
+        CHECK(ClapEvents(AnalyseMotion(Rig(Planted(-0.1, 0.0), Planted(0.1, 0.0), one))).empty());
+    }
+    {
+        const auto toward = [](Vec3d from, Vec3d to, double t0, double speed) {
+            return [=](double t) {
+                const Vec3d  d{to.x - from.x, to.y - from.y, to.z - from.z};
+                const double len = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+                const double u = std::clamp((t - t0) * speed / len, 0.0, 1.0);
+                return Vec3d{from.x + d.x * u, from.y + d.y * u, from.z + d.z * u};
+            };
+        };
+        // The left hand lands on the front of the left thigh (12 cm from its axis) at 2 m/s:
+        // arrives at 0.5 + 0.61 / 2 = 0.805 s. The right hand stays far.
+        Options o;
+        o.dur = 3.0;
+        o.hand[0] = toward(Vec3d{-0.6, 0.75, 0.3}, Vec3d{-0.1, 0.75, -0.02}, 0.5, 2.0);
+        o.hand[1] = [](double) { return Vec3d{0.7, 1.2, 0.4}; };
+        const std::vector<BoneTrack>    rig = Rig(Planted(-0.1, 0.0), Planted(0.1, 0.0), o);
+        const PhysicsAnalysis           a = AnalyseMotion(rig);
+        const std::vector<PhysicsEvent> body = HandOnBodyEvents(a);
+        CHECK(body.size() == 1);
+        if (body.size() == 1)
+            CHECK(body[0].kind == PhysicsKind::HandOnBody && body[0].side == 'L' && std::fabs(body[0].time_s - 0.805) < 0.03);
+        CHECK(ClapEvents(a).empty());
+        CHECK(HandBodyDistance(a, 'L').size() == a.samples && HandBodyDistance(a, 'R').size() == a.samples);
+        AutoSettings s;
+        s.type[static_cast<int>(AutoType::HandOnBody)].on = true;
+        const std::vector<Event> ev = DetectAutoEvents(AutoBlocks(s), rig, nullptr, false);
+        CHECK(ev.size() == 1 && ev[0].marker == "Hand on body L");
+        // A hand swinging past the thigh (15 cm aside) at 2 m/s, never stopping: none.
+        Options swing = o;
+        swing.hand[0] = toward(Vec3d{-0.25, 0.75, 0.6}, Vec3d{-0.25, 0.75, -0.9}, 0.5, 2.0);
+        CHECK(HandOnBodyEvents(AnalyseMotion(Rig(Planted(-0.1, 0.0), Planted(0.1, 0.0), swing))).empty());
+        // A hand that comes to rest slowly (0.5 m/s) against the thigh: none.
+        Options rest = o;
+        rest.hand[0] = toward(Vec3d{-0.6, 0.75, 0.3}, Vec3d{-0.1, 0.75, -0.02}, 0.5, 0.5);
+        CHECK(HandOnBodyEvents(AnalyseMotion(Rig(Planted(-0.1, 0.0), Planted(0.1, 0.0), rest))).empty());
+        // The parts: a hand on body needs a body segment; the hips and up legs give one.
+        std::vector<int> map(static_cast<size_t>(Role::Count), -1);
+        map[static_cast<size_t>(Role::LeftHand)] = 1;
+        map[static_cast<size_t>(Role::RightHand)] = 2;
+        CHECK(!HasBodySegment(map));
+        map[static_cast<size_t>(Role::Spine)] = 3;
+        CHECK(!HasBodySegment(map));
+        map[static_cast<size_t>(Role::Head)] = 4;
+        CHECK(HasBodySegment(map));  // spine -> head (the missing chest and neck skipped)
     }
 
     if (g_fails) std::printf("%d check(s) failed\n", g_fails);

@@ -200,6 +200,7 @@ if(WIN32)
             src/foot_taps.cpp  # 10-9e
             src/auto_types_body.cpp  # 10-9b
             src/body_contacts.cpp
+            src/hand_touch.cpp  # 10-9d
             src/detection_measure.cpp
             src/rule_record.cpp
             src/preset_store.cpp

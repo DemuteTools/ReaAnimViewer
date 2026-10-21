@@ -12,7 +12,8 @@ add_compile_definitions(RAV_HOST_TEST)
 set(RAV_AUTO_SRCS ../src/auto_detect.cpp ../src/auto_types.cpp ../src/auto_types_legs.cpp ../src/auto_types_arms.cpp
                   ../src/auto_types_jolt.cpp ../src/auto_types_spin.cpp
                   ../src/foot_taps.cpp  # story 10-9e
-                  ../src/auto_types_body.cpp ../src/body_contacts.cpp)  # 10-9b: Body, body contacts
+                  ../src/auto_types_body.cpp ../src/body_contacts.cpp  # 10-9b: Body, body contacts
+                  ../src/hand_touch.cpp)  # 10-9d
 
 enable_testing()
 

@@ -627,7 +627,10 @@ struct PhysicsParams {
     // opens the arm, Lvl_TopDown's 14.7 leg/s strike, 0.17), the arm goes from at most
     // punch_start_reach of its length (0.33-0.58) to at least punch_end_reach (0.92-1.00), and
     // ends no lower than punch_min_rise (the shoulder -> hand direction's vertical share; -0.42
-    // to +0.38 on the punches; an arm reaching down to a support or for balance, -0.68 to -0.98).
+    // to +0.38 on the punches; an arm reaching down to a support or for balance, -0.68 to -0.98)
+    // and no higher than punch_max_rise (review 10-9h: a climb's arm reaching up for the next
+    // hold opens as a punch does, +0.78 to +0.99, Climbing A Rope's at 1.81 leg/s, a Punch from
+    // sensitivity 57 %; the punches end at +0.39 at most).
     // The arm's length: shoulder -> elbow + elbow -> hand (medians), else the hand's farthest
     // reach. Elsewhere: runs, jumps, climbs, strafes, claps: 2.36 leg/s at most, and those fail
     // the start, the end or the rise.
@@ -642,6 +645,7 @@ struct PhysicsParams {
     double     punch_start_reach = 0.65;
     double     punch_end_reach = 0.90;
     double     punch_min_rise = -0.6;
+    double     punch_max_rise = 0.6;
 };
 
 // One contact of a part, in samples [start, end).

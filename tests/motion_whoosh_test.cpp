@@ -62,6 +62,7 @@ struct Body {
     bool   swing = false;   // left hand: an arc about the shoulder at 0.5 s
     bool   punch = false;   // right hand: a straight thrust at 1.2 s
     bool   punch_down = false;  // 10-9h: the thrust driven down (to the floor) instead of forward
+    bool   punch_up = false;    // review 10-9h: the thrust driven up (a climb's reach for a hold)
     bool   kick = false;    // left leg: a straight-leg front kick at 1.6 s
     bool   fold = false;    // right shank: a fast heel kick-up behind (a running stride's fold) at 0.4 s
     bool   pump = false;    // right hand: a running arm pump, the elbow straightening as it swings forward
@@ -110,6 +111,7 @@ std::vector<BoneTrack> MakeBody(const Body& b)
         } else {
             put(Role::RightHand,
                 b.punch ? Plus(guard, b.punch_down ? V(0.0, -0.5 * Smoothstep((t - 1.2) / 0.08), 0.2 * Smoothstep((t - 1.2) / 0.08))
+                                      : b.punch_up ? V(0.0, 0.6 * Smoothstep((t - 1.2) / 0.08), 0.1 * Smoothstep((t - 1.2) / 0.08))
                                                    : V(0.0, 0.1 * Smoothstep((t - 1.2) / 0.08), 0.55 * Smoothstep((t - 1.2) / 0.08)))
                         : guard);
         }
@@ -230,6 +232,18 @@ void TestPhysics()
         const PhysicsAnalysis da = AnalyseMotion(MakeBody(down), p);
         CHECK(da.ok && Count(WhooshEvents(da, p, false), PhysicsKind::Punch) == 0);
         CHECK(da.whoosh_hand[1].rise.back() < p.punch_min_rise);
+    }
+    // Review 10-9h: the same thrust driven up (a climb's arm reaching for the next hold): no punch,
+    // and a punch again with the cap lifted (the rise is the only test it fails).
+    {
+        Body up;
+        up.punch = up.punch_up = true;
+        const PhysicsAnalysis ua = AnalyseMotion(MakeBody(up), p);
+        CHECK(ua.ok && Count(WhooshEvents(ua, p, false), PhysicsKind::Punch) == 0);
+        CHECK(ua.whoosh_hand[1].rise.back() > p.punch_max_rise);
+        PhysicsParams any_rise = p;
+        any_rise.punch_max_rise = 1.0;
+        CHECK(Count(WhooshEvents(ua, any_rise, false), PhysicsKind::Punch) == 1);
     }
     // A kick must be raised: with the minimum height at 2 leg, none.
     PhysicsParams low = p;

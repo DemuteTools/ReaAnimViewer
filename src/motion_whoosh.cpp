@@ -24,7 +24,8 @@
 //           straight thrust, not an arc that also opens the arm), the arm opening from at most
 //           punch_start_reach of its length to at least punch_end_reach (bent -> straight), its
 //           end no lower than punch_min_rise (the shoulder -> hand direction's vertical share: an
-//           arm thrown down to a support or for balance is none) and the hand not in contact
+//           arm thrown down to a support or for balance is none) nor higher than punch_max_rise
+//           (an arm reaching up, a climb's reach for the next hold, is none) and the hand not in contact
 //           at its peak. Peak = the hand's fastest sample within start / end, those where the
 //           extending speed falls under whoosh_edge_frac of its peak; strength = the radial peak
 //           (leg/s).
@@ -223,7 +224,7 @@ std::vector<WhooshRun> PunchRuns(const WhooshTrack& h, double arm, const Physics
                 top = j;
             }
         if (lo > p.punch_start_reach * arm || hi < p.punch_end_reach * arm) continue;
-        if (h.rise[top] < p.punch_min_rise) continue;
+        if (h.rise[top] < p.punch_min_rise || h.rise[top] > p.punch_max_rise) continue;
         // The marker span: where the extending speed, walking away from its peak, falls under
         // whoosh_edge_frac of it (inside the run).
         WhooshRun w;

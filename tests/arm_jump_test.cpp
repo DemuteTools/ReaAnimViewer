@@ -64,6 +64,10 @@ struct Body {
     bool left_arm = true;    // up 150 deg from 0.8 s (0.3 s), back down from 1.45 s (0.25 s)
     bool right_arm = true;   // up and down 120 deg from 2.1 s, away from the jump
     bool hips = true;
+    // Story 10-9m: the right foot lands this much after the body (its own longer arc), and the
+    // right arm, held up from the start, comes down from 1.61 s (0.25 s, its fastest at 1.735 s).
+    double right_foot_late = 0.0;
+    bool   right_arm_late_down = false;
 };
 
 // The body's lift (m) at t: a ballistic flight (up at g x kFlight / 2).
@@ -72,6 +76,21 @@ double Lift(const Body& b, double t)
     if (!b.jump || t <= kTakeOff || t >= kTakeOff + kFlight) return 0.0;
     const double u = t - kTakeOff, v0 = kG * kFlight / 2.0;
     return v0 * u - 0.5 * kG * u * u;
+}
+
+// The right foot's lift: the body's, or its own ballistic arc kFlight + right_foot_late long.
+double RightFootLift(const Body& b, double t)
+{
+    if (!(b.right_foot_late > 0.0)) return Lift(b, t);
+    const double fl = kFlight + b.right_foot_late;
+    if (!b.jump || t <= kTakeOff || t >= kTakeOff + fl) return 0.0;
+    const double u = t - kTakeOff, v0 = kG * fl / 2.0;
+    return v0 * u - 0.5 * kG * u * u;
+}
+
+double LateDownArm(double t)
+{
+    return 120.0 * kPi / 180.0 * (1.0 - Smoothstep((t - 1.61) / 0.25));
 }
 
 double LeftArm(double t)
@@ -103,9 +122,15 @@ std::vector<BoneTrack> MakeBody(const Body& b)
         put(Role::LeftShoulder, shl);
         put(Role::RightShoulder, shr);
         put(Role::LeftHand, AboutX(Plus(shl, V(0.0, -0.6, 0.0)), shl, b.left_arm ? LeftArm(t) : 0.0));
-        put(Role::RightHand, AboutX(Plus(shr, V(0.0, -0.6, 0.0)), shr, b.right_arm ? RightArm(t) : 0.0));
+        put(Role::RightHand, AboutX(Plus(shr, V(0.0, -0.6, 0.0)), shr,
+                                    b.right_arm_late_down ? LateDownArm(t) : b.right_arm ? RightArm(t) : 0.0));
         for (int s = 0; s < 2; ++s) {
             const double x = s ? -0.1 : 0.1;
+            // Story 10-9m: the feet ride their own arc (the right one may land late).
+            auto put = [&](Role r, const Vec3d& p) {
+                const double y = s ? RightFootLift(b, t) : Lift(b, t);
+                rt[static_cast<size_t>(r)].pos.push_back(Plus(p, V(0.0, y, 0.0)));
+            };
             put(s ? Role::RightUpLeg : Role::LeftUpLeg, V(x, 0.95, 0.0));
             put(s ? Role::RightKnee : Role::LeftKnee, V(x, 0.5, 0.0));
             put(s ? Role::RightHeel : Role::LeftHeel, V(x, 0.08, -0.05));
@@ -207,6 +232,16 @@ void TestArms()
     still.jump = false;
     CHECK(Detect(still, On({AutoType::ArmJump, AutoType::ArmLand})).empty());
     CHECK(Markers(Detect(still, On({AutoType::Swing, AutoType::ArmJump, AutoType::ArmLand}))).size() == 4);
+
+    // Story 10-9m: the right foot lands 60 ms after the left (apart): Legs Land L and Land R, but
+    // the arms come down once per landing: the right arm's way down at 1.735 s (outside the first
+    // Land's window, inside the second's) is no Arms Land, the left arm's one Arms Land L.
+    Body apart;
+    apart.right_foot_late = 0.06;
+    apart.right_arm = false;
+    apart.right_arm_late_down = true;
+    CHECK((Markers(Detect(apart, On({AutoType::Land}))) == std::vector<std::string>{"Land L", "Land R"}));
+    CHECK((Markers(Detect(apart, On({AutoType::ArmLand}))) == std::vector<std::string>{"Arms Land L"}));
 
     // The sensitivity divides the speed: at 0 (8 leg/s) this 9 leg/s throw is still one.
     AutoSettings low = On({AutoType::ArmJump});

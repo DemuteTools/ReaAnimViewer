@@ -68,8 +68,18 @@ std::vector<double> JumpTimes(const PhysicsAnalysis& a, const PhysicsParams& p, 
 {
     std::vector<double> out;
     if (land) {
-        for (const PhysicsEvent& e : AutoSourceJump(a, p))
-            if (e.kind == PhysicsKind::Land) out.push_back(e.time_s);
+        // Story 10-9m: a landing on both feet apart gives two Lands (one per foot); the arms come
+        // down once: the first foot's Land only (the second is the other foot's, apart from it by
+        // jump_land_apart_max_s at most).
+        double last = 0.0;
+        bool   have = false;
+        for (const PhysicsEvent& e : AutoSourceJump(a, p)) {
+            if (e.kind != PhysicsKind::Land) continue;
+            if (have && e.time_s - last >= 0.0 && e.time_s - last <= p.jump_land_apart_max_s + 1e-6) continue;
+            out.push_back(e.time_s);
+            last = e.time_s;
+            have = true;
+        }
     } else {
         for (auto src : {&AutoSourceJump, &AutoSourceJumpPushOff, &AutoSourceJumpFreeFall})
             for (const PhysicsEvent& e : src(a, p))

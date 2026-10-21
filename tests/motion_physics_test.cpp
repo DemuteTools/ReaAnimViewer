@@ -2050,6 +2050,30 @@ int main()
         const PhysicsAnalysis a5 = AnalyseMotion(Rig(JumpFoot(-0.1, 1.0, 0.5), JumpFoot(0.1, 0.97, 0.5), o), SpeedTiming());
         CHECK(Of(JumpEvents(a5, SpeedTiming()), PhysicsKind::Land, 'R').size() == 1 &&
               Of(JumpEvents(a5, SpeedTiming()), PhysicsKind::Land).size() == 1);
+        // Story 10-9m: both feet leave together, the right lands 60 ms after the left (apart): a
+        // Land on each foot, each at its own foot step; one Jump still.
+        const PhysicsAnalysis a6 = AnalyseMotion(Rig(JumpFoot(-0.1, 1.0, 0.5), JumpFoot(0.1, 1.0, 0.56), o), SpeedTiming());
+        const std::vector<PhysicsEvent> ev6 = JumpEvents(a6, SpeedTiming());
+        const std::vector<PhysicsEvent> fev6 = FootEvents(a6, SpeedTiming());
+        CHECK(Of(ev6, PhysicsKind::Jump).size() == 1 && Of(ev6, PhysicsKind::Land, 'L').size() == 1 &&
+              Of(ev6, PhysicsKind::Land, 'R').size() == 1 && ev6.size() == 3);
+        if (Of(ev6, PhysicsKind::Land).size() == 2 && Of(fev6, PhysicsKind::FootStep, 'L').size() == 1 &&
+            Of(fev6, PhysicsKind::FootStep, 'R').size() == 1) {
+            const PhysicsEvent l = Of(ev6, PhysicsKind::Land, 'L')[0], r = Of(ev6, PhysicsKind::Land, 'R')[0];
+            CHECK(l.time_s == Of(fev6, PhysicsKind::FootStep, 'L')[0].time_s && l.part == Of(fev6, PhysicsKind::FootStep, 'L')[0].part);
+            CHECK(r.time_s == Of(fev6, PhysicsKind::FootStep, 'R')[0].time_s && r.part == Of(fev6, PhysicsKind::FootStep, 'R')[0].part);
+            CHECK(r.time_s - l.time_s > 0.045 && r.time_s - l.time_s < 0.075 && r.strength > 0.0);
+        }
+        CHECK(JumpSummary(a6, ev6) == "jumps: take-offs 1, landings 2");
+        // Apart only past jump_land_apart_s: raised over the gap, one Land (L).
+        PhysicsParams together = SpeedTiming();
+        together.jump_land_apart_s = 0.080;
+        CHECK(Of(JumpEvents(a6, together), PhysicsKind::Land).size() == 1 &&
+              Of(JumpEvents(a6, together), PhysicsKind::Land, 'L').size() == 1);
+        // 150 ms after (past jump_land_apart_max_s): a one-foot landing and a step, one Land (L).
+        const PhysicsAnalysis a7 = AnalyseMotion(Rig(JumpFoot(-0.1, 1.0, 0.5), JumpFoot(0.1, 1.0, 0.65), o), SpeedTiming());
+        CHECK(Of(JumpEvents(a7, SpeedTiming()), PhysicsKind::Land).size() == 1 &&
+              Of(JumpEvents(a7, SpeedTiming()), PhysicsKind::Land, 'L').size() == 1);
 
         // The same feet off while the hips are held up (hanging: the hands hold the body): no jump.
         std::vector<BoneTrack> held = rig;

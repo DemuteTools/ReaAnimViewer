@@ -1940,6 +1940,17 @@ int main()
         land_off[8].enabled = false;
         const std::vector<Event> ev_lo = DetectAutoEvents(land_off, rig, nullptr, false);
         CHECK(count(ev_lo, "FS L") == 1 && count(ev_lo, "FS R") == 1 && count(ev_lo, "Lift L") == 0);
+        // Story 10-9m: the right foot lands 60 ms after the left (apart): Land L and Land R, each
+        // replacing its foot's step; one Jump. With Land off, both steps.
+        {
+            const std::vector<BoneTrack> apart = Rig(JumpFoot(-0.1, 1.0, 0.5), JumpFoot(0.1, 1.0, 0.56), o);
+            const std::vector<Event>     ev_ap = DetectAutoEvents(r.blocks, apart, nullptr, false);
+            CHECK(count(ev_ap, "Land L") == 1 && count(ev_ap, "Land R") == 1 && count(ev_ap, "FS L") == 0 &&
+                  count(ev_ap, "FS R") == 0);
+            CHECK(count(ev_ap, "Jump L") + count(ev_ap, "Jump R") == 1);
+            const std::vector<Event> ev_ap_off = DetectAutoEvents(land_off, apart, nullptr, false);
+            CHECK(count(ev_ap_off, "FS L") == 1 && count(ev_ap_off, "FS R") == 1 && count(ev_ap_off, "Land R") == 0);
+        }
         // Walking steps before and after the jump: only the steps and lifts of the jump go.
         {
             Options                      ow;

@@ -1990,11 +1990,17 @@ std::vector<PhysicsEvent> JumpEvents(const PhysicsAnalysis& a, const PhysicsPara
             // The landing: the first foot to touch (a contact of it starts where the flight ends),
             // as FootEvents' foot step of that foot: the earliest timed part to touch during that
             // contact of the foot. Feet within p.jump_tie_s of each other land together: the first
-            // foot (L) names it, at its own step.
+            // foot (L) names it, at its own step. Story 10-9m: the other foot touching more than
+            // p.jump_land_apart_s after it (and p.jump_land_apart_max_s at most) lands apart: its
+            // own Land, at its own step.
             PhysicsEvent land;
             bool         found = false;
+            PhysicsEvent foot_land[2];
+            bool         foot_have[2] = {false, false};
             const int tie = static_cast<int>(std::floor(p.jump_tie_s * rate + 1e-9));
-            for (const FootTrack& f : a.foot) {
+            const int apart = static_cast<int>(std::floor(p.jump_land_apart_max_s * rate + 1e-9));
+            for (int s = 0; s < 2; ++s) {
+                const FootTrack& f = a.foot[s];
                 PhysicsEvent mine;
                 bool         have = false;
                 std::vector<char> any(static_cast<size_t>(n), 0);
@@ -2002,10 +2008,10 @@ std::vector<PhysicsEvent> JumpEvents(const PhysicsAnalysis& a, const PhysicsPara
                     if (pt.present)
                         for (int k = 0; k < n && static_cast<size_t>(k) < pt.contact.size(); ++k)
                             if (pt.contact[static_cast<size_t>(k)]) any[static_cast<size_t>(k)] = 1;
-                // This foot's contact starting at the flight's end, or within the tie after it.
+                // This foot's first contact after the flight's end, within the widest window.
                 int us = fe;
-                while (us < n && us <= fe + tie && !any[static_cast<size_t>(us)]) ++us;
-                if (us >= n || us > fe + tie || !any[static_cast<size_t>(us)]) continue;
+                while (us < n && us <= fe + std::max(tie, apart) && !any[static_cast<size_t>(us)]) ++us;
+                if (us >= n || us > fe + std::max(tie, apart) || !any[static_cast<size_t>(us)]) continue;
                 int ue = us;
                 while (ue < n && any[static_cast<size_t>(ue)]) ++ue;
                 for (int q = 0; q < kFootPartCount; ++q) {
@@ -2018,7 +2024,11 @@ std::vector<PhysicsEvent> JumpEvents(const PhysicsAnalysis& a, const PhysicsPara
                             have = true;
                         }
                 }
-                if (have && (!found || mine.time_s < land.time_s - p.jump_tie_s - kTieS)) {
+                if (!have) continue;
+                foot_land[s] = mine;
+                foot_have[s] = true;
+                // The first foot: a contact starting at the flight's end, or within the tie after it.
+                if (us <= fe + tie && (!found || mine.time_s < land.time_s - p.jump_tie_s - kTieS)) {
                     land = mine;
                     found = true;
                 }
@@ -2027,6 +2037,16 @@ std::vector<PhysicsEvent> JumpEvents(const PhysicsAnalysis& a, const PhysicsPara
                 land.kind = PhysicsKind::Land;
                 land.strength = HipsPeakSpeed(a, p, land.time_s, -1);
                 ev.push_back(land);
+                const int o = land.side == 'L' ? 1 : 0;  // the other foot
+                if (foot_have[o]) {
+                    const double gap = foot_land[o].time_s - land.time_s;
+                    if (gap > p.jump_land_apart_s + kTieS && gap <= p.jump_land_apart_max_s + kTieS) {
+                        PhysicsEvent second = foot_land[o];
+                        second.kind = PhysicsKind::Land;
+                        second.strength = HipsPeakSpeed(a, p, second.time_s, -1);
+                        ev.push_back(second);
+                    }
+                }
             }
         }
     }

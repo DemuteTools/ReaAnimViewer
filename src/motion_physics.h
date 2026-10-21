@@ -184,8 +184,11 @@
 // Story 10-9a-3: both carry the foot (PhysicsEvent::side L / R) and the part (FootPart) that
 // leaves last / touches first. Feet within jump_tie_s of each other (a two-footed take-off or
 // landing: the parts' 8 ms smoothing does not order them) tie, and a tie keeps the first foot
-// (L), at its own last part to leave / its own step: one event. Looping clips: as the other
-// events.
+// (L), at its own last part to leave / its own step: one event. Story 10-9m: at a landing, the
+// other foot touching more than jump_land_apart_s after the first (jump_land_apart_max_s at most:
+// later, it is a step after a one-foot landing) lands apart, a second Land on that foot at its
+// own step (its first part to touch). A take-off keeps one Jump (the last foot to leave): the
+// staggered take-offs' first foot is a lift-off. Looping clips: as the other events.
 //
 // Running strides (story 10-9a-4): a run's flights (both feet off each stride, longer as it
 // speeds up: Treadmill Running's sprint flies 154-162 ms at -1 g, which Detect's raise of the
@@ -443,6 +446,16 @@ struct PhysicsParams {
     // Attack, Jump_Small, Standing Jump), staggered ones 60 ms or more (Standing Jump02, Jump
     // Away); landings 13 ms or more apart. Not moved by the sensitivity.
     double     jump_tie_s = 0.010;
+    // Story 10-9m: a landing whose second foot touches more than jump_land_apart_s after the first
+    // (and jump_land_apart_max_s at most) gives that foot its own Land (s). Measured (first foot ->
+    // second foot's step): two-footed landings together 3-12 ms (Jump Attack, Jumping Down,
+    // Jump_Small, Standing Jump02, AirPunch's first) and 30 ms (Standing Jump), apart 62 ms
+    // (AirPunch's 1.54 s, Antho: two impacts); one-foot landings whose other foot steps after
+    // 115 ms (Jumping Down_Calm, a confirmed step) to 186-234 ms (the running jumps). Take-offs
+    // keep one Jump: a staggered take-off's first foot is a confirmed lift-off (Standing Jump02
+    // 64 ms, Jumping Down 25 ms). Not moved by the sensitivity.
+    double     jump_land_apart_s = 0.040;
+    double     jump_land_apart_max_s = 0.090;
     // Story 10-9a-4: a running stride's flight is no jump (see "Running strides" above): a
     // neighbouring flight one single-foot stance away (the stance this long at most, s) lasting at
     // least this flight / jump_stride_ratio. Measured (240 Hz dumps): consecutive stride flights

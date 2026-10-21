@@ -51,7 +51,7 @@ Vec3d Plus(const Vec3d& a, const Vec3d& b)
     return Vec3d{a.x + b.x, a.y + b.y, a.z + b.z};
 }
 
-enum class Blow { Hook, PulledBack, Chop, None };
+enum class Blow { Hook, PulledBack, Chop, Bounce, None };
 
 struct Body {
     Blow   right = Blow::Hook;
@@ -83,12 +83,16 @@ double ProfileAngle(double t, double t0, double up, double stop, double peak)
 Vec3d RightHand(const Body& b, const Vec3d& sh, double t)
 {
     if (b.right == Blow::None) return Plus(sh, V(0.0, -kArm, 0.0));
-    const double el = b.right == Blow::Chop ? -0.75 : -0.2, c = std::sqrt(1.0 - el * el);
-    const double stop = b.right == Blow::Chop ? 0.03 : b.hook_stop;
-    const double peak = b.right == Blow::Chop ? 1.3 * kHookPeak : kHookPeak;  // the low arm's shorter reach
+    const bool   low = b.right == Blow::Chop || b.right == Blow::Bounce;
+    const double el = low ? -0.75 : -0.2, c = std::sqrt(1.0 - el * el);
+    const double stop = low ? 0.03 : b.hook_stop;
+    const double peak = low ? 1.3 * kHookPeak : kHookPeak;  // the low arm's shorter reach
     const double total = ProfileAngle(1e9, kHook0, kHookUp, stop, peak);
     double       th = ProfileAngle(t, kHook0, kHookUp, stop, peak);
     if (b.right == Blow::PulledBack) th = total - th;
+    // Bounce: the chop's dead stop, then the hand snaps straight back (its speed back to 0.9 of
+    // the peak within 50 ms): a reversal (a feint, a dance pop), no hit.
+    if (b.right == Blow::Bounce) th -= ProfileAngle(t, kHook0 + kHookUp + stop, 0.05, 0.2, 0.9 * peak);
     return Plus(sh, V(-std::cos(th) * c * kArm, el * kArm, std::sin(th) * c * kArm));
 }
 
@@ -210,6 +214,11 @@ void TestStrike()
     Body chop;
     chop.right = Blow::Chop;
     CHECK((Markers(Detect(chop, On({AutoType::Strike}))) == std::vector<std::string>{"Strike R"}));
+
+    // The same low blow snapping straight back after its stop (a reversal): no strike.
+    Body bounce;
+    bounce.right = Blow::Bounce;
+    CHECK(Detect(bounce, On({AutoType::Strike})).empty());
 
     // No blow at all: none.
     Body none;

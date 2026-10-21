@@ -496,10 +496,10 @@ constexpr AutoStrengthCuts kStrengthRows[] = {
     // AirPunch's landing on the hands 2.97 and 8.21 leg/s; the hand's approach, as Grab): wp33 1.42,
     // wp67 2.61.
     {T::Slap, 1.4, 2.6},
-    // Story 10-9n: 7 on 6 clips (Jump Attack's right hand 5.42, the uppercut 6.47, Fist Fight's
-    // left 7.88, the sword 8.03, the hook 10.6, the hammer fist 11.6, Lvl_TopDown 14.9 leg/s; the
-    // hand's peak speed): wp33 7.88, wp67 10.6.
-    {T::Strike, 7.9, 10.6},
+    // Story 10-9n: 6 on 5 clips (Jump Attack's right hand 5.42, the uppercut 6.47, the sword 8.03,
+    // the hook 10.6, the hammer fist 11.6, Lvl_TopDown 14.9 leg/s; the hand's peak speed): wp33
+    // 8.03, wp67 11.6 (11.5: the hammer fist on the high side; review: Fist Fight's left 7.88 snaps back, a Swing).
+    {T::Strike, 8.0, 11.5},
 };
 
 // ---- Kinds -------------------------------------------------------------------------------------

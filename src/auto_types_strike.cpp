@@ -12,7 +12,8 @@
 //   - it stops: the speed falls under strike_stop_frac of the peak within strike_stop_s after it
 //     (a follow-through, an arm swinging on, takes longer);
 //   - and it hits (the speed under strike_hit_frac of the peak within strike_hit_s: a blade into
-//     the floor, a fist into a block) or travels an arc in front: at the peak the arm is raised
+//     the floor, a fist into a block, and staying under strike_rebound_frac for strike_rebound_s
+//     after it: a hand coming straight back is a reversal, no hit) or travels an arc in front: at the peak the arm is raised
 //     (the shoulder -> hand direction's vertical share, WhooshTrack::rise, at strike_min_rise at
 //     least: not a pendulum through the bottom of the arm's arc, as running arms and jump swings
 //     are) and the hand moves forward (its velocity relative to the torso, its share along the
@@ -168,10 +169,16 @@ std::vector<PhysicsEvent> StrikeEvents(const PhysicsAnalysis& a, const PhysicsPa
             while (j + 1 < n && at(j) > p.strike_stop_frac * v) ++j;
             if (at(j) > p.strike_stop_frac * v || static_cast<double>(j - k) / rate > p.strike_stop_s) continue;
             // A hit, or an arc in front.
-            double     least = v;
+            // A hit leaves the hand stopped: after the hit window's slowest point, the speed stays
+            // under strike_rebound_frac of the peak for strike_rebound_s (a hand coming straight
+            // back, a feint or a dance pop, is a reversal, no hit).
+            long       slow = k;
             const long hit_end = std::min(n - 1, k + std::lround(p.strike_hit_s * rate));
-            for (long q = k; q <= hit_end; ++q) least = std::min(least, at(q));
-            const bool hit = least <= p.strike_hit_frac * v;
+            for (long q = k; q <= hit_end; ++q)
+                if (at(q) < at(slow)) slow = q;
+            bool       hit = at(slow) <= p.strike_hit_frac * v;
+            const long reb_end = std::min(n - 1, slow + std::lround(p.strike_rebound_s * rate));
+            for (long q = slow; q <= reb_end && hit; ++q) hit = !(at(q) > p.strike_rebound_frac * v);
             if (!hit && !ArcAt(a, p, h, f, k)) continue;
             PhysicsEvent e;
             e.kind = PhysicsKind::Swing;
@@ -236,8 +243,9 @@ void AutoLanesStrike(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::
     std::snprintf(buf, sizeof(buf),
                   "Shaded: the arm raised and the hand moving forward (an arc). A peak above the line\n"
                   "whose speed falls to %.0f %% within %.0f ms is a strike when it is in the shade, or when it\n"
-                  "hits (to %.0f %% within %.0f ms).",
-                  p.strike_stop_frac * 100.0, p.strike_stop_s * 1000.0, p.strike_hit_frac * 100.0, p.strike_hit_s * 1000.0);
+                  "hits (to %.0f %% within %.0f ms, then under %.0f %% for %.0f ms).",
+                  p.strike_stop_frac * 100.0, p.strike_stop_s * 1000.0, p.strike_hit_frac * 100.0, p.strike_hit_s * 1000.0,
+                  p.strike_rebound_frac * 100.0, p.strike_rebound_s * 1000.0);
     l.shade_note = buf;
     out.push_back(std::move(l));
 }

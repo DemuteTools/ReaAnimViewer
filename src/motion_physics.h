@@ -711,14 +711,22 @@ struct PhysicsParams {
     // 0.20-0.27 s to stop, a counter-arm pull (AirPunch R) moves backward (-0.95), running arms and
     // jump swings pass the bottom of the arc (-0.7..-1.0); the running arms' reversals stop at
     // 3.9-4.9 leg/s and keep 41-58 % of their speed after 70 ms.
+    // Review of 10-9n: a hit leaves the hand stopped: within strike_rebound_s of the slowest
+    // point of the hit window, the speed stays under strike_rebound_frac of the peak (a blade in
+    // the floor 13-15 %, Lvl_TopDown's recovery 45 %); a hand coming straight back is a reversal
+    // (a feint, a dance pop: 65-162 %), no hit. strike_min_rise -0.5 (was -0.6): halfway between
+    // the air blows' lowest arm (the hook, -0.38) and the nearest arm that is no blow (a running
+    // arm -0.59, Fist Fight's swing -0.61), so neither sits on the line.
     double     strike_speed = 5.0;
     double     strike_stop_s = 0.175;
     double     strike_stop_frac = 0.3;
     double     strike_hit_s = 0.07;
     double     strike_hit_frac = 0.32;
-    double     strike_min_rise = -0.6;
+    double     strike_min_rise = -0.5;
     double     strike_min_fwd = 0.3;
     double     strike_touch_s = 0.10;
+    double     strike_rebound_s = 0.10;
+    double     strike_rebound_frac = 0.55;
 };
 
 // One contact of a part, in samples [start, end).

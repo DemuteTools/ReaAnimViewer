@@ -133,6 +133,11 @@ bool AutoMatchTap(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
 bool AutoMatchDrag(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
 void AutoLanesDrag(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
 
+// heel_taps.cpp (story 10-9i)
+std::vector<PhysicsEvent> AutoSourceHeelTap(const PhysicsAnalysis& a, const PhysicsParams& p);
+bool AutoMatchHeelTap(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+void AutoLanesHeelTap(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+
 // auto_types_arms.cpp
 std::vector<PhysicsEvent> AutoSourceHand(const PhysicsAnalysis& a, const PhysicsParams& p);
 std::vector<PhysicsEvent> AutoSourceHandAny(const PhysicsAnalysis& a, const PhysicsParams& p);
@@ -340,6 +345,13 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "at its fastest, or where the motion starts (Start).",
      "punch", {{&P::punch_speed, S::Divide}, {}}, &AutoPartsWhooshHand, false, false, false, true, true, -1, -1,
      false, 0u, 0.5},  // story 10-9h: half steps for the confidence (conf_scale)
+    // Story 10-9i: higher sensitivity = a smaller heel rise counts (heel_tap_min_rise / f).
+    {T::HeelTap, "Heel Tap", "Heel Tap", C::Legs,
+     "A marker where the heel drops back onto the floor while the ball of the foot stays down\n"
+     "(the foot rolls onto its ball, then the heel comes down): Heel Tap L / Heel Tap R.\n"
+     "With Step ticked, it replaces that foot's step there.",
+     "heel_tap", {{&P::heel_tap_min_rise, S::Divide}, {}}, &AutoPartsFootBoth, false, false, false, true, false,
+     static_cast<int>(T::Step), -1, true, 0u, 0.5},  // conf_scale: Hip Hop's softest drops rise 0.017 over 0.013
 };
 
 // ---- Strength levels (story 10-10b) ------------------------------------------------------------
@@ -389,6 +401,9 @@ constexpr AutoStrengthCuts kStrengthRows[] = {
     // 9 on 4 clips (story 10-9h; the radial extending speed, not the hand's): the jabs 2.34-2.44
     // Soft, the crosses 2.66-2.79 Medium, the wound-up punch 4.69 Hard.
     {T::Punch, 2.6, 3.5},
+    // 11 on 2 clips: wp33 0.259, wp67 0.308 leg/s (the heel's fastest descent); Hip Hop Dancing's
+    // 9 from 0.12 (slow drops) to 0.34, Clap_Normal's seated heel pops 0.26 and 0.31.
+    {T::HeelTap, 0.26, 0.31},
 };
 
 // ---- Kinds -------------------------------------------------------------------------------------
@@ -525,6 +540,9 @@ constexpr AutoKindInfo kKindRows[] = {
     {K::PunchStart, "punch_start", T::Punch, "Punch", {0xDD503C, 0x3CDD8C}, kNo, false, false, "hand", K::Punch,
      {{"start", &AutoSourceWhooshStart, &AutoMatchPunch}}, &AutoMissingWhooshHand, &AutoLanesPunch,
      &AutoRolesWhooshHand, nullptr, true},
+    // Story 10-9i: the heel tap, on the heel.
+    {K::HeelTap, "heel_tap", T::HeelTap, "Heel Tap", {0x50B4A0, 0xE0A050}, kNo, false, false, "heel", K::HeelTap,
+     {{"heel drop", &AutoSourceHeelTap, &AutoMatchHeelTap}}, &AutoMissingHeelOrToe, &AutoLanesHeelTap, &AutoRolesFoot},
 };
 
 // One row per enum value, in enum order.

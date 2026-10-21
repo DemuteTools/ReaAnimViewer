@@ -520,6 +520,21 @@ struct PhysicsParams {
     double     tap_max_s = 0.150;
     double     tap_heel_rise = 0.03;
     double     tap_floor_height = 0.03;
+    // Story 10-9i: heel taps (HeelTapEvents, heel_taps.h): the heel rises over the ball (both over
+    // their floors) by heel_tap_min_rise at least (leg) and comes back within heel_tap_land of its
+    // floor, falling at heel_tap_min_speed at least (leg/s), the heel in contact throughout and
+    // the ball in contact within heel_tap_ball_height of its floor, that floor within
+    // heel_tap_floor of the body's (BodyTrack::floor_y). The sensitivity divides
+    // heel_tap_min_rise. Measured on the fixture dumps (spec 10-9i): Hip Hop Dancing's heel drops
+    // rise 0.017-0.050 leg over the ball and fall at 0.12-0.34 leg/s; the punches' and the
+    // weight shifts' heel lifts rise 0.004-0.012 (Fist Fight 0.012); the climbs' and the crawl's
+    // feet rest on holds or tiptoes 0.2-1.9 leg over the floor.
+    double     heel_tap_min_rise = 0.013;
+    double     heel_tap_min_speed = 0.06;
+    double     heel_tap_ball_height = 0.02;
+    double     heel_tap_land = 0.003;
+    double     heel_tap_floor = 0.03;
+    double     heel_tap_hold_s = 0.100;  // then rests within heel_tap_land of its floor this long
     // A drag is the toe (ball or tip) sliding on its support during a swing: the heel off the
     // ground, the toe part not in contact (it moves), within drag_height (leg) above or below the
     // support of its latest contact, at drag_speed to drag_max_speed (leg/s, horizontal, ground

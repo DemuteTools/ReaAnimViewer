@@ -14,7 +14,8 @@ set(RAV_AUTO_SRCS ../src/auto_detect.cpp ../src/auto_types.cpp ../src/auto_types
                   ../src/foot_taps.cpp  # story 10-9e
                   ../src/auto_types_body.cpp ../src/body_contacts.cpp  # 10-9b: Body, body contacts
                   ../src/hand_touch.cpp  # 10-9d
-                  ../src/auto_types_whoosh.cpp)  # 10-9c
+                  ../src/auto_types_whoosh.cpp  # 10-9c
+                  ../src/heel_taps.cpp)  # 10-9i
 
 enable_testing()
 
@@ -149,6 +150,11 @@ add_executable(foot_taps_test foot_taps_test.cpp ${RAV_AUTO_SRCS} ../src/motion_
                ../src/rule_record.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
 target_include_directories(foot_taps_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME foot_taps COMMAND foot_taps_test)
+# Story 10-9i -- heel taps (src/heel_taps.h), and their Heel Tap row through Detect.
+add_executable(heel_taps_test heel_taps_test.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/motion_whoosh.cpp ../src/bone_events.cpp
+               ../src/rule_record.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
+target_include_directories(heel_taps_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME heel_taps COMMAND heel_taps_test)
 
 add_executable(bone_roles_test bone_roles_test.cpp ../src/bone_events.cpp)
 target_include_directories(bone_roles_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)

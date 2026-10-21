@@ -31,6 +31,9 @@
 //              (FS, Toe) within +-30 ms of it; with Lift-off, its lift-offs over the touch.
 //   drag       (story 10-9e) the toe sliding on the ground during a swing, the heel up
 //              (Drag L / R, with its end). See foot_taps.h.
+//   heel tap   (story 10-9i) the heel dropping back onto the floor while the ball stays down
+//              (Heel Tap L / R). With Step ticked too, it replaces that foot's steps within +-30 ms
+//              of it. See heel_taps.h.
 //   Story 10-9a-3: lift-off, jump and land each have Combined / Separate
 //   (AutoSettings::separate_parts, the types whose row says `part_split`). Separate puts each
 //   event on its part's block: Heel = the heel, Toe = the ball or the toe tip (kinds lift_heel,
@@ -121,12 +124,12 @@ namespace rav {
 // The types the section ticks (story 10-9e appends Tap and Drag, story 10-9b Knee, Elbow, Sit, Fall,
 // story 10-9d Clap and Hand on body, story 10-9c Kick, Swing and Punch).
 enum class AutoType : int { Step = 0, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land, Jolt, Spin, Tap, Drag,
-                            Knee, Elbow, Sit, Fall, Clap, HandOnBody, Kick, Swing, Punch };
-constexpr int kAutoTypeCount = 22;  // story 10-9g: Jolt; 10-9f: Spin (Body, sideless); 10-9e: Tap, Drag; 10-9b; 10-9d; 10-9c
+                            Knee, Elbow, Sit, Fall, Clap, HandOnBody, Kick, Swing, Punch, HeelTap };
+constexpr int kAutoTypeCount = 23;  // story 10-9g: Jolt; 10-9f: Spin (Body, sideless); 10-9e: Tap, Drag; 10-9b; 10-9d; 10-9c; 10-9i: Heel Tap
 // "Step", "Lift-off", "Slide scuff", "Pivot scuff", "Grab", "Release", "Pivot scuff" (the hand's),
 // "Jump", "Land", "Jolt" (story 10-9g, Body), "Spin" (story 10-9f, Body), "Tap", "Drag";
 // story 10-9b: "Knee", "Elbow", "Sit", "Fall"; story 10-9d: "Clap", "Hand on body"; story 10-9c:
-// "Kick", "Swing", "Punch"
+// "Kick", "Swing", "Punch"; story 10-9i: "Heel Tap"
 const char* AutoTypeLabel(AutoType t);
 
 // Story 10-9-0: every type, category and kind has one descriptor row in auto_types.cpp (labels,
@@ -154,15 +157,16 @@ enum class AutoKind : int {
     Knee, Elbow, Sit, Fall,  // story 10-9b
     Clap, HandOnBody,        // story 10-9d
     // Story 10-9c: kick (combined, heel, toe), then the same at the start; swing, punch and theirs.
-    Kick, KickHeel, KickToe, KickStart, KickHeelStart, KickToeStart, Swing, SwingStart, Punch, PunchStart
+    Kick, KickHeel, KickToe, KickStart, KickHeelStart, KickToeStart, Swing, SwingStart, Punch, PunchStart,
+    HeelTap  // story 10-9i
 };
-constexpr int kAutoKindCount = 47;
+constexpr int kAutoKindCount = 48;
 // "step", "heel", "toe", "lift", "slide", "pivot", "grab", "release", "hand_pivot", "hand_pivot_any",
 // "slide_heel", "slide_toe", "pivot_heel", "pivot_toe", "slide_heel_longest", "slide_toe_longest",
 // "pivot_heel_longest", "pivot_toe_longest", "jump", "land", "lift_heel", "lift_toe", "jump_heel",
 // "jump_toe", "land_heel", "land_toe", "jolt" (story 10-9g), "spin", "spin_end" (10-9f), "tap", "drag",
 // "knee", "elbow", "sit", "fall" (10-9b), "clap", "hand_body" (10-9d), "kick", "kick_heel", "kick_toe",
-// "kick_start", "kick_heel_start", "kick_toe_start", "swing", "swing_start", "punch", "punch_start" (10-9c)
+// "kick_start", "kick_heel_start", "kick_toe_start", "swing", "swing_start", "punch", "punch_start" (10-9c), "heel_tap" (10-9i)
 const char* AutoKindWord(AutoKind k);
 bool AutoKindFromWord(const std::string& w, AutoKind* out);
 AutoType AutoTypeOfKind(AutoKind k);

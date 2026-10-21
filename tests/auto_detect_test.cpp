@@ -1152,7 +1152,8 @@ int main()
                     case AutoKind::PivotHeelLongest:
                     case AutoKind::PivotToeLongest: 
                     case AutoKind::Tap:   // story 10-9e: the heel and the toe, as a pivot
-                    case AutoKind::Drag: parts = {heel, toe}; break;
+                    case AutoKind::Drag:
+                    case AutoKind::HeelTap: parts = {heel, toe}; break;  // story 10-9i: as a tap
                     case AutoKind::Step:
                     case AutoKind::Lift:
                     case AutoKind::Slide: parts = {heel, toe, tip}; break;

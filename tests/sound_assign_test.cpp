@@ -63,13 +63,14 @@ static void TestTable()
     CHECK(parts.size() == 4);
     // Story 10-9a: Legs > Jump / Land, assigned like any type (story 10-9e: and Tap / Drag). Story
     // 10-9b: Legs > Knee, Arms > Elbow, Body > Sit / Fall. Story 10-9d: Arms > Clap, Hand on body.
-    // Story 10-9c: Legs > Kick, Arms > Swing / Punch.
-    CHECK(parts[0].id == "legs" && parts[0].label == "Legs" && parts[0].types.size() == 11);
-    if (parts[0].types.size() == 11)
+    // Story 10-9c: Legs > Kick, Arms > Swing / Punch. Story 10-9i: Legs > Heel Tap.
+    CHECK(parts[0].id == "legs" && parts[0].label == "Legs" && parts[0].types.size() == 12);
+    if (parts[0].types.size() == 12)
         CHECK(parts[0].types[0].word == "step" && parts[0].types[1].word == "lift" && parts[0].types[2].word == "slide" &&
               parts[0].types[3].word == "pivot" && parts[0].types[4].word == "jump" && parts[0].types[5].word == "land" &&
               parts[0].types[6].word == "tap" && parts[0].types[7].word == "drag" && parts[0].types[8].word == "knee" &&
-              parts[0].types[9].word == "kick" && parts[0].types[10].word == "rules");
+              parts[0].types[9].word == "kick" && parts[0].types[10].word == "heel_tap" &&
+              parts[0].types[11].word == "rules");
     CHECK(parts[1].id == "arms" && parts[1].types.size() == 9 && parts[1].types[2].word == "hand_pivot" &&
           parts[1].types[3].word == "elbow" && parts[1].types[4].word == "clap" && parts[1].types[5].word == "hand_body" &&
           parts[1].types[6].word == "swing" && parts[1].types[7].word == "punch" && parts[1].types[8].word == "rules");
@@ -112,7 +113,8 @@ static void TestEventRoleKey()
                                         "knee", "elbow", "",    "",                      // 10-9b: sit, fall: the body
                                         "hand", "hand",   // story 10-9d: clap, hand on body
                                         "",     "heel", "toe",  "",     "heel", "toe",   // 10-9c: kick, at the start
-                                        "hand", "hand", "hand", "hand"};                 // swing, punch
+                                        "hand", "hand", "hand", "hand",                  // swing, punch
+                                        "heel"};                                         // 10-9i: heel tap
     for (int k = 0; k < kAutoKindCount; ++k)
         for (char side : {'L', 'R'}) CHECK(EventRoleKey(AutoB(static_cast<AutoKind>(k), side, "x")) == want[k]);
     Block unknown = AutoB(AutoKind::Heel, 'L', "x");
@@ -178,7 +180,8 @@ static void TestPartOfBlock()
                                         "arms.clap",  "arms.hand_body",  // story 10-9d
                                         // story 10-9c: kick (combined, heel, toe, then at the start), swing, punch
                                         "legs.kick", "legs.kick", "legs.kick", "legs.kick", "legs.kick", "legs.kick",
-                                        "arms.swing", "arms.swing", "arms.punch", "arms.punch"};
+                                        "arms.swing", "arms.swing", "arms.punch", "arms.punch",
+                                        "legs.heel_tap"};  // story 10-9i
     for (int k = 0; k < kAutoKindCount; ++k) {
         const Block b = AutoB(static_cast<AutoKind>(k), 'L', "x");
         CHECK(PartOf(b) == want[k]);

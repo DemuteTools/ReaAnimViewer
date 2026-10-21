@@ -540,8 +540,8 @@ constexpr AutoKindInfo kKindRows[] = {
     {K::PunchStart, "punch_start", T::Punch, "Punch", {0xDD503C, 0x3CDD8C}, kNo, false, false, "hand", K::Punch,
      {{"start", &AutoSourceWhooshStart, &AutoMatchPunch}}, &AutoMissingWhooshHand, &AutoLanesPunch,
      &AutoRolesWhooshHand, nullptr, true},
-    // Story 10-9i: the heel tap, on the heel.
-    {K::HeelTap, "heel_tap", T::HeelTap, "Heel Tap", {0x50B4A0, 0xE0A050}, kNo, false, false, "heel", K::HeelTap,
+    // Story 10-9i: the heel tap, on the heel (dark blue / brown: away from Scuff's teal / sand, 10-9j).
+    {K::HeelTap, "heel_tap", T::HeelTap, "Heel Tap", {0x1E5A8C, 0x8C5A1E}, kNo, false, false, "heel", K::HeelTap,
      {{"heel drop", &AutoSourceHeelTap, &AutoMatchHeelTap}}, &AutoMissingHeelOrToe, &AutoLanesHeelTap, &AutoRolesFoot},
 };
 

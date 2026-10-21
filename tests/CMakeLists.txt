@@ -16,6 +16,7 @@ set(RAV_AUTO_SRCS ../src/auto_detect.cpp ../src/auto_types.cpp ../src/auto_types
                   ../src/hand_touch.cpp  # 10-9d
                   ../src/auto_types_whoosh.cpp  # 10-9c
                   ../src/heel_taps.cpp  # 10-9i
+                  ../src/auto_types_arm_jump.cpp  # 10-9k
                   ../src/scuff_peak.cpp)  # 10-9j
 
 enable_testing()
@@ -170,6 +171,11 @@ add_executable(heel_taps_test heel_taps_test.cpp ${RAV_AUTO_SRCS} ../src/motion_
                ../src/rule_record.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
 target_include_directories(heel_taps_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME heel_taps COMMAND heel_taps_test)
+# Story 10-9k -- Arms > Jump / Land (src/auto_types_arm_jump.cpp) through Detect, and their Swing replacement.
+add_executable(arm_jump_test arm_jump_test.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/motion_whoosh.cpp ../src/bone_events.cpp
+               ../src/rule_record.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
+target_include_directories(arm_jump_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME arm_jump COMMAND arm_jump_test)
 
 add_executable(bone_roles_test bone_roles_test.cpp ../src/bone_events.cpp)
 target_include_directories(bone_roles_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)

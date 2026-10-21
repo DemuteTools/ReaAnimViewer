@@ -185,6 +185,30 @@ void TestKnownValues()
         CHECK(AutoPhysicsParams(AutoType::Fall, 100.0, false).fall_min_speed == d0.fall_min_speed / 2.0);
         CHECK(AutoPhysicsParams(AutoType::Knee, 100.0, false).contact_speed == d0.contact_speed);
     }
+    // Story 10-9k: Arms > Jump, Land: markers apart from Legs Jump / Land, replacing the Swing of
+    // their hand within their run, never raised by Detect, the sensitivity dividing the arm speed.
+    {
+        CHECK(std::string(AutoTypeLabel(AutoType::ArmJump)) == "Jump" &&
+              std::string(AutoTypeLabel(AutoType::ArmLand)) == "Land");
+        CHECK(std::string(AutoTypeRow(AutoType::ArmJump).undo_label) == "Arms Jump" &&
+              std::string(AutoTypeRow(AutoType::ArmLand).undo_label) == "Arms Land");
+        CHECK(AutoCategoryOf(AutoType::ArmJump) == AutoCategory::Arms && AutoCategoryOf(AutoType::ArmLand) == AutoCategory::Arms);
+        CHECK(AutoMarkerName(AutoKind::ArmJump, 'L') == "Arms Jump L" && AutoMarkerName(AutoKind::ArmLand, 'R') == "Arms Land R");
+        CHECK(std::string(AutoKindWord(AutoKind::ArmJump)) == "arm_jump" &&
+              std::string(AutoKindWord(AutoKind::ArmLand)) == "arm_land");
+        CHECK(std::string(AutoTypeWord(AutoType::ArmJump)) == "arm_jump" &&
+              std::string(AutoTypeWord(AutoType::ArmLand)) == "arm_land");
+        for (AutoType t : {AutoType::ArmJump, AutoType::ArmLand}) {
+            const AutoTypeInfo& r = AutoTypeRow(t);
+            CHECK(r.replaces == -1 && r.replaces_in_span == static_cast<int>(AutoType::Swing) && r.replaces_own_side);
+            CHECK(r.no_sens_raise && !r.start_option && !r.part_split && !r.sideless && !r.shared_sides);
+            CHECK(AutoKindsOf(t).size() == 1);
+        }
+        const PhysicsParams d0;
+        CHECK(AutoPhysicsParams(AutoType::ArmJump, 100.0, false).arm_jump_speed == d0.arm_jump_speed / 2.0);
+        CHECK(AutoPhysicsParams(AutoType::ArmLand, 0.0, false).arm_land_speed == d0.arm_land_speed * 2.0);
+        CHECK(AutoPhysicsParams(AutoType::ArmJump, 100.0, false).swing_speed == d0.swing_speed);
+    }
     CHECK(AutoKindRow(AutoKind::PivotHeel).degrees && !AutoKindRow(AutoKind::SlideHeel).degrees);
     CHECK(AutoKindRow(AutoKind::SlideToeLongest).scuff == ScuffParts::Longest && !AutoKindRow(AutoKind::SlideToeLongest).scuff_heel);
     const PhysicsParams d;

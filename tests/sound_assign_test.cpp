@@ -70,9 +70,15 @@ static void TestTable()
               parts[0].types[6].word == "tap" && parts[0].types[7].word == "drag" && parts[0].types[8].word == "knee" &&
               parts[0].types[9].word == "kick" && parts[0].types[10].word == "heel_tap" &&
               parts[0].types[11].word == "rules");
-    CHECK(parts[1].id == "arms" && parts[1].types.size() == 9 && parts[1].types[2].word == "hand_pivot" &&
-          parts[1].types[3].word == "elbow" && parts[1].types[4].word == "clap" && parts[1].types[5].word == "hand_body" &&
-          parts[1].types[6].word == "swing" && parts[1].types[7].word == "punch" && parts[1].types[8].word == "rules");
+    // Story 10-9k: Arms > Jump, Land (the arms of a jump).
+    CHECK(parts[1].id == "arms" && parts[1].types.size() == 11);
+    if (parts[1].types.size() == 11)
+        CHECK(parts[1].types[2].word == "hand_pivot" && parts[1].types[3].word == "elbow" &&
+              parts[1].types[4].word == "clap" && parts[1].types[5].word == "hand_body" &&
+              parts[1].types[6].word == "swing" && parts[1].types[7].word == "punch" &&
+              parts[1].types[8].word == "arm_jump" && parts[1].types[9].word == "arm_land" &&
+              parts[1].types[10].word == "rules");
+    CHECK(TypeLabel("arms", "arm_jump") == "Jump" && TypeLabel("arms", "arm_land") == "Land");
     CHECK(parts[2].id == "body" && parts[2].label == "Body" && parts[2].has_category &&
           parts[2].category == AutoCategory::Body && parts[2].types.size() == 5);
     if (parts[2].types.size() == 5)  // stories 10-9g, 10-9f, 10-9b: Body > Jolt, Spin, Sit, Fall
@@ -117,7 +123,8 @@ static void TestEventRoleKey()
                                         // story 10-9j: the scuffs' Peak twins, as their Start kinds
                                         "",     "heel", "toe",  "heel", "toe",               // slide
                                         "",     "heel", "toe",  "heel", "toe",               // pivot
-                                        "hand", "hand"};                                 // hand pivot
+                                        "hand", "hand",                                  // hand pivot
+                                        "hand", "hand"};                                 // 10-9k: arms jump, land
     for (int k = 0; k < kAutoKindCount; ++k)
         for (char side : {'L', 'R'}) CHECK(EventRoleKey(AutoB(static_cast<AutoKind>(k), side, "x")) == want[k]);
     Block unknown = AutoB(AutoKind::Heel, 'L', "x");
@@ -188,7 +195,8 @@ static void TestPartOfBlock()
                                         // story 10-9j: the scuffs' Peak twins
                                         "legs.slide", "legs.slide", "legs.slide", "legs.slide", "legs.slide",
                                         "legs.pivot", "legs.pivot", "legs.pivot", "legs.pivot", "legs.pivot",
-                                        "arms.hand_pivot", "arms.hand_pivot"};
+                                        "arms.hand_pivot", "arms.hand_pivot",
+                                        "arms.arm_jump", "arms.arm_land"};  // story 10-9k
     for (int k = 0; k < kAutoKindCount; ++k) {
         const Block b = AutoB(static_cast<AutoKind>(k), 'L', "x");
         CHECK(PartOf(b) == want[k]);

@@ -661,6 +661,23 @@ struct PhysicsParams {
     double     punch_end_reach = 0.90;
     double     punch_min_rise = -0.6;
     double     punch_max_rise = 0.6;
+    // Story 10-9k: the arms of a jump (auto_types_arm_jump.cpp). Per take-off (Jump's events) and
+    // hand, the fastest speed peak of the hand relative to the torso within arm_jump_before_s
+    // before to arm_jump_after_s after it, at arm_jump_speed at least (leg/s; the sensitivity
+    // divides it), the hand not touching, the arm ending its run higher than it started (thrown
+    // up into the take-off); per landing (Land's events), the same within arm_land_before_s /
+    // arm_land_after_s at arm_land_speed, the arm coming down. Measured on the 16 jump clips
+    // (spec 10-9k): the arms thrown into a take-off peak 0.03-0.18 s before it to 0.12 s after,
+    // 4.6-8.2 leg/s (a slow one, Jumping's right arm, 3.5); at a landing 0.07 s before it to
+    // 0.17 s after, 3.1-9.2 leg/s. A running arm swings at 3-6 leg/s: the landing window stays
+    // short (a running jump's next stride swing, 0.18-0.24 s after, is outside), and 2.5 would add
+    // two arms barely moving (2.9 leg/s).
+    double     arm_jump_speed = 4.0;
+    double     arm_jump_before_s = 0.30;
+    double     arm_jump_after_s = 0.15;
+    double     arm_land_speed = 3.0;
+    double     arm_land_before_s = 0.10;
+    double     arm_land_after_s = 0.20;
 };
 
 // One contact of a part, in samples [start, end).

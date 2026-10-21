@@ -227,6 +227,14 @@ void AutoLanesPunch(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::s
 std::vector<Role> AutoRolesKick(char side);
 std::vector<Role> AutoRolesWhooshHand(char side);
 
+// auto_types_arm_jump.cpp (story 10-9k: the arms of a jump)
+std::vector<PhysicsEvent> AutoSourceArmJump(const PhysicsAnalysis& a, const PhysicsParams& p);
+std::vector<PhysicsEvent> AutoSourceArmLand(const PhysicsAnalysis& a, const PhysicsParams& p);
+void AutoPartsArmJump(bool separate, const std::vector<int>& role_to_bone, std::vector<std::string>& out);
+bool AutoMissingArmJump(char side, const std::vector<int>& role_to_bone);
+void AutoLanesArmJump(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+void AutoLanesArmLand(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+
 namespace {
 
 using C = AutoCategory;
@@ -366,6 +374,22 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "With Step ticked, it replaces that foot's step there.",
      "heel_tap", {{&P::heel_tap_min_rise, S::Divide}, {}}, &AutoPartsFootBoth, false, false, false, true, false,
      static_cast<int>(T::Step), -1, true, 0u, 0.5},  // conf_scale: Hip Hop's softest drops rise 0.017 over 0.013
+    // Story 10-9k: the arms of a jump (auto_types_arm_jump.cpp); higher sensitivity = slower arms
+    // count (their speed / f). With Swing ticked, each replaces the Swing of that hand within its
+    // run (one motion, one sound). Not raised by Detect (no_sens_raise): a clip with no jump has
+    // none, and a raise would turn an arm's sway at a step into one.
+    {T::ArmJump, "Jump", "Arms Jump", C::Arms,
+     "A marker where an arm is thrown up into a jump's take-off (Arms Jump L / Arms Jump R),\n"
+     "at the hand's fastest. It follows the take-offs Legs > Jump finds (ticked or not).\n"
+     "With Swing ticked, it replaces that hand's Swing there.",
+     "arm_jump", {{&P::arm_jump_speed, S::Divide}, {}}, &AutoPartsArmJump, false, false, false, true, false, -1,
+     static_cast<int>(T::Swing), true, 0u, 0.5},  // conf_scale: Jump Attack's left arm 4.76 over 4.0
+    {T::ArmLand, "Land", "Arms Land", C::Arms,
+     "A marker where an arm comes down at a jump's landing, reaching for the floor or the knees\n"
+     "(Arms Land L / Arms Land R), at the hand's fastest. It follows the landings Legs > Land\n"
+     "finds (ticked or not). With Swing ticked, it replaces that hand's Swing there.",
+     "arm_land", {{&P::arm_land_speed, S::Divide}, {}}, &AutoPartsArmJump, false, false, false, true, false, -1,
+     static_cast<int>(T::Swing), true, 0u, 0.5},  // conf_scale: the hand to the floor 3.7-3.9 over 3.0
 };
 
 // ---- Strength levels (story 10-10b) ------------------------------------------------------------
@@ -418,6 +442,12 @@ constexpr AutoStrengthCuts kStrengthRows[] = {
     // 11 on 2 clips: wp33 0.259, wp67 0.308 leg/s (the heel's fastest descent); Hip Hop Dancing's
     // 9 from 0.12 (slow drops) to 0.34, Clap_Normal's seated heel pops 0.26 and 0.31.
     {T::HeelTap, 0.26, 0.31},
+    // Story 10-9k: 18 on 10 clips: wp33 5.36, wp67 6.58 leg/s (the hand's peak speed); Jumping's
+    // and Jump Attack's slower arms (4.8-5.7) Soft, Standing Jump's 7.4-7.6 Hard.
+    {T::ArmJump, 5.4, 6.6},
+    // 15 on 9 clips: wp33 4.0, wp67 5.07 leg/s; Standing Jump02's arms coming down 3.1-3.3 Soft,
+    // Jump Attack's strike on landing 8.0 and the vault's 9.2 Hard.
+    {T::ArmLand, 4.0, 5.1},
 };
 
 // ---- Kinds -------------------------------------------------------------------------------------
@@ -613,6 +643,14 @@ constexpr AutoKindInfo kKindRows[] = {
      K::HandPivot,
      {{"rub peak", &AutoSourceHandAnyPeak, &AutoMatchHandPivot}},
      &AutoMissingHand, &AutoLanesHandPivot, &AutoRolesHand},
+    // Story 10-9k: the arms of a jump, on the hand (a cyan / amber and a deep blue / bronze, away
+    // from Swing's blue / magenta and Legs Jump's teal).
+    {K::ArmJump, "arm_jump", T::ArmJump, "Arms Jump", {0x46C8DC, 0xDC9646}, kNo, false, false, "hand", K::ArmJump,
+     {{"take-off arm", &AutoSourceArmJump, &AutoMatchSwing}}, &AutoMissingArmJump, &AutoLanesArmJump,
+     &AutoRolesWhooshHand},
+    {K::ArmLand, "arm_land", T::ArmLand, "Arms Land", {0x2E6EA0, 0xA06E2E}, kNo, false, false, "hand", K::ArmLand,
+     {{"landing arm", &AutoSourceArmLand, &AutoMatchSwing}}, &AutoMissingArmJump, &AutoLanesArmLand,
+     &AutoRolesWhooshHand},
 };
 
 // One row per enum value, in enum order.

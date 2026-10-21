@@ -205,6 +205,7 @@ if(WIN32)
             src/hand_touch.cpp  # 10-9d
             src/auto_types_whoosh.cpp  # 10-9c
             src/heel_taps.cpp  # 10-9i
+            src/auto_types_arm_jump.cpp  # 10-9k
             src/scuff_peak.cpp  # 10-9j
             src/detection_measure.cpp
             src/rule_record.cpp

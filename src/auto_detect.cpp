@@ -675,6 +675,7 @@ std::vector<Event> AutoEventsImpl(const std::vector<AutoAnalysis>& analyses, con
     std::vector<Event> out;
     std::vector<double>   raw;     // per event in `out`: its physics time (before the block's offset)
     std::vector<double>   raw_end; // per event in `out`: its physics end (story 10-9e, replaces_in_span)
+    std::vector<double>   raw_start; // per event in `out`: its physics start (story 10-9k: a span before its time)
     std::vector<AutoType> type;    // per event in `out`: its block's type
     std::vector<double>   period;  // per event in `out`: its analysis' loop period (0: not looping)
     std::vector<const char*> part;  // per event in `out`: its kind's role key ("heel", "toe"; "" = the foot)
@@ -744,6 +745,7 @@ std::vector<Event> AutoEventsImpl(const std::vector<AutoAnalysis>& analyses, con
             out.push_back(std::move(ev));
             raw.push_back(e.time_s);
             raw_end.push_back(std::max(e.time_s, e.end_s));
+            raw_start.push_back(std::min(e.time_s, e.start_s));
             type.push_back(row.type);
             period.push_back(loop_period);
             part.push_back(row.role_key ? row.role_key : "");
@@ -755,7 +757,9 @@ std::vector<Event> AutoEventsImpl(const std::vector<AutoAnalysis>& analyses, con
     // Story 10-8r: in Separate (heel / toe), only the steps / lift-offs of its own part: a Land Toe
     // never drops the Heel slap that follows it (a whole-foot kind, on either side, still replaces
     // any part's). Story 10-9e: read from the type rows (`replaces`, `replaces_in_span`); a Tap
-    // replaces its own foot's steps at its touch and the lift-off that ends it (one sound).
+    // replaces its own foot's steps at its touch and the lift-off that ends it (one sound). Story
+    // 10-9k: the span is [start, end] (an Arms Jump's run starts before its peak, where a Swing
+    // marked at its start sits).
     if (replace) {
         std::vector<char> drop(out.size(), 0);
         bool              any = false;
@@ -768,8 +772,8 @@ std::vector<Event> AutoEventsImpl(const std::vector<AutoAnalysis>& analyses, con
                 if (!at_time && !in_span) continue;
                 if (tr.replaces_own_side && sides[j] != sides[i]) continue;
                 if (*part[i] && *part[j] && std::strcmp(part[i], part[j]) != 0) continue;
-                // The distance to the event's time (at_time) or to its span [time, end] (in_span).
-                const double lo = raw[i], hi = in_span ? raw_end[i] : raw[i];
+                // The distance to the event's time (at_time) or to its span [start, end] (in_span).
+                const double lo = in_span ? raw_start[i] : raw[i], hi = in_span ? raw_end[i] : raw[i];
                 double d = std::fabs(raw[j] - raw[i]);
                 if (raw[j] >= lo && raw[j] <= hi) d = 0.0;
                 else d = std::min(std::fabs(raw[j] - lo), std::fabs(raw[j] - hi));

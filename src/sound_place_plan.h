@@ -191,8 +191,9 @@ struct PieceApply {
 // Sound is placed from its zones (Takes mode too: its take's zones; a Sound read but not laid out is laid out on a copy
 // first, ZonesLaidOut); `file` no longer changes anything. {} for a bad index, an off variation, or a variation with no
 // zone of that part.
-// 13-62h (spec 13-62h Lot B, C2): one piece per part zone, never merged (a split Heel|Heel = 2 butted items). Each
-// piece is cut as HeardPieces cuts it: at a Gap it runs into the Gap by xl on its right / starts xr before the Gap's end
+// 13-62h (spec 13-62h Lot B, C2): one piece per part zone (a split Heel|Heel = 2 butted items); 2026-10-21 (Antho):
+// except a combined event ("") on a divided Sound, where each run of butted zones of the same gain is one piece (its
+// in side from its first zone, its out side from its last, the snap from the run's start). Each piece is cut as HeardPieces cuts it: at a Gap it runs into the Gap by xl on its right / starts xr before the Gap's end
 // on its left, its fade on that side = xl + xr (the two items overlap by xl + xr and crossfade); every other side
 // ZoneFade (own -- with its shape, 13-62i -- / At cuts / part / Sound). Positions are heard time: a piece after a Gap
 // comes the jumped length earlier than in the file; empty space stays. The anchor = the first piece with a snap of its

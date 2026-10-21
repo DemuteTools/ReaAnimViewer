@@ -403,7 +403,7 @@ static void TestPartsAudition()
     CHECK(PlayedText(lib, v) == "Steps");  // the later piece is not named again
     v = PartAuditionVoices(lib, n, 1, "vf");
     CHECK(v.size() == 1 && Near(v[0].start_s, 1.1) && Near(v[0].length_s, 0.2) && Near(v[0].fade_in_s, kDefaultCutFade));
-    CHECK(PartAuditionVoices(lib, n, 1, "").size() == 2);        // the whole variation: each zone an item (C2)
+    CHECK(PartAuditionVoices(lib, n, 1, "").size() == 1);        // the whole variation: Back | Front butted, one item
     CHECK(PartAuditionVoices(lib, n, 2, "vb").empty());          // a bad index
     // 13-28: a part with its own gain (part_db) plays at it, the others at the frame's dB; a zone in it too
     // (the root's gain is 0 here).

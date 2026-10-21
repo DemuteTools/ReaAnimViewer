@@ -199,19 +199,19 @@ static void TestParts()
         // Slide / pivot heel kinds read as heel too.
         CHECK(ResolveFor(st, lib, Auto(AutoKind::PivotHeel)).res.sounds[0].part_value == "vb");
     }
-    // Row 3: a combined step (FS) gets the whole variation, its first part's sync. 13-62h (C2): one item per
-    // zone, never merged: Back and Front butted, At cuts at the cut.
+    // Row 3: a combined step (FS) gets the whole variation, its first part's sync. 2026-10-21 (Antho; was 13-62h C2,
+    // one item per zone): Back and Front butted = one item, no cut.
     {
         Resolved r = ResolveFor(st, lib, Auto(AutoKind::Step));
         CHECK(r.res.sounds.size() == 1 && r.res.sounds[0].part_value.empty() && r.ed.out[0].part.empty());
         const int                     v = r.res.sounds[0].variation;
         const std::vector<PieceApply> pa = PieceApplyFor(sd, v, "");
-        CHECK(pa.size() == 2 && pa[0].anchor && Near(pa[0].slice.length, 0.2) && Near(pa[0].slice.snap_offset, 0.020));
-        if (pa.size() == 2) {
-            CHECK(Near(pa[0].fades.in, kDefaultFadeIn) && Near(pa[1].fades.out, kDefaultFadeOut));
-            CHECK(Near(pa[0].fades.out, kDefaultCutFade) && Near(pa[1].fades.in, kDefaultCutFade) &&
-                  Near(pa[1].from_anchor, 0.2));
-        }
+        CHECK(pa.size() == 1 && pa[0].anchor && Near(pa[0].slice.length, 0.4) && Near(pa[0].slice.snap_offset, 0.020));
+        if (pa.size() == 1) CHECK(Near(pa[0].fades.in, kDefaultFadeIn) && Near(pa[0].fades.out, kDefaultFadeOut));
+        // A gain change at the cut still cuts it (one item carries one gain).
+        SoundData g = sd;
+        g.frames[static_cast<size_t>(v)].zones[1].db = -3.0;
+        CHECK(PieceApplyFor(g, v, "").size() == 2);
     }
     // Row 4: a rule whose first condition reads a toe end bone: Front.
     {
@@ -293,10 +293,11 @@ static void TestParts()
         const std::vector<PieceApply> pb = PieceApplyFor(n.sound, 0, "vb");
         CHECK(pb.size() == 2 && !pb[0].anchor && pb[1].anchor && Near(pb[1].slice.snap_offset, 0.01) &&
               Near(pb[0].from_anchor, -0.12));
-        // The whole variation: its three zones, each its own item (from the same anchor).
+        // The whole variation: the space keeps two items, the butted Back | Front one item (2026-10-21), from the
+        // same anchor.
         const std::vector<PieceApply> pw = PieceApplyFor(n.sound, 0, "");
-        CHECK(pw.size() == 3 && Near(pw[2].slice.length, 0.2) && Near(pw[2].fades.out, kDefaultFadeOut) &&
-              Near(pw[2].from_anchor, 0.08));
+        CHECK(pw.size() == 2 && pw[1].anchor && Near(pw[1].slice.start_offs, 0.12) && Near(pw[1].slice.length, 0.28) &&
+              Near(pw[1].fades.out, kDefaultFadeOut) && Near(pw[0].from_anchor, -0.12));
         // The slot is placed again when the piece count or the part changes (re-Populate).
         std::vector<DesiredSlot>  d = {De(0, "s", 0)};
         std::vector<ExistingSlot> x = {Ex(0, "s", 0)};

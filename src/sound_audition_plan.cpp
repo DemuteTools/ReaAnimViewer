@@ -484,6 +484,11 @@ EditPlay EditPlayFrom(const SoundData& d, double from, double to, const PartList
     EditPlay out;
     if (!UsesZones(d) || !std::isfinite(from) || !std::isfinite(to) || !(to > from)) return out;
     const bool         listening = listen && listen->Active();
+    // 2026-10-21: every part heard on a divided Sound = a combined event: touching zones of the same gain play as one
+    // voice, as Populate places them as one item (ZonePieces).
+    const bool         merge = !listening && IsDivided(d);
+    ZoneRef            last_z;      // the last zone of the last voice
+    size_t             last_span = 0;  // and its span in out.map
     double             at = 0.0;
     std::map<int, int> nth;  // voices so far per variation (PlayedText names a variation's first one)
     for (const HeardPiece& p : HeardPieces(d, from, to, tl)) {
@@ -521,7 +526,25 @@ EditPlay EditPlayFrom(const SoundData& d, double from, double to, const PartList
             if (s.heard && !(s.b > s.a)) s.heard = false;  // only its jumped stretch was in the range
             s.cin = ZoneFadeCurve(d, p.z, -1, cut_in);  // 13-75: its sides' curves, as Populate places them
             s.cout = ZoneFadeCurve(d, p.z, 1, cut_out);
-            if (s.heard) {
+            AuditionVoice* back = out.voices.empty() ? nullptr : &out.voices.back();
+            const ZoneRef  bz = last_z;
+            if (s.heard && merge && back && back->variation == p.z.frame && Butted(d, bz, p.z) &&
+                std::fabs(back->gain_db - z->db) < 0.01 && std::fabs(back->delay_ms + back->length_s * 1000.0 - s.at * 1000.0) < 1e-6) {
+                const double lo = back->start_s - back->fade_from_s;  // the merged voice's envelope
+                back->length_s = s.b - back->start_s;
+                back->fade_out_s = s.fout;
+                back->fade_out_shape = s.cout.shape;
+                back->fade_out_dir = s.cout.dir;
+                back->fade_span_s = s.hi - lo;
+                back->mono = PartMono(d, std::string());
+                back->part.clear();  // mixed
+                out.map.spans[last_span].fout = 0.0;  // no fade at the joined cut
+                s.fin = 0.0;
+                last_z = p.z;
+                last_span = out.map.spans.size();
+            } else if (s.heard) {
+                last_z = p.z;
+                last_span = out.map.spans.size();
                 AuditionVoice v;
                 v.variation = p.z.frame;
                 v.start_s = s.a;

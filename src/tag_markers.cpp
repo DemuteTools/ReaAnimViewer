@@ -5,6 +5,7 @@
 #include "tag_markers.h"
 #include "watchdog.h"  // freeze audit: breadcrumbs and scopes
 #include "sound_follow.h"
+#include "rav_features.h"  // release 0.4.0: kWithSounds
 #include "busy_progress_ui.h"  // 13-59: the busy card of a long gesture
 
 #ifdef _WIN32
@@ -1865,11 +1866,14 @@ void MarkerMirrorTick()
                 } catch (...) {
                 }
             }
-            // Epic 13 (D20): placed sounds follow their animation item's events (13-9).
-            try {
-                mp.follow_waits = SoundFollowTick(c.first);
-            } catch (...) {
-                mp.follow_waits = false;
+            // Epic 13 (D20): placed sounds follow their animation item's events (13-9). Release 0.4.0: not
+            // without the sound library (the placed sounds stay where they are).
+            if constexpr (kWithSounds) {
+                try {
+                    mp.follow_waits = SoundFollowTick(c.first);
+                } catch (...) {
+                    mp.follow_waits = false;
+                }
             }
             // The mirror's own writes moved the count: the next tick has nothing to do.
             mp.count = GetProjectStateChangeCount(c.first);

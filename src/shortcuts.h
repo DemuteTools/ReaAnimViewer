@@ -21,6 +21,8 @@
 #include <string>
 #include <vector>
 
+#include "rav_features.h"  // release 0.4.0: kWithSounds
+
 namespace rav {
 
 // ---- virtual keys (the Windows VK_* values, spelled here so this half stays Windows-free)
@@ -50,10 +52,18 @@ enum class ShortcutContext {
     LibraryEdit,  // 13-61: ...and the Library's Sound Edit window has the focus
 };
 
+// Release 0.4.0: a row of this context exists in this build (RAV built without the sound library has no
+// Sound Edit window: its rows are neither listed nor registered as REAPER actions).
+constexpr bool ShortcutRowBuilt(ShortcutContext c, bool with_sounds = kWithSounds)
+{
+    return with_sounds || c != ShortcutContext::LibraryEdit;
+}
+
 // Two contexts can be on at once (then their actions cannot share a key): Anywhere overlaps
 // every context; Video view, Tagging view and the Library's Edit window never are on together.
 inline bool ShortcutContextsOverlap(ShortcutContext a, ShortcutContext b)
 {
+    if (!ShortcutRowBuilt(a) || !ShortcutRowBuilt(b)) return false;  // release 0.4.0: a row not built takes no key
     return a == ShortcutContext::Anywhere || b == ShortcutContext::Anywhere || a == b;
 }
 
@@ -315,12 +325,13 @@ struct MouseGestureDef {
     int         group;    // index in kMouseGestureGroups
     const char* action;
     const char* gesture;
+    bool        sounds = false;  // release 0.4.0: a gesture of the sound library's windows only
 };
 
 inline const MouseGestureDef kMouseGestureTable[] = {
     {0, "Orbit", "Right-drag"},
     {0, "Pan", "Middle-drag"},
-    {0, "Hand scroll (Sound Edit, Blend lanes)", "Middle-drag"},  // 13-45 (the mockup: fixed)
+    {0, "Hand scroll (Sound Edit, Blend lanes)", "Middle-drag", true},  // 13-45 (the mockup: fixed)
     {0, "Zoom", "Wheel"},
     {0, "Menu, buttons, nav cube", "Left-click"},
     {1, "Move the playhead", "Click / drag"},
@@ -328,6 +339,12 @@ inline const MouseGestureDef kMouseGestureTable[] = {
     {1, "Switch Cut / Move", "Middle-click a shot"},
     {1, "Resize the strip", "Drag its top edge"},
 };
+
+// Release 0.4.0: a mouse row exists in this build (without the sound library, its windows' gestures are not listed).
+constexpr bool MouseGestureBuilt(const MouseGestureDef& d, bool with_sounds = kWithSounds)
+{
+    return with_sounds || !d.sounds;
+}
 
 using ShortcutBindings = std::array<KeyBinding, kShortcutCount>;
 

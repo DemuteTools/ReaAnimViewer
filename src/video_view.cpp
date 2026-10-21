@@ -17,6 +17,7 @@
 #include <utility>
 
 #include "console_log.h"
+#include "rav_features.h"  // release 0.4.0: kWithSounds (no Library view without it)
 #include "reaper_actions.h"
 #include "reaper_api.h"
 #include "render_current.h"
@@ -851,7 +852,7 @@ bool VideoViewActive()
 
 bool LibraryViewActive()
 {
-    return g_mode == ViewMode::Library;
+    return kWithSounds && g_mode == ViewMode::Library;
 }
 
 bool TaggingViewActive()
@@ -868,16 +869,17 @@ void SetViewMode(ViewMode mode)
 {
     // Entering or leaving Video view keeps its rules (first entry opens the panel, a running
     // gesture is written as shown); RAV view <-> Tagging view only switches the mode.
+    if (!kWithSounds && mode == ViewMode::Library) mode = ViewMode::Rav;  // release 0.4.0: no Library view
     SetVideoViewActive(mode == ViewMode::Video);
     g_mode = mode;
 }
 
-ViewMode NextViewMode(ViewMode mode)
+ViewMode NextViewMode(ViewMode mode, bool with_sounds)
 {
     switch (mode) {
     case ViewMode::Rav: return ViewMode::Tagging;
     case ViewMode::Tagging: return ViewMode::Video;
-    case ViewMode::Video: return ViewMode::Library;
+    case ViewMode::Video: return with_sounds ? ViewMode::Library : ViewMode::Rav;  // release 0.4.0
     default: return ViewMode::Rav;
     }
 }

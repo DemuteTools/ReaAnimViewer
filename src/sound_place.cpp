@@ -5,6 +5,7 @@
 // never writes RAV_SOUNDS and records no undo.
 
 #include "sound_place.h"
+#include "rav_features.h"  // release 0.4.0: kWithSounds
 
 #ifdef _WIN32
 
@@ -1068,8 +1069,8 @@ void InitSoundPlace(void* (*get_func)(const char* name))
     f_set_take_source = reinterpret_cast<SetMediaItemTakeSourceFn>(get_func("SetMediaItemTake_Source"));
     f_project_path = reinterpret_cast<GetProjectPathExFn>(get_func("GetProjectPathEx"));
 
-    // E11: the dev action, registered here (no frozen file changes).
-    if (f_plugin_register && g_test_cmd == 0) {
+    // E11: the dev action, registered here (no frozen file changes). Release 0.4.0: not without the sounds.
+    if (kWithSounds && f_plugin_register && g_test_cmd == 0) {
         g_test_cmd = f_plugin_register("command_id", const_cast<char*>("RAV_SOUND_PLACE_TEST"));
         if (g_test_cmd) {
             g_test_accel.accel.cmd = static_cast<WORD>(g_test_cmd);

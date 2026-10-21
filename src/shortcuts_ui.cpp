@@ -105,12 +105,14 @@ const std::vector<RowRef>& AllRows()
     static std::vector<RowRef> rows;
     if (!rows.empty()) return rows;
     for (int s = static_cast<int>(Sec::Viewer); s <= static_cast<int>(Sec::Mouse); ++s) {
-        for (int i = 0; i < kShortcutCount; ++i)
-            if (static_cast<int>(SecOf(RowRef{RowRef::Kind::Key, i})) == s) rows.push_back(RowRef{RowRef::Kind::Key, i});
+        for (int i = 0; i < kShortcutCount; ++i)  // release 0.4.0: only the rows built (no Sound Edit without the sounds)
+            if (static_cast<int>(SecOf(RowRef{RowRef::Kind::Key, i})) == s && ShortcutRowBuilt(kShortcutTable[i].context))
+                rows.push_back(RowRef{RowRef::Kind::Key, i});
         if (s == static_cast<int>(Sec::Timelines))
             for (int i = 0; i < kNavRowCount; ++i) rows.push_back(RowRef{RowRef::Kind::Nav, i});
         if (s == static_cast<int>(Sec::Mouse))
-            for (int i = 0; i < kMouseRowCount; ++i) rows.push_back(RowRef{RowRef::Kind::Mouse, i});
+            for (int i = 0; i < kMouseRowCount; ++i)
+                if (MouseGestureBuilt(kMouseGestureTable[i])) rows.push_back(RowRef{RowRef::Kind::Mouse, i});
     }
     return rows;
 }
@@ -1022,7 +1024,7 @@ void Detail(const RowRef& r)
         // Conflicts (facts).
         for (const Cap& c : caps)
             if (!c.tip.empty()) warns.push_back(c.tip);
-        if (def.context != ShortcutContext::LibraryEdit) {
+        if (kWithSounds && def.context != ShortcutContext::LibraryEdit) {  // release 0.4.0: no Library view without the sounds
             std::string library;
             for (const KeyBinding& k : CurrentShortcutKeymap().keys[static_cast<size_t>(id)])
                 if (LibraryViewUsesKey(k.vk, k.ctrl, k.shift, k.alt)) library += (library.empty() ? "" : ", ") + ShortcutBindingLabel(k);
@@ -1334,7 +1336,8 @@ void LinkModal(bool open_now)
                 const int o = ShortcutKeyOwner(CurrentShortcutKeymap(), kb, t);
                 if (o >= 0 && ShortcutFollowedAction(o).empty())
                     held += (held.empty() ? "" : ", ") + ShortcutBindingLabel(kb) + " (\"" + kShortcutTable[o].label + "\")";
-                if (LibraryViewUsesKey(kb.vk, kb.ctrl, kb.shift, kb.alt)) library += (library.empty() ? "" : ", ") + ShortcutBindingLabel(kb);
+                if (kWithSounds && LibraryViewUsesKey(kb.vk, kb.ctrl, kb.shift, kb.alt))  // release 0.4.0
+                    library += (library.empty() ? "" : ", ") + ShortcutBindingLabel(kb);
             }
             if (!held.empty()) ui::ToneText("Kept by another RAV row: " + held, ui::kWarn, true, wrap);
             if (!library.empty()) ui::ToneText("The Library view's own while it has the focus: " + library, ui::kWarn, true, wrap);
@@ -1502,6 +1505,7 @@ void NavPane(float w, float h)
     if (ui::BeginPane("##secnav", ImVec2(w, h), o)) {
         const std::vector<RowRef>& rows = AllRows();
         for (int s = 0; s < static_cast<int>(Sec::Count); ++s) {
+            if (!kWithSounds && s == static_cast<int>(Sec::Edit)) continue;  // release 0.4.0: no Sound Edit section
             if (s == static_cast<int>(Sec::Viewer) || s == static_cast<int>(Sec::Mouse)) {
                 const ImVec2 p = ImGui::GetCursorScreenPos();
                 ImGui::GetWindowDrawList()->AddLine(ImVec2(p.x + ui::Dp(4.0f), p.y + ui::Dp(3.0f)),

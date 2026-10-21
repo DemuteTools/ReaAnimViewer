@@ -11,6 +11,7 @@
 #include <map>
 
 #include "item_rules.h"
+#include "rav_features.h"  // release 0.4.0: kWithSounds
 #include "reaper_item_read.h"  // ItemGuidOf (13-51)
 #include "sound_model.h"
 #include "sound_place.h"
@@ -161,7 +162,7 @@ ItemClearResult ClearItemData(MediaItem* item)
             }
             // A record not cleared still lists what it handed over: taken back (one owner per marker).
             if (!res.error.empty()) RevertFailedHandOversNoUndo(handoffs);
-            if (res.error.empty()) {
+            if (kWithSounds && res.error.empty()) {  // release 0.4.0: the sounds stay without the sound library
                 // 3. The sounds: library sources untagged (they stay), the others deleted.
                 for (const std::string& guid : g.plan.untag_guids) {
                     const auto f = g.tagged_items.find(Upper(guid));

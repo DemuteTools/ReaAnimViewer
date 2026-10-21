@@ -45,6 +45,7 @@
 #include "gl_loader.h"   // LoadGlFunctions + modern-GL pointers; pulls in <gl/GL.h>
 #include "overlay_icons.h"    // kIcon_menu/light/color — Antho's SVGs rasterized to RGBA (Story 6.5.3 rev)
 #include "pcm_source_anim.h"  // GetCurrentAnimItem — the transport→current-item query (Story 4.3)
+#include "rav_features.h"     // release 0.4.0: kWithSounds (no Library tab, Sounds section or sound window without it)
 #include "rav_version.h"      // RAV_DISPLAY_VERSION — menu footer + copied error log header
 #include "renderer.h"
 #include "shortcuts.h"         // spec 11-fb-3: the viewer's keys, rebindable
@@ -920,16 +921,19 @@ void RenderTick()
     // frame is not presented (the next one is whole).
     if (!BusyTakePainted()) SwapBuffers(g_hdc);
 
-    // 13-15: the Sound assignment window, a window of its own anywhere on the screen (its own ImGui
-    // context on the shared GL context); it puts our context back on return.
-    if (g_imgui_ready) DrawAssignFloat(g_hwnd, g_hdc, g_hglrc);
-    // 13-68e: the Attach manager, the same way.
-    if (g_imgui_ready) DrawAttachManagerFloat(g_hwnd, g_hdc, g_hglrc);
-    if (AttachManagerHasPending() && !g_attach_mgr_post_pending && g_hwnd)
-        g_attach_mgr_post_pending = PostMessageW(g_hwnd, kMsgRunAttachManager, 0, 0) != FALSE;
-    // Spec missing-sounds-window: the Missing sounds window, the same way (its gestures run after its frame).
-    if (g_imgui_ready) DrawMissingSoundsFloat(g_hwnd, g_hdc, g_hglrc);
-    if (g_imgui_ready) DrawSyncWithFileFloat(g_hwnd, g_hdc, g_hglrc);  // 13-77c: Sync with file, the same way
+    // Release 0.4.0: the sound windows only with the sound library.
+    if constexpr (kWithSounds) {
+        // 13-15: the Sound assignment window, a window of its own anywhere on the screen (its own ImGui
+        // context on the shared GL context); it puts our context back on return.
+        if (g_imgui_ready) DrawAssignFloat(g_hwnd, g_hdc, g_hglrc);
+        // 13-68e: the Attach manager, the same way.
+        if (g_imgui_ready) DrawAttachManagerFloat(g_hwnd, g_hdc, g_hglrc);
+        if (AttachManagerHasPending() && !g_attach_mgr_post_pending && g_hwnd)
+            g_attach_mgr_post_pending = PostMessageW(g_hwnd, kMsgRunAttachManager, 0, 0) != FALSE;
+        // Spec missing-sounds-window: the Missing sounds window, the same way (its gestures run after its frame).
+        if (g_imgui_ready) DrawMissingSoundsFloat(g_hwnd, g_hdc, g_hglrc);
+        if (g_imgui_ready) DrawSyncWithFileFloat(g_hwnd, g_hdc, g_hglrc);  // 13-77c: Sync with file, the same way
+    }
 
     // Story 11-4 — the Video view's REAPER writes run from the window procedure, never
     // inside this tick (a message box or a plug-in load may run a modal loop).
@@ -977,8 +981,8 @@ void CALLBACK FrameTimerProc(HWND, UINT, UINT_PTR, DWORD)
             LogInfo("panel hidden — render paused");
         }
         // 13-68e: the Attach manager lives outside the panel: it still draws (its own window, our GL context).
-        if (g_imgui_ready && g_main_imgui_ctx && g_hdc && g_hglrc && !g_populate_running &&
-            (AttachManagerIsOpen() || AttachManagerFloatHwnd())) {  // open, or shown and to hide
+        if (kWithSounds && g_imgui_ready && g_main_imgui_ctx && g_hdc && g_hglrc && !g_populate_running &&
+            (AttachManagerIsOpen() || AttachManagerFloatHwnd())) {  // open, or shown and to hide (release 0.4.0: with the sounds only)
             wd::MainBeat();
             ImGui::SetCurrentContext(g_main_imgui_ctx);
             if (GlMakeCurrent(g_hdc, g_hglrc)) DrawAttachManagerFloat(g_hwnd, g_hdc, g_hglrc);
@@ -1455,8 +1459,11 @@ void DrawToolUi()
         // Spec viewer-options-menu-tabs: REAPER-style vertical tabs on the left (Global, then one
         // per view), the selected tab's settings on the right, a fixed footer under both.
         static const char* const kTabLabels[kMenuTabCount] = { "Global", "Main", "Tagging", "Video", "Library" };
+        // Release 0.4.0: no Library tab (the last) without the sound library.
+        constexpr int kTabsShown = kWithSounds ? kMenuTabCount : kMenuTabLibrary;
+        if (g_menu_tab >= kTabsShown) g_menu_tab = kMenuTabGlobal;
         const float tabs_top = ImGui::GetCursorScreenPos().y;
-        ui::VerticalTabs("##menutabs", kTabLabels, kMenuTabCount, &g_menu_tab);
+        ui::VerticalTabs("##menutabs", kTabLabels, kTabsShown, &g_menu_tab);
         const float tabs_bottom = ImGui::GetItemRectMax().y;
         const float divider_x = ImGui::GetItemRectMax().x + ui::Dp(7.0f);  // between the tabs and the content
         ImGui::SameLine(0.0f, ui::Dp(14.0f));
@@ -1637,8 +1644,8 @@ void DrawToolUi()
                             MarkerModeLine(GetTaggingMarkerMode()));
             }
             ui::EndSection(sec);
-            // Epic 13 (D20): the Sounds section of the menu (13-9).
-            DrawSoundsMenuSection();
+            // Epic 13 (D20): the Sounds section of the menu (13-9). Release 0.4.0: only with the sound library.
+            if constexpr (kWithSounds) DrawSoundsMenuSection();
             break;
         }
 

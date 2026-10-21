@@ -12,6 +12,7 @@
 // thread on first draw, after this module writes a file, and on Refresh (decision 2).
 
 #include "library_user_ui.h"
+#include "rav_features.h"  // release 0.4.0: kWithSounds
 #include "watchdog.h"  // freeze audit: breadcrumbs and scopes
 #include "busy_progress_ui.h"  // 13-59: the busy card of a long gesture
 
@@ -3140,7 +3141,8 @@ void InitLibraryUser(reaper_plugin_info_t* rec)
     ApplyHooks();  // the tree's missing marks, even before column 1 draws
     SetFileNameFold(&Win32FoldFileName);  // review 13-77a M1: names compare as the file system does
     g_register = rec->Register;
-    if (g_register) g_timer_on = g_register("timer", reinterpret_cast<void*>(&OnTimer)) != 0;
+    // Release 0.4.0: no timer without the sound library (it writes RAVSOUNDS: a project's sound data stays as it is).
+    if (kWithSounds && g_register) g_timer_on = g_register("timer", reinterpret_cast<void*>(&OnTimer)) != 0;
 }
 
 void QuitLibraryUser()

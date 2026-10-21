@@ -31,6 +31,7 @@
 #include "item_rules.h"
 #include "library_icons.h"  // 13-14: the tool glyphs (ToolIcon)
 #include "preset_menu_model.h"
+#include "rav_features.h"  // release 0.4.0: kWithSounds (no sound section in Tagging without it)
 #include "preset_store.h"
 #include "reaper_api.h"
 #include "rule_record.h"
@@ -1048,7 +1049,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                             const bool moving = dragging && e.kind == g_drag_ev.kind && e.t == g_drag_ev.t;
                             const float ex = std::floor(x_of(pt)) + 0.5f;
                             DrawEventMark(dl, e, ex, ry, row_h, moving ? WithAlpha(col, 0x40) : col, is_sel && !moving);
-                            DrawSoundStripGlyph(dl, m, e, ex, ry + row_h);  // Epic 13 (13-8)
+                            if constexpr (kWithSounds) DrawSoundStripGlyph(dl, m, e, ex, ry + row_h);  // Epic 13 (13-8)
                         }
                         if (dragging) {  // where it lands: the user's own event
                             double pt = 0.0;
@@ -3734,8 +3735,8 @@ void DrawEventInspector(const TaggingModel& m, const ItemRules& rules, const Sho
         QueueVideoSeek(t);
     }
     if (!on_timeline) ImGui::EndDisabled();
-    // Epic 13 (D20): the event's sounds (13-8).
-    DrawEventSoundSection(SoundContextOf(m, rules, e.block), e);
+    // Epic 13 (D20): the event's sounds (13-8). Release 0.4.0: only with the sound library.
+    if constexpr (kWithSounds) DrawEventSoundSection(SoundContextOf(m, rules, e.block), e);
 }
 
 // ---- Story 10-8b: the Smart Detection section -------------------------------------------------------
@@ -4105,9 +4106,11 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
                 AutoValueField("##offset", t, false, detected, off_v, fw);
                 if (differ) ui::ItemTip("%s\nAn edit sets every row.", row_list(false).c_str());
                 else ui::ItemTip("Moves every marker of this type, in ms (+ = later).");
-                // Antho 2026-10-12 (13-8): the type's sound, every row at once.
-                ImGui::SetCursorPosX(x_row);
-                DrawAutoSoundRow(m.item, rules, AutoSoundKeys(rows));
+                // Antho 2026-10-12 (13-8): the type's sound, every row at once (release 0.4.0: with the sounds only).
+                if constexpr (kWithSounds) {
+                    ImGui::SetCursorPosX(x_row);
+                    DrawAutoSoundRow(m.item, rules, AutoSoundKeys(rows));
+                }
             } else {
                 // One row per block, labelled by its marker.
                 for (size_t bi = 0; bi < rows.size(); ++bi) {
@@ -4131,9 +4134,11 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
                         else
                             ui::ItemTip("Moves this row's markers, in ms (+ = later).");
                     }
-                    // Antho 2026-10-12 (13-8): this row's sound.
-                    ImGui::SetCursorPosX(x_row);
-                    DrawAutoSoundRow(m.item, rules, AutoSoundKeys({b}));
+                    // Antho 2026-10-12 (13-8): this row's sound (release 0.4.0: with the sounds only).
+                    if constexpr (kWithSounds) {
+                        ImGui::SetCursorPosX(x_row);
+                        DrawAutoSoundRow(m.item, rules, AutoSoundKeys({b}));
+                    }
                     ImGui::PopID();
                 }
             }
@@ -4359,7 +4364,7 @@ void DrawInspector(const ItemRules& rules)
 
     // Story 10-8b: an auto block has no condition to edit. Epic 13 (13-8): it has a Sound section.
     if (IsAutoBlock(blk)) {
-        DrawRuleSoundSection(SoundContextOf(GetTaggingModel(), rules, b));
+        if constexpr (kWithSounds) DrawRuleSoundSection(SoundContextOf(GetTaggingModel(), rules, b));  // release 0.4.0
         return;
     }
 
@@ -4464,8 +4469,8 @@ void DrawInspector(const ItemRules& rules)
             ui::ItemTipText(t.tip);
         }
     }
-    // Epic 13 (D20): the rule's sound library (13-8).
-    DrawRuleSoundSection(SoundContextOf(GetTaggingModel(), rules, b));
+    // Epic 13 (D20): the rule's sound library (13-8). Release 0.4.0: only with the sound library.
+    if constexpr (kWithSounds) DrawRuleSoundSection(SoundContextOf(GetTaggingModel(), rules, b));
 }
 
 // ---- Story 13-26: Clear item data ------------------------------------------------------------------
@@ -4592,11 +4597,15 @@ void DrawClearItemRow(const TaggingModel& m)
             }
         }
         if (busy || nothing) ImGui::EndDisabled();
+        // Release 0.4.0: without the sound library, Clear keeps the sounds (item_clear_plan.h): its texts do not name them.
         ui::ItemTipText(busy      ? "Populate is running."
-                        : nothing ? "Nothing to clear: this item and its linked copies have no rules, events, markers,\n"
-                                    "sound settings or sounds from RAV."
-                                  : "Removes this item's rules, events, markers, sound settings and sounds, and its "
-                                    "linked copies'.\nOne undo step.");
+                        : nothing ? (kWithSounds ? "Nothing to clear: this item and its linked copies have no rules, events, markers,\n"
+                                                   "sound settings or sounds from RAV."
+                                                 : "Nothing to clear: this item and its linked copies have no rules, events or markers\n"
+                                                   "from RAV.")
+                        : kWithSounds ? "Removes this item's rules, events, markers, sound settings and sounds, and its "
+                                        "linked copies'.\nOne undo step."
+                                      : "Removes this item's rules, events and markers, and its linked copies'.\nOne undo step.");
     }
     if (!g_clear.note.empty() && g_clear.note_item == m.item) ui::ToneText(g_clear.note, ui::kMuted, /*wrap=*/true);
 }
@@ -4811,8 +4820,10 @@ void DrawTaggingPanel(float x, float y, float w, float h)
     ImGui::End();
     ImGui::PopStyleColor(2);
     RunLater();
-    DrawAssignWindow(m);  // 13-15b: the Sound assignment window, over the panel
-    RunPickedSoundGestures();  // 13-8 fix: the sound menus' and the window's picks, after the widgets
+    if constexpr (kWithSounds) {  // release 0.4.0: only with the sound library
+        DrawAssignWindow(m);  // 13-15b: the Sound assignment window, over the panel
+        RunPickedSoundGestures();  // 13-8 fix: the sound menus' and the window's picks, after the widgets
+    }
 }
 
 }  // namespace rav

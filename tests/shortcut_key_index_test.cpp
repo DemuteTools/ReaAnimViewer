@@ -251,6 +251,46 @@ static void TestRavSide()
     CHECK(KbGestureOfBinding(KeyBinding{'S', true, true, false}) == Key('S', kViewModCtrl | kViewModShift));
 }
 
+// Release 0.4.0: what RAV built without the sound library lists (with_sounds false): no Sound Edit row,
+// no Edit window reserved key, no sound window mouse gesture; the other rows stay. With the sounds: all.
+static void TestBuiltWithoutSounds()
+{
+    int edit_rows = 0, other_rows = 0;
+    for (int i = 0; i < kShortcutCount; ++i) {
+        const ShortcutContext c = kShortcutTable[i].context;
+        CHECK(ShortcutRowBuilt(c, true));
+        if (c == ShortcutContext::LibraryEdit) {
+            ++edit_rows;
+            CHECK(!ShortcutRowBuilt(c, false));
+            CHECK(!RavKeyUseBuilt(RavKeyUse::Kind::KeyRow, i, false));
+        } else {
+            ++other_rows;
+            CHECK(ShortcutRowBuilt(c, false));
+            CHECK(RavKeyUseBuilt(RavKeyUse::Kind::KeyRow, i, false));
+        }
+        CHECK(RavKeyUseBuilt(RavKeyUse::Kind::KeyRow, i, true));
+    }
+    CHECK(edit_rows == kShortcutCount - kShortcutEditTrimLeft && other_rows == kShortcutEditTrimLeft);
+    // The Sound Edit rows' REAPER actions ("RAV: Sound Edit - ...") are all on Library Edit rows.
+    for (int i = 0; i < kShortcutCount; ++i)
+        if (kShortcutTable[i].action_desc && std::string(kShortcutTable[i].action_desc).find("Sound Edit") != std::string::npos)
+            CHECK(!ShortcutRowBuilt(kShortcutTable[i].context, false));
+    CHECK(!RavKeyUseBuilt(RavKeyUse::Kind::EditReserved, 0, false) && RavKeyUseBuilt(RavKeyUse::Kind::EditReserved, 0, true));
+    CHECK(RavKeyUseBuilt(RavKeyUse::Kind::ViewRow, kNavZoomH, false));
+    int mouse_off = 0, mouse_on = 0, mi = 0;
+    for (const MouseGestureDef& d : kMouseGestureTable) {
+        if (MouseGestureBuilt(d, true)) ++mouse_on;
+        if (MouseGestureBuilt(d, false)) ++mouse_off;
+        else CHECK(std::string(d.action).find("Sound Edit") != std::string::npos);
+        CHECK(RavKeyUseBuilt(RavKeyUse::Kind::Mouse, mi, false) == MouseGestureBuilt(d, false));
+        ++mi;
+    }
+    CHECK(mouse_on == mi && mouse_off == mi - 1);
+    // A Library Edit row never takes another row's key without the sounds (no conflict with a row not built).
+    CHECK(ShortcutContextsOverlap(ShortcutContext::Anywhere, ShortcutContext::LibraryEdit) == kWithSounds);
+    CHECK(ShortcutContextsOverlap(ShortcutContext::Anywhere, ShortcutContext::TaggingView));
+}
+
 int main()
 {
     TestIndex();
@@ -259,6 +299,7 @@ int main()
     TestTyped();
     TestSearch();
     TestRavSide();
+    TestBuiltWithoutSounds();
     if (g_fail) {
         std::printf("%d check(s) failed\n", g_fail);
         return 1;

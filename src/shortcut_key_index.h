@@ -111,4 +111,18 @@ KbGesture KbGestureOfBinding(const KeyBinding& b);
 std::vector<RavKeyUse> RavUsesOf(const ShortcutKeymap& keys, const ViewNavMap& nav, const KbGesture& g,
                                  int char_view_row = -1);
 
+// Release 0.4.0: a use that exists in this build (without the sound library: no Sound Edit row, no Edit
+// window reserved key, no sound window mouse gesture). RavUsesOf lists only those.
+inline bool RavKeyUseBuilt(RavKeyUse::Kind k, int index, bool with_sounds = kWithSounds)
+{
+    if (with_sounds) return true;
+    if (k == RavKeyUse::Kind::EditReserved) return false;
+    if (k == RavKeyUse::Kind::KeyRow) return index >= 0 && index < kShortcutCount && ShortcutRowBuilt(kShortcutTable[index].context, false);
+    if (k == RavKeyUse::Kind::Mouse) {
+        constexpr int n = static_cast<int>(sizeof(kMouseGestureTable) / sizeof(kMouseGestureTable[0]));
+        return index >= 0 && index < n && MouseGestureBuilt(kMouseGestureTable[index], false);
+    }
+    return true;
+}
+
 }  // namespace rav

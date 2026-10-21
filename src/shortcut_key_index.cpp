@@ -154,6 +154,7 @@ std::vector<RavKeyUse> RavUsesOf(const ShortcutKeymap& keys, const ViewNavMap& n
 {
     std::vector<RavKeyUse> out;
     auto add = [&out](RavKeyUse::Kind k, int i, bool shadowed) {
+        if (!RavKeyUseBuilt(k, i)) return;  // release 0.4.0: not in this build (no sound library)
         for (const RavKeyUse& u : out)
             if (u.kind == k && u.index == i) return;
         RavKeyUse u;

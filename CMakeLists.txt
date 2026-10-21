@@ -15,6 +15,10 @@ project(reaanimviewer
 # option stays OFF on purpose: it injects raw /MT flags that would duplicate this.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
+# The sound library (Epic 13). OFF builds RAV without it: every sound entry point is off (src/rav_features.h),
+# the sound code still compiles.
+option(RAV_WITH_SOUNDS "Build RAV with the sound library" ON)
+
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(ReaperPlugin)
 

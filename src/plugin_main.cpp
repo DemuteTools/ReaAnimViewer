@@ -32,6 +32,7 @@
 #include "viewer_window.h"
 #include "watchdog.h"  // freeze audit: breadcrumbs, heartbeats, the freeze report
 
+#include "rav_features.h"  // release 0.4.0: kWithSounds, the sound library on or off
 #include "rav_version.h"
 
 #include <cstring>
@@ -330,8 +331,10 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
             if (g_stack_this_id) g_register("-gaccel", &g_stack_this_accel);
             if (g_stack_all_id) g_register("-gaccel", &g_stack_all_accel);
             if (g_attach_mgr_id) g_register("-gaccel", &g_attach_mgr_accel);  // 13-68e
-            g_register("-hookpostcommand", (void*)&AttachWatchPostCommand);  // 13-68e v5
-            g_register("-timer", reinterpret_cast<void*>(&AttachWatchTick));  // 13-68e v5: the linked instances' watcher
+            if constexpr (kWithSounds) {  // release 0.4.0: registered only with the sound library
+                g_register("-hookpostcommand", (void*)&AttachWatchPostCommand);  // 13-68e v5
+                g_register("-timer", reinterpret_cast<void*>(&AttachWatchTick));  // 13-68e v5: the linked instances' watcher
+            }
             if (g_make_unique_id) g_register("-gaccel", &g_make_unique_accel);
             if (g_measure_detection_id) g_register("-gaccel", &g_measure_detection_accel);
             if (g_video_bg_id) g_register("-gaccel", &g_video_bg_accel);
@@ -373,7 +376,8 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
     // Lot 13-60b -- the viewer keys' actions (no default key: the user gives them one in REAPER). A
     // failure only loses that action (its row's "REAPER" then finds no action in REAPER's list).
     for (int i = 0; i < kShortcutCount; ++i)  // 13-61: a row on one of REAPER's own actions has none
-        if (kShortcutTable[i].action && std::strcmp(kShortcutTable[i].action, kFullScreenName) != 0)
+        if (kShortcutTable[i].action && std::strcmp(kShortcutTable[i].action, kFullScreenName) != 0 &&
+            ShortcutRowBuilt(kShortcutTable[i].context))  // release 0.4.0: no Sound Edit action without the sounds
             g_key_ids[i] = RegisterAction(rec, kShortcutTable[i].action, kShortcutTable[i].action_desc, &g_key_accels[i]);
 
     // Story 11-2 -- the video FX background option. A failure only loses that action.
@@ -409,17 +413,22 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
     InitSoundAttach(rec->GetFunc);
     InitLibraryMedia(rec->GetFunc);  // 13-7c: preview + the media database load (on first draw)
     InitLibraryUser(rec);            // 13-11: User Libraries (.ravlib), File Sound import, Locate
-    g_sound_check_id = RegisterAction(rec, kSoundStoreCheckName, kSoundStoreCheckDesc, &g_sound_check_accel);
     InitReaperToast(hInstance, rec->hwnd_main);  // 13-68 (P9)
     InitSoundSpreadSelection(rec->GetFunc);
-    g_spread_this_id = RegisterAction(rec, kSpreadThisName, kSpreadThisDesc, &g_spread_this_accel);
-    g_spread_all_id = RegisterAction(rec, kSpreadAllName, kSpreadAllDesc, &g_spread_all_accel);
-    g_stack_this_id = RegisterAction(rec, kStackThisName, kStackThisDesc, &g_stack_this_accel);
-    g_stack_all_id = RegisterAction(rec, kStackAllName, kStackAllDesc, &g_stack_all_accel);
-    g_attach_mgr_id = RegisterAction(rec, kAttachMgrName, kAttachMgrDesc, &g_attach_mgr_accel);  // 13-68e
-    // 13-68e v5: a gesture on one instance in REAPER reaches its linked instances (also with the window closed).
-    rec->Register("timer", reinterpret_cast<void*>(&AttachWatchTick));
-    rec->Register("hookpostcommand", (void*)&AttachWatchPostCommand);
+    // Release 0.4.0: built without the sound library (RAV_WITH_SOUNDS off), none of its actions, timers or
+    // hooks is registered (the inits above only resolve REAPER functions; the RAVSOUNDS projectconfig stays
+    // registered so a project's sound data is read and written back as it is).
+    if constexpr (kWithSounds) {
+        g_sound_check_id = RegisterAction(rec, kSoundStoreCheckName, kSoundStoreCheckDesc, &g_sound_check_accel);
+        g_spread_this_id = RegisterAction(rec, kSpreadThisName, kSpreadThisDesc, &g_spread_this_accel);
+        g_spread_all_id = RegisterAction(rec, kSpreadAllName, kSpreadAllDesc, &g_spread_all_accel);
+        g_stack_this_id = RegisterAction(rec, kStackThisName, kStackThisDesc, &g_stack_this_accel);
+        g_stack_all_id = RegisterAction(rec, kStackAllName, kStackAllDesc, &g_stack_all_accel);
+        g_attach_mgr_id = RegisterAction(rec, kAttachMgrName, kAttachMgrDesc, &g_attach_mgr_accel);  // 13-68e
+        // 13-68e v5: a gesture on one instance in REAPER reaches its linked instances (also with the window closed).
+        rec->Register("timer", reinterpret_cast<void*>(&AttachWatchTick));
+        rec->Register("hookpostcommand", (void*)&AttachWatchPostCommand);
+    }
 
     rec->Register("hookcommand", (void*)&OnHookCommand);
     rec->Register("toggleaction", (void*)&OnToggleAction);

@@ -54,7 +54,7 @@ std::string PoolOnlyRecord(const std::string& raw)
 }
 
 ItemClearPlan PlanItemClear(const std::vector<ClearTarget>& targets, const std::vector<ClearTagged>& tagged,
-                            const std::vector<std::string>& library_source_guids)
+                            const std::vector<std::string>& library_source_guids, bool with_sounds)
 {
     ItemClearPlan plan;
     plan.counts.items = static_cast<int>(targets.size());
@@ -89,7 +89,7 @@ ItemClearPlan PlanItemClear(const std::vector<ClearTarget>& targets, const std::
             }
         }
         w.committed = !t.committed_raw.empty();
-        w.sounds = !t.sounds_raw.empty();
+        w.sounds = with_sounds && !t.sounds_raw.empty();  // release 0.4.0: kept without the sound library
         if (w.sounds) {
             ItemSounds s;
             if (ParseItemSounds(t.sounds_raw, &s))
@@ -104,8 +104,9 @@ ItemClearPlan PlanItemClear(const std::vector<ClearTarget>& targets, const std::
     for (const std::string& g : library_source_guids)
         if (!g.empty()) sources.insert(Upper(g));
 
-    std::set<std::string> done;  // each item once
-    for (const ClearTagged& t : tagged) {
+    std::set<std::string>                 done;  // each item once
+    static const std::vector<ClearTagged> kNone;
+    for (const ClearTagged& t : with_sounds ? tagged : kNone) {  // release 0.4.0: no sound item without the sounds
         const std::string key = Upper(t.guid);
         if (key.empty() || done.count(key)) continue;
         PlacedTag  tag;

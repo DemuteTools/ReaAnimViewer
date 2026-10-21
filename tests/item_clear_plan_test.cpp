@@ -268,6 +268,40 @@ static void TestTexts()
     CHECK(ClearDoneText(d) == "Cleared: 1 item + 1 copy \xC2\xB7 1 sound removed");
 }
 
+// Release 0.4.0: RAV built without the sound library (with_sounds false) clears the rules, events and
+// markers only: the sound records stay, no sound item is deleted or untagged, the texts name no sound.
+// With the sounds (the default), the same input clears them as before.
+static void TestWithoutSounds()
+{
+    const std::vector<ClearTarget> targets = {
+        Target("{A}", RulesRecord(), SoundsRecord({"{S1}", "{P1}"}), RulesRecord()),
+        Target("{B}", RulesRecord(), SoundsRecord({"{S3}"})),
+    };
+    const std::vector<ClearTagged> tagged = {Tagged("{S1}", Tag("{A}", Ownership::Attached)), Tagged("{P1}", Tag("{A}")),
+                                             Tagged("{S3}", Tag("{B}")), Tagged("{STRAY}", Tag("{A}"))};
+    const ItemClearPlan off = PlanItemClear(targets, tagged, {"{P1}"}, /*with_sounds=*/false);
+    CHECK(off.anything);
+    CHECK(off.delete_guids.empty() && off.untag_guids.empty());
+    CHECK(off.counts.sounds == 0 && off.counts.attached == 0);
+    CHECK(off.counts.events == 6 && off.counts.rules == 4 && off.counts.markers == 8);
+    CHECK(off.records.size() == 2);
+    for (const ClearRecordWrite& w : off.records) CHECK(w.rules && !w.sounds);
+    CHECK(off.records[0].committed);
+    CHECK(ClearConfirmText(off.counts).find("sound") == std::string::npos);
+    CHECK(ClearDoneText(off.counts).find("sound") == std::string::npos);
+    // Only sound data: nothing to clear without the sounds.
+    const ItemClearPlan only = PlanItemClear({Target("{A}", {}, SoundsRecord({"{S1}"}))}, {Tagged("{S1}", Tag("{A}"))}, {}, false);
+    CHECK(!only.anything && only.records.empty());
+
+    const ItemClearPlan on = PlanItemClear(targets, tagged, {"{P1}"}, /*with_sounds=*/true);
+    CHECK(on.counts.sounds == 3 && on.counts.attached == 1);
+    CHECK(Has(on.delete_guids, "{S1}") && Has(on.delete_guids, "{S3}") && Has(on.delete_guids, "{STRAY}"));
+    CHECK(on.untag_guids.size() == 1 && on.untag_guids[0] == "{P1}");
+    for (const ClearRecordWrite& w : on.records) CHECK(w.sounds);
+    const ItemClearPlan dflt = PlanItemClear(targets, tagged, {"{P1}"});  // the default is this build's (ON in the host tests)
+    CHECK(dflt.counts.sounds == (kWithSounds ? 3 : 0));
+}
+
 int main()
 {
     TestPoolOnlyRecord();
@@ -279,6 +313,7 @@ int main()
     TestNothing();
     TestLibrarySourceGuids();
     TestTexts();
+    TestWithoutSounds();
     if (g_fail) {
         std::printf("%d failure(s)\n", g_fail);
         return 1;

@@ -27,6 +27,7 @@
 #include <glm/glm.hpp>
 
 #include "camera.h"
+#include "rav_features.h"  // release 0.4.0: kWithSounds
 #include "video_camera_params.h"
 #include "video_shots.h"
 
@@ -108,7 +109,7 @@ ViewMode GetViewMode();
 // the new mode.
 void SetViewMode(ViewMode mode);
 // The next view in the cycle: RAV -> Tagging -> Video -> Library -> RAV.
-ViewMode NextViewMode(ViewMode mode);
+ViewMode NextViewMode(ViewMode mode, bool with_sounds = kWithSounds);  // release 0.4.0: no Library without the sounds
 // True in Tagging view (RAV view's camera and render, the Auto-Tagging strip and panel).
 bool TaggingViewActive();
 // True only in Video view.

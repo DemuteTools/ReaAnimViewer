@@ -15,6 +15,7 @@
 
 #include <imgui.h>
 
+#include "rav_features.h"  // release 0.4.0: kWithSounds (no Library view without it)
 #include "reaper_actions.h"  // spec 11-fb-5: REAPER's Video window open
 #include "shortcuts.h"   // spec 11-fb-3: the current keys on the key caps; 11-fb-11: LoadPref*
 #include "strip_view.h"
@@ -636,11 +637,12 @@ void DrawVideoViewToggle(float center_x)
         // Story 10-3: RAV view / Tagging view / Video view, in V's cycle order; Epic 13 (D20): Library view.
         static const char* const kViews[4] = {"Main", "Tagging", "Video", "Library"};
         static const ViewMode kModes[4] = {ViewMode::Rav, ViewMode::Tagging, ViewMode::Video, ViewMode::Library};
+        constexpr int kShown = kWithSounds ? 4 : 3;  // release 0.4.0: Library (the last) only with the sound library
         const ViewMode mode = GetViewMode();
         int sel = 0;
-        for (int i = 0; i < 4; ++i)
+        for (int i = 0; i < kShown; ++i)
             if (kModes[i] == mode) sel = i;
-        if (ui::Segmented("##view", kViews, 4, &sel) && sel >= 0 && sel < 4)
+        if (ui::Segmented("##view", kViews, kShown, &sel) && sel >= 0 && sel < kShown)
             SetViewMode(kModes[sel]);
         g_view_toggle_size = ImGui::GetItemRectSize();  // Segmented ends with one item, the whole well
     }

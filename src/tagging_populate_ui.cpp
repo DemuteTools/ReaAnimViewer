@@ -23,6 +23,7 @@
 #include "library_tree_ui.h"  // 13-48: ShowInLibrary
 #include "library_user_ui.h"  // FileSoundMissing, Locate (missing report lines)
 #include "picked_gestures.h"
+#include "rav_features.h"  // release 0.4.0: kWithSounds (no sound footer without it)
 #include "reaper_api.h"
 #include "rule_record.h"
 #include "sound_assign.h"
@@ -472,7 +473,7 @@ void DropSoundFooterCaches()
 
 bool SoundFooterVisible(const TaggingSoundContext& ctx)
 {
-    return ctx.item != nullptr && !GetSoundStore(nullptr).libraries.empty();
+    return kWithSounds && ctx.item != nullptr && !GetSoundStore(nullptr).libraries.empty();  // release 0.4.0
 }
 
 float SoundFooterHeight(const TaggingSoundContext& ctx)

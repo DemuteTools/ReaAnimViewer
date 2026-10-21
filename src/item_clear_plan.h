@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 
+#include "rav_features.h"  // release 0.4.0: kWithSounds
 #include "sound_model.h"
 
 namespace rav {
@@ -65,9 +66,11 @@ struct ItemClearPlan {
 };
 
 // GUIDs are compared ignoring ASCII case. `library_source_guids`: every Sound source item of the
-// project's libraries (SoundSource::item_guid).
+// project's libraries (SoundSource::item_guid). Release 0.4.0: `with_sounds` false (RAV built without the
+// sound library) clears only the rules, events and markers: the sound records and every sound item stay
+// (no delete, no untag, counts.sounds 0, so the texts below never name sounds).
 ItemClearPlan PlanItemClear(const std::vector<ClearTarget>& targets, const std::vector<ClearTagged>& tagged,
-                            const std::vector<std::string>& library_source_guids);
+                            const std::vector<std::string>& library_source_guids, bool with_sounds = kWithSounds);
 
 // Every item a library Sound comes from (SoundSource::item_guid, whatever the source kind: a Sound
 // converted to a User Library keeps its project item), across all the store's libraries.

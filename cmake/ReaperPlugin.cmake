@@ -33,6 +33,13 @@ function(add_reaper_extension target)
         "${CMAKE_SOURCE_DIR}/extern/reaper-sdk/sdk"
     )
 
+    # src/rav_features.h: the sound library on or off (option RAV_WITH_SOUNDS, CMakeLists.txt).
+    if(RAV_WITH_SOUNDS)
+        target_compile_definitions(${target} PRIVATE RAV_WITH_SOUNDS=1)
+    else()
+        target_compile_definitions(${target} PRIVATE RAV_WITH_SOUNDS=0)
+    endif()
+
     if(MSVC)
         # /EHsc is REQUIRED, not optional: assimp is statically linked and uses C++
         # exceptions internally (DeadlyImportError etc.), and LoadAsset relies on

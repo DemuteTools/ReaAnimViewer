@@ -5,7 +5,8 @@
 //
 // A spin is a turn of the whole body about the vertical, read from the hip line (left up leg ->
 // right up leg seen from above, PhysicsAnalysis::hips_yaw_deg): the turn segmentation of gait
-// studies (R[1][12]). The yaw is smoothed (spin_smooth_s); its rate above spin_start_dps starts
+// studies (R[1][12]). The yaw is smoothed (spin_smooth_s) for the decisions, and the markers set
+// back on the unsmoothed yaw (SpinSpans); its rate above spin_start_dps starts
 // a spin, which runs back and forward from there while the rate stays at spin_end_dps or more in
 // the same direction (a stop or a turn back ends it); a spin is kept when its yaw changes by
 // spin_min_deg at least. A sample where the hip line is too steep to give a yaw counts as no
@@ -54,6 +55,8 @@ std::vector<double> SmoothCurve(const std::vector<double>& v, double sigma)
 struct SpinYaw {
     std::vector<double> yaw;
     std::vector<double> rate;
+    std::vector<double> raw_rate;  // the unsmoothed yaw's rate (deg/s): where the markers go
+    double              sigma = 0.0;  // the smoothing (samples)
 };
 
 SpinYaw SpinYawOf(const PhysicsAnalysis& a, const PhysicsParams& p)
@@ -76,19 +79,25 @@ SpinYaw SpinYawOf(const PhysicsAnalysis& a, const PhysicsParams& p)
     };
     std::vector<double> joined(n, 0.0);
     for (size_t i = 1; i < n; ++i) joined[i] = joined[i - 1] + delta(i);
-    out.yaw = SmoothCurve(joined, p.spin_smooth_s * a.rate_hz);
+    out.sigma = p.spin_smooth_s * a.rate_hz;
+    out.yaw = SmoothCurve(joined, out.sigma);
     out.rate.assign(n, 0.0);
+    out.raw_rate.assign(n, 0.0);
     for (size_t i = 0; i < n; ++i) {
         const size_t lo = i > 0 ? i - 1 : 0, hi = i + 1 < n ? i + 1 : n - 1;
         out.rate[i] = (out.yaw[hi] - out.yaw[lo]) * a.rate_hz / static_cast<double>(hi - lo);
+        out.raw_rate[i] = (joined[hi] - joined[lo]) * a.rate_hz / static_cast<double>(hi - lo);
     }
     return out;
 }
 
-// The spins as analysed-sample spans [start, end] (inclusive), by time.
+// The spins as analysed-sample spans [start, end] (inclusive), by time: the span found on the
+// smoothed yaw, and its markers' samples set on the unsmoothed one (mark_start / mark_end).
 struct SpinSpan {
     size_t start = 0;
     size_t end = 0;
+    size_t mark_start = 0;
+    size_t mark_end = 0;
     double sweep = 0.0;  // degrees, signed
 };
 
@@ -108,6 +117,26 @@ std::vector<SpinSpan> SpinSpans(const SpinYaw& y, const PhysicsParams& p)
         sp.start = s;
         sp.end = e;
         sp.sweep = y.yaw[e] - y.yaw[s];
+        // The markers on the unsmoothed yaw: the smoothing spreads a sudden turn by up to its
+        // 3 sigma either way, so the start moves to the first sample of [s, s + 3 sigma] where the
+        // raw rate holds (spin_end_dps, the same way), the end to the last of [e - 3 sigma, e].
+        // None there (a noisy or eased rate already holds at s / e): the smoothed sample stays.
+        const size_t w = static_cast<size_t>(std::ceil(3.0 * y.sigma));
+        auto raw_holds = [&](size_t j) { return (d > 0 ? y.raw_rate[j] : -y.raw_rate[j]) >= p.spin_end_dps; };
+        sp.mark_start = s;
+        sp.mark_end = e;
+        if (w > 0 && !raw_holds(s))
+            for (size_t j = s + 1; j <= e && j <= s + w; ++j)
+                if (raw_holds(j)) {
+                    sp.mark_start = j;
+                    break;
+                }
+        if (w > 0 && !raw_holds(e))
+            for (size_t j = e; j-- > sp.mark_start && j + w >= e;)
+                if (raw_holds(j)) {
+                    sp.mark_end = j;
+                    break;
+                }
         if (std::fabs(sp.sweep) >= p.spin_min_deg) out.push_back(sp);
         i = e;
     }
@@ -138,7 +167,7 @@ std::vector<PhysicsEvent> SpinEvents(const PhysicsAnalysis& a, const PhysicsPara
     const SpinYaw             y = SpinYawOf(a, p);
     if (y.rate.empty()) return ev;
     for (const SpinSpan& sp : SpinSpans(y, p)) {
-        const double s = static_cast<double>(sp.start) / a.rate_hz, e = static_cast<double>(sp.end) / a.rate_hz;
+        const double s = static_cast<double>(sp.mark_start) / a.rate_hz, e = static_cast<double>(sp.mark_end) / a.rate_hz;
         for (const bool at_end : {false, true}) {
             double t;
             if (!SpinClipTime(a, at_end ? e : s, &t)) continue;

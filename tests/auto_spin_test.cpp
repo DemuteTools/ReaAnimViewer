@@ -159,6 +159,22 @@ void TestTurns()
         CHECK(Run(tr).start.empty());
         const Found f = Run(tr, false, 100.0);
         CHECK(f.start.size() == 1 && f.end.size() == 1);
+        // Review 10-9f: Detect's search never raises a silent Spin block (a 30 deg twist stays none);
+        // the block counts as searched (review 10-9g), so Detect is not lit for it.
+        const std::vector<Block> blocks = SpinBlocks();
+        std::vector<int>         role_to_bone(static_cast<size_t>(Role::Count), 0);
+        const std::vector<AutoSensResult> r =
+            SearchAutoSensitivity(blocks, tr, std::vector<int>(blocks.size(), 0), role_to_bone, false);
+        CHECK(r.size() == blocks.size());
+        for (const AutoSensResult& x : r) CHECK(x.searched && !x.raised && x.sens == kAutoDefaultSens);
+    }
+    // A sudden turn (90 deg/s from 1 s to 2 s, no easing): the markers sit on the turn's start and
+    // end, not 80 ms out where the smoothed rate passes 5 deg/s.
+    {
+        const Found f = Run(TurningRig([](double t) { return 90.0 * std::clamp(t - 1.0, 0.0, 1.0); }, 3.0));
+        CHECK(f.start.size() == 1 && f.end.size() == 1);
+        if (f.start.size() == 1 && f.end.size() == 1)
+            CHECK(std::fabs(f.start[0] - 1.0) < 0.01 && std::fabs(f.end[0] - 2.0) < 0.01);
     }
     // A hip sway of +-15 deg at 1 Hz (a walk's at most): sweeps 30 deg each way, none.
     {
@@ -203,7 +219,7 @@ void TestLoop()
     const Found g = Run(TurningRig(y2, 3.0), true);
     CHECK(g.start.size() == 1 && g.end.size() == 1);
     if (g.start.size() == 1 && g.end.size() == 1) {
-        CHECK(std::fabs(g.start[0] - 2.5) < 0.1 && std::fabs(g.end[0] - 0.5) < 0.1);  // a sudden 90 deg/s: the smoothing leads / lags 80 ms
+        CHECK(std::fabs(g.start[0] - 2.5) < 0.01 && std::fabs(g.end[0] - 0.5) < 0.01);  // a sudden 90 deg/s: the markers on the unsmoothed yaw
         CHECK(g.sweep[0] > 85.0 && g.sweep[0] < 95.0);
     }
 }

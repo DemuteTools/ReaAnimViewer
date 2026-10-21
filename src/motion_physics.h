@@ -494,7 +494,7 @@ struct PhysicsParams {
     // Story 10-9f: the body spins (auto_types_spin.cpp). The turn segmentation of gait studies
     // (R[1][12]): the hip line's yaw rate above spin_start_dps starts a spin, it runs while the
     // rate stays at spin_end_dps or more in the same direction, and it is kept when it sweeps
-    // spin_min_deg at least (the sensitivity divides the start rate and the sweep). The yaw is
+    // spin_min_deg at least (the sensitivity divides the sweep only; Detect never raises it). The yaw is
     // smoothed over spin_smooth_s (Gaussian sigma) first: measured on the fixtures, 50 ms keeps
     // the timing of Hip Hop Dancing's four turns (98-111 deg) and drops Climbing Up Wall's 46 deg
     // pelvis twist (no smoothing: 46 deg); a walk's hip sway sweeps 21 deg at most.

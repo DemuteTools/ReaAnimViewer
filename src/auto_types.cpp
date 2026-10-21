@@ -199,11 +199,11 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "Raise the sensitivity for softer steps, lower it for only the hard impacts.",
      "jolt", {{&P::jolt_min_g, S::Divide}, {}}, &AutoPartsJolt, true, false, false, true},
     // Story 10-9f: the Body's first type, sideless (a turn of the whole body has no foot).
-    // Higher sensitivity = a smaller turn counts (the sweep / f).
+    // Higher sensitivity = a smaller turn counts (the sweep / f). Never raised by Detect.
     {T::Spin, "Spin", "Spin", C::Body,
      "A spin of the whole body (the hips turning about the vertical):\n"
      "Spin where it starts turning, Spin End where it stops (45 deg or more).",
-     "spin", {{&P::spin_min_deg, S::Divide}, {}}, &AutoPartsSpin, true},
+     "spin", {{&P::spin_min_deg, S::Divide}, {}}, &AutoPartsSpin, true, false, false, true},
 };
 
 // ---- Kinds -------------------------------------------------------------------------------------

@@ -23,9 +23,12 @@
 // first, +-kMatchWindowS, inside '# visible' only; confirmed / draft counted apart.
 //
 // The run is saved to <out>/last.tsv (the previous one read first), and every row that changed
-// is listed. <out>/review.json holds what the review page shows (per clip: joints at 30 Hz, the
-// parents, foot / hand / hips heights at 60 Hz, the found events of both configurations, the
-// references).
+// is listed. Story 10-13a: <out>/matches.tsv holds every pair of every row of both matrices
+// (config, clip, kind, side, ref_s, det_s, err_ms, ref_status): a match fills both sides of the
+// pair, a missed reference leaves det_s / err_ms empty, an extra detection leaves ref_s / err_ms /
+// ref_status empty (tools/physics_bench/summary.py reads it). <out>/review.json holds what the
+// review page shows (per clip: joints at 30 Hz, the parents, foot / hand / hips heights at 60 Hz,
+// the found events of both configurations, the references).
 //
 // --old-refs: prints the csv dump's old REF markers as reference lines (ref_file.h OldRefLines),
 // then '# skipped <label>' lines; tools/ref_draft merges them.
@@ -372,6 +375,31 @@ std::string TsvValue(const RowScore& s)
     return b;
 }
 
+// Story 10-13a: the row's pairs as matches.tsv lines (prefix = "config\tclip\tkind\tside"),
+// from ScoreRow's own result (its scoring untouched): the references inside [lo, hi] in its order
+// (by time, stable), the missed ones taken out in order; the rest pair with err_s in order.
+void MatchLines(const std::string& prefix, std::vector<RowRef> refs, const RowScore& s, double lo, double hi,
+                std::vector<std::string>* out)
+{
+    refs.erase(std::remove_if(refs.begin(), refs.end(), [&](const RowRef& r) { return r.t < lo || r.t > hi; }),
+               refs.end());
+    std::stable_sort(refs.begin(), refs.end(), [](const RowRef& a, const RowRef& b) { return a.t < b.t; });
+    size_t mi = 0, ei = 0;
+    for (const RowRef& r : refs) {
+        const char* st = r.confirmed ? "confirmed" : "draft";
+        if (mi < s.missed_t.size() && s.missed_t[mi] == r.t) {
+            out->push_back(prefix + "\t" + Fmt("%.4f", r.t) + "\t\t\t" + st);
+            ++mi;
+            continue;
+        }
+        if (ei >= s.err_s.size()) continue;  // cannot happen: every reference is matched or missed
+        const double e = s.err_s[ei++];
+        out->push_back(prefix + "\t" + Fmt("%.4f", r.t) + "\t" + Fmt("%.4f", r.t + e) + "\t" + Fmt("%+.1f", e * 1000.0) +
+                       "\t" + st);
+    }
+    for (double t : s.extra_t) out->push_back(prefix + "\t\t" + Fmt("%.4f", t) + "\t\t");
+}
+
 std::map<std::string, std::string> ReadLast(const std::string& path, bool* had)
 {
     std::map<std::string, std::string> m;
@@ -558,7 +586,7 @@ int main(int argc, char** argv)
     std::printf("=== trigger_bench: every auto type ticked, Detect path (DetectAutoEvents) ===\n");
     std::printf("%zu clips in %s; match +-%g ms inside # visible; exp / matched / missed = confirmed/draft\n",
                 clips.size(), fixtures.c_str(), kMatchWindowS * 1000.0);
-    std::vector<std::string> tsv;
+    std::vector<std::string> tsv, matches;
     std::map<std::string, std::string> now;
     for (int cfg = 0; cfg < 2; ++cfg) {
         const BenchConfig bc = static_cast<BenchConfig>(cfg);
@@ -579,6 +607,7 @@ int main(int argc, char** argv)
                                         "\t" + std::string(1, kv.first.side);
                 now[key] = TsvValue(s);
                 tsv.push_back(key + "\t" + now[key]);
+                MatchLines(key, kv.second.refs, s, c.clip.lo, c.clip.hi, &matches);
                 if (!c.has_ref) continue;  // the summary sums clips with a reference only
                 RowScore& t = sum[kv.first.target];
                 t.exp_c += s.exp_c, t.exp_d += s.exp_d, t.found += s.found, t.matched_c += s.matched_c;
@@ -885,9 +914,15 @@ int main(int argc, char** argv)
         for (const std::string& l : tsv) f << l << "\n";
     }
     {
+        std::ofstream f((out / "matches.tsv").u8string(), std::ios::binary);
+        f << "# config\tclip\tkind\tside\tref_s\tdet_s\terr_ms\tref_status\n";
+        for (const std::string& l : matches) f << l << "\n";
+    }
+    {
         std::ofstream f((out / "review.json").u8string(), std::ios::binary);
         f << ReviewJson(clips);
     }
-    std::printf("Saved %s and %s\n", last.c_str(), (out / "review.json").u8string().c_str());
+    std::printf("Saved %s, %s and %s\n", last.c_str(), (out / "matches.tsv").u8string().c_str(),
+                (out / "review.json").u8string().c_str());
     return 0;
 }

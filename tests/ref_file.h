@@ -16,7 +16,8 @@
 //   part    heel / toe / tip / hand / any
 //   time_s  clip time (s)
 //   status  draft (Claude, from the motion) / confirmed / deleted (kept, never expected)
-//   source  motion / REF (an old REF marker of the csv dump) / antho (the review page)
+//   source  motion / REF (an old REF marker of the csv dump) / antho (the review page) /
+//           physics (story 10-13a: written by tools/physics_bench from the mocap's markers)
 //
 // Configurations: default = every type at the default sensitivity in its default modes (steps
 // combined, slides and pivots combined, lift-off / jump / land combined); parts = steps heel / toe

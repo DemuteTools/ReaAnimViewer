@@ -4,7 +4,8 @@
 // (AutoType) and block kind (AutoKind) of auto_detect.h has one descriptor row here, in enum
 // order; the code that used to switch on them reads the rows. A type's own logic (the physics
 // events it takes, its lanes, its required parts) is reached through the function pointers of its
-// rows, in one file per category (auto_types_legs.cpp, auto_types_arms.cpp). How to add a type:
+// rows, in one file per category (auto_types_legs.cpp, auto_types_arms.cpp) or per type
+// (auto_types_jolt.cpp, story 10-9g). How to add a type:
 // see the note at the top of auto_types.cpp.
 //
 // The modes of the existing types (steps separate, slide / pivot parts, hand pivot any) stay as
@@ -66,6 +67,39 @@ struct AutoTypeInfo {
     // foot that names it): Detect's sensitivity search skips a block when a block of the type on
     // either side has the event.
     bool            shared_sides = false;
+    // Story 10-9f: Detect's sensitivity search never raises this type's silent blocks (a motion
+    // most clips never hold, a spin: a raise would turn a clip's sway or twist into one). The
+    // user's own sensitivity still applies. Story 10-9g: Jolt too (a walk or a climb has no jolt;
+    // a raise would make its softest step one); the block counts as searched (Detect not lit).
+    // Story 10-9e: Tap and Drag too (a walk's toe skims drag from 67 %). Story 10-9d: Clap and
+    // Hand on body too. Story 10-9c: Kick, Swing and Punch too.
+    bool            no_sens_raise = false;
+    // Story 10-9c: Peak / Start (AutoSettings::at_start): each kind has a twin of the other flavour
+    // (same type, marker, colour, role key and sound key), Start making the kinds whose row says
+    // `at_start` (kick, swing, punch: the twins; story 10-9j: slide, pivot, hand pivot, whose own
+    // kinds are the Start ones, their Peak twins appended). The type's first kind's flavour is its
+    // default (AutoStartDefault). The Peak / Start widget, the settings and the block kept across a
+    // switch follow the row.
+    bool            start_option = false;
+    // Story 10-9e: the type whose events this type's events replace within kAutoReplaceS when both
+    // are ticked (AutoEvents; story 10-9a: Land the steps, Jump the lift-offs), as an AutoType
+    // value; -1 = none. `replaces_in_span`: another type replaced anywhere over the event's span
+    // (its physics start to end, +-kAutoReplaceS: a Tap the lift-off that ends its touch); -1 =
+    // none. `replaces_own_side`: only those of the same foot (Tap), else either foot.
+    int             replaces = -1;
+    int             replaces_in_span = -1;
+    bool            replaces_own_side = false;
+    // Story 10-10a: the `sens` fields the confidence probes make stricter (bit i = sens[i];
+    // 0 = all of them, the default): a field that is a tolerance rather than a margin is left out
+    // (Clap / Hand on body's reach: two hands that meet cannot come much closer, so a real clap
+    // would read as doubtful). See auto_detect.h RateAutoEvents.
+    unsigned        conf_probe = 0;
+    // Story 10-9h: the share of each probe step the probed fields take (1 = the full
+    // kAutoConfidenceStepSens points). Under 1 for a type whose threshold sits close under its
+    // real events by nature, its shape (not its speed) setting it apart: Punch, 0.5 (a jab's
+    // extending speed 2.34-2.44 leg/s over a 2.0 threshold that cannot come lower, Hip Hop
+    // reading as a punch from 1.7; at a full step the jabs would read as doubtful).
+    double          conf_scale = 1.0;
 };
 
 // An event source: the physics events of one analysis a kind reads (FootEvents, HandEvents...).
@@ -119,7 +153,33 @@ struct AutoKindInfo {
     AutoPartMissingFn part_missing;
     AutoLanesFn       lanes;
     AutoRolesFn       roles;
+    // Story 10-9g: the strength's unit when it is neither leg/s nor degrees ("g": a jolt); its
+    // speed is then 0 (no m/s). Null for the others.
+    const char*       strength_unit = nullptr;
+    // Story 10-9c: a `start_option` type's kind that marks the motion's start (its sound key is
+    // its twin's: the peak kind's for kick, swing, punch; story 10-9j: the scuffs' start kinds are
+    // their own, their peak twins share it). Twins pair by position among the type's kinds of each
+    // flavour (enum order).
+    bool              at_start = false;
 };
+
+// Story 10-10b: a type's strength levels for layering (Soft / Medium / Hard), in the strength unit
+// of its kinds (leg/s, degrees, g: AutoKindInfo::degrees / strength_unit): Medium from `medium`,
+// Hard from `hard` (medium < hard). One row per AutoType, in enum order (kStrengthRows, next to
+// the type table); the cuts were measured on the fixtures (tools/bench, its STRENGTH block).
+struct AutoStrengthCuts {
+    AutoType type;
+    double   medium;
+    double   hard;
+};
+// The levels, 1-based (0 = none: no strength).
+constexpr int kStrengthSoft = 1, kStrengthMedium = 2, kStrengthHard = 3;
+const AutoStrengthCuts& AutoStrengthRow(AutoType t);
+// The level of a strength of type t: Soft below `medium`, Medium below `hard`, Hard from it; 0 for
+// a strength that is not finite or not above 0 (a user event on an auto row has none).
+int AutoStrengthLevel(AutoType t, double strength);
+// "Soft", "Medium", "Hard"; "" for 0 or out of range.
+const char* StrengthLevelName(int level);
 
 // The rows, by enum (a value out of range reads the first row).
 const AutoCategoryInfo& AutoCategoryRow(AutoCategory c);

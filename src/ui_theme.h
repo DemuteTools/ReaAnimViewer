@@ -411,6 +411,21 @@ bool ConfirmButton(const char* label, const ImVec2& size = ImVec2(0.0f, 0.0f));
 // stroke-strong under the mouse), text muted (kText under the mouse); `on` = accent-soft, accent-line,
 // kAccentText. Natural width = label + 7 px each side; ControlH() high; shrinks and ellipsizes.
 bool ChipButton(const char* label, const ImVec2& size = ImVec2(0.0f, 0.0f), bool on = false);
+// Story 10-10e: ChipButton's pill in two zones (the Smart Detection type and preset chips): a main
+// zone (a reserved tick slot, ticked when `on`, then the label; bold when `bold`) and a ⚙ zone
+// (`gear`, ControlH() wide, after a divider). Both always there, so ticking never changes the width.
+// `selected` fills the ⚙ zone with kAccent and rings the pill (drawn outside, takes no room); `flag`
+// puts a kWarn dot on the ⚙. Shrinks to the room left, its label ellipsized (full label as tooltip);
+// `label_max` > 0 caps the label's room (a preset name: the mockup's 140 px).
+struct SplitChipClick {
+    bool main = false;
+    bool gear = false;
+    bool main_hovered = false;  // for the caller's tooltip
+    bool gear_hovered = false;
+};
+float          SplitChipWidth(const char* label, bool bold = false, float label_max = 0.0f);
+SplitChipClick SplitChip(const char* id_label, const Icon& gear, bool on, bool selected = false, bool flag = false,
+                         bool bold = false, float label_max = 0.0f);
 // The help mark (.qmark): an 18 px circle with "?"; `tip` shown on hover. True when clicked. Centred on
 // a `line_h` high line (13-53: its toolbar's button height), the frame height by default.
 bool HelpMark(const char* id, const char* tip = nullptr, float line_h = 0.0f);
@@ -843,6 +858,13 @@ struct ConfirmBand {
 };
 void BeginConfirmBand(ConfirmBand& b, float width = 0.0f, bool warn = false);
 void EndConfirmBand(ConfirmBand& b);
+// Story 10-10f (the mockup's .bubble): an amber confirm bubble over the button it confirms, so nothing
+// under it moves: a popup opened with ImGui::OpenPopup(id), its bottom-right corner 6 px above `anchor`
+// (the button's top-right; pulled back inside the viewport), `width` wide (0 = 300 px): a dark amber
+// fill, the amber edge, r7, the shadow, pad 10 8, the theme's metrics inside. Esc or a click outside
+// closes it. Call EndConfirmBubble only when it returned true.
+bool BeginConfirmBubble(const char* id, ImVec2 anchor, float width = 0.0f);
+void EndConfirmBubble();
 
 // 13-14 (G-12): a colour swatch (ControlH() square, r5, the colour, stroke-strong edge, kFrameHover
 // under the mouse) that opens a themed colour picker (a panel popup) on click. True while `rgb`

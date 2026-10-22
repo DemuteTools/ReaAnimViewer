@@ -238,6 +238,7 @@ struct Event {
     double      strength = 0.0;
     double      speed = 0.0;   // total speed of the first condition's signal at the landing (m/s, or deg/s for an angle)
     int         signature = 0; // story 10-9a-2: an auto event's signature (index in its kind's list); 0 otherwise, -1 = unknown (kept from the record)
+    double      confidence = 1.0;  // story 10-10a: an auto event's margin to its thresholds, 0..1 (RateAutoEvents); 1 otherwise
     // When each condition last came true (clip time, before the offset), in condition order.
     // The latest one is the crossing that completed the AND.
     std::vector<double> cond_entry_s;

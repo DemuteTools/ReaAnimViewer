@@ -25,6 +25,12 @@ void InitSoundFollow(void* (*get_func)(const char* name));
 bool SoundFollowTick(ReaProject* proj);
 // The menu's Sounds section (Tagging tab, after "Markers written").
 void DrawSoundsMenuSection();
+// Story 10-10f (moved from that section to the Tagging footer): the selected animation items that have a sound
+// record, and (placed_out) how many sounds Populate placed on them.
+std::vector<MediaItem*> RepopulateItems(ReaProject* proj, int* placed_out);
+// Repopulate: removes those items' populated sounds (even moved ones), forgets the ones deleted by hand, then
+// places and draws again; attached and spread sounds stay. One undo point. Nothing without such an item.
+void Repopulate(ReaProject* proj);
 // Story 13-17 (N6): the menu's Library tab, its Tracks section: where placed sounds land (the
 // Tracks option, moved from Tagging > Sounds) and the separator of joined track names.
 void DrawLibraryTracksSection();

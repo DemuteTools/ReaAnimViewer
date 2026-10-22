@@ -454,4 +454,16 @@ void SavePrefFloat(const char* key, float value)
     SetExtState(kExtSection, key, buf, true);
 }
 
+std::string LoadPrefString(const char* key)
+{
+    if (!key || !GetExtState) return std::string();
+    const char* v = GetExtState(kExtSection, key);
+    return v ? std::string(v) : std::string();
+}
+
+void SavePrefString(const char* key, const std::string& value)
+{
+    if (key && SetExtState) SetExtState(kExtSection, key, value.c_str(), true);
+}
+
 }  // namespace rav

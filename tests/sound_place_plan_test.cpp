@@ -386,6 +386,7 @@ static void TestDivideNonePlacement()
 {
     SoundData d = Zoned({Zn(0.10, 0.30, "heel"), Zn(0.40, 0.70, "toe"), Zn(0.70, 0.90, "heel")});
     d.frames[0].zones[1].onset = 0.43;
+    d.frames[0].zones[2].db = -1.0;  // its own gain: the cut at 0.70 stays a cut once divided too (2026-10-21)
     PartSettings t;
     t.fade_in = 0.02;
     t.fade_out = 0.03;
@@ -562,9 +563,9 @@ static void TestZonePlacement()
         for (int i = 1100; i < 1300; ++i) pk.max_abs[static_cast<size_t>(i)] = 0.5f;
         pa = PieceApplyFor(d, 0, "heel", false, &pk);
         CHECK(pa.size() == 1 && Near(pa[0].slice.snap_offset, 0.100, 1e-6));
-        // The anchor of a whole event = the first zone; the others carry no snap.
+        // The anchor of a whole event = the first zone; Heel | Toe butted = one item (2026-10-21).
         pa = PieceApplyFor(d, 0, "", false, &pk);
-        CHECK(pa.size() == 2 && pa[0].anchor && !pa[1].anchor && Near(pa[1].slice.snap_offset, 0.0));
+        CHECK(pa.size() == 1 && pa[0].anchor && Near(pa[0].slice.length, 1.0) && Near(pa[0].slice.snap_offset, 0.100, 1e-6));
         // 13-62h review (R2): once the Edit window laid the zones out with the peaks, the measured snap is stored:
         // Populate needs no peaks and places the same snap whether they can be read or not.
         SoundData m = d;

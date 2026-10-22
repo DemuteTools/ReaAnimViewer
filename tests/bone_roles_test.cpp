@@ -131,7 +131,10 @@ int main()
         CHECK(m[R(Role::RightUpLeg)] == 24 && m[R(Role::RightKnee)] == 25 && m[R(Role::RightHeel)] == 26);
         CHECK(m[R(Role::RightToe)] == 27);
         CHECK(m[R(Role::RightToeEnd)] == 28);
-        for (int r = 0; r < static_cast<int>(Role::Count); ++r) CHECK(m[r] >= 0);  // every role found
+        // Story 10-9l: no middle finger, the index stands in for the knuckle; no finger tip bone.
+        CHECK(m[R(Role::LeftKnuckle)] == 12 && m[R(Role::RightKnuckle)] == 18);
+        CHECK(m[R(Role::LeftFingertip)] == -1 && m[R(Role::RightFingertip)] == -1);
+        for (int r = 0; r < static_cast<int>(Role::LeftKnuckle); ++r) CHECK(m[r] >= 0);  // every role before the fingers found
     }
     // The same on mixamorig1_ names; a rig without ToeBase plays its Toe_End as both toe roles.
     {
@@ -148,8 +151,9 @@ int main()
         CHECK(m[R(Role::Head)] == 7);
         CHECK(m[R(Role::Spine)] == -1 && m[R(Role::RightHand)] == -1 && m[R(Role::RightToeEnd)] == -1);
     }
-    // Unreal, UE5 mannequin (fixtures/SKM_Manny_Simple.glb): spine_05 is the chest; the twist,
-    // IK and finger bones are never guessed; no toe tip: the toe (ball_l) stands in.
+    // Unreal, UE5 mannequin (fixtures/SKM_Manny_Simple.glb): spine_05 is the chest; the twist and
+    // IK bones are never guessed (the fingers only for the knuckle and fingertip, story 10-9l); no
+    // toe tip: the toe (ball_l) stands in.
     {
         const std::vector<std::string> names = {
             "root",        "pelvis",      "spine_01",           "spine_02",    "spine_03",
@@ -175,7 +179,9 @@ int main()
         CHECK(m[R(Role::RightHand)] == 20);
         CHECK(m[R(Role::RightToe)] == 24 && m[R(Role::LeftToe)] == 28);
         CHECK(m[R(Role::LeftToeEnd)] == 28 && m[R(Role::RightToeEnd)] == 24);
-        for (int r = 0; r < static_cast<int>(Role::Count); ++r) CHECK(m[r] >= 0);  // "all found"
+        // Story 10-9l: the left index's base stands in for the knuckle; no finger tip, no right finger.
+        CHECK(m[R(Role::LeftKnuckle)] == 15 && m[R(Role::RightKnuckle)] == -1 && m[R(Role::LeftFingertip)] == -1);
+        for (int r = 0; r < static_cast<int>(Role::LeftKnuckle); ++r) CHECK(m[r] >= 0);  // "all found" (the fingers apart)
     }
     // Unreal, UE4 mannequin: three spine bones, spine_03 is the chest.
     {

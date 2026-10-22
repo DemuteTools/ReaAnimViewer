@@ -198,7 +198,9 @@ struct EditPlay {
     HeardMap                   map;
 };
 // {} for to <= from. The library overload adds GainFromRoot and the node's uid. 13-62i: on timeline `tl` (a Takes-mode
-// Sound's take; sound_zones.h ZoneTimeline).
+// Sound's take; sound_zones.h ZoneTimeline). 2026-10-21: no part soloed / muted on a divided Sound, butted zones of the
+// same gain are one voice (as PieceApplyFor places a combined event): part "" (mixed), the Sound's mono, no fade at the
+// joined cut in `map`.
 EditPlay EditPlayFrom(const SoundData& d, double from, double to, const PartListen* listen = nullptr, int tl = -1);
 EditPlay EditPlayFrom(const SoundLibrary& lib, const SoundNode& n, double from, double to,
                       const PartListen* listen = nullptr, int tl = -1);

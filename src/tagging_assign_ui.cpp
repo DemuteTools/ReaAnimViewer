@@ -2001,6 +2001,22 @@ void DrawKeyExtras(const Frame& f, const std::vector<const av::Target*>& sel)
     }
 }
 
+// 2026-10-21: what the selected entry is and how it is found, under the Library: an auto type's hint (its row in
+// the type table, the text the Smart Detection card shows), at most 3 lines (the rest in a tooltip). A bone rule
+// has no summary of its own yet: nothing. Several targets: only when they all share it.
+void DrawEntryHint(const std::vector<const av::Target*>& sel)
+{
+    const char* hint = nullptr;
+    for (const av::Target* t : sel) {
+        AutoType at;
+        if (!t || t->type.empty() || t->type == kTypeRules || !AutoTypeFromWord(t->type, &at)) return;
+        const char* h = AutoTypeRow(at).hint;
+        if (!h || !h[0] || (hint && std::strcmp(hint, h) != 0)) return;
+        hint = h;
+    }
+    if (hint) ui::ClampedText(hint, ui::kMuted, 3);
+}
+
 void DrawDetails(const Frame& f)
 {
     if (f.keyed && !g.sel.keys.empty()) {
@@ -2048,6 +2064,7 @@ void DrawDetails(const Frame& f)
 
     if (!item_row) {
         DrawLibraryRow(f, sel, mix);
+        DrawEntryHint(sel);
         if (f.keyed) DrawKeyExtras(f, sel);
     }
     if (mix.lib) {

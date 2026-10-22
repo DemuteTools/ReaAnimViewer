@@ -10,6 +10,7 @@
 #include "auto_types.h"
 #include "bone_roles.h"
 #include "event_list.h"
+#include "hand_touch.h"
 #include "motion_physics.h"
 #include "rule_record.h"
 
@@ -36,6 +37,17 @@ int g_fails = 0;
     } while (0)
 
 constexpr double kPi = 3.14159265358979323846;
+
+// Story 10-9j: a scuff's Peak twin's Start kind ("pivot_heel_peak" -> pivot_heel); any other kind
+// itself.
+AutoKind StartKindOfWord(AutoKind k)
+{
+    const std::string w = AutoKindWord(k), tail = "_peak";
+    AutoKind          out = k;
+    if (w.size() > tail.size() && w.compare(w.size() - tail.size(), tail.size(), tail) == 0)
+        AutoKindFromWord(w.substr(0, w.size() - tail.size()), &out);
+    return out;
+}
 
 // A synthetic rig, as tests/motion_physics_test.cpp builds it: one foot = its ball, heading and
 // pitch; the heel 14 cm behind and 6 cm above the ball, the tip 7 cm ahead and 2 cm below; the
@@ -292,11 +304,11 @@ int main()
             CHECK((AutoDefaultColor(static_cast<AutoKind>(k), 'L') != AutoDefaultColor(static_cast<AutoKind>(k), 'R')) !=
                   AutoKindSideless(static_cast<AutoKind>(k)));
         }
-        CHECK(!AutoKindFromWord("tap", nullptr) && !AutoKindFromWord("", nullptr));
+        CHECK(!AutoKindFromWord("future_kind", nullptr) && !AutoKindFromWord("", nullptr));
         Block rule = HeelRule("Step");
         CHECK(!IsAutoBlock(rule) && !AutoBlockKind(rule, nullptr, nullptr));
         Block future;
-        future.auto_type = "tap";  // a type of a newer RAV: an auto block of no known kind
+        future.auto_type = "future_kind";  // a type of a newer RAV: an auto block of no known kind
         CHECK(IsAutoBlock(future) && !AutoBlockKind(future, nullptr, nullptr));
     }
 
@@ -418,7 +430,7 @@ int main()
     // An auto block of an unknown type (a newer RAV's) is kept as it is by Detect.
     {
         Block future;
-        future.auto_type = "tap";
+        future.auto_type = "future_kind";
         future.marker = "Tap L";
         std::vector<Block> blocks = {future};
         const std::vector<int> map = ApplyAutoSettings(blocks, Ticked(false, true, false, false));
@@ -877,8 +889,18 @@ int main()
         CHECK(AutoTypeOfKind(AutoKind::Grab) == AutoType::Grab && AutoTypeOfKind(AutoKind::Release) == AutoType::Release);
         for (int t = 0; t < kAutoTypeCount; ++t) {
             const bool hand = t == static_cast<int>(AutoType::Grab) || t == static_cast<int>(AutoType::Release) ||
-                              t == static_cast<int>(AutoType::HandPivot);
-            CHECK(AutoCategoryOf(static_cast<AutoType>(t)) == (hand ? AutoCategory::Arms : AutoCategory::Legs));
+                              t == static_cast<int>(AutoType::HandPivot) || t == static_cast<int>(AutoType::Clap) ||
+                              t == static_cast<int>(AutoType::HandOnBody) ||  // story 10-9d
+                              t == static_cast<int>(AutoType::Swing) || t == static_cast<int>(AutoType::Punch) ||  // 10-9c
+                              t == static_cast<int>(AutoType::ArmJump) || t == static_cast<int>(AutoType::ArmLand) ||
+                              t == static_cast<int>(AutoType::Slap) ||  // 10-9k, 10-9l
+                              t == static_cast<int>(AutoType::Strike);  // 10-9n
+            // Story 10-9b: Elbow in Arms, Sit and Fall in Body.
+            const bool arms = hand || t == static_cast<int>(AutoType::Elbow);
+            const bool body = t == static_cast<int>(AutoType::Jolt) || t == static_cast<int>(AutoType::Spin) ||  // 10-9g, 10-9f
+                              t == static_cast<int>(AutoType::Sit) || t == static_cast<int>(AutoType::Fall);
+            CHECK(AutoCategoryOf(static_cast<AutoType>(t)) ==
+                  (arms ? AutoCategory::Arms : body ? AutoCategory::Body : AutoCategory::Legs));
         }
         CHECK(std::string(AutoCategoryLabel(AutoCategory::Legs)) == "Legs" &&
               std::string(AutoCategoryLabel(AutoCategory::Arms)) == "Arms");
@@ -890,14 +912,23 @@ int main()
                     continue;  // one marker name, one colour
                 // Story 10-8m: a heel scuff block takes its type's colour; a Longest part block its
                 // Each part counterpart's.
-                const AutoKind kk = static_cast<AutoKind>(k), jk = static_cast<AutoKind>(j);
+                // Story 10-9j: a scuff's Peak twin as its Start kind (the same colour).
+                AutoKind kk = StartKindOfWord(static_cast<AutoKind>(k)), jk = StartKindOfWord(static_cast<AutoKind>(j));
+                if (kk > jk) std::swap(kk, jk);
+                if (kk == jk || (kk == AutoKind::HandPivot && jk == AutoKind::HandPivotAny) ||
+                    (kk == AutoKind::HandPivotAny && jk == AutoKind::HandPivot))
+                    continue;
                 if ((kk == AutoKind::Slide && (jk == AutoKind::SlideHeel || jk == AutoKind::SlideHeelLongest)) ||
                     (kk == AutoKind::Pivot && (jk == AutoKind::PivotHeel || jk == AutoKind::PivotHeelLongest)) ||
-                    (kk >= AutoKind::SlideHeel && kk <= AutoKind::PivotToe && j == k + 4))
+                    (kk >= AutoKind::SlideHeel && kk <= AutoKind::PivotToe && jk == static_cast<AutoKind>(static_cast<int>(kk) + 4)))
                     continue;
                 // Story 10-9a-3: a lift-off / jump / land heel block takes its type's colour.
                 if ((kk == AutoKind::Lift && jk == AutoKind::LiftHeel) || (kk == AutoKind::Jump && jk == AutoKind::JumpHeel) ||
                     (kk == AutoKind::Land && jk == AutoKind::LandHeel))
+                    continue;
+                // Story 10-9c: a Start kind shares its Peak twin's colour; a kick heel block the kick's.
+                const AutoKind pk = AutoKindRow(kk).sound_key, pj = AutoKindRow(jk).sound_key;
+                if (pk == pj || (pk == AutoKind::Kick && pj == AutoKind::KickHeel) || (pk == AutoKind::KickHeel && pj == AutoKind::Kick))
                     continue;
                 for (char side : {'L', 'R'})
                     CHECK(AutoDefaultColor(static_cast<AutoKind>(k), side) != AutoDefaultColor(static_cast<AutoKind>(j), side));
@@ -919,7 +950,7 @@ int main()
         CHECK(ReadAutoSettings(blocks) == ui && !AutoPending(ui, ReadAutoSettings(blocks)));
         // An auto block of an unknown type belongs to no category.
         Block future;
-        future.auto_type = "clap";
+        future.auto_type = "future_type";
         CHECK(!AutoCategoryInBlocks({future}, AutoCategory::Arms) && !AutoCategoryInBlocks({future}, AutoCategory::Legs));
     }
 
@@ -1031,7 +1062,7 @@ int main()
         Block off = blk(AutoKind::Step, 'R');
         off.enabled = false;
         Block unknown = blk(AutoKind::Step, 'R');
-        unknown.auto_type = "kick";
+        unknown.auto_type = "future_kind";
         CHECK(!AutoBlockPartMissing(off, map) && !AutoBlockPartMissing(Block{}, map) && !AutoBlockPartMissing(unknown, map));
         CHECK((AutoBlocksPartMissing({Block{}, blk(AutoKind::Step, 'R'), blk(AutoKind::Step, 'L')}, map) ==
                std::vector<char>{0, 1, 0}));
@@ -1087,10 +1118,13 @@ int main()
             hands[static_cast<size_t>(Role::RightHand)] = static_cast<int>(Role::RightHand);
             const bool no_scale = !AutoMissingParts(AutoType::Grab, false, hands).empty();
             for (int ki = 0; ki < kAutoKindCount; ++ki) {
-                const AutoKind k = static_cast<AutoKind>(ki);
+                // Story 10-9j: a scuff's Peak twin needs what its Start kind needs.
+                const AutoKind k = StartKindOfWord(static_cast<AutoKind>(ki));
                 const bool     sep = k == AutoKind::Heel || k == AutoKind::Toe || k == AutoKind::SlideHeel ||
                                k == AutoKind::SlideToe || k == AutoKind::SlideHeelLongest || k == AutoKind::SlideToeLongest ||
-                               k >= AutoKind::LiftHeel;  // story 10-9a-3: the lift-off / jump / land parts
+                               (k >= AutoKind::LiftHeel && k <= AutoKind::LandToe) ||  // story 10-9a-3: the lift-off / jump / land parts
+                               k == AutoKind::KickHeel || k == AutoKind::KickToe ||  // story 10-9c: the kick parts
+                               k == AutoKind::KickHeelStart || k == AutoKind::KickToeStart;
                 const std::vector<std::string> listed = AutoMissingParts(AutoTypeOfKind(k), sep, map);
                 for (char side : {'L', 'R'}) {
                     std::vector<Role> parts;
@@ -1106,14 +1140,18 @@ int main()
                     case AutoKind::PivotHeel:
                     case AutoKind::PivotToe:
                     case AutoKind::PivotHeelLongest:
-                    case AutoKind::PivotToeLongest: parts = {heel, toe}; break;
+                    case AutoKind::PivotToeLongest: 
+                    case AutoKind::Tap:   // story 10-9e: the heel and the toe, as a pivot
+                    case AutoKind::Drag:
+                    case AutoKind::HeelTap: parts = {heel, toe}; break;  // story 10-9i: as a tap
                     case AutoKind::Step:
                     case AutoKind::Lift:
                     case AutoKind::Slide: parts = {heel, toe, tip}; break;
                     // Story 10-9a: the hips, or a foot with none of its parts (each foot's heel is
                     // listed only then).
                     case AutoKind::Jump:
-                    case AutoKind::Land: parts = {Role::Hips, Role::LeftHeel, Role::RightHeel}; break;
+                    case AutoKind::Land:
+                    case AutoKind::Jolt: parts = {Role::Hips, Role::LeftHeel, Role::RightHeel}; break;  // 10-9g: as a jump
                     // Story 10-9a-3: the lift-off parts as the step parts; a jump / land part: the
                     // hips, its own part, or a foot with none (its heel and toe both listed, below).
                     case AutoKind::LiftHeel: parts = {heel}; break;
@@ -1122,18 +1160,51 @@ int main()
                     case AutoKind::LandHeel: parts = {Role::Hips, heel}; break;
                     case AutoKind::JumpToe:
                     case AutoKind::LandToe: parts = {Role::Hips, toe}; break;
+                    // Story 10-9b: its own part (sit: hips and chest; fall: the hips, listed only
+                    // without a chest too), or no foot at all (each foot's heel listed only then).
+                    case AutoKind::Knee:
+                        parts = {side == 'R' ? Role::RightKnee : Role::LeftKnee, Role::LeftHeel, Role::RightHeel};
+                        break;
+                    case AutoKind::Elbow:
+                        parts = {side == 'R' ? Role::RightElbow : Role::LeftElbow, Role::LeftHeel, Role::RightHeel};
+                        break;
+                    case AutoKind::Sit: parts = {Role::Hips, Role::Chest, Role::LeftHeel, Role::RightHeel}; break;
+                    case AutoKind::Fall: parts = {Role::Hips, Role::LeftHeel, Role::RightHeel}; break;
+                    // Story 10-9d: a clap needs both hands, a hand on body its hand (and a body
+                    // segment, below).
+                    case AutoKind::Clap: parts = {Role::LeftHand, Role::RightHand}; break;
+                    // Story 10-9c: the whooshes: the torso (listed as the chest), then the kick's
+                    // foot parts as a step's, or the hand.
+                    case AutoKind::Kick:
+                    case AutoKind::KickStart: parts = {Role::Chest, heel, toe, tip}; break;
+                    case AutoKind::KickHeel:
+                    case AutoKind::KickHeelStart: parts = {Role::Chest, heel}; break;
+                    case AutoKind::KickToe:
+                    case AutoKind::KickToeStart: parts = {Role::Chest, toe}; break;
+                    case AutoKind::Swing:
+                    case AutoKind::SwingStart:
+                    case AutoKind::Punch:
+                    case AutoKind::Strike:  // story 10-9n: a swing's parts
+                    case AutoKind::PunchStart: parts = {Role::Chest, side == 'R' ? Role::RightHand : Role::LeftHand}; break;
+                    // Story 10-9k: the arms of a jump: a jump's parts and a swing's.
+                    case AutoKind::ArmJump:
+                    case AutoKind::ArmLand:
+                        parts = {Role::Hips, Role::LeftHeel, Role::RightHeel, Role::Chest,
+                                 side == 'R' ? Role::RightHand : Role::LeftHand};
+                        break;
                     default: parts = {side == 'R' ? Role::RightHand : Role::LeftHand}; break;
                     }
                     auto is_listed = [&](Role r) {
                         return std::find(listed.begin(), listed.end(), RoleName(r)) != listed.end();
                     };
-                    bool expect = no_scale;
+                    bool expect = no_scale || (k == AutoKind::HandOnBody && !HasBodySegment(map));
                     for (Role r : parts)
                         if (is_listed(r)) expect = true;
                     if (k == AutoKind::JumpHeel || k == AutoKind::JumpToe || k == AutoKind::LandHeel || k == AutoKind::LandToe)
                         for (char fs : {'L', 'R'})
                             if (is_listed(FootPartRole(fs, 0)) && is_listed(FootPartRole(fs, 1))) expect = true;
-                    const bool got = AutoBlockPartMissing(MakeAutoBlock(k, side, kAutoDefaultSens, 0.0), map);
+                    const bool got =
+                        AutoBlockPartMissing(MakeAutoBlock(static_cast<AutoKind>(ki), side, kAutoDefaultSens, 0.0), map);
                     if (got != expect) std::printf("  kind %d side %c: %d, expected %d\n", ki, side, got, expect);
                     CHECK(got == expect);
                 }
@@ -1782,11 +1853,11 @@ int main()
             CHECK(changed && Markers(old) == (std::vector<std::string>{"Rule", "Jump L", "Jump R", "Land L", "Land R"}));
             CHECK(map == (std::vector<int>{0, -1, -1}));
             Block future;
-            future.auto_type = "tap";  // an auto type of a newer RAV still stays
+            future.auto_type = "future_kind";  // an auto type of a newer RAV still stays
             future.auto_side = 'B';
             std::vector<Block> keep = {future};
             ApplyAutoSettings(keep, s);
-            CHECK(keep.size() == 5 && keep[0].auto_type == "tap");
+            CHECK(keep.size() == 5 && keep[0].auto_type == "future_kind");
         }
 
         // The record: side=L / R round-trips byte-identical; a pooled copy carries the blocks.
@@ -1871,6 +1942,25 @@ int main()
         land_off[8].enabled = false;
         const std::vector<Event> ev_lo = DetectAutoEvents(land_off, rig, nullptr, false);
         CHECK(count(ev_lo, "FS L") == 1 && count(ev_lo, "FS R") == 1 && count(ev_lo, "Lift L") == 0);
+        // Story 10-9m: the right foot lands 60 ms after the left (apart): Land L and Land R, each
+        // replacing its foot's step; one Jump. With Land off, both steps.
+        {
+            const std::vector<BoneTrack> apart = Rig(JumpFoot(-0.1, 1.0, 0.5), JumpFoot(0.1, 1.0, 0.56), o);
+            const std::vector<Event>     ev_ap = DetectAutoEvents(r.blocks, apart, nullptr, false);
+            CHECK(count(ev_ap, "Land L") == 1 && count(ev_ap, "Land R") == 1 && count(ev_ap, "FS L") == 0 &&
+                  count(ev_ap, "FS R") == 0);
+            CHECK(count(ev_ap, "Jump L") + count(ev_ap, "Jump R") == 1);
+            const std::vector<Event> ev_ap_off = DetectAutoEvents(land_off, apart, nullptr, false);
+            CHECK(count(ev_ap_off, "FS L") == 1 && count(ev_ap_off, "FS R") == 1 && count(ev_ap_off, "Land R") == 0);
+            // Review 10-9m: 36 ms late (past the 30 ms replacement, under jump_land_apart_s):
+            // together, one Land, and the right foot's step goes too (no step beside the Land).
+            const std::vector<BoneTrack> near = Rig(JumpFoot(-0.1, 1.0, 0.5), JumpFoot(0.1, 1.0, 0.536), o);
+            const std::vector<Event>     ev_nr = DetectAutoEvents(r.blocks, near, nullptr, false);
+            CHECK(count(ev_nr, "Land L") == 1 && count(ev_nr, "Land R") == 0 && count(ev_nr, "FS L") == 0 &&
+                  count(ev_nr, "FS R") == 0);
+            const std::vector<Event> ev_nr_off = DetectAutoEvents(land_off, near, nullptr, false);
+            CHECK(count(ev_nr_off, "FS L") == 1 && count(ev_nr_off, "FS R") == 1);
+        }
         // Walking steps before and after the jump: only the steps and lifts of the jump go.
         {
             Options                      ow;
@@ -2193,6 +2283,356 @@ int main()
             // t0 = 0: the take-off reads just before the seam (T = 2 s); t0 = 10 ms: just after it.
             CHECK(t0 == 0.0 ? on[0].time_s > 1.98 && on[0].time_s < 2.0 : on[0].time_s >= 0.0 && on[0].time_s < 0.02);
         }
+    }
+
+    // ---- Story 10-9g: the gear jolt (Body, sideless) ------------------------------------------
+    {
+        Options ow;
+        ow.dur = 4.3;
+        // Walking steps at 0.3 / 0.8 and 2.9 / 3.4 s (each lands 0.4 s later), a both-feet jump
+        // from 1.8 s flying 0.5 s (landing at 2.3 s, 2.45 m/s down).
+        const std::vector<BoneTrack> rig =
+            Rig(StepsAndJump(-0.1, {0.3, 2.9}, 1.8, 0.5), StepsAndJump(0.1, {0.8, 3.4}, 1.8, 0.5), ow);
+        AutoSettings s;
+        s.type[static_cast<int>(AutoType::Jolt)].on = true;
+        const std::vector<Block> jb = AutoBlocks(s);
+        CHECK(jb.size() == 1 && Markers(jb) == (std::vector<std::string>{"Jolt"}));
+        AutoKind k = AutoKind::Step;
+        char     side = 0;
+        CHECK(jb.size() == 1 && AutoBlockKind(jb[0], &k, &side) && k == AutoKind::Jolt && side == 'B' && AutoKindSideless(k));
+        CHECK(std::string(AutoKindSides(AutoKind::Jolt)) == "B" && AutoMarkerName(AutoKind::Jolt, 'R') == "Jolt");
+        CHECK(MakeAutoBlock(AutoKind::Jolt, 'L', 50.0, 0.0).auto_side == 'B' && ReadAutoSettings(jb) == s);
+        CHECK(AutoCategoryOf(AutoType::Jolt) == AutoCategory::Body && std::string(AutoKindWord(AutoKind::Jolt)) == "jolt");
+        // Default (1 g): the landing jolts, the walking steps (about 0.4 g) do not; strength in g,
+        // no speed.
+        const std::vector<Event> ev = DetectAutoEvents(jb, rig, nullptr, false);
+        CHECK(ev.size() == 1);
+        if (ev.size() == 1) CHECK(ev[0].time_s > 2.2 && ev[0].time_s < 2.4 && ev[0].strength > 2.0 && ev[0].speed == 0.0);
+        // Every impact at 0 g: one jolt per step, the landing's two feet and its Land merged into one.
+        const PhysicsAnalysis a = AnalyseMotion(rig);
+        PhysicsParams         all;
+        all.jolt_min_g = 0.0;
+        const std::vector<PhysicsEvent> imp = JoltEvents(a, all);
+        CHECK(imp.size() == 5);
+        int soft = 0, hard = 0;
+        for (size_t i = 0; i < imp.size(); ++i) {
+            CHECK(imp[i].kind == PhysicsKind::Jolt && imp[i].side == 'B' && imp[i].part == -1);
+            if (i) CHECK(imp[i - 1].time_s < imp[i].time_s);
+            if (imp[i].time_s > 2.2 && imp[i].time_s < 2.4) hard += imp[i].strength > 2.0;
+            else soft += imp[i].strength < 1.0;
+        }
+        CHECK(hard == 1 && soft == 4);
+        // The sensitivity divides the threshold: at 0 % (2 g) the landing still jolts.
+        CHECK(AutoPhysicsParams(AutoType::Jolt, 0.0, false).jolt_min_g == PhysicsParams().jolt_min_g * 2.0);
+        if (!jb.empty()) {
+            Block j0 = jb[0];
+            j0.sens = 0.0;
+            CHECK(DetectAutoEvents(std::vector<Block>{j0}, rig, nullptr, false).size() == 1);
+        }
+        // A merge window longer than the gaps: every impact in one jolt, at the first's time, with
+        // the highest peak.
+        PhysicsParams wide = all;
+        wide.jolt_merge_s = 10.0;
+        const std::vector<PhysicsEvent> one = JoltEvents(a, wide);
+        CHECK(one.size() == 1 && !imp.empty());
+        if (one.size() == 1 && !imp.empty()) CHECK(one[0].time_s == imp[0].time_s && one[0].strength > 2.0);
+        // Ticking Jolt changes no other type's events.
+        AutoSettings legs = Ticked(true, true, false, false);
+        legs.type[static_cast<int>(AutoType::Jump)].on = true;
+        legs.type[static_cast<int>(AutoType::Land)].on = true;
+        AutoSettings with = legs;
+        with.type[static_cast<int>(AutoType::Jolt)].on = true;
+        const std::vector<Block> lb = AutoBlocks(legs), wb = AutoBlocks(with);
+        std::vector<Event>       others;
+        for (const Event& e : DetectAutoEvents(wb, rig, nullptr, false))
+            if (e.marker != "Jolt") others.push_back(e);
+        CHECK(SameEvents(others, DetectAutoEvents(lb, rig, nullptr, false)));
+        // No hips: the part is missing and no jolt (no acceleration).
+        std::vector<int> map(static_cast<size_t>(Role::Count), -1);
+        for (int r = 0; r < static_cast<int>(Role::Count); ++r) map[static_cast<size_t>(r)] = r;
+        if (!jb.empty()) {
+            CHECK(!AutoBlockPartMissing(jb[0], map));
+            map[static_cast<size_t>(Role::Hips)] = -1;
+            CHECK(AutoBlockPartMissing(jb[0], map));
+        }
+        std::vector<BoneTrack> no_hips = rig;
+        no_hips[static_cast<size_t>(Role::Hips)] = BoneTrack();
+        const PhysicsAnalysis nh = AnalyseMotion(no_hips);
+        CHECK(JoltAccelerationG(nh).empty() && JoltEvents(nh, all).empty());
+        // Its lane: the upward acceleration against the threshold.
+        if (!jb.empty()) {
+            AutoAnalysis aa;
+            aa.params = AutoPhysicsParams(AutoType::Jolt, kAutoDefaultSens, false);
+            aa.analysis = AnalyseMotion(rig, aa.params);
+            const std::vector<AutoLane> lanes = AutoBlockLanes(aa, jb[0]);
+            CHECK(lanes.size() == 1);
+            if (lanes.size() == 1) CHECK(lanes[0].unit == "g" && lanes[0].above && lanes[0].threshold == 1.0);
+        }
+        // Review: Detect never raises Jolt: a walk with no jolt is searched (Detect not lit for it),
+        // neither raised nor "none up to 100 %", its sensitivity unchanged.
+        {
+            Options wo;
+            wo.dur = 4.3;
+            const std::vector<BoneTrack> walk =
+                Rig(StepsAndJump(-0.1, {0.3, 2.9}, 10.0, 0.5), StepsAndJump(0.1, {0.8, 3.4}, 10.0, 0.5), wo);
+            CHECK(DetectAutoEvents(jb, walk, nullptr, false).empty());
+            std::vector<int> full(static_cast<size_t>(Role::Count), -1);
+            for (int r = 0; r < static_cast<int>(Role::Count); ++r) full[static_cast<size_t>(r)] = r;
+            const std::vector<AutoSensResult> sr = SearchAutoSensitivity(jb, walk, {0}, full, false);
+            CHECK(sr.size() == 1);
+            if (sr.size() == 1) CHECK(sr[0].searched && !sr[0].raised && !sr[0].none && sr[0].sens == jb[0].sens);
+            CHECK(AutoTypeRow(AutoType::Jolt).no_sens_raise);
+            for (int t = 0; t <= static_cast<int>(AutoType::Land); ++t)  // the Legs and Arms types still raise
+                CHECK(!AutoTypeRow(static_cast<AutoType>(t)).no_sens_raise);
+        }
+        // Review: on a loop, a landing just before the seam and the other foot's just after it
+        // (100 ms apart through the seam) make one jolt, at the earlier one (before the seam).
+        {
+            Options lo;
+            lo.dur = 2.0;
+            auto cyc = [](double x, double t0) {
+                return FootFn([=](double t) {
+                    FootPose     f;
+                    const double u = std::fmod(t - t0 + 4.0, 2.0);
+                    f.ball = Vec3d{x, 0.02, 0.0};
+                    if (u > 0.0 && u < 0.5) f.ball.y += 9.81 * 0.5 / 2.0 * u - 0.5 * 9.81 * u * u;
+                    return f;
+                });
+            };
+            const std::vector<BoneTrack> rig2 = Rig(cyc(-0.1, 1.45), cyc(0.1, 1.55), lo);
+            PhysicsParams                lp = AutoPhysicsParams(AutoType::Jolt, kAutoDefaultSens, true);
+            lp.jolt_min_g = 0.0;
+            const PhysicsAnalysis la = AnalyseMotion(rig2, lp);
+            CHECK(la.ok && la.looping);
+            int steps = 0;
+            for (const PhysicsEvent& e : FootEvents(la, lp)) steps += e.kind == PhysicsKind::FootStep;
+            CHECK(steps == 2);  // 0.05 and 1.95 s
+            const std::vector<PhysicsEvent> lj = JoltEvents(la, lp);
+            CHECK(lj.size() == 1);
+            if (lj.size() == 1) CHECK(lj[0].time_s > 1.9 && lj[0].time_s < 2.0);
+        }
+    }
+    // Story 10-9d: claps and hand on body (hand_touch.h), standing still. Leg 0.87 m; the left
+    // thigh's axis runs x -0.1, z -0.14, y 0.50 -> 0.95.
+    {
+        // A hand moving straight from `from` to `to` at `speed` m/s from t0, then at rest there.
+        const auto toward = [](Vec3d from, Vec3d to, double t0, double speed) {
+            return [=](double t) {
+                const Vec3d  d{to.x - from.x, to.y - from.y, to.z - from.z};
+                const double len = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+                const double u = std::clamp((t - t0) * speed / len, 0.0, 1.0);
+                return Vec3d{from.x + d.x * u, from.y + d.y * u, from.z + d.z * u};
+            };
+        };
+        const Vec3d far_r{0.6, 1.2, 0.35}, meet_r{0.045, 1.2, 0.35}, still_l{-0.045, 1.2, 0.35};
+        Options o;
+        o.dur = 4.0;
+        o.hand[0] = [=](double) { return still_l; };
+        // The right hand claps on the still left one at 0.722 s, leaves slowly from 1.2 s, claps
+        // again at 2.722 s.
+        const HandFn in1 = toward(far_r, meet_r, 0.5, 2.5), out = toward(meet_r, far_r, 1.2, 1.0),
+                     in2 = toward(far_r, meet_r, 2.5, 2.5);
+        o.hand[1] = [=](double t) { return t < 1.2 ? in1(t) : t < 2.5 ? out(t) : in2(t); };
+        const std::vector<BoneTrack> rig = Rig(Planted(-0.1, 0.0), Planted(0.1, 0.0), o);
+        const PhysicsAnalysis        a = AnalyseMotion(rig);
+        CHECK(a.ok && a.role_pos.size() == static_cast<size_t>(Role::Count));
+        const std::vector<PhysicsEvent> claps = ClapEvents(a);
+        CHECK(claps.size() == 2);
+        if (claps.size() == 2) {
+            CHECK(claps[0].kind == PhysicsKind::Clap && claps[0].side == 'R' && claps[0].part == -1);
+            CHECK(std::fabs(claps[0].time_s - 0.722) < 0.03 && std::fabs(claps[1].time_s - 2.722) < 0.03);
+            CHECK(claps[0].strength > 2.0 && claps[0].strength < 3.2);  // 2.5 m/s / 0.87 m = 2.9 leg/s
+        }
+        CHECK(HandOnBodyEvents(a).empty());  // both hands stay far from the body
+        CHECK(TouchSummary(a, claps) == "touches: claps 2, hand on body 0");
+        CHECK(PhysicsMarkerName(claps.empty() ? PhysicsEvent{} : claps[0]).rfind("PHY R clap ", 0) == 0);
+        const std::vector<double> hd = HandsDistance(a);
+        CHECK(hd.size() == a.samples && std::fabs(hd[static_cast<size_t>(0.722 * 240.0) + 24] - 0.09 / 0.87) < 0.01);
+        // Through Detect: one Clap block per side, the right one marked.
+        AutoSettings s;
+        s.type[static_cast<int>(AutoType::Clap)].on = true;
+        const std::vector<Block> blocks = AutoBlocks(s);
+        CHECK(Markers(blocks) == (std::vector<std::string>{"Clap L", "Clap R"}));
+        const std::vector<Event> ev = DetectAutoEvents(blocks, rig, nullptr, false);
+        CHECK(ev.size() == 2 && ev[0].marker == "Clap R" && ev[1].marker == "Clap R");
+        // A slow clap (1 m/s, 1.15 leg/s): none at the default sensitivity, found at 100 %.
+        Options slow = o;
+        slow.hand[1] = toward(far_r, meet_r, 0.5, 1.0);
+        const std::vector<BoneTrack> srig = Rig(Planted(-0.1, 0.0), Planted(0.1, 0.0), slow);
+        CHECK(ClapEvents(AnalyseMotion(srig)).empty());
+        const PhysicsParams hi = AutoPhysicsParams(AutoType::Clap, 100.0, false);
+        CHECK(ClapEvents(AnalyseMotion(srig, hi), hi).size() == 1);
+        // Hands passing each other at speed, never stopping: no clap.
+        Options pass = o;
+        pass.hand[1] = toward(Vec3d{0.045, 1.2, 1.0}, Vec3d{0.045, 1.2, -0.3}, 0.5, 2.5);
+        CHECK(ClapEvents(AnalyseMotion(Rig(Planted(-0.1, 0.0), Planted(0.1, 0.0), pass))).empty());
+        // One hand missing: no clap, and the block says so.
+        Options one = o;
+        one.hand[1] = nullptr;
+        CHECK(ClapEvents(AnalyseMotion(Rig(Planted(-0.1, 0.0), Planted(0.1, 0.0), one))).empty());
+    }
+    {
+        const auto toward = [](Vec3d from, Vec3d to, double t0, double speed) {
+            return [=](double t) {
+                const Vec3d  d{to.x - from.x, to.y - from.y, to.z - from.z};
+                const double len = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+                const double u = std::clamp((t - t0) * speed / len, 0.0, 1.0);
+                return Vec3d{from.x + d.x * u, from.y + d.y * u, from.z + d.z * u};
+            };
+        };
+        // The left hand lands on the front of the left thigh (12 cm from its axis) at 2 m/s:
+        // arrives at 0.5 + 0.61 / 2 = 0.805 s. The right hand stays far.
+        Options o;
+        o.dur = 3.0;
+        o.hand[0] = toward(Vec3d{-0.6, 0.75, 0.3}, Vec3d{-0.1, 0.75, -0.02}, 0.5, 2.0);
+        o.hand[1] = [](double) { return Vec3d{0.7, 1.2, 0.4}; };
+        const std::vector<BoneTrack>    rig = Rig(Planted(-0.1, 0.0), Planted(0.1, 0.0), o);
+        const PhysicsAnalysis           a = AnalyseMotion(rig);
+        const std::vector<PhysicsEvent> body = HandOnBodyEvents(a);
+        CHECK(body.size() == 1);
+        if (body.size() == 1)
+            CHECK(body[0].kind == PhysicsKind::HandOnBody && body[0].side == 'L' && std::fabs(body[0].time_s - 0.805) < 0.03);
+        CHECK(ClapEvents(a).empty());
+        CHECK(HandBodyDistance(a, 'L').size() == a.samples && HandBodyDistance(a, 'R').size() == a.samples);
+        AutoSettings s;
+        s.type[static_cast<int>(AutoType::HandOnBody)].on = true;
+        const std::vector<Event> ev = DetectAutoEvents(AutoBlocks(s), rig, nullptr, false);
+        CHECK(ev.size() == 1 && ev[0].marker == "Hand on body L");
+        // A hand swinging past the thigh (15 cm aside) at 2 m/s, never stopping: none.
+        Options swing = o;
+        swing.hand[0] = toward(Vec3d{-0.25, 0.75, 0.6}, Vec3d{-0.25, 0.75, -0.9}, 0.5, 2.0);
+        CHECK(HandOnBodyEvents(AnalyseMotion(Rig(Planted(-0.1, 0.0), Planted(0.1, 0.0), swing))).empty());
+        // A hand that comes to rest slowly (0.5 m/s) against the thigh: none.
+        Options rest = o;
+        rest.hand[0] = toward(Vec3d{-0.6, 0.75, 0.3}, Vec3d{-0.1, 0.75, -0.02}, 0.5, 0.5);
+        CHECK(HandOnBodyEvents(AnalyseMotion(Rig(Planted(-0.1, 0.0), Planted(0.1, 0.0), rest))).empty());
+        // Review 10-9d: a slower touch (1 m/s, 1.15 leg/s) is none at the default sensitivity and
+        // found at 100 %, but Detect's search never raises a touch type (no_sens_raise): the
+        // block counts as searched, neither raised nor none. Clap is kept out the same way.
+        {
+            Options                      soft = o;
+            soft.hand[0] = toward(Vec3d{-0.1, 0.75, 0.4}, Vec3d{-0.1, 0.75, -0.02}, 0.5, 1.0);  // head-on
+            const std::vector<BoneTrack> srig = Rig(Planted(-0.1, 0.0), Planted(0.1, 0.0), soft);
+            CHECK(HandOnBodyEvents(AnalyseMotion(srig)).empty());
+            const PhysicsParams hi = AutoPhysicsParams(AutoType::HandOnBody, 100.0, false);
+            CHECK(HandOnBodyEvents(AnalyseMotion(srig, hi), hi).size() == 1);
+            std::vector<int> smap(static_cast<size_t>(Role::Count), -1);
+            for (int r = 0; r < static_cast<int>(Role::Count); ++r)
+                if (!srig[static_cast<size_t>(r)].pos.empty()) smap[static_cast<size_t>(r)] = r;
+            AutoSettings ss;
+            ss.type[static_cast<int>(AutoType::HandOnBody)].on = true;
+            ss.type[static_cast<int>(AutoType::Clap)].on = true;
+            const std::vector<Block>          sb = AutoBlocks(ss);
+            const std::vector<AutoSensResult> res = SearchAutoSensitivity(sb, srig, std::vector<int>(sb.size(), 0), smap, false);
+            CHECK(res.size() == sb.size() && sb.size() == 4);
+            for (const AutoSensResult& r : res) CHECK(r.searched && !r.raised && !r.none && r.sens == 50.0);
+            CHECK(AutoTypeRow(AutoType::HandOnBody).no_sens_raise && AutoTypeRow(AutoType::Clap).no_sens_raise);
+        }
+        // Review 10-9d: the body coming onto a hand held still (a climb's last pull) is no touch:
+        // the same closing, but made by the body. The whole body moves 0.4 m forward at 2 m/s and
+        // stops, its left thigh 12 cm behind the left hand, which never moves.
+        {
+            const double t0 = 0.5, run = 0.4, v = 2.0;
+            auto shift = [=](double t) { return std::clamp((t - t0) * v, 0.0, run) - run; };
+            Options still = o;
+            still.hand[0] = [](double) { return Vec3d{-0.1, 0.75, -0.02}; };
+            std::vector<BoneTrack> body = Rig(Planted(-0.1, 0.0), Planted(0.1, 0.0), still);
+            for (size_t r = 0; r < body.size(); ++r) {
+                if (r == static_cast<size_t>(Role::LeftHand) || r == static_cast<size_t>(Role::RightHand)) continue;
+                BoneTrack& t = body[r];
+                for (size_t i = 0; i < t.pos.size(); ++i) t.pos[i].z += shift(static_cast<double>(i) / 240.0);
+            }
+            const PhysicsAnalysis     ba = AnalyseMotion(body);
+            const std::vector<double> d = HandBodyDistance(ba, 'L');
+            CHECK(!d.empty() && d.front() > 0.4 && d.back() < 0.2);  // the closing does happen
+            CHECK(HandOnBodyEvents(ba).empty());
+            PhysicsParams any;
+            any.body_hand_frac = 0.0;  // without the hand's own approach, it would be one
+            CHECK(HandOnBodyEvents(ba, any).size() == 1);
+        }
+        // The parts: a hand on body needs a body segment; the hips and up legs give one.
+        std::vector<int> map(static_cast<size_t>(Role::Count), -1);
+        map[static_cast<size_t>(Role::LeftHand)] = 1;
+        map[static_cast<size_t>(Role::RightHand)] = 2;
+        CHECK(!HasBodySegment(map));
+        map[static_cast<size_t>(Role::Spine)] = 3;
+        CHECK(!HasBodySegment(map));
+        map[static_cast<size_t>(Role::Head)] = 4;
+        CHECK(HasBodySegment(map));  // spine -> head (the missing chest and neck skipped)
+    }
+
+    // Story 10-10a: confidence. The steps of 0..5 strictness steps a kept event survived.
+    {
+        CHECK(AutoConfidenceOfSteps(0) == 0.0 && AutoConfidenceOfSteps(kAutoConfidenceSteps) == 1.0);
+        CHECK(std::fabs(AutoConfidenceOfSteps(2) - 0.4) < 1e-12 && AutoConfidenceOfSteps(9) == 1.0 &&
+              AutoConfidenceOfSteps(-1) == 0.0);
+    }
+    // The slow slide (none at 50 %, one at 80 %): rated at 80 %, its confidence is the share of
+    // 10-point steps below 80 it is still found at, in a row; the rule's events stay at 1.
+    {
+        const FootFn slide = [](double t) {
+            FootPose f;
+            f.ball = Vec3d{-0.1, 0.02, 0.18 * std::clamp(t - 1.0, 0.0, 0.4)};
+            return f;
+        };
+        Options o;
+        o.dur = 3.0;
+        const std::vector<BoneTrack> rig = Rig(slide, Planted(0.1, 0.2), o);
+        std::vector<Block>           blocks = AutoBlocks(Ticked(false, false, true, false));
+        for (Block& b : blocks) b.sens = 80.0;
+        std::vector<Event> ev = DetectAutoEvents(blocks, rig, nullptr, false);
+        CHECK(OfBlock(ev, 0).size() == 1);
+        for (const Event& e : ev) CHECK(e.confidence == 1.0);  // not rated yet
+        Event rule_ev;
+        rule_ev.block = 99;  // not an auto block: untouched
+        rule_ev.confidence = 0.7;
+        ev.push_back(rule_ev);
+        std::vector<AutoAnalysis> probes;
+        RateAutoEvents(ev, blocks, rig, &probes, false);
+        CHECK(ev.back().confidence == 0.7);
+        int kept = 0;  // the steps the slide survives, by hand: the block at 70, 60, 50...
+        for (int k = 1; k <= kAutoConfidenceSteps; ++k) {
+            std::vector<Block> stricter = blocks;
+            for (Block& b : stricter) b.sens = 80.0 - kAutoConfidenceStepSens * k;
+            if (OfBlock(DetectAutoEvents(stricter, rig, nullptr, false), 0).empty()) break;
+            ++kept;
+        }
+        CHECK(kept < 3);  // gone by 50 %
+        const std::vector<Event> sl = OfBlock(ev, 0);
+        CHECK(sl.size() == 1 && std::fabs(sl[0].confidence - AutoConfidenceOfSteps(kept)) < 1e-12);
+        CHECK(!probes.empty());
+        // Without a cache, the same; the cache reused (no new analysis).
+        std::vector<Event> ev2 = DetectAutoEvents(blocks, rig, nullptr, false);
+        RateAutoEvents(ev2, blocks, rig, nullptr, false);
+        const size_t n = probes.size();
+        std::vector<Event> ev3 = DetectRatedAutoEvents(blocks, rig, nullptr, &probes, false);
+        CHECK(probes.size() == n);
+        CHECK(ev2.size() == ev3.size());
+        for (size_t i = 0; i < ev2.size() && i < ev3.size(); ++i) CHECK(ev2[i].confidence == ev3[i].confidence);
+        // Review of 10-10a: a drag's preview rates from the cache only. An empty cache: false,
+        // nothing changed, no analysis run; the filled one: the same confidences, no new analysis.
+        std::vector<Event> ev4 = DetectAutoEvents(blocks, rig, nullptr, false);
+        for (Event& e : ev4) e.confidence = 0.5;
+        std::vector<AutoAnalysis> none;
+        CHECK(!RateAutoEventsFromCache(ev4, blocks, rig, &none, false) && none.empty());
+        CHECK(!RateAutoEventsFromCache(ev4, blocks, rig, nullptr, false));
+        for (const Event& e : ev4) CHECK(e.confidence == 0.5);
+        CHECK(RateAutoEventsFromCache(ev4, blocks, rig, &probes, false) && probes.size() == n);
+        CHECK(ev4.size() == ev2.size());
+        for (size_t i = 0; i < ev2.size() && i < ev4.size(); ++i) CHECK(ev2[i].confidence == ev4[i].confidence);
+    }
+    // A clear walk: its steps and lift-offs rated, each 0..1, the steps of a firm walk confident.
+    {
+        const std::vector<BoneTrack> rig = Walk();
+        const std::vector<Block>     blocks = AutoBlocks(Ticked(true, true, false, false));
+        const std::vector<Event>     ev = DetectRatedAutoEvents(blocks, rig, nullptr, nullptr, false);
+        CHECK(!ev.empty());
+        int firm = 0;
+        for (const Event& e : ev) {
+            CHECK(e.confidence >= 0.0 && e.confidence <= 1.0);
+            firm += e.confidence >= kDefaultDoubtLimit;
+        }
+        CHECK(firm == static_cast<int>(ev.size()));
     }
 
     if (g_fails) std::printf("%d check(s) failed\n", g_fails);

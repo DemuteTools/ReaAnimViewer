@@ -34,6 +34,7 @@ namespace rav {
 namespace {
 
 constexpr char kPrefMarkers[] = "tagging.markers";  // 0 take, 1 project, 2 both
+constexpr char kPrefDoubt[] = "tagging.doubt_pct";   // story 10-10a: the doubt limit, in %
 constexpr char kUndoCommit[] = "RAV: Commit auto-tagging";
 constexpr char kUndoCancel[] = "RAV: Cancel auto-tagging changes";
 constexpr char kUndoOption[] = "RAV: Auto-tagging marker option";
@@ -1531,6 +1532,8 @@ void InitTagMarkers(void* (*get_func)(const char* name))
     f_color_to_native = reinterpret_cast<ColorToNativeFn>(get_func("ColorToNative"));
     f_set_marker_value = reinterpret_cast<SetRegionOrMarkerInfo_ValueFn>(get_func("SetRegionOrMarkerInfo_Value"));
     f_set_marker_by_index2 = reinterpret_cast<SetProjectMarkerByIndex2Fn>(get_func("SetProjectMarkerByIndex2"));
+    // Story 10-10a: the doubt limit, before anything plans markers.
+    SetDoubtLimit(LoadPrefFloat(kPrefDoubt, static_cast<float>(kDefaultDoubtLimit * 100.0)) / 100.0);
 }
 
 bool ProjectMarkerSelected(const std::string& guid, double* pos)
@@ -1557,14 +1560,13 @@ MarkerMode GetTaggingMarkerMode()
     return g_mode == 0 ? MarkerMode::Take : g_mode == 1 ? MarkerMode::Project : MarkerMode::Both;
 }
 
-void SetTaggingMarkerMode(MarkerMode mode)
+namespace {
+
+// 10-4 fb-4: the previews follow a marker option. Every project item with previews or a commit
+// gets its previews rewritten for it, in one undo point (only when there is such an item). False
+// when there was none (nothing reread).
+bool RewriteAllPreviews()
 {
-    const MarkerMode before = GetTaggingMarkerMode();
-    g_mode = mode == MarkerMode::Take ? 0 : mode == MarkerMode::Project ? 1 : 2;
-    SavePrefFloat(kPrefMarkers, static_cast<float>(g_mode));
-    if (mode == before) return;
-    // 10-4 fb-4: the previews follow the option. Every project item with previews or a commit
-    // gets its previews rewritten for it, in one undo point (only when there is such an item).
     try {
         std::vector<MediaItem*> items;
         const int               n = CountMediaItems(nullptr);
@@ -1574,7 +1576,7 @@ void SetTaggingMarkerMode(MarkerMode mode)
             if (!it || !ReadItemRules(it, &rd) || !rd.present || !rd.valid) continue;
             if (HasPreviews(rd.rules) || rd.rules.has_applied) items.push_back(it);
         }
-        if (items.empty()) return;
+        if (items.empty()) return false;
         Undo_BeginBlock2(nullptr);
         BusyScope busy("Rewriting previews");  // 13-59: every item with previews or a commit
         for (size_t k = 0; k < items.size(); ++k) {
@@ -1588,8 +1590,37 @@ void SetTaggingMarkerMode(MarkerMode mode)
         Undo_EndBlock2(nullptr, kUndoOption, UNDO_STATE_ALL);
         UpdateArrange();
         TaggingReread();
+        return true;
     } catch (...) {
+        return false;
     }
+}
+
+}  // namespace
+
+void SetTaggingMarkerMode(MarkerMode mode)
+{
+    const MarkerMode before = GetTaggingMarkerMode();
+    g_mode = mode == MarkerMode::Take ? 0 : mode == MarkerMode::Project ? 1 : 2;
+    SavePrefFloat(kPrefMarkers, static_cast<float>(g_mode));
+    if (mode == before) return;
+    RewriteAllPreviews();
+}
+
+double GetTaggingDoubtLimit()
+{
+    return DoubtLimit();
+}
+
+void SetTaggingDoubtLimit(double limit)
+{
+    const double before = DoubtLimit();
+    SetDoubtLimit(limit);
+    SavePrefFloat(kPrefDoubt, static_cast<float>(DoubtLimit() * 100.0));
+    if (DoubtLimit() == before) return;
+    // Story 10-10a: the markers' amber follows the limit (previews until the next Commit), and
+    // the Tagging view's.
+    if (!RewriteAllPreviews()) TaggingReread();
 }
 
 const char* MarkerModeLine(MarkerMode mode)

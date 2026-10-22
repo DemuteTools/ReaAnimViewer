@@ -813,6 +813,8 @@ int RunPhysics(const std::vector<std::string>& files, const PhysicsParams& base)
         std::printf("  %s\n%s", JumpPushOffSummary(pc.a, pev).c_str(), PhysicsEventLines(pev, "  ").c_str());
         const std::vector<PhysicsEvent> fev = JumpFreeFallEvents(pc.a, base);  // story 10-9a-3
         std::printf("  %s\n%s", JumpFreeFallSummary(pc.a, fev).c_str(), PhysicsEventLines(fev, "  ").c_str());
+        const std::vector<PhysicsEvent> bev = BodyContactEvents(pc.a, base);  // story 10-9b
+        std::printf("  %s\n%s", BodyContactSummary(pc.a, bev).c_str(), PhysicsEventLines(bev, "  ").c_str());
     }
 
     // Story 10-8c: each labelled hand REF and the nearest Grab of that side.

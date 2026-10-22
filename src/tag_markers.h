@@ -57,6 +57,11 @@ MarkerMode GetTaggingMarkerMode();
 void SetTaggingMarkerMode(MarkerMode mode);  // kept across sessions
 // "Writes take markers" / "Writes project markers" / "Writes take + project markers".
 const char* MarkerModeLine(MarkerMode mode);
+// Story 10-10a: the doubt limit (event_list.h DoubtLimit, 0..1), kept across sessions (read at
+// InitTagMarkers). Setting it rewrites the previews of every item with previews or a commit (the
+// amber follows it), in one undo point, and rereads the Tagging view.
+double GetTaggingDoubtLimit();
+void   SetTaggingDoubtLimit(double limit);
 
 struct ApplyResult {
     bool        ran = false;       // something was written (one undo point)

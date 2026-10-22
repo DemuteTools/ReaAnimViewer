@@ -791,6 +791,9 @@ Set SetBlock(Block& b, const std::string& k, const std::string& v)
         b.sens_from = x;
         return Set::Ok;
     }
+    // Story 10-10f: the strength in the marker names (10-10b's `lvl=`) is gone; a dev project's
+    // field is read and dropped (Epic 10 was never released: nothing to keep).
+    if (k == "lvl") return Set::Ok;
     if (k == "color") return R(ReadColor(v, &b.color));
     if (k == "hold_ms") return R(ReadNumber(v, &b.min_hold_ms));
     if (k == "cooldown_ms") return R(ReadNumber(v, &b.cooldown_ms));
@@ -907,6 +910,7 @@ Fields EventFields(const EventEntry& e)
     if (e.has_block) f.push_back({"block", FormatInt(e.block)});
     if (e.has_strength) f.push_back({"strength", FormatNumber(e.strength)});
     if (e.has_speed) f.push_back({"speed", FormatNumber(e.speed)});
+    if (e.has_confidence) f.push_back({"confidence", FormatNumber(e.confidence)});  // story 10-10a
     return f;
 }
 
@@ -917,6 +921,7 @@ Set SetEvent(EventEntry& e, const std::string& k, const std::string& v)
     if (k == "block") return R(e.has_block = ReadInt(v, &e.block));
     if (k == "strength") return R(e.has_strength = ReadNumber(v, &e.strength));
     if (k == "speed") return R(e.has_speed = ReadNumber(v, &e.speed));
+    if (k == "confidence") return R(e.has_confidence = ReadNumber(v, &e.confidence));
     return Set::Unknown;
 }
 

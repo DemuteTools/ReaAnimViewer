@@ -184,8 +184,12 @@
 // Story 10-9a-3: both carry the foot (PhysicsEvent::side L / R) and the part (FootPart) that
 // leaves last / touches first. Feet within jump_tie_s of each other (a two-footed take-off or
 // landing: the parts' 8 ms smoothing does not order them) tie, and a tie keeps the first foot
-// (L), at its own last part to leave / its own step: one event. Looping clips: as the other
-// events.
+// (L), at its own last part to leave / its own step: one event. Story 10-9m: at a landing, the
+// other foot touching more than jump_land_apart_s after the first (jump_land_apart_max_s at most:
+// later, it is a step after a one-foot landing) lands apart, a second Land on that foot at its
+// own step (its first part to touch); together (jump_land_apart_s at most), the Land's span
+// [start_s, end_s] reaches the other foot's step (Land replaces the steps over it). A take-off keeps one Jump (the last foot to leave): the
+// staggered take-offs' first foot is a lift-off. Looping clips: as the other events.
 //
 // Running strides (story 10-9a-4): a run's flights (both feet off each stride, longer as it
 // speeds up: Treadmill Running's sprint flies 154-162 ms at -1 g, which Detect's raise of the
@@ -443,6 +447,21 @@ struct PhysicsParams {
     // Attack, Jump_Small, Standing Jump), staggered ones 60 ms or more (Standing Jump02, Jump
     // Away); landings 13 ms or more apart. Not moved by the sensitivity.
     double     jump_tie_s = 0.010;
+    // Story 10-9m: a landing whose second foot touches more than jump_land_apart_s after the first
+    // (and jump_land_apart_max_s at most) gives that foot its own Land (s). Measured (first foot ->
+    // second foot's step): two-footed landings together 3-12 ms (Jump Attack, Jumping Down,
+    // Jump_Small, Standing Jump02, AirPunch's first) and 30 ms (Standing Jump), apart 62 ms
+    // (AirPunch's 1.54 s, Antho: two impacts); one-foot landings whose other foot steps after
+    // 115 ms (Jumping Down_Calm, a confirmed step) to 186-234 ms (the running jumps). Take-offs
+    // keep one Jump: a staggered take-off's first foot is a confirmed lift-off (Standing Jump02
+    // 64 ms, Jumping Down 25 ms). Not moved by the sensitivity. Review 10-9m: the upper bound is a
+    // time, not the hips (Jumping Down_Calm's confirmed step lands with the hips still falling at
+    // 96 % of their landing speed and the first foot down, as AirPunch's second foot, 75 %): a
+    // running stride after a landing comes 179 ms or more later, the first foot leaving before it
+    // (a stride's flight); a step under 90 ms would be over 11 steps a second. Arms Land reads
+    // jump_land_apart_max_s too (one Arms Land per landing).
+    double     jump_land_apart_s = 0.040;
+    double     jump_land_apart_max_s = 0.090;
     // Story 10-9a-4: a running stride's flight is no jump (see "Running strides" above): a
     // neighbouring flight one single-foot stance away (the stance this long at most, s) lasting at
     // least this flight / jump_stride_ratio. Measured (240 Hz dumps): consecutive stride flights
@@ -470,6 +489,244 @@ struct PhysicsParams {
     // running jumps (Running Jump Over Hole's 4.37) keep their flight.
     double     jump_impulse_max_speed = 2.2;
     double     jump_impulse_smooth_s = 0.040;  // the acceleration's smoothing (Gaussian sigma, s)
+    // Story 10-9g: the gear jolts (see JoltEvents). The centre of mass's acceleration peak (g) an
+    // impact must reach (the sensitivity divides it), the window around the impact it is read in
+    // (s, before / after the contact), its smoothing (Gaussian sigma, s), and the impacts closer
+    // than jolt_merge_s that make one jolt (the earliest's time, the highest peak). 1 g = the
+    // ground pushing with twice the body's weight: running peaks at 2-3 body weights, walking at
+    // 1.1-1.3 (vertical ground reaction force). Measured on the fixtures (JoltAccelerationG peak
+    // per impact, 20 ms smoothing): jump landings 1.33-6.26 g (Running Jump Over Hole 1.33,
+    // Jumping Down 1.51, Standing Jump 2.10, Jump Attack 6.26); running steps 0.65-3.2 g (Slow Run
+    // 1.46 / 1.89, Treadmill Running 1.6-3.2, Two Cycle Sprint 1.66-2.43, Great Sword Run 0.93 /
+    // 1.11, the strafes 0.65-1.12); walks 0.05-0.54 g (Walking 0.15 / 0.20, Catwalk 0.11-0.36,
+    // Walk With Briefcase 0.39 / 0.43, Ascending Stairs 0.51 / 0.54), climbs 0.07-1.00. At 1 g
+    // every landing and most running steps jolt, no walk; the sensitivity (/ f) takes it to 0.5 g
+    // at 100 % (brisk steps, stairs) and 2 g at 0 % (hard landings, sprints). The smoothing moves
+    // the peaks (Slow Run 1.46 g at 20 ms, 1.62 at 10, 1.04 at 40): 20 ms sits between the
+    // parts' 8 ms and the push-off's 40. Window: the step time lags the hips' deceleration by up
+    // to 30 ms; the deceleration lasts 50-150 ms after it.
+    double     jolt_min_g = 1.0;
+    double     jolt_before_s = 0.030;
+    double     jolt_after_s = 0.150;
+    double     jolt_smooth_s = 0.020;
+    double     jolt_merge_s = 0.150;
+    // Story 10-9f: the body spins (auto_types_spin.cpp). The turn segmentation of gait studies
+    // (R[1][12]): the hip line's yaw rate above spin_start_dps starts a spin, it runs while the
+    // rate stays at spin_end_dps or more in the same direction, and it is kept when it sweeps
+    // spin_min_deg at least (the sensitivity divides the sweep only; Detect never raises it). The yaw is
+    // smoothed over spin_smooth_s (Gaussian sigma) first: measured on the fixtures, 50 ms keeps
+    // the timing of Hip Hop Dancing's four turns (98-111 deg) and drops Climbing Up Wall's 46 deg
+    // pelvis twist (no smoothing: 46 deg); a walk's hip sway sweeps 21 deg at most.
+    double     spin_start_dps = 15.0;
+    double     spin_end_dps = 5.0;
+    double     spin_min_deg = 45.0;
+    double     spin_smooth_s = 0.050;
+    // Story 10-9h: a twist is no spin. Two spins turning opposite ways, the second starting within
+    // spin_twist_gap_s of the first's end, sweeping within spin_twist_ratio of each other (the
+    // hips turning out and back: a punch's hip drive, 60-123 deg there, back-to-back 0.01-0.22 s
+    // apart), are neither. A turn and a much smaller turn back (Capoeira's 220 deg roue then 56)
+    // stay spins; turns apart (Hip Hop Dancing's, ~1 s apart) too.
+    double     spin_twist_gap_s = 0.250;
+    double     spin_twist_ratio = 2.5;
+    // Story 10-9e: foot taps and drags (FootTapEvents, FootDragEvents, foot_taps.h). A tap is a
+    // toe contact (ball or tip) of tap_max_s at most, the heel up (higher above that part than in
+    // the foot's flat pose by tap_heel_rise, leg) and the other foot down the whole time (it
+    // carries the body), its same part at the same support height (within tap_floor_height,
+    // leg: the floor the body stands on). The sensitivity multiplies tap_max_s. Measured on the
+    // fixture dumps (default analysis): no foot contact of 300 ms or less has the other foot down
+    // at any sample (the sprints' toe-only stances, 117-167 ms on Treadmill Running and Two Cycle
+    // Sprint, are single supports), so a walk or a run gives no tap.
+    double     tap_max_s = 0.150;
+    double     tap_heel_rise = 0.03;
+    double     tap_floor_height = 0.03;
+    // Story 10-9i: heel taps (HeelTapEvents, heel_taps.h): the heel rises over the ball (both over
+    // their floors) by heel_tap_min_rise at least (leg) and comes back within heel_tap_land of its
+    // floor, falling at heel_tap_min_speed at least (leg/s), the heel in contact throughout and
+    // the ball in contact within heel_tap_ball_height of its floor, that floor within
+    // heel_tap_floor of the body's (BodyTrack::floor_y). The sensitivity divides
+    // heel_tap_min_rise. Measured on the fixture dumps (spec 10-9i): Hip Hop Dancing's heel drops
+    // rise 0.017-0.050 leg over the ball and fall at 0.12-0.34 leg/s; the punches' and the
+    // weight shifts' heel lifts rise 0.004-0.012 (Fist Fight 0.012); the climbs' and the crawl's
+    // feet rest on holds or tiptoes 0.2-1.9 leg over the floor.
+    double     heel_tap_min_rise = 0.013;
+    double     heel_tap_min_speed = 0.06;
+    double     heel_tap_ball_height = 0.02;
+    double     heel_tap_land = 0.003;
+    double     heel_tap_floor = 0.03;
+    double     heel_tap_hold_s = 0.100;  // then rests within heel_tap_land of its floor this long
+    // A drag is the toe (ball or tip) sliding on its support during a swing: the heel off the
+    // ground, the toe part not in contact (it moves), within drag_height (leg) above or below the
+    // support of its latest contact, at drag_speed to drag_max_speed (leg/s, horizontal, ground
+    // frame), for drag_min_s at least over drag_min_dist (leg) at least; runs drag_gap_s apart or
+    // less (the heel still off) are one. The sensitivity divides drag_min_s. Measured on the
+    // fixture dumps (spec 10-9e): the knee crawl (246 ms), the one-knee kneel (375 ms, its two
+    // runs 100 ms apart joined) and its stand-up (179 ms) drag; no walk or run drags at the
+    // default, the longest such run on one is 79 ms (Walking, Catwalk: found from 67 %). Within
+    // 0.8 cm of the support (drag_height) a swing skims the floor only at toe-off and landing;
+    // past 2 leg/s the toe is swinging.
+    double     drag_height = 0.008;
+    double     drag_speed = 0.5;
+    double     drag_max_speed = 2.0;
+    double     drag_min_s = 0.100;
+    double     drag_min_dist = 0.08;
+    double     drag_gap_s = 0.100;
+    // Story 10-9b: body contacts (see BodyContactEvents). A knee, elbow or the hips touch when they
+    // come to rest (segmented as a hand: contact speed, switch cost, min contact) while low over
+    // the floor ("stationary and low", HuMoR's knee / hand rule, research d3); heights in leg
+    // lengths above the floor, of the joint centres. Measured on the fixtures (the knee joint):
+    // kneeling rests at 0.12-0.14 (Kneel_1knee), 0.09 (Kneeling Down To Crouch), crawling -0.05 to
+    // 0.06; the lowest knee elsewhere 0.15 moving at 0.4-0.8 leg/s (Jump Attack's lunge), 0.17 at
+    // 1+ leg/s (Running Crawl, never at rest), 0.28 (Standing Jump02), 0.32 (Crouched Walking).
+    // HuMoR's 0.08 m (0.09 leg) misses the Kneel clip's knee: 0.20. An elbow's centre sits closer
+    // to its skin (a forearm flat on the floor: about 0.05 leg): 0.12; no fixture rests on its
+    // elbows (Jump Away's lie on the back: 0.18-0.24, crawling 0.26+). The descent: the kneels
+    // and crawls come down at 0.5-1.0 leg/s, Jump Away's legs stop sliding at 0.1: 0.3.
+    double     knee_contact_speed = 0.4;     // leg/s (the Knee sensitivity multiplies it)
+    double     elbow_contact_speed = 0.4;    // leg/s (the Elbow sensitivity multiplies it)
+    double     sit_contact_speed = 0.4;      // leg/s, the hips (the Sit sensitivity multiplies it)
+    double     body_switch_cost = 10.0;      // samples of clear evidence (240 Hz), as the hands'
+    double     body_min_contact_s = 0.150;   // a shorter rest is no contact
+    double     body_min_descent = 0.3;       // leg/s: a knee / elbow contact comes down at this speed at least
+    double     body_stop_frac = 0.2;         // a knee / elbow is timed where its downward speed falls to this x the descent's peak
+    double     knee_ground_height = 0.20;    // leg
+    // A knee landing that slides on (a low crawl drags its knees at 0.5-1.3 leg/s, too fast for
+    // the contact speed): the knee comes within knee_land_height of the floor (re-armed above 1.5
+    // x it) after a descent of knee_land_descent at least (over fall_window_s), timed where its
+    // downward speed falls to body_stop_frac of that peak, sliding at knee_land_max_hspeed at most
+    // there (Jump Away's knees hitting the floor in its slide: 2.1-2.6), and no counted Knee of that
+    // side within knee_land_merge_s (the contact gives it). Story 10-9h, measured: crawls' and the
+    // hands-and-knees landing's knees 0.02-0.10 leg high, descents 0.58-3.84 leg/s; the slow
+    // kneels 0.31-0.34 (counted by their contacts).
+    double     knee_land_height = 0.10;      // leg
+    double     knee_land_descent = 0.5;      // leg/s
+    double     knee_land_max_hspeed = 1.6;   // leg/s
+    double     knee_land_merge_s = 0.200;
+    double     elbow_ground_height = 0.12;   // leg
+    double     body_floor_pct = 5.0;         // the floor: this percentile of the lowest foot part's height
+    // Sit: the hips at rest below sit_max_height, the chest at least sit_min_upright above them,
+    // at least sit_min_offset (horizontal) from the feet, no knee down, for sit_min_s. A squat
+    // must keep the hips over the feet to balance (Kneeling Down To Crouch 0.04, Kneel_1knee
+    // 0.05-0.08 leg), a chair holds them a thigh behind (about 0.5 leg); a lying or crawling
+    // trunk has its chest 0.1-0.2 leg over the hips, a standing or kneeling one 0.35+. No fixture
+    // sits: chosen from these, checked on synthetic clips only.
+    double     sit_max_height = 0.75;        // leg
+    double     sit_min_upright = 0.30;       // leg
+    double     sit_min_offset = 0.25;        // leg
+    double     sit_min_s = 0.300;
+    // Fall: the trunk (the lower of the hips and the chest) comes within fall_height of the floor
+    // falling at fall_min_speed at least over the fall_window_s before its descent stops (the
+    // Fall sensitivity divides fall_min_speed). Measured: Jump Away lands on its back with the
+    // hips at 0.11 leg falling at 3.4 leg/s; the lowest trunk elsewhere is 0.44 (Kneeling Down To
+    // Crouch's hips), 0.47 (crawling), 0.48 (Jumping Down's landing crouch).
+    double     fall_height = 0.35;           // leg
+    double     fall_min_speed = 1.0;         // leg/s, downwards
+    double     fall_window_s = 0.300;
+    double     fall_stop_speed = 0.25;       // leg/s: the descent has stopped (vertical speed above -this)
+    // Story 10-9d: claps and hand on body (hand_touch.h, "Touches"). A touch is a hand coming
+    // within reach of the other hand (clap) or of a body bone's segment (hand on body) at speed,
+    // then stopping against it. Reach (leg lengths, from the hand bone's origin, the wrist, to the
+    // other wrist / the segment's axis), the approach (the peak closing speed, leg/s, the
+    // sensitivity divides it), the stop (the relative speed falls to touch_stop_frac x that peak)
+    // and its abruptness (the stop within this long of the braking's start, s). See hand_touch.h
+    // for the values measured on the fixtures. Not moved by the sensitivity: the stop and the
+    // window.
+    double     clap_reach = 0.18;
+    double     clap_min_speed = 1.5;
+    double     clap_stop_s = 0.150;
+    double     body_reach = 0.22;
+    double     body_min_speed = 1.5;
+    double     body_stop_s = 0.100;
+    double     touch_stop_frac = 0.25;
+    double     touch_window_s = 0.300;  // the approach's peak is searched this far before the stop
+    // Hand on body: the hand itself makes the approach, its ground-frame speed over the approach
+    // at least this x the closing speed. A body rising past a hand held still (a climb's last
+    // pull: Climbing_Large's hand 0.2 leg/s, the closing 2.5) is no touch; a slap's hand moves
+    // at 1.1-1.7 x the closing speed (Hip Hop Dancing 1.74 / 1.54, Pistol Equip 4.6 / 2.8).
+    double     body_hand_frac = 0.5;
+    // Story 10-9c: swings, kicks and punches (WhooshEvents, motion_whoosh.cpp). The peak speed of
+    // a hand or foot relative to the torso (leg/s) a whoosh must reach, per type (the sensitivity
+    // divides it); the share of the peak that bounds its start and end; the relative speed's
+    // smoothing (Gaussian sigma, s); a kick's foot at the peak: its height above the other foot
+    // and its distance from the up leg (leg: raised on an extended leg); a punch's share of its
+    // speed along the shoulder -> hand line, extending. Measured on the fixtures (57 clips, spec
+    // 10-9c): hands relative to the torso reach 1-2.5 leg/s walking and climbing, 4-5.7 running
+    // and sprinting (Sword And Shield Run 5.72), 5-7.6 swinging the arms into a jump (Standing
+    // Jump 7.59), Jump Attack's strike 8.03; 7.0 keeps every run. Running feet whip at 8-14 leg/s
+    // relative to the torso, folded (up leg -> foot 0.56-0.94 leg when 0.4 leg up or more) or low
+    // (0.20-0.30 leg up when extended to 1.0-1.06): a raised extended foot is a kick.
+    // Punch (story 10-9h, settled on the Fight_* fixtures, 11 straight punches): not a speed peak
+    // but an extension: the hand's speed along the shoulder -> hand line stays positive over a
+    // run, peaks at punch_speed at least (leg/s; the sensitivity divides it; measured 2.34-4.69),
+    // where it is at least punch_radial_frac of the hand's speed (0.45-0.74; a swing that also
+    // opens the arm, Lvl_TopDown's 14.7 leg/s strike, 0.17), the arm goes from at most
+    // punch_start_reach of its length (0.33-0.58) to at least punch_end_reach (0.92-1.00), and
+    // ends no lower than punch_min_rise (the shoulder -> hand direction's vertical share; -0.42
+    // to +0.38 on the punches; an arm reaching down to a support or for balance, -0.68 to -0.98)
+    // and no higher than punch_max_rise (review 10-9h: a climb's arm reaching up for the next
+    // hold opens as a punch does, +0.78 to +0.99, Climbing A Rope's at 1.81 leg/s, a Punch from
+    // sensitivity 57 %; the punches end at +0.39 at most).
+    // The arm's length: shoulder -> elbow + elbow -> hand (medians), else the hand's farthest
+    // reach. Elsewhere: runs, jumps, climbs, strafes, claps: 2.36 leg/s at most, and those fail
+    // the start, the end or the rise.
+    double     kick_speed = 6.0;
+    double     swing_speed = 7.0;
+    double     punch_speed = 2.0;
+    double     whoosh_edge_frac = 0.25;
+    double     whoosh_smooth_s = 0.020;
+    double     kick_min_height = 0.5;
+    double     kick_min_reach = 1.0;
+    double     punch_radial_frac = 0.4;
+    double     punch_start_reach = 0.65;
+    double     punch_end_reach = 0.90;
+    double     punch_min_rise = -0.6;
+    double     punch_max_rise = 0.6;
+    // Story 10-9k: the arms of a jump (auto_types_arm_jump.cpp). Per take-off (Jump's events) and
+    // hand, the fastest speed peak of the hand relative to the torso within arm_jump_before_s
+    // before to arm_jump_after_s after it, at arm_jump_speed at least (leg/s; the sensitivity
+    // divides it), the hand not touching, the arm ending its run higher than it started (thrown
+    // up into the take-off); per landing (Land's events), the same within arm_land_before_s /
+    // arm_land_after_s at arm_land_speed, the arm coming down. Measured on the 16 jump clips
+    // (spec 10-9k): the arms thrown into a take-off peak 0.03-0.18 s before it to 0.12 s after,
+    // 4.6-8.2 leg/s (a slow one, Jumping's right arm, 3.5); at a landing 0.07 s before it to
+    // 0.17 s after, 3.1-9.2 leg/s. A running arm swings at 3-6 leg/s: the landing window stays
+    // short (a running jump's next stride swing, 0.18-0.24 s after, is outside), and 2.5 would add
+    // two arms barely moving (2.9 leg/s).
+    double     arm_jump_speed = 4.0;
+    double     arm_jump_before_s = 0.30;
+    double     arm_jump_after_s = 0.15;
+    double     arm_land_speed = 3.0;
+    double     arm_land_before_s = 0.10;
+    double     arm_land_after_s = 0.20;
+    // Story 10-9n: strikes, a fast arc blow that stops (auto_types_strike.cpp). A hand speed peak
+    // relative to the torso of strike_speed at least (leg/s; the sensitivity divides it) whose
+    // speed falls under strike_stop_frac of the peak within strike_stop_s after it, and that hits
+    // (under strike_hit_frac within strike_hit_s: a sword into the floor) or travels an arc (the
+    // arm raised at the peak, the shoulder -> hand direction's vertical share at strike_min_rise
+    // at least, and the hand moving forward, its velocity's share along the body's facing at
+    // strike_min_fwd at least). A clap or a hand on body within strike_touch_s of the run (before
+    // its start: the hands parting after a clap; after its end: the hands meeting) is that touch.
+    // Measured on the fixtures (spec 10-9n): the blows 5.4-14.9 leg/s (the uppercut 6.47),
+    // stopping to 30 % within 0.05-0.15 s; the air blows' arm at -0.38..+0.03, forward
+    // +0.63..+0.96; the hits down to 10-29 % within 70 ms. A follow-through (Armada, Roue) takes
+    // 0.20-0.27 s to stop, a counter-arm pull (AirPunch R) moves backward (-0.95), running arms and
+    // jump swings pass the bottom of the arc (-0.7..-1.0); the running arms' reversals stop at
+    // 3.9-4.9 leg/s and keep 41-58 % of their speed after 70 ms.
+    // Review of 10-9n: a hit leaves the hand stopped: within strike_rebound_s of the slowest
+    // point of the hit window, the speed stays under strike_rebound_frac of the peak (a blade in
+    // the floor 13-15 %, Lvl_TopDown's recovery 45 %); a hand coming straight back is a reversal
+    // (a feint, a dance pop: 65-162 %), no hit. strike_min_rise -0.5 (was -0.6): halfway between
+    // the air blows' lowest arm (the hook, -0.38) and the nearest arm that is no blow (a running
+    // arm -0.59, Fist Fight's swing -0.61), so neither sits on the line.
+    double     strike_speed = 5.0;
+    double     strike_stop_s = 0.175;
+    double     strike_stop_frac = 0.3;
+    double     strike_hit_s = 0.07;
+    double     strike_hit_frac = 0.32;
+    double     strike_min_rise = -0.5;
+    double     strike_min_fwd = 0.3;
+    double     strike_touch_s = 0.10;
+    double     strike_rebound_s = 0.10;
+    double     strike_rebound_frac = 0.55;
 };
 
 // One contact of a part, in samples [start, end).
@@ -540,6 +797,40 @@ struct HandTrack {
     std::vector<Scuff>  pivots;               // part -1; every resting hand's (HandEvents filters)
 };
 
+// Story 10-9b: the body parts that touch the ground. knee / elbow / hips: segmented as a hand
+// (their own contact speed, PhysicsParams::body_switch_cost) where they are low enough (knee /
+// elbow: knee_ground_height / elbow_ground_height; hips: sit_max_height), free above; chest: its
+// heights and speeds only (the chest role, else the spine). Heights (PartTrack::y) in the ground
+// frame, metres; `floor_y` the floor (body_floor_pct of the lowest foot part's height).
+struct BodyTrack {
+    bool                has_floor = false;
+    double              floor_y = 0.0;      // m
+    std::string         floor_missing;      // !has_floor: why ("no foot bone")
+    PartTrack           knee[2];            // L, R
+    PartTrack           elbow[2];           // L, R
+    PartTrack           hips;
+    PartTrack           chest;
+    std::vector<double> hips_feet;          // per sample: the hips' horizontal distance to the feet's middle (leg); empty without
+};
+
+// Story 10-9c: one limb's motion relative to the torso, per analysed sample (empty when not
+// present): its speed relative to the torso (leg/s; a foot: its fastest present part's, `part`
+// names it), its speed along the anchor -> limb line (leg/s, + = extending; a hand only), the
+// anchor -> limb distance (leg; the anchor is the shoulder for a hand, the up leg for a foot,
+// else the torso), and a foot's height above the other foot's lowest present part (leg; 0
+// without the other foot).
+struct WhooshTrack {
+    bool                present = false;
+    std::string         missing;
+    std::vector<double> speed;
+    std::vector<double> radial;
+    std::vector<double> reach;   // the anchor -> limb distance (leg; a foot: its fastest part's)
+    std::vector<double> rise;    // a hand: the shoulder -> hand direction's vertical share (-1 down .. +1 up)
+    std::vector<double> arm_len;    // a hand: shoulder -> elbow + elbow -> hand (leg); empty without an elbow
+    std::vector<double> height;
+    std::vector<int>    part;
+};
+
 struct PhysicsAnalysis {
     bool                     ok = false;
     std::string              error;          // !ok: why
@@ -562,6 +853,22 @@ struct PhysicsAnalysis {
     // push-off jumps' running check. Empty with hips_vy.
     std::vector<double>      hips_vh;
     std::string              hips_missing;
+    // Story 10-9f: the hip line's yaw (left up leg -> right up leg seen from above, degrees,
+    // unwrapped, not smoothed; a sample where that line is under half its length from above holds
+    // the previous yaw and is flagged invalid), for the spins. Empty without both up legs
+    // (spin_missing says why).
+    std::vector<double>      hips_yaw_deg;
+    std::vector<char>        hips_yaw_valid;
+    std::string              spin_missing;
+    BodyTrack                body;           // story 10-9b
+    // Story 10-9d: every physics role's position (m, smoothed as the parts; indexed by Role, empty =
+    // no bone), for the touches (hand_touch.h). Analysed track samples.
+    std::vector<std::vector<Vec3d>> role_pos;
+    // Story 10-9c: the whooshes' limbs (WhooshTrack), hands L / R and feet L / R, and why the
+    // torso is missing ("" = found: the chest, else the spine, else the hips).
+    WhooshTrack              whoosh_hand[2];
+    WhooshTrack              whoosh_foot[2];
+    std::string              torso_missing;
     // The clip inside the analysed track (story 10-8i): looping, the track is three cycles and
     // the clip is its samples [window_first, window_first + window_samples); otherwise 0 and
     // `samples`. Per-sample data (PartTrack...) is indexed in the analysed track; the event
@@ -585,8 +892,14 @@ std::vector<BoneTrack> PhysicsRoleTracks(const std::vector<int>& bone_of_role,
 // hands' rot_world are read (one per sample, else ignored).
 PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& role_tracks, const PhysicsParams& p = {});
 
-enum class PhysicsKind { Step, FootStep, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land };
-constexpr int kPhysicsKindCount = 10;  // story 10-9-0: PhysicsMarkerName's rows follow the enum
+// Story 10-9e appends Tap and Drag (foot_taps.h); story 10-9b Knee, Elbow (side L / R), Sit, Fall
+// (side 'B': the body); story 10-9d Clap, HandOnBody (hand_touch.h); story 10-9c Kick, Swing, Punch
+// (motion_whoosh.cpp).
+enum class PhysicsKind { Step, FootStep, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land, Jolt, Spin, SpinEnd, Tap, Drag,
+                         Knee, Elbow, Sit, Fall, Clap, HandOnBody, Kick, Swing, Punch };
+// Story 10-9f: Spin / SpinEnd, a spin's start / end (side B, start_s / end_s its span, strength =
+// its sweep in degrees; auto_types_spin.cpp).
+constexpr int kPhysicsKindCount = 24;  // story 10-9-0: PhysicsMarkerName's rows follow the enum
 
 struct PhysicsEvent {
     PhysicsKind kind = PhysicsKind::Step;
@@ -624,6 +937,46 @@ std::vector<PhysicsEvent> JumpPushOffEvents(const PhysicsAnalysis& a, const Phys
 // Story 10-9a-3: the free-fall take-offs (Kind Jump), by time. Uses p.jump_min_flight_s,
 // p.jump_fall_g and p.jump_freefall_window_s.
 std::vector<PhysicsEvent> JumpFreeFallEvents(const PhysicsAnalysis& a, const PhysicsParams& p = {});
+// Story 10-9g (defined in auto_types_jolt.cpp, the Jolt type's file): the centre of mass's upward
+// acceleration per analysed sample, in g: HipsUpAccelerationG smoothed over p.jolt_smooth_s
+// instead, downward read as 0 (gravity not counted: 0 at a steady speed, 1 g = the ground pushing
+// with twice the body's weight). Vertical only: the horizontal speed's change (hips_vh) peaks at
+// 4-10 g away from any impact on in-place clips (Running Jump_Long 9.9 g, its vertical 0.8 g).
+// Empty without hips.
+std::vector<double> JoltAccelerationG(const PhysicsAnalysis& a, const PhysicsParams& p = {});
+// Story 10-9g: the gear jolts (Kind Jolt, side 'B', part -1), by time: an impact (a foot step or a
+// jump's landing; body contacts once 10-9b lands) whose JoltAccelerationG peak within
+// [-p.jolt_before_s, +p.jolt_after_s] of it reaches p.jolt_min_g, at the impact's time; impacts
+// within p.jolt_merge_s of each other make one (on a loop, through the seam too). Strength = the
+// peak (g).
+std::vector<PhysicsEvent> JoltEvents(const PhysicsAnalysis& a, const PhysicsParams& p = {});
+
+// Story 10-9b: body contacts (src/body_contacts.cpp), by time:
+//   knee / elbow  (side L / R) a counted contact (BodyTrack: at rest and low), never at the clip
+//                 start, lasting body_min_contact_s at least (one the clip end cuts short
+//                 counts), that came down at body_min_descent at least over the fall_window_s
+//                 before it (legs that stop sliding along the floor give none). Timed where the
+//                 part's downward speed falls to body_stop_frac x that peak (it has landed).
+//                 Strength = the peak downward speed (leg/s).
+//   sit           (side B) a counted hips contact (at rest under sit_max_height) lasting sit_min_s,
+//                 its chest sit_min_upright above the hips (not lying), its hips sit_min_offset
+//                 from the feet's middle (something else carries the body: a squat keeps the hips
+//                 over the feet) and no knee in contact over it (a kneel). Never at the clip start.
+//                 Strength = the hips' peak speed before.
+//   fall          (side B) the trunk (the lower of hips and chest) enters fall_height of the floor
+//                 and stops descending (vertical speed above -fall_stop_speed), having fallen at
+//                 fall_min_speed at least within fall_window_s before: a body landing (a fall on
+//                 the back after a free fall). One per stay low (re-armed above 1.5 x fall_height).
+//                 A squat is none: where the descent stops, the chest sit_min_upright above the
+//                 hips with the hips within sit_min_offset of the feet's middle.
+//                 Strength = that peak downward speed.
+// No floor (no foot bone) or no bone for a part: none of its events (BodyContactSummary says why).
+std::vector<PhysicsEvent> BodyContactEvents(const PhysicsAnalysis& a, const PhysicsParams& p = {});
+// "body: knees 2, elbows 0, sits 0, falls 1" plus "; missing: ..." ("body: skipped: <error>").
+std::string BodyContactSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEvent>& ev);
+// Analysed times (time_s, start_s, end_s) as clip times (a loop: its middle cycle), dropping the
+// events outside the clip (story 10-9b: for the event functions outside motion_physics.cpp).
+void PhysicsEventsToClipTime(const PhysicsAnalysis& a, std::vector<PhysicsEvent>& ev);
 
 // The separate step times of one part (side 'L' / 'R'), by `timing` plus `offset_s`.
 std::vector<double> PartStepTimes(const PhysicsAnalysis& a, char side, int part, StepTiming timing, double offset_s);
@@ -650,6 +1003,16 @@ std::string JumpSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEvent
 std::string JumpPushOffSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEvent>& ev);
 // Story 10-9a-3: the free-fall jumps' report: "jumps (free fall): 1", as JumpPushOffSummary.
 std::string JumpFreeFallSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEvent>& ev);
+
+// Story 10-9c (motion_whoosh.cpp): fills the analysis' whoosh tracks from the role tracks it
+// analyses (AnalyseMotion calls it; looping, the unrolled ones).
+void AnalyseWhooshTracks(const std::vector<BoneTrack>& role_tracks, const PhysicsParams& p, PhysicsAnalysis& a);
+// Story 10-9c: the kicks, swings and punches (Kind Kick / Swing / Punch), by time: time_s = the
+// peak (`at_start`: the start), start_s / end_s the span. Kicks above p.kick_speed, swings above
+// p.swing_speed, punches above p.punch_speed. Strength = the peak speed (leg/s).
+std::vector<PhysicsEvent> WhooshEvents(const PhysicsAnalysis& a, const PhysicsParams& p, bool at_start);
+// "whooshes: kicks 1, swings 2, punches 0" plus "; missing: ..." ("whooshes: skipped: <error>").
+std::string WhooshSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEvent>& ev);
 // One line per event ("   1.234 s  PHY L heel 1.8", a scuff or hand pivot "... (to 1.456 s)"), each with
 // `indent` in front and '\n' after.
 std::string PhysicsEventLines(const std::vector<PhysicsEvent>& ev, const std::string& indent);

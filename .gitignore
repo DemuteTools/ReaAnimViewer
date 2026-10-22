@@ -58,6 +58,7 @@ _bmad/
 _bmad-output/
 CLAUDE.md
 sample/
+Backups/
 docs/PHASE*_VALIDATOR_GATE.md
 docs/SPIKE0_FINDINGS.md
 docs/SPIKE11_FINDINGS.md
@@ -70,3 +71,4 @@ reapack-check.bat
 tools/release.ps1
 tools/ensure-gh.bat
 RELEASING.md
+__pycache__/

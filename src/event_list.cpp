@@ -4,6 +4,9 @@
 
 #include "event_list.h"
 
+#include "auto_detect.h"  // story 10-10b: AutoBlockKind, AutoTypeOfKind
+#include "auto_types.h"   // StrengthLevelName (10-10b names read back)
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -57,6 +60,7 @@ std::vector<ShownEvent> BuildEventList(const std::vector<Event>& detections, con
         s.speed = e.speed;
         s.detection = static_cast<int>(d);
         s.signature = e.signature;
+        s.confidence = e.confidence;
         s.kind = ShownKind::Detected;
         // The nearest suppression of this rule within the window.
         double best = 1e300;
@@ -125,6 +129,7 @@ void KeepBlockEvents(std::vector<Event>& detections, const std::vector<EventEntr
         e.strength = x.strength;
         e.speed = x.speed;
         e.signature = -1;  // story 10-9a-2: signatures are not saved (no "Found by")
+        e.confidence = x.has_confidence ? x.confidence : 1.0;  // story 10-10a
         detections.push_back(e);
     }
     std::stable_sort(detections.begin(), detections.end(), [](const Event& a, const Event& b) {
@@ -403,6 +408,24 @@ std::vector<EchoStep> PlanLoopEchoes(const std::vector<ProjectMarkerRef>& refs, 
     return out;
 }
 
+std::string EventMarkerName(const Block& b)
+{
+    return OneLine(b.marker);
+}
+
+std::vector<std::string> BlockMarkerNames(const Block& b)
+{
+    std::vector<std::string> out = {OneLine(b.marker)};
+    if (!AutoBlockKind(b, nullptr, nullptr)) return out;
+    // Story 10-10f: the names 10-10b's option wrote on a dev project ("FS L Hard", "FS L 3") are
+    // still read back to their rule, so the next Commit replaces them.
+    for (int lv = kStrengthSoft; lv <= kStrengthHard; ++lv) {
+        out.push_back(out.front() + " " + StrengthLevelName(lv));
+        out.push_back(out.front() + " " + std::to_string(lv));
+    }
+    return out;
+}
+
 std::vector<PlannedMarker> PlanMarkers(const std::vector<ShownEvent>& list, const std::vector<Block>& blocks,
                                        const ItemClipMap& map)
 {
@@ -420,11 +443,16 @@ std::vector<PlannedMarker> PlanMarkers(const std::vector<ShownEvent>& list, cons
         m.project_t = pt;
         m.in_item = in;
         m.block = e.block;
-        m.name = OneLine(b.marker);
+        m.name = EventMarkerName(b);
         m.color = b.color;
         m.user = e.kind == ShownKind::User;
         m.strength = e.strength;
         m.speed = e.speed;
+        // Story 10-10a: a doubtful detection takes the amber marker colour (its name unchanged).
+        if (!m.user) {
+            m.confidence = e.confidence;
+            if (IsDoubtful(e.confidence)) m.color = kDoubtColor;
+        }
         out.push_back(m);
     }
     std::stable_sort(out.begin(), out.end(), [](const PlannedMarker& a, const PlannedMarker& b) {
@@ -498,6 +526,10 @@ void RecordApplied(ItemRules& rules, const std::vector<PlannedMarker>& planned, 
         e.strength = m.strength;
         e.speed = m.speed;
         e.has_block = e.has_strength = e.has_speed = true;
+        // Story 10-10a: an auto detection's confidence under 1, so a kept block plans its marker
+        // in the colour Commit wrote.
+        e.confidence = m.confidence;
+        e.has_confidence = m.confidence < 1.0;
         snapshot.push_back(e);
     }
     rules.events.erase(std::remove_if(rules.events.begin(), rules.events.end(),
@@ -546,6 +578,25 @@ int FindTwinMarker(const std::vector<ExistingMarker>& existing, double t, const 
 std::string PreviewMarkerName(const std::string& name)
 {
     return name + kPreviewSuffix;
+}
+
+namespace {
+double g_doubt_limit = kDefaultDoubtLimit;
+}  // namespace
+
+double DoubtLimit()
+{
+    return g_doubt_limit;
+}
+
+void SetDoubtLimit(double limit)
+{
+    g_doubt_limit = std::isfinite(limit) ? std::clamp(limit, 0.0, 1.0) : kDefaultDoubtLimit;
+}
+
+bool IsDoubtful(double confidence)
+{
+    return confidence < g_doubt_limit - 1e-9;
 }
 
 uint32_t PreviewColor(uint32_t color)
@@ -766,11 +817,13 @@ namespace {
 
 constexpr double kEditMatchTolS = 1e-5;  // an entry this close to a marker's clip time is its event
 
-// The marker name a rule writes, committed or preview.
-std::string EditNameOf(const Block& b, bool preview)
+// Whether a marker of this name was written by the rule, committed or preview (story 10-10b: with
+// any of its strength levels).
+bool WritesName(const Block& b, bool preview, const std::string& name)
 {
-    const std::string n = OneLine(b.marker);
-    return preview ? PreviewMarkerName(n) : n;
+    for (const std::string& n : BlockMarkerNames(b))
+        if ((preview ? PreviewMarkerName(n) : n) == name) return true;
+    return false;
 }
 
 int FindEntryNear(const std::vector<EventEntry>& entries, EventKind kind, int block, double t, double tol)
@@ -795,7 +848,7 @@ int MarkerEditBlock(const ItemRules& rules, const MarkerEdit& e)
 {
     std::vector<int> cand;
     for (size_t i = 0; i < rules.blocks.size(); ++i)
-        if (EditNameOf(rules.blocks[i], e.preview) == e.name) cand.push_back(static_cast<int>(i));
+        if (WritesName(rules.blocks[i], e.preview, e.name)) cand.push_back(static_cast<int>(i));
     if (e.has_color && cand.size() > 1) {
         std::vector<int> col;
         for (int b : cand) {

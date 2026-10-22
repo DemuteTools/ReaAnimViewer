@@ -295,7 +295,8 @@ std::string RoleFamilyKey(Role r)
 std::vector<std::string> RoleMenuKeys(const std::vector<std::string>& custom_role_keys)
 {
     std::vector<std::string> out = {"heel", "toe",   "toe_end", "knee",  "hip",  "hips", "clavicle",
-                                    "shoulder", "elbow", "hand", "spine", "chest", "neck", "head"};
+                                    "shoulder", "elbow", "hand", "knuckle", "fingertip",  // story 10-9l: the fingers
+                                    "spine", "chest", "neck", "head"};
     for (std::string key : custom_role_keys) {
         Role r;
         if (RoleFromKey(key, &r)) continue;  // a custom key that became built-in reads as the built-in

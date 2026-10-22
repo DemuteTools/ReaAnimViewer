@@ -52,7 +52,24 @@ struct ShownEvent {
     int       entry = -1;      // Suppressed: the suppression; Orphan / User: the entry (index into ItemRules::events)
     int       detection = -1;  // Detected / Suppressed: index into the detections given
     int       signature = 0;   // story 10-9a-2: Detected / Suppressed: the detection's Event::signature
+    double    confidence = 1.0;  // story 10-10a: Detected / Suppressed: the detection's Event::confidence; 1 otherwise
 };
+
+// ---- Story 10-10a: doubtful events --------------------------------------------------------------
+//
+// An auto detection whose confidence (auto_detect.h RateAutoEvents) is under the doubt limit is
+// doubtful: amber in the Tagging view and on its markers (kDoubtColor instead of the rule's
+// colour; its name unchanged), "check it by ear". One limit for every type (a confidence is
+// already a share of the same strictness steps for each), a global option of the Tagging view
+// kept across sessions (tag_markers.h). A user event is never doubtful. The colour is part of the
+// marker signature, so a changed limit shows previews until the next Commit. MarkerEditBlock reads
+// an amber marker by its name (no rule has that colour), then by the event near it.
+constexpr double   kDefaultDoubtLimit = 0.4;
+constexpr uint32_t kDoubtColor = 0x1000000u | 0xFFB020u;  // amber (0x1000000 | 0xRRGGBB, as Block::color)
+// The limit in force (0..1; kDefaultDoubtLimit until set). Process-wide.
+double DoubtLimit();
+void   SetDoubtLimit(double limit);  // clamped to 0..1 (non-finite: the default)
+bool   IsDoubtful(double confidence);  // confidence < DoubtLimit()
 
 // The displayed list, sorted by time (then rule). `detections` = the live detections (any
 // order, Event::block = the rule), `entries` = the record's. Entries of an unknown kind, of
@@ -136,10 +153,18 @@ struct PlannedMarker {
     double      strength = 0.0;
     double      speed = 0.0;
     bool        in_item = true;   // 10-4b: the event shows on the item's first pass (else no project marker is written)
+    double      confidence = 1.0; // story 10-10a: a detection's (doubtful: `color` is kDoubtColor); 1 for a user event
 };
 
+// The marker name an event of rule b writes: the rule's marker (on one line, trimmed). Story
+// 10-10f: the strength level 10-10b could add to it is gone (parked until the intensity module).
+std::string EventMarkerName(const Block& b);
+// Every name rule b may be read back from: the marker alone, then, on an auto block, the names a
+// dev project's 10-10b option wrote ("FS L Hard", "FS L 3"), so a Commit replaces them.
+std::vector<std::string> BlockMarkerNames(const Block& b);
+
 // What Apply writes for this list: its Detected and User events whose rule exists and is on,
-// sorted by time. 10-4b: an event outside the item's first pass is kept with `in_item` false
+// sorted by time. Story 10-10b: each marker's name is EventMarkerName. 10-4b: an event outside the item's first pass is kept with `in_item` false
 // (it gets a take marker, in source time, and a hidden project ref the mirror shows again when
 // the item is extended).
 std::vector<PlannedMarker> PlanMarkers(const std::vector<ShownEvent>& list, const std::vector<Block>& blocks,
@@ -394,7 +419,7 @@ struct MarkerEdit {
 };
 
 // The rule a marker belongs to (by its name, then its colour; a rule with an event at its clip
-// time first), or -1.
+// time first), or -1. Story 10-10b: any name the rule writes (BlockMarkerNames).
 int MarkerEditBlock(const ItemRules& rules, const MarkerEdit& e);
 
 // The record's event list with the edits applied, with the Tagging view's Move / Delete

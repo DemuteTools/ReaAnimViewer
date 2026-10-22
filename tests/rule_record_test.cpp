@@ -1778,6 +1778,26 @@ int main()
         }
     }
 
+    // Story 10-10f: `lvl` (10-10b's strength level in the marker names, gone) is read and dropped:
+    // a dev project's record parses, keeps nothing of it and writes back without it.
+    {
+        const std::string head = "RAVRULES 1\noptions sensitivity=0 edge_ms=0 smooth_ms=8\nanalyse floor_pct=2 "
+                                 "pos_frac=0.25 speed_pct=30 margin_ratio=0.5 onset_frac=0.1 per_bone_floor=0\n";
+        const std::string s = head +
+                              "block auto=step side=L sens=50 lvl=word color=#5F9EDD hold_ms=0 cooldown_ms=0 offset_ms=0 "
+                              "land=cross marker=FS L\n"
+                              "block auto=step side=R sens=50 lvl=num color=#DD9E5F hold_ms=0 cooldown_ms=0 offset_ms=0 "
+                              "land=cross marker=FS R\n"
+                              "block lvl=loud color=none hold_ms=0 cooldown_ms=0 offset_ms=0 land=cross marker=Rule\n";
+        ItemRules p;
+        CHECK(ParseItemRules(s, &p) && !HasKeptText(p) && p.blocks.size() == 3);
+        const std::string out = SerializeItemRules(p);
+        CHECK(out.find("lvl=") == std::string::npos);
+        CHECK(out.find("sens=50 color=#5F9EDD") != std::string::npos);
+        ItemRules q;
+        CHECK(ParseItemRules(out, &q) && BlocksEqual(q.blocks, p.blocks));
+    }
+
     // ---- 10-5 frozen fixtures ----
     // Written by the 10-5 build (the shipped v1 grammar) and committed as text. NEVER
     // regenerate them: a later format change must keep reading these and writing them back

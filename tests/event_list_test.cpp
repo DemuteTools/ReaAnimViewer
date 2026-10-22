@@ -9,6 +9,7 @@
 
 #include "auto_detect.h"  // fb-1: KeepUnrunnableEvents
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <map>
@@ -1809,6 +1810,110 @@ int main()
             CHECK(EchoKeyOf(1, "Step", 0.25).c == EchoKeyOf(1, "Step", 0.25 + 2e-7).c);
             CHECK(EchoKeyOf(1, "Step", 0.25) < EchoKeyOf(2, "Step", 0.25));
         }
+    }
+
+    // ---- Story 10-10f: no strength level in the marker names any more ------------------------
+    // (10-10b's option is gone). A dev project's "FS L Hard" / "FS L 3" markers are still read
+    // back to their rule, so the next Commit replaces them with "FS L".
+    {
+        Block fs = Rule("FS L");
+        fs.auto_type = "step";
+        fs.auto_side = 'L';
+        Block sword = Rule("Sword");
+        const std::vector<Block> blocks = {fs, sword};
+        CHECK(EventMarkerName(fs) == "FS L" && EventMarkerName(sword) == "Sword");
+        const std::vector<std::string> names = BlockMarkerNames(fs);
+        CHECK(BlockMarkerNames(sword).size() == 1 && names.size() == 7 && names[0] == "FS L");
+        CHECK(std::find(names.begin(), names.end(), "FS L Hard") != names.end() &&
+              std::find(names.begin(), names.end(), "FS L 3") != names.end());
+
+        ItemClipMap map;
+        map.item_pos = 0.0;
+        map.item_len = 5.0;
+        map.clip_len = 5.0;
+        ItemRules r;
+        r.blocks = blocks;
+        r.events.push_back(MakeUserEvent(0, 3.0, 0.0, 0.0));
+        const std::vector<Event> det = {Det(0, 0.5, 0.2), Det(0, 1.5, 50.0), Det(1, 2.0, 9.0)};
+        const std::vector<PlannedMarker> plan = PlanMarkers(BuildEventList(det, r.events, blocks.size()), blocks, map);
+        CHECK(plan.size() == 4);
+        if (plan.size() == 4) {
+            CHECK(plan[0].name == "FS L" && plan[1].name == "FS L" && plan[2].name == "Sword" && plan[3].name == "FS L");
+        }
+
+        // A REAPER edit of a dev project's level-named marker (committed or preview) finds its rule.
+        MarkerEdit e;
+        e.kind = MarkerEditKind::Drag;
+        e.c = 1.5;
+        e.new_c = 1.7;
+        e.name = "FS L Hard";
+        CHECK(MarkerEditBlock(r, e) == 0);
+        e.name = PreviewMarkerName("FS L 2");
+        e.preview = true;
+        CHECK(MarkerEditBlock(r, e) == 0);
+        e.preview = false;
+        e.name = "FS L Loud";  // not a name the rule writes
+        CHECK(MarkerEditBlock(r, e) == -1);
+        e.name = "FS L Hard hit";  // a user's own name
+        CHECK(MarkerEditBlock(r, e) == -1);
+    }
+
+    // ---- Story 10-10a: doubtful events in amber -------------------------------------------------
+    {
+        CHECK(DoubtLimit() == kDefaultDoubtLimit);
+        Block fs = Rule("FS L", 0x1000000u | 0x112233u);
+        fs.auto_type = "step";
+        const std::vector<Block> blocks = {fs};
+        ItemClipMap map;
+        map.item_pos = 10.0;
+        map.item_len = 5.0;
+        map.clip_len = 5.0;
+        Event firm = Det(0, 0.5), doubt = Det(0, 1.5), edge = Det(0, 2.5);
+        doubt.confidence = 0.2;
+        edge.confidence = kDefaultDoubtLimit;  // at the limit: not doubtful
+        ItemRules r;
+        r.blocks = blocks;
+        r.events.push_back(MakeUserEvent(0, 3.0, 0.4, 0.9));  // never doubtful
+        const std::vector<Event>      det = {firm, doubt, edge};
+        const std::vector<ShownEvent> l = BuildEventList(det, r.events, blocks.size());
+        CHECK(l.size() == 4 && l[1].confidence == 0.2 && l[3].kind == ShownKind::User && l[3].confidence == 1.0);
+        std::vector<PlannedMarker> plan = PlanMarkers(l, blocks, map);
+        CHECK(plan.size() == 4);
+        if (plan.size() == 4) {
+            CHECK(plan[0].color == fs.color && plan[1].color == kDoubtColor && plan[2].color == fs.color &&
+                  plan[3].color == fs.color);
+            CHECK(plan[1].name == "FS L" && plan[1].confidence == 0.2 && plan[3].confidence == 1.0);  // name unchanged
+            CHECK(PreviewPlan(plan)[1].color == PreviewColor(kDoubtColor));
+        }
+        // The colour is in the signature: another limit, other markers.
+        const std::string sig = MarkerSignature(plan, MarkerMode::Both);
+        SetDoubtLimit(0.0);  // never amber
+        const std::vector<PlannedMarker> plain = PlanMarkers(l, blocks, map);
+        CHECK(plain.size() == 4 && plain[1].color == fs.color && MarkerSignature(plain, MarkerMode::Both) != sig);
+        SetDoubtLimit(2.0);
+        CHECK(DoubtLimit() == 1.0 && IsDoubtful(0.99) && !IsDoubtful(1.0));
+        SetDoubtLimit(std::nan(""));
+        CHECK(DoubtLimit() == kDefaultDoubtLimit && IsDoubtful(0.2) && !IsDoubtful(0.4));
+        // Commit records a confidence under 1 (only), the record reads it back, and a block kept
+        // from it (its part has no bone) plans its marker amber again: still up to date.
+        RecordApplied(r, plan, MarkerMode::Both);
+        int with = 0;
+        for (const EventEntry& e : r.events) with += e.has_confidence;
+        CHECK(with == 2);  // the doubtful one and the one at the limit
+        ItemRules back;
+        CHECK(ParseItemRules(SerializeItemRules(r), &back));
+        std::vector<Event> kept;
+        KeepBlockEvents(kept, back.events, blocks, {1});
+        CHECK(kept.size() == 3 && kept[1].confidence == 0.2 && kept[0].confidence == 1.0);
+        CHECK(MarkersUpToDate(back, PlanMarkers(BuildEventList(kept, back.events, 1), blocks, map), MarkerMode::Both));
+        // A REAPER-side edit of an amber marker finds its rule by its name.
+        MarkerEdit me;
+        me.kind = MarkerEditKind::Delete;
+        me.c = 1.5;
+        me.name = "FS L";
+        me.color = kDoubtColor;
+        me.has_color = true;
+        CHECK(MarkerEditBlock(back, me) == 0);
     }
 
     if (g_fails) {

@@ -39,20 +39,48 @@ bool PartSplitKind(AutoKind k)
     return AutoTypeRow(AutoKindRow(k).type).part_split && AutoKindRow(k).role_key[0] != '\0';
 }
 
-// The kind of a `part_split` type: its combined one (part = false), else its heel one.
-AutoKind PartSplitKindOf(AutoType t, bool heel_part)
+// The kind of a `part_split` type: its combined one (part = false), else its heel one (story
+// 10-9c: of a `start_option` type, the one at the start when `at_start`).
+AutoKind PartSplitKindOf(AutoType t, bool heel_part, bool at_start = false)
 {
     for (AutoKind k : AutoKindsOf(t)) {
         const std::string key = AutoKindRow(k).role_key;
+        if (AutoTypeRow(t).start_option && AutoKindRow(k).at_start != at_start) continue;
         if (heel_part ? key == "heel" : key.empty()) return k;
     }
     return AutoKindsOf(t).front();
 }
 
-// The kinds a ticked type makes, in block order. The modes of steps, slides, pivots and hand
-// pivots pick among their kinds, and Combined / Separate among a `part_split` type's (story
-// 10-9a-3); a type with no mode makes all its kinds (story 10-9-0).
-std::vector<AutoKind> KindsOf(AutoType t, const AutoSettings& s)
+// Story 10-9c: a `start_option` kind's twin of that flavour (`at_start`: its Start kind, else its
+// Peak kind); the kind itself when it is of that flavour, or of a type with no Peak / Start. Story
+// 10-9j: the twins pair by position: the n-th kind of the type with `at_start` and the n-th without
+// (enum order; auto_types.cpp appends a type's twins in the order of the kinds they pair with).
+AutoKind StartTwin(AutoKind k, bool at_start)
+{
+    const AutoType t = AutoTypeOfKind(k);
+    if (!InRangeType(t) || !AutoTypeRow(t).start_option || AutoKindRow(k).at_start == at_start) return k;
+    const std::vector<AutoKind> kinds = AutoKindsOf(t);
+    int                         pos = 0;
+    for (AutoKind o : kinds) {
+        if (o == k) break;
+        if (AutoKindRow(o).at_start == AutoKindRow(k).at_start) ++pos;
+    }
+    for (AutoKind o : kinds)
+        if (AutoKindRow(o).at_start == at_start && pos-- == 0) return o;
+    return k;
+}
+
+// Story 10-9j: the kind as the type's default flavour (its kinds before Peak / Start: kick's
+// peak kind, a scuff's start kind), for the code that names those kinds.
+AutoKind DefaultTwin(AutoKind k)
+{
+    return StartTwin(k, AutoStartDefault(AutoTypeOfKind(k)));
+}
+
+// The kinds a ticked type makes, in block order, before Peak / Start. The modes of steps, slides,
+// pivots and hand pivots pick among their kinds, and Combined / Separate among a `part_split`
+// type's (story 10-9a-3); a type with no mode makes all its kinds (story 10-9-0).
+std::vector<AutoKind> ModeKindsOf(AutoType t, const AutoSettings& s)
 {
     if (InRangeType(t) && AutoTypeRow(t).part_split) {
         std::vector<AutoKind> out;
@@ -83,6 +111,20 @@ std::vector<AutoKind> KindsOf(AutoType t, const AutoSettings& s)
     return AutoKindsOf(t);
 }
 
+// The kinds a ticked type makes, in block order: its mode's (ModeKindsOf), each as its twin of the
+// type's Peak / Start (story 10-9c; 10-9j: the scuffs), once.
+std::vector<AutoKind> KindsOf(AutoType t, const AutoSettings& s)
+{
+    std::vector<AutoKind> kinds = ModeKindsOf(t, s);
+    if (!InRangeType(t) || !AutoTypeRow(t).start_option) return kinds;
+    std::vector<AutoKind> out;
+    for (AutoKind k : kinds) {
+        const AutoKind w = StartTwin(k, s.at_start[static_cast<int>(t)]);
+        if (std::find(out.begin(), out.end(), w) == out.end()) out.push_back(w);
+    }
+    return out;
+}
+
 // Story 10-8m: a slide / pivot part kind's mode (Combined for any other kind), and whether it is
 // the heel's (the kind's row).
 ScuffParts ScuffMode(AutoKind k)
@@ -96,9 +138,12 @@ bool ScuffHeel(AutoKind k)
 }
 
 // The kinds that are one block switched between modes (place, marker, colour, edits kept): the hand
-// pivots, and each slide / pivot part across Each part / Longest part. 0 = none.
+// pivots, and each slide / pivot part across Each part / Longest part; story 10-9c: a
+// `start_option` kind and its twin (Peak / Start), story 10-9j with the scuffs' modes above (a
+// group per sound key: Hand Pivot, Slide Heel... in either mode and either flavour). 0 = none.
 int SwapGroup(AutoKind k)
 {
+    if (AutoTypeRow(AutoKindRow(k).type).start_option) return 100 + static_cast<int>(AutoKindRow(k).sound_key);
     if (k == AutoKind::HandPivot || k == AutoKind::HandPivotAny) return 1;
     if (ScuffMode(k) == ScuffParts::Combined) return 0;
     return 2 + (AutoTypeOfKind(k) == AutoType::Pivot ? 2 : 0) + (ScuffHeel(k) ? 0 : 1);
@@ -110,6 +155,16 @@ bool InRange(int i, int count)
 }
 
 }  // namespace
+
+bool AutoStartDefault(AutoType t)
+{
+    return InRangeType(t) && AutoTypeRow(t).start_option && AutoKindRow(AutoKindsOf(t).front()).at_start;
+}
+
+AutoSettings::AutoSettings()
+{
+    for (int t = 0; t < kAutoTypeCount; ++t) at_start[t] = AutoStartDefault(static_cast<AutoType>(t));
+}
 
 const char* AutoTypeLabel(AutoType t)
 {
@@ -226,7 +281,8 @@ bool operator==(const AutoTypeSettings& a, const AutoTypeSettings& b)
 bool operator==(const AutoSettings& a, const AutoSettings& b)
 {
     for (int t = 0; t < kAutoTypeCount; ++t)
-        if (!(a.type[t] == b.type[t]) || a.separate_parts[t] != b.separate_parts[t]) return false;
+        if (!(a.type[t] == b.type[t]) || a.separate_parts[t] != b.separate_parts[t] || a.at_start[t] != b.at_start[t])
+            return false;
     return a.separate_steps == b.separate_steps && a.hand_pivot_any == b.hand_pivot_any &&
            a.slide_parts == b.slide_parts && a.pivot_parts == b.pivot_parts;
 }
@@ -261,6 +317,10 @@ bool AutoPending(const AutoSettings& ui, const AutoSettings& item)
         // Story 10-9a-3: a `part_split` type switched between Combined and Separate.
         if (AutoTypeRow(static_cast<AutoType>(t)).part_split && ui.type[t].on && item.type[t].on &&
             ui.separate_parts[t] != item.separate_parts[t])
+            return true;
+        // Story 10-9c: a `start_option` type switched between Peak and Start.
+        if (AutoTypeRow(static_cast<AutoType>(t)).start_option && ui.type[t].on && item.type[t].on &&
+            ui.at_start[t] != item.at_start[t])
             return true;
     }
     const int step = static_cast<int>(AutoType::Step), hp = static_cast<int>(AutoType::HandPivot);
@@ -304,6 +364,7 @@ AutoSettings ReadAutoSettings(const std::vector<Block>& blocks)
     bool combined = false, separate = false, strict = false, any = false;
     bool scuff_mode[2][3] = {};  // story 10-8m: per scuff type (slide, pivot), the modes its blocks say
     bool split[kAutoTypeCount][2] = {};  // story 10-9a-3: per part_split type, combined / part blocks seen
+    bool start[kAutoTypeCount][2] = {};  // story 10-9c: per start_option type, peak / start blocks seen
     for (const Block& b : blocks) {
         AutoKind k;
         if (!AutoBlockKind(b, &k, nullptr)) continue;
@@ -315,9 +376,10 @@ AutoSettings ReadAutoSettings(const std::vector<Block>& blocks)
         }
         if (k == AutoKind::Step) combined = true;
         if (k == AutoKind::Heel || k == AutoKind::Toe) separate = true;
-        if (k == AutoKind::HandPivot) strict = true;
-        if (k == AutoKind::HandPivotAny) any = true;
+        if (DefaultTwin(k) == AutoKind::HandPivot) strict = true;  // story 10-9j: either flavour
+        if (DefaultTwin(k) == AutoKind::HandPivotAny) any = true;
         if (AutoTypeRow(AutoTypeOfKind(k)).part_split) split[t][PartSplitKind(k) ? 1 : 0] = true;
+        if (AutoTypeRow(AutoTypeOfKind(k)).start_option) start[t][AutoKindRow(k).at_start ? 1 : 0] = true;
         if (t == static_cast<int>(AutoType::Slide) || t == static_cast<int>(AutoType::Pivot))
             scuff_mode[t == static_cast<int>(AutoType::Pivot) ? 1 : 0][static_cast<int>(ScuffMode(k))] = true;
     }
@@ -331,7 +393,11 @@ AutoSettings ReadAutoSettings(const std::vector<Block>& blocks)
     }
     s.separate_steps = separate && !combined;
     s.hand_pivot_any = any && !strict;
-    for (int t = 0; t < kAutoTypeCount; ++t) s.separate_parts[t] = split[t][1] && !split[t][0];
+    for (int t = 0; t < kAutoTypeCount; ++t) {
+        s.separate_parts[t] = split[t][1] && !split[t][0];
+        // Story 10-9j: the flavour its blocks say; none or both, the type's default.
+        if (start[t][0] != start[t][1]) s.at_start[t] = start[t][1];
+    }
     return s;
 }
 
@@ -449,24 +515,30 @@ std::vector<int> ApplyAutoSettings(std::vector<Block>& blocks, const AutoSetting
         }
         return -1;
     };
+    // Story 10-9j: a scuff's kinds are named as their default flavour (`dk`), and the new block
+    // looked for in the flavour the settings make (`flav`).
+    auto flav = [&](AutoKind w) { return StartTwin(w, s.at_start[static_cast<int>(AutoTypeOfKind(w))]); };
     for (size_t i = 0; i < old.size(); ++i) {
         AutoKind k;
         char     side;
         if (keep[i] || !AutoBlockKind(old[i], &k, &side)) continue;
+        const AutoKind dk = DefaultTwin(k);
         if (k == AutoKind::Step) map[i] = find_new(AutoKind::Heel, side);
         else if (k == AutoKind::Heel || k == AutoKind::Toe) map[i] = find_new(AutoKind::Step, side);
-        else if (k == AutoKind::HandPivot) map[i] = find_new(AutoKind::HandPivotAny, side);
-        else if (k == AutoKind::HandPivotAny) map[i] = find_new(AutoKind::HandPivot, side);
+        else if (dk == AutoKind::HandPivot) map[i] = find_new(flav(AutoKind::HandPivotAny), side);
+        else if (dk == AutoKind::HandPivotAny) map[i] = find_new(flav(AutoKind::HandPivot), side);
         // Story 10-8m: a slide / pivot switched between combined and separate, as steps.
-        else if (k == AutoKind::Slide || k == AutoKind::Pivot) {
-            const bool sl = k == AutoKind::Slide;
-            map[i] = find_new(sl ? AutoKind::SlideHeel : AutoKind::PivotHeel, side);
-            if (map[i] < 0) map[i] = find_new(sl ? AutoKind::SlideHeelLongest : AutoKind::PivotHeelLongest, side);
+        else if (dk == AutoKind::Slide || dk == AutoKind::Pivot) {
+            const bool sl = dk == AutoKind::Slide;
+            map[i] = find_new(flav(sl ? AutoKind::SlideHeel : AutoKind::PivotHeel), side);
+            if (map[i] < 0) map[i] = find_new(flav(sl ? AutoKind::SlideHeelLongest : AutoKind::PivotHeelLongest), side);
         } else if (ScuffMode(k) != ScuffParts::Combined)
-            map[i] = find_new(AutoTypeOfKind(k) == AutoType::Slide ? AutoKind::Slide : AutoKind::Pivot, side);
+            map[i] = find_new(flav(AutoTypeOfKind(k) == AutoType::Slide ? AutoKind::Slide : AutoKind::Pivot), side);
         // Story 10-9a-3: a lift-off, jump or land switched between combined and separate, as steps.
         else if (AutoTypeRow(AutoTypeOfKind(k)).part_split)
-            map[i] = find_new(PartSplitKindOf(AutoTypeOfKind(k), !PartSplitKind(k)), side);
+            map[i] = find_new(PartSplitKindOf(AutoTypeOfKind(k), !PartSplitKind(k),
+                                              s.at_start[static_cast<int>(AutoTypeOfKind(k))]),
+                              side);
     }
     if (changed) *changed = !BlocksEqual(old, out);
     blocks = std::move(out);
@@ -482,18 +554,36 @@ double SensitivityFactor(double sens)
     return std::pow(2.0, (sens - 50.0) / 50.0);
 }
 
-PhysicsParams AutoPhysicsParams(AutoType t, double sens, bool looping)
+namespace {
+
+// Story 10-10a: the constants at sensitivity `sens` made `shift` points stricter (the confidence
+// probes, RateAutoEvents), past 0 when needed: f = SensitivityFactor(sens) x 2^(-shift / 50).
+// shift 0 = AutoPhysicsParams.
+PhysicsParams ShiftedAutoParams(AutoType t, double sens, double shift, bool looping)
 {
     PhysicsParams p;
     p.looping = looping;
-    const double  f = SensitivityFactor(sens);
     if (!InRange(static_cast<int>(t), kAutoTypeCount)) return p;
-    for (const AutoSensField& sf : AutoTypeRow(t).sens) {
+    const AutoTypeInfo& row = AutoTypeRow(t);
+    for (int i = 0; i < kAutoSensFields; ++i) {
+        const AutoSensField& sf = row.sens[i];
         if (!sf.field) continue;
+        // Only the fields the row's conf_probe names get stricter (all by default).
+        // Story 10-9h: by the row's conf_scale share of the shift.
+        const bool   probed = shift != 0.0 && (row.conf_probe == 0 || ((row.conf_probe >> i) & 1u) != 0);
+        const double f = probed ? SensitivityFactor(sens) * std::pow(2.0, -shift * row.conf_scale / 50.0)
+                                : SensitivityFactor(sens);
         if (sf.dir == AutoSensDir::Times) p.*sf.field *= f;
         else p.*sf.field /= f;
     }
     return p;
+}
+
+}  // namespace
+
+PhysicsParams AutoPhysicsParams(AutoType t, double sens, bool looping)
+{
+    return ShiftedAutoParams(t, sens, 0.0, looping);
 }
 
 bool SameAutoAnalysis(const PhysicsParams& a, const PhysicsParams& b)
@@ -523,18 +613,28 @@ bool HasActiveAutoBlocks(const std::vector<Block>& blocks)
     return false;
 }
 
-std::vector<PhysicsParams> AutoParamSets(const std::vector<Block>& blocks, bool looping)
+namespace {
+
+// AutoParamSets with every block `shift` sensitivity points stricter (story 10-10a).
+std::vector<PhysicsParams> ShiftedParamSets(const std::vector<Block>& blocks, bool looping, double shift)
 {
     std::vector<PhysicsParams> out;
     for (const Block& b : blocks) {
         AutoKind k;
         if (!b.enabled || !AutoBlockKind(b, &k, nullptr)) continue;
-        const PhysicsParams p = AutoPhysicsParams(AutoTypeOfKind(k), b.sens, looping);
+        const PhysicsParams p = ShiftedAutoParams(AutoTypeOfKind(k), b.sens, shift, looping);
         bool                seen = false;
         for (const PhysicsParams& q : out) seen = seen || SameAutoAnalysis(p, q);
         if (!seen) out.push_back(p);
     }
     return out;
+}
+
+}  // namespace
+
+std::vector<PhysicsParams> AutoParamSets(const std::vector<Block>& blocks, bool looping)
+{
+    return ShiftedParamSets(blocks, looping, 0.0);
 }
 
 std::vector<AutoSigPick> MergeSignatureEvents(const std::vector<std::vector<double>>& times, double period)
@@ -567,14 +667,19 @@ namespace {
 
 // AutoEvents; `replace` (story 10-9a): Land / Jump events replace the steps / lift-offs near them
 // (off for Detect's per-block event counts, which read each block's own detections).
+// Story 10-10a: `shift` = every block's sensitivity that many points stricter (the confidence
+// probes; 0 otherwise).
 std::vector<Event> AutoEventsImpl(const std::vector<AutoAnalysis>& analyses, const std::vector<Block>& blocks,
-                                  bool looping, bool replace)
+                                  bool looping, bool replace, double shift = 0.0)
 {
     std::vector<Event> out;
     std::vector<double>   raw;     // per event in `out`: its physics time (before the block's offset)
+    std::vector<double>   raw_end; // per event in `out`: its physics end (story 10-9e, replaces_in_span)
+    std::vector<double>   raw_start; // per event in `out`: its physics start (story 10-9k: a span before its time)
     std::vector<AutoType> type;    // per event in `out`: its block's type
     std::vector<double>   period;  // per event in `out`: its analysis' loop period (0: not looping)
     std::vector<const char*> part;  // per event in `out`: its kind's role key ("heel", "toe"; "" = the foot)
+    std::vector<char>        sides; // per event in `out`: its block's side (story 10-9e)
     // Each analysis' event sources (the kinds' rows: foot events, hand events...), each computed
     // once, when a block first reads it.
     struct Source {
@@ -588,7 +693,7 @@ std::vector<Event> AutoEventsImpl(const std::vector<AutoAnalysis>& analyses, con
         AutoKind     k;
         char         side;
         if (!b.enabled || !AutoBlockKind(b, &k, &side)) continue;
-        const PhysicsParams p = AutoPhysicsParams(AutoTypeOfKind(k), b.sens, looping);
+        const PhysicsParams p = ShiftedAutoParams(AutoTypeOfKind(k), b.sens, shift, looping);
         size_t              ai = analyses.size();
         for (size_t j = 0; j < analyses.size() && ai == analyses.size(); ++j)
             if (SameAutoAnalysis(analyses[j].params, p)) ai = j;
@@ -636,33 +741,51 @@ std::vector<Event> AutoEventsImpl(const std::vector<AutoAnalysis>& analyses, con
             ev.block = static_cast<int>(bi);
             ev.marker = b.marker;
             ev.strength = e.strength;
-            ev.speed = row.degrees ? 0.0 : e.strength * a.leg_length;
+            ev.speed = (row.degrees || row.strength_unit) ? 0.0 : e.strength * a.leg_length;  // 10-9g: a jolt's g
             out.push_back(std::move(ev));
             raw.push_back(e.time_s);
+            raw_end.push_back(std::max(e.time_s, e.end_s));
+            raw_start.push_back(std::min(e.time_s, e.start_s));
             type.push_back(row.type);
             period.push_back(loop_period);
             part.push_back(row.role_key ? row.role_key : "");
+            sides.push_back(side);
         }
     }
     // Story 10-9a: a Land replaces the steps within kAutoReplaceS of it, a Jump the lift-offs, on
     // their physics times (a block's offset never adds or removes one). Only when both types run.
     // Story 10-8r: in Separate (heel / toe), only the steps / lift-offs of its own part: a Land Toe
     // never drops the Heel slap that follows it (a whole-foot kind, on either side, still replaces
-    // any part's).
+    // any part's). Story 10-9e: read from the type rows (`replaces`, `replaces_in_span`); a Tap
+    // replaces its own foot's steps at its touch and the lift-off that ends it (one sound). Story
+    // 10-9k: the span is [start, end] (an Arms Jump's run starts before its peak, where a Swing
+    // marked at its start sits).
     if (replace) {
         std::vector<char> drop(out.size(), 0);
         bool              any = false;
         for (size_t i = 0; i < out.size(); ++i) {
-            if (type[i] != AutoType::Land && type[i] != AutoType::Jump) continue;
-            const AutoType replaced = type[i] == AutoType::Land ? AutoType::Step : AutoType::LiftOff;
+            const AutoTypeInfo& tr = AutoTypeRow(type[i]);
+            if (tr.replaces < 0 && tr.replaces_in_span < 0) continue;
             for (size_t j = 0; j < out.size(); ++j) {
-                if (type[j] != replaced) continue;
+                const bool at_time = tr.replaces >= 0 && type[j] == static_cast<AutoType>(tr.replaces);
+                const bool in_span = tr.replaces_in_span >= 0 && type[j] == static_cast<AutoType>(tr.replaces_in_span);
+                if (!at_time && !in_span) continue;
+                if (tr.replaces_own_side && sides[j] != sides[i]) continue;
                 if (*part[i] && *part[j] && std::strcmp(part[i], part[j]) != 0) continue;
+                // The distance to the event's time (at_time) or to its span [start, end] (in_span).
+                const double lo = in_span ? raw_start[i] : raw[i], hi = in_span ? raw_end[i] : raw[i];
                 double d = std::fabs(raw[j] - raw[i]);
+                if (raw[j] >= lo && raw[j] <= hi) d = 0.0;
+                else d = std::min(std::fabs(raw[j] - lo), std::fabs(raw[j] - hi));
                 // A loop: the distance through the seam too.
                 if (period[i] > 0.0) {
-                    d = std::fmod(d, period[i]);
-                    d = std::min(d, period[i] - d);
+                    double dl = std::fmod(std::fabs(raw[j] - lo), period[i]);
+                    dl = std::min(dl, period[i] - dl);
+                    double dh = std::fmod(std::fabs(raw[j] - hi), period[i]);
+                    dh = std::min(dh, period[i] - dh);
+                    d = std::min(d, std::min(dl, dh));
+                    for (double w : {raw[j] - period[i], raw[j] + period[i]})
+                        if (w >= lo && w <= hi) d = 0.0;
                 }
                 if (d <= kAutoReplaceS + 1e-9) {
                     drop[j] = 1;
@@ -725,6 +848,138 @@ std::vector<Event> DetectAutoEvents(const std::vector<Block>& blocks, const std:
     return DetectImpl(blocks, role_tracks, cache, looping, true);
 }
 
+// ---- Confidence (story 10-10a) ----------------------------------------------------------------
+
+namespace {
+
+// The loop period of the clip the analyses read (0: not looping): the first analysis that ran.
+double AnalysesLoopPeriod(const std::vector<AutoAnalysis>& runs, bool looping)
+{
+    if (!looping) return 0.0;
+    for (const AutoAnalysis& r : runs)
+        if (r.analysis.ok && r.analysis.looping && r.analysis.window_samples > 1 && r.analysis.rate_hz > 0.0)
+            return static_cast<double>(r.analysis.window_samples - 1) / r.analysis.rate_hz;
+    return 0.0;
+}
+
+}  // namespace
+
+double AutoConfidenceOfSteps(int kept_steps)
+{
+    return std::clamp(static_cast<double>(kept_steps) / kAutoConfidenceSteps, 0.0, 1.0);
+}
+
+namespace {
+
+// RateAutoEvents. `analyse` false (review of 10-10a, a drag's preview): rates only when every
+// probe it needs is in `cache` already; false, `events` untouched, when one is missing.
+bool RateImpl(std::vector<Event>& events, const std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
+              std::vector<AutoAnalysis>* cache, bool looping, bool analyse)
+{
+    std::vector<size_t> rated;  // the auto events, by index into `events`
+    for (size_t i = 0; i < events.size(); ++i) {
+        const int b = events[i].block;
+        if (b < 0 || b >= static_cast<int>(blocks.size()) || !IsActiveAutoBlock(blocks[static_cast<size_t>(b)])) continue;
+        rated.push_back(i);
+    }
+    if (rated.empty()) return true;
+    if (!analyse && !cache) return false;
+    std::vector<double> conf(rated.size(), 1.0);  // written to `events` once rated
+    std::vector<AutoAnalysis>  local;
+    std::vector<AutoAnalysis>& runs = cache ? *cache : local;
+    std::vector<PhysicsParams> used;  // every probe's parameter sets (kept in the cache)
+    std::vector<char>          alive(rated.size(), 1);
+    for (int k = 1; k <= kAutoConfidenceSteps; ++k) {
+        const double shift = kAutoConfidenceStepSens * k;
+        for (const PhysicsParams& p : ShiftedParamSets(blocks, looping, shift)) {
+            used.push_back(p);
+            bool have = false;
+            for (const AutoAnalysis& r : runs) have = have || SameAutoAnalysis(r.params, p);
+            if (have) continue;
+            if (!analyse) return false;  // a probe the cache does not hold: no analysis here
+            AutoAnalysis r;
+            r.params = p;
+            r.analysis = AnalyseMotion(role_tracks, p);
+            runs.push_back(std::move(r));
+        }
+        // Each block's own events at that strictness (no Land / Jump replacement: an event's own
+        // threshold only).
+        const std::vector<Event> probe = AutoEventsImpl(runs, blocks, looping, false, shift);
+        const double             period = AnalysesLoopPeriod(runs, looping);
+        // Review of 10-10a: one probe event survives one event at most, the nearest pairs first, so
+        // a neighbour (the next step of a fast run) never keeps an event that is gone alive.
+        struct Pair {
+            double d;
+            size_t j, q;
+        };
+        std::vector<Pair> pairs;
+        for (size_t j = 0; j < rated.size(); ++j) {
+            if (!alive[j]) continue;
+            const Event& ev = events[rated[j]];
+            for (size_t q = 0; q < probe.size(); ++q) {
+                if (probe[q].block != ev.block) continue;
+                double d = std::fabs(probe[q].time_s - ev.time_s);
+                if (period > 0.0) {
+                    d = std::fmod(d, period);
+                    d = std::min(d, period - d);
+                }
+                if (d <= kAutoConfidenceTolS + 1e-9) pairs.push_back({d, j, q});
+            }
+        }
+        std::stable_sort(pairs.begin(), pairs.end(), [](const Pair& a, const Pair& b) { return a.d < b.d; });
+        std::vector<char> found(rated.size(), 0), taken(probe.size(), 0);
+        for (const Pair& pr : pairs) {
+            if (found[pr.j] || taken[pr.q]) continue;
+            found[pr.j] = taken[pr.q] = 1;
+        }
+        bool any = false;
+        for (size_t j = 0; j < rated.size(); ++j) {
+            if (!alive[j]) continue;
+            if (found[j]) {
+                any = true;
+                continue;
+            }
+            alive[j] = 0;
+            conf[j] = AutoConfidenceOfSteps(k - 1);
+        }
+        if (!any) break;
+    }
+    for (size_t j = 0; j < rated.size(); ++j) events[rated[j]].confidence = conf[j];
+    // A cache keeps the probes' analyses and a few others.
+    if (cache) {
+        for (size_t i = 0; i < runs.size() && runs.size() > std::max(kMaxCachedAnalyses, used.size());) {
+            bool in_use = false;
+            for (const PhysicsParams& p : used) in_use = in_use || SameAutoAnalysis(runs[i].params, p);
+            if (in_use) ++i;
+            else runs.erase(runs.begin() + static_cast<std::ptrdiff_t>(i));
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+void RateAutoEvents(std::vector<Event>& events, const std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
+                    std::vector<AutoAnalysis>* cache, bool looping)
+{
+    RateImpl(events, blocks, role_tracks, cache, looping, true);
+}
+
+bool RateAutoEventsFromCache(std::vector<Event>& events, const std::vector<Block>& blocks,
+                             const std::vector<BoneTrack>& role_tracks, std::vector<AutoAnalysis>* cache, bool looping)
+{
+    return RateImpl(events, blocks, role_tracks, cache, looping, false);
+}
+
+std::vector<Event> DetectRatedAutoEvents(const std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
+                                         std::vector<AutoAnalysis>* cache, std::vector<AutoAnalysis>* probe_cache,
+                                         bool looping)
+{
+    std::vector<Event> ev = DetectAutoEvents(blocks, role_tracks, cache, looping);
+    RateAutoEvents(ev, blocks, role_tracks, probe_cache, looping);
+    return ev;
+}
+
 // ---- Sensitivity search (story 10-8h) ---------------------------------------------------------
 
 namespace {
@@ -781,6 +1036,15 @@ std::vector<AutoSensResult> SearchAutoSensitivity(const std::vector<Block>& bloc
         if (!IsActiveAutoBlock(b) || AutoBlockPartMissing(b, role_to_bone)) continue;
         if (i >= event_counts.size() || event_counts[i] != 0) continue;  // has events (or unknown): untouched
         if (GroupHasEvents(blocks, event_counts, i)) continue;  // story 10-9a-3: its sibling holds the event
+        {  // stories 10-9f / 10-9g / 10-9e / 10-9d / 10-9c: a type its row keeps out of the search
+           // (Spin, Jolt, Tap, Drag, Clap, Hand on body, Kick, Swing, Punch): counted as searched
+           // (Detect is not lit for it), neither raised nor none
+            AutoKind k;
+            if (AutoBlockKind(b, &k, nullptr) && AutoTypeRow(AutoTypeOfKind(k)).no_sens_raise) {
+                r.searched = true;
+                continue;
+            }
+        }
         const double start = std::isfinite(b.sens) ? std::clamp(b.sens, 0.0, 100.0) : kAutoDefaultSens;
         if (CountAt(b, start, role_tracks, runs, looping) != 0) continue;  // a failed analysis, or events after all
         const int at100 = CountAt(b, 100.0, role_tracks, runs, looping);

@@ -16,7 +16,8 @@
 //   part    heel / toe / tip / hand / any
 //   time_s  clip time (s)
 //   status  draft (Claude, from the motion) / confirmed / deleted (kept, never expected)
-//   source  motion / REF (an old REF marker of the csv dump) / antho (the review page)
+//   source  motion / REF (an old REF marker of the csv dump) / antho (the review page) /
+//           physics (story 10-13a: written by tools/physics_bench from the mocap's markers)
 //
 // Configurations: default = every type at the default sensitivity in its default modes (steps
 // combined, slides and pivots combined, lift-off / jump / land combined); parts = steps heel / toe
@@ -86,6 +87,12 @@ inline bool NormaliseRefKind(const std::string& kind, const std::string& part, s
         p = "toe";
     } else if (kind == "hand_pivot_any") {
         b = "hand_pivot";
+    } else if (kind == "kick_heel") {  // story 10-9h
+        b = "kick";
+        p = "heel";
+    } else if (kind == "kick_toe") {
+        b = "kick";
+        p = "toe";
     } else if (kind == "lift_heel" || kind == "jump_heel" || kind == "land_heel") {
         b = kind.substr(0, 4);
         p = "heel";
@@ -93,7 +100,18 @@ inline bool NormaliseRefKind(const std::string& kind, const std::string& part, s
         b = kind.substr(0, 4);
         p = "toe";
     } else if (!(kind == "step" || kind == "lift" || kind == "slide" || kind == "pivot" || kind == "grab" ||
-                 kind == "release" || kind == "hand_pivot" || kind == "jump" || kind == "land")) {
+                 kind == "release" || kind == "hand_pivot" || kind == "jump" || kind == "land" ||
+                 // story 10-9b: body contacts (sit and fall: side B)
+                 kind == "knee" || kind == "elbow" || kind == "sit" || kind == "fall" ||
+                 // story 10-9h: the other wave-3 kinds (jolt, spin, spin_end: side B)
+                 kind == "kick" || kind == "swing" || kind == "punch" || kind == "clap" || kind == "hand_body" ||
+                 kind == "tap" || kind == "drag" || kind == "jolt" || kind == "spin" || kind == "spin_end" ||
+                 // story 10-9i: a heel tap (side L / R, part heel), one row in both configurations
+                 kind == "heel_tap" ||
+                 // story 10-9k: the arms of a jump (side L / R)
+                 kind == "arm_jump" || kind == "arm_land" ||
+                 // story 10-9n: a strike (side L / R)
+                 kind == "strike")) {
         return false;
     }
     if (base) *base = b;
@@ -102,7 +120,12 @@ inline bool NormaliseRefKind(const std::string& kind, const std::string& part, s
 }
 
 // Jump and land: the kinds whose reference may say side B (no particular foot, story 10-9a).
-inline bool SidelessTarget(const std::string& word) { return word == "jump" || word == "land"; }
+// Story 10-9b: sit and fall are always side B (the body); 10-9h: jolt, spin and spin_end too.
+inline bool SidelessTarget(const std::string& word)
+{
+    return word == "jump" || word == "land" || word == "sit" || word == "fall" || word == "jolt" || word == "spin" ||
+           word == "spin_end";
+}
 
 // One line of a reference file. False (and `err`) for a malformed line; a '#' or blank line is
 // false with an empty `err` (nothing to read).
@@ -219,6 +242,13 @@ inline std::string RefTarget(const RefLine& r, BenchConfig c)
         if (part == "toe" || part == "tip") return base == "step" ? "toe" : base + "_toe";
         return "";
     }
+    // Story 10-9h: a kick, as a step: one row in Default, the part's (heel, toe) in Parts.
+    if (base == "kick") {
+        if (c == BenchConfig::Default) return part == "any" ? base : "";
+        if (part == "heel") return "kick_heel";
+        if (part == "toe" || part == "tip") return "kick_toe";
+        return "";
+    }
     return base;
 }
 
@@ -226,6 +256,10 @@ inline std::string RefTarget(const RefLine& r, BenchConfig c)
 // pivot read as their row's; story 10-9a-3: the lift-off / jump / land part kinds as their type).
 inline std::string FoundTarget(const std::string& kind_word)
 {
+    // Story 10-9j: a scuff's Peak twin reads as its Start kind's row.
+    const std::string peak = "_peak";
+    if (kind_word.size() > peak.size() && kind_word.compare(kind_word.size() - peak.size(), peak.size(), peak) == 0)
+        return FoundTarget(kind_word.substr(0, kind_word.size() - peak.size()));
     if (kind_word == "lift_heel" || kind_word == "lift_toe") return "lift";
     if (kind_word == "jump_heel" || kind_word == "jump_toe") return "jump";
     if (kind_word == "land_heel" || kind_word == "land_toe") return "land";

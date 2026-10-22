@@ -49,6 +49,12 @@ bool SameLineIfFits(float next_w, float right_limit = 0.0f);
 // its full text as a tooltip when shortened. An item of the width it takes. True when shortened.
 bool FitText(const std::string& text, ImU32 col = kText, float width = 0.0f);
 
+// 2026-10-21 (the Smart Detection card's two-line hint, generalised): `text` ('\n' read as a space)
+// wrapped to the room left over at most `max_lines` lines, the last one ellipsized, the full text as
+// a tooltip when cut. An item of the room's width, as high as its lines (`fixed`: always `max_lines`
+// high, a fixed slot). True when cut.
+bool ClampedText(const char* text, ImU32 col, int max_lines, bool fixed = false);
+
 // EllipsisText plus the full text as a tooltip while the mouse is over it (draw-list rows).
 bool EllipsisTextTip(ImDrawList* dl, ImVec2 p, float max_x, ImU32 col, const std::string& text,
                      const char* extra = nullptr);  // extra: shown in the tooltip too (and alone when not cut)

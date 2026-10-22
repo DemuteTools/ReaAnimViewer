@@ -19,12 +19,23 @@
 //              free fall: its signatures). Story 10-9a-3: on the foot that leaves last
 //              (Jump L / R).
 //   land       (story 10-9a) its landing: the first foot touching after it, timed as that foot's
-//              step (Land L / R). With Step ticked too, Land replaces the steps (FS / Heel / Toe,
-//              either foot) within +-30 ms of it; with Lift-off ticked too, Jump replaces the
+//              step (Land L / R); story 10-9m: the other foot touching 40-90 ms after it
+//              (PhysicsParams::jump_land_apart_s / _max_s) gets its own Land. With Step ticked
+//              too, Land replaces the steps (FS / Heel / Toe, either foot) within +-30 ms of it
+//              (of its span: a landing together reaches the other foot's step, review 10-9m); with Lift-off ticked too, Jump replaces the
 //              lift-offs (either foot, any part) within +-30 ms of it (their physics times, before
 //              the blocks' offsets). Story 10-8r: a Separate one (Land Heel / Land Toe, Jump
 //              Heel / Jump Toe) replaces only its own part's (and the whole-foot kinds'), so a
 //              toe landing keeps the heel slap after it. Strength = the hips' vertical speed (leg/s).
+//   tap        (story 10-9e) a light toe touch while the other foot carries the body: a foot
+//              contact under 150 ms with no heel, the other foot down throughout (Tap L / R),
+//              at that contact's step. With Step ticked too, a Tap replaces that foot's steps
+//              (FS, Toe) within +-30 ms of it; with Lift-off, its lift-offs over the touch.
+//   drag       (story 10-9e) the toe sliding on the ground during a swing, the heel up
+//              (Drag L / R, with its end). See foot_taps.h.
+//   heel tap   (story 10-9i) the heel dropping back onto the floor while the ball stays down
+//              (Heel Tap L / R). With Step ticked too, it replaces that foot's steps within +-30 ms
+//              of it. See heel_taps.h.
 //   Story 10-9a-3: lift-off, jump and land each have Combined / Separate
 //   (AutoSettings::separate_parts, the types whose row says `part_split`). Separate puts each
 //   event on its part's block: Heel = the heel, Toe = the ball or the toe tip (kinds lift_heel,
@@ -46,9 +57,39 @@
 //   Arms
 //   grab       the hand lands on something (Grab L / R).
 //   release    the hand leaves its support (Release L / R).
+//   slap       (story 10-9l) a flat hand hitting something (the floor, a wall, the body), the
+//              fingers staying extended through and after the contact (Slap L / R): a grab's
+//              contact or a hand on body whose fingers do not close. With Grab / Hand on body
+//              ticked too, it replaces that hand's grab / hand on body there. Needs finger bones
+//              that move in the clip (roles knuckle and fingertip); see hand_slap.h.
 //   pivot      the planted hand turns (Hand Pivot L / R): only after a grab (a hand that came to
 //              rest with a grab's approach, or at rest from the clip start; kind hand_pivot, the
 //              default), or any resting hand (kind hand_pivot_any).
+//   clap       (story 10-9d) the two hands meet at speed and stop against each other
+//              (hand_touch.h): one marker, on the faster hand (Clap L / R).
+//   hand on body (story 10-9d) a hand lands at speed on the trunk, the head or a thigh, on that
+//              hand (Hand on body L / R). Strength = the closing speed (leg/s), both.
+//   swing      (story 10-9c) a hand's speed peak relative to the torso (Swing L / R).
+//   punch      (story 10-9c) the same, a straight thrust away from the shoulder (Punch L / R).
+//   Body
+//   jolt       (story 10-9g) an impact that shakes the gear and cloth: a foot step, a jump's
+//              landing or a body contact (a knee, a sit, a fall: 10-9b) where the centre of
+//              mass's acceleration peaks above the sensitivity's threshold (motion_physics.h
+//              JoltEvents). Sideless ("Jolt", side B). Strength = the peak in g.
+//   spin       (story 10-9f) the body turns about the vertical: the hip line's yaw rate above
+//              15 deg/s starts it, below 5 deg/s (or turning back) ends it, kept when it sweeps
+//              45 deg at least. Sideless: two blocks, "Spin" at its start (kind spin) and
+//              "Spin End" at its end (kind spin_end). Strength = the sweep (degrees).
+//   Story 10-9c: kick (Legs) is a foot's speed peak relative to the torso, raised off the ground
+//   (Kick L / R; Separate: on the part fastest at the peak, Kick Heel L / Kick Toe L). Kick, swing
+//   and punch put their marker at the peak, or at the motion's start (AutoSettings::at_start, the
+//   types whose row says `start_option`: kinds kick_start, swing_start... sharing the peak kind's
+//   marker, colour and sound key; a block switched between them keeps its place, marker and
+//   edits). Strength = the peak speed (leg/s); see WhooshEvents (motion_physics.h).
+//   Story 10-9j: the scuffs (slide, pivot, hand pivot) have the same choice, Start by default
+//   (their markers as before, at the scuff's start), Peak at the rub's speed peak (scuff_peak.h):
+//   kinds slide_peak, pivot_heel_peak, hand_pivot_peak... sharing the Start kind's marker, colour
+//   and sound key.
 // Each ticked type x side is one block of the item (Block::auto_type, auto_side, sens), with no
 // condition: the rule engine never fires it. Story 10-9a: a sideless type (its type row's
 // `sideless`; none since story 10-9a-3, kept for the Body types) has one block per kind, saved
@@ -61,14 +102,19 @@
 // constant per type by f = 2^((s - 50) / 50): step and lift-off contact_speed x f (more
 // sensitive = more contacts), slide slide_speed / f, pivot pivot_min_deg and pivot_rate_dps / f,
 // grab and release hand_contact_speed x f, hand pivot hand_pivot_min_deg and hand_pivot_rate_dps / f,
-// jump and land jump_min_flight_s / f (story 10-9a: higher sensitivity = shorter flights count).
+// jump and land jump_min_flight_s / f (story 10-9a: higher sensitivity = shorter flights count),
+// jolt jolt_min_g / f (story 10-9g: higher sensitivity = softer impacts count).
+// tap tap_max_s x f and drag drag_min_s / f (story 10-9e).
+// Story 10-9d: clap clap_min_speed / f and clap_reach x f, hand on body body_min_speed / f and
+// body_reach x f.
 // The arrival speed at the clip end (story 10-8j, 2 x the contact speed) follows contact_speed
 // and hand_contact_speed; the min approaches do not move.
 // The block's offset (ms) is added on top of the physics' own per-part step offsets.
 //
 // Values: strength is the physics strength (leg/s for steps, lift-offs, slides, grabs and
-// releases, the hips' vertical speed for jumps and lands, degrees for pivots and hand pivots); speed
-// is strength x the leg length (m/s), 0 for pivots and hand pivots.
+// releases, the hips' vertical speed for jumps and lands, degrees for pivots and hand pivots, g for
+// jolts); speed is strength x the leg length (m/s), 0 for pivots, hand pivots and jolts (a kind
+// row's `strength_unit`).
 //
 // Pure C++17, deterministic. Host-tested (tests/auto_detect_test.cpp).
 
@@ -86,11 +132,15 @@ namespace rav {
 
 // ---- Types and block kinds ---------------------------------------------------------------------
 
-// The types the section ticks.
-enum class AutoType : int { Step = 0, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land };
-constexpr int kAutoTypeCount = 9;
+// The types the section ticks (story 10-9e appends Tap and Drag, story 10-9b Knee, Elbow, Sit, Fall,
+// story 10-9d Clap and Hand on body, story 10-9c Kick, Swing and Punch, story 10-9l Slap, story 10-9n Strike).
+enum class AutoType : int { Step = 0, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land, Jolt, Spin, Tap, Drag,
+                            Knee, Elbow, Sit, Fall, Clap, HandOnBody, Kick, Swing, Punch, HeelTap, ArmJump, ArmLand, Slap, Strike };
+constexpr int kAutoTypeCount = 27;  // story 10-9g: Jolt; 10-9f: Spin (Body, sideless); 10-9e: Tap, Drag; 10-9b; 10-9d; 10-9c; 10-9i: Heel Tap; 10-9k: Arms Jump, Land; 10-9l: Slap; 10-9n: Strike
 // "Step", "Lift-off", "Slide scuff", "Pivot scuff", "Grab", "Release", "Pivot scuff" (the hand's),
-// "Jump", "Land"
+// "Jump", "Land", "Jolt" (story 10-9g, Body), "Spin" (story 10-9f, Body), "Tap", "Drag";
+// story 10-9b: "Knee", "Elbow", "Sit", "Fall"; story 10-9d: "Clap", "Hand on body"; story 10-9c:
+// "Kick", "Swing", "Punch"; story 10-9i: "Heel Tap"; story 10-9k: "Jump", "Land" (Arms); story 10-9l: "Slap"; story 10-9n: "Strike"
 const char* AutoTypeLabel(AutoType t);
 
 // Story 10-9-0: every type, category and kind has one descriptor row in auto_types.cpp (labels,
@@ -98,39 +148,60 @@ const char* AutoTypeLabel(AutoType t);
 // read it.
 
 // The section's categories (foldable groups), each holding some types: the body part that makes
-// the sound (story 10-9-1). Body (trunk, head) has no type yet.
+// the sound (story 10-9-1). Body (trunk, head): Jolt (story 10-9g), Spin (10-9f), sit and fall (story 10-9b).
 enum class AutoCategory : int { Legs = 0, Arms, Body };
 constexpr int kAutoCategoryCount = 3;
-AutoCategory AutoCategoryOf(AutoType t);              // step, lift-off, slide, pivot, jump, land: Legs; grab, release, hand pivot: Arms
+AutoCategory AutoCategoryOf(AutoType t);              // step, lift-off, slide, pivot, jump, land, knee: Legs; grab, release, hand pivot, elbow: Arms; sit, fall: Body
 const char*  AutoCategoryLabel(AutoCategory c);       // "Legs", "Arms", "Body"
 
 // The block kinds (Block::auto_type words): a combined step, a separate heel or toe step, a
 // lift-off, a slide, a pivot, a grab, a release, a hand pivot after a grab or of any resting hand.
 // Story 10-8m appends the slides and pivots by part (Each part, then Longest part); story 10-9a
-// jump and land; story 10-9a-3 the lift-off, jump and land parts (Separate).
+// jump and land; story 10-9a-3 the lift-off, jump and land parts (Separate); story 10-9b knee,
+// elbow, sit, fall.
 enum class AutoKind : int {
     Step = 0, Heel, Toe, Lift, Slide, Pivot, Grab, Release, HandPivot, HandPivotAny,
     SlideHeel, SlideToe, PivotHeel, PivotToe, SlideHeelLongest, SlideToeLongest, PivotHeelLongest, PivotToeLongest,
-    Jump, Land, LiftHeel, LiftToe, JumpHeel, JumpToe, LandHeel, LandToe
+    Jump, Land, LiftHeel, LiftToe, JumpHeel, JumpToe, LandHeel, LandToe, Jolt,
+    Spin, SpinEnd,  // story 10-9f: a spin's start ("Spin") and end ("Spin End")
+    Tap, Drag,      // story 10-9e
+    Knee, Elbow, Sit, Fall,  // story 10-9b
+    Clap, HandOnBody,        // story 10-9d
+    // Story 10-9c: kick (combined, heel, toe), then the same at the start; swing, punch and theirs.
+    Kick, KickHeel, KickToe, KickStart, KickHeelStart, KickToeStart, Swing, SwingStart, Punch, PunchStart,
+    HeelTap,  // story 10-9i
+    // Story 10-9j: the scuffs' Peak twins (the kinds above mark the scuff's start), in the order of
+    // their Start kinds within each type.
+    SlidePeak, SlideHeelPeak, SlideToePeak, SlideHeelLongestPeak, SlideToeLongestPeak,
+    PivotPeak, PivotHeelPeak, PivotToePeak, PivotHeelLongestPeak, PivotToeLongestPeak,
+    HandPivotPeak, HandPivotAnyPeak,
+    ArmJump, ArmLand,  // story 10-9k
+    Slap,  // story 10-9l
+    Strike  // story 10-9n
 };
-constexpr int kAutoKindCount = 26;
+constexpr int kAutoKindCount = 64;
 // "step", "heel", "toe", "lift", "slide", "pivot", "grab", "release", "hand_pivot", "hand_pivot_any",
 // "slide_heel", "slide_toe", "pivot_heel", "pivot_toe", "slide_heel_longest", "slide_toe_longest",
 // "pivot_heel_longest", "pivot_toe_longest", "jump", "land", "lift_heel", "lift_toe", "jump_heel",
-// "jump_toe", "land_heel", "land_toe"
+// "jump_toe", "land_heel", "land_toe", "jolt" (story 10-9g), "spin", "spin_end" (10-9f), "tap", "drag",
+// "knee", "elbow", "sit", "fall" (10-9b), "clap", "hand_body" (10-9d), "kick", "kick_heel", "kick_toe",
+// "kick_start", "kick_heel_start", "kick_toe_start", "swing", "swing_start", "punch", "punch_start" (10-9c), "heel_tap" (10-9i),
+// "slide_peak", "slide_heel_peak", "slide_toe_peak", "slide_heel_longest_peak", "slide_toe_longest_peak",
+// "pivot_peak", "pivot_heel_peak", "pivot_toe_peak", "pivot_heel_longest_peak", "pivot_toe_longest_peak",
+// "hand_pivot_peak", "hand_pivot_any_peak" (10-9j), "arm_jump", "arm_land" (10-9k), "slap" (10-9l), "strike" (10-9n)
 const char* AutoKindWord(AutoKind k);
 bool AutoKindFromWord(const std::string& w, AutoKind* out);
 AutoType AutoTypeOfKind(AutoKind k);
 // The marker name: "FS L", "Heel L", "Toe L", "Lift L", "Slide L", "Pivot L", "Grab L", "Release L",
 // "Hand Pivot L" (both hand pivot kinds), "Slide Heel L", "Slide Toe L", "Pivot Heel L", "Pivot Toe L"
-// (both part modes), "Jump L", "Land L", "Lift Heel L", "Jump Toe L", "Land Heel L"... (and R); a
-// sideless kind's has no side (any `side`).
+// (both part modes), "Jump L", "Land L", "Lift Heel L", "Jump Toe L", "Land Heel L"... (and R),
+// "Knee L", "Elbow L"; a sideless kind's has no side (any `side`): "Sit", "Fall".
 std::string AutoMarkerName(AutoKind k, char side);
 // The default colour (Block::color form: 0x1000000 | 0xRRGGBB), one per kind and side (a sideless
 // kind: one).
 uint32_t AutoDefaultColor(AutoKind k, char side);
 
-// Story 10-9a: a kind of a sideless type (its type row's `sideless`; none since story 10-9a-3).
+// Story 10-9a: a kind of a sideless type (its type row's `sideless`; story 10-9g: jolt).
 bool AutoKindSideless(AutoKind k);
 // The sides of a kind's blocks: "LR", or "B" for a sideless kind.
 const char* AutoKindSides(AutoKind k);
@@ -182,7 +253,17 @@ struct AutoSettings {
     // Story 10-9a-3: Separate (heel / toe blocks) for the types whose row says `part_split`
     // (lift-off, jump, land), by AutoType; ignored for the others.
     bool             separate_parts[kAutoTypeCount] = {};
+    // Story 10-9c: the marker at the motion's start, not its peak, for the types whose row says
+    // `start_option` (kick, swing, punch; story 10-9j: slide, pivot, hand pivot), by AutoType;
+    // ignored for the others. Default: the type's own (AutoStartDefault: Peak for kick, swing and
+    // punch, Start for the scuffs).
+    bool             at_start[kAutoTypeCount] = {};
+    AutoSettings();  // every type off, its modes the defaults (at_start: AutoStartDefault)
 };
+// Story 10-9j: whether a `start_option` type's markers sit at the start by default: the flavour of
+// its first kind (the kinds it had before the option: kick's mark the peak, the scuffs' the start).
+// False for the others.
+bool AutoStartDefault(AutoType t);
 bool operator==(const AutoTypeSettings& a, const AutoTypeSettings& b);
 bool operator==(const AutoSettings& a, const AutoSettings& b);
 inline bool operator!=(const AutoSettings& a, const AutoSettings& b)
@@ -295,6 +376,47 @@ std::vector<Event> AutoEvents(const std::vector<AutoAnalysis>& analyses, const s
 std::vector<Event> DetectAutoEvents(const std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
                                     std::vector<AutoAnalysis>* cache, bool looping);
 
+// ---- Confidence (story 10-10a) ----------------------------------------------------------------
+//
+// An auto event's confidence (Event::confidence, 0..1) = its margin to its type's thresholds,
+// one generic measure for every type, read from the type table: the constants a type's
+// sensitivity moves (AutoTypeInfo::sens: a contact speed, a minimum turn, a contact length, a
+// peak in g...) ARE its thresholds. The block runs again with them made stricter, step by step
+// (kAutoConfidenceStepSens sensitivity points each, kAutoConfidenceSteps steps: the last one
+// halves the sensitivity factor, 2^(-50/50)); the confidence is the share of steps the event
+// survives in a row (an event of the block within kAutoConfidenceTolS of its time, each probe
+// event matched to one event at most, nearest pairs first; no Land / Jump replacement). 1 = still
+// found with every threshold twice as strict; 0 = gone at the first step (only just over a
+// threshold). Relative to the block's own sensitivity (Detect's raise included: an event that
+// only appears after a raise reads low). A type needs no code of its own:
+// a new row's `sens` fields give its confidence (its `conf_probe` may leave out a field that is a
+// tolerance, not a margin: Clap / Hand on body's reach; its `conf_scale` may shorten the steps:
+// Punch, half steps). What it cannot see: a constant no sensitivity
+// moves (a knee's height over the floor, a clap's stop), and an event that is physically sound but
+// not the motion the clip means (a hands' grip join read as a clap).
+// The tolerance is wider than kAutoMergeS: a stricter contact speed delays a contact's start
+// (measured on the fixtures: 26 of the events lost at 60 ms were found again 60-100 ms away).
+// Whether an event is doubtful (amber): event_list.h DoubtLimit.
+constexpr double kAutoConfidenceStepSens = 10.0;
+constexpr int    kAutoConfidenceSteps = 5;
+constexpr double kAutoConfidenceTolS = 0.100;
+// The confidence of an event that survived `kept_steps` steps (0..kAutoConfidenceSteps).
+double AutoConfidenceOfSteps(int kept_steps);
+// Sets Event::confidence of the auto blocks' events of `events` (the others untouched), on role
+// tracks. `cache` (optional): the probes' analyses (keep it apart from DetectAutoEvents' cache:
+// the two evict each other's).
+void RateAutoEvents(std::vector<Event>& events, const std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
+                    std::vector<AutoAnalysis>* cache, bool looping);
+// Review of 10-10a: RateAutoEvents with no new analysis (a sensitivity drag's preview, every frame):
+// rates only when every probe analysis it needs is in `cache` already. False (`events` untouched)
+// when one is missing.
+bool RateAutoEventsFromCache(std::vector<Event>& events, const std::vector<Block>& blocks,
+                             const std::vector<BoneTrack>& role_tracks, std::vector<AutoAnalysis>* cache, bool looping);
+// DetectAutoEvents then RateAutoEvents (what the Tagging view and Commit run).
+std::vector<Event> DetectRatedAutoEvents(const std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
+                                         std::vector<AutoAnalysis>* cache, std::vector<AutoAnalysis>* probe_cache,
+                                         bool looping);
+
 // ---- Sensitivity search (story 10-8h) ---------------------------------------------------------
 
 // One block's search result.
@@ -315,7 +437,8 @@ struct AutoSensResult {
 // 10-9a-3: nor a block whose group holds the event: another active block of the same `part_split`
 // type and side has events (Lift Heel L is silent when the toe leaves last), or, for a type whose
 // row says `shared_sides` (jump, land: one event per jump for both feet), another active block of
-// that type on either side. Uses a
+// that type on either side. Story 10-9g: a type whose row says `no_sens_raise` (jolt) is never
+// raised: `searched`, not `none`, its value unchanged. Uses a
 // local analysis cache. One result per block.
 std::vector<AutoSensResult> SearchAutoSensitivity(const std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
                                                   const std::vector<int>& event_counts, const std::vector<int>& role_to_bone,
@@ -349,6 +472,7 @@ bool HasActiveAutoBlocks(const std::vector<Block>& blocks);
 //   lift-off separate (10-9a-3)      the heel; the toe (or the toe end)
 //   jump, land (story 10-9a)         the hips; per side, the heel, toe or toe end (as a lift-off;
 //                                    separate: the heel and the toe or toe end)
+//   tap, drag (story 10-9e)          the heel and the toe (or the toe end), as a pivot
 std::vector<std::string> AutoMissingParts(AutoType t, bool separate, const std::vector<int>& role_to_bone);
 
 // 10-8b fb-1 -- true when a known auto block that is on cannot find its events on this mapping:
@@ -393,7 +517,8 @@ struct AutoLane {
 // part's hspeed vs slide_speed; pivot, |yaw rate| (yaw where valid, else heading where valid, else
 // 0) vs pivot_rate_dps; grab and release, the hand's speed vs hand_contact_speed; hand pivot (both
 // kinds), |heading rate| vs hand_pivot_rate_dps; jump and land (story 10-9a), the hips' vertical
-// speed (no threshold), shaded over the flights both feet are off. Empty for a rule, an unknown
+// speed (no threshold), shaded over the flights both feet are off; tap (story 10-9e) as toe, drag
+// the ball's (else the tip's) hspeed vs drag_speed, shaded where it drags. Empty for a rule, an unknown
 // kind, a failed analysis or an absent part; `why` (optional) then gets the reason ("" for a
 // rule or unknown kind).
 std::vector<AutoLane> AutoBlockLanes(const AutoAnalysis& aa, const Block& b, std::string* why = nullptr);

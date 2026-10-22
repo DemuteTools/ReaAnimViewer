@@ -5,7 +5,8 @@
 // keeps the follow report, and draws the menu's Sounds section.
 //
 // F4: the follow writes create no undo point (the user's gesture is the undo point; the next
-// tick converges again). Repopulate (reset) is a gesture: one SoundUndoScope.
+// tick converges again). Repopulate is a gesture: one SoundUndoScope (story 10-10f: its button is
+// in the Tagging footer's Populate row).
 
 #include "sound_follow.h"
 #include "busy_progress_ui.h"  // 13-59: the busy card of a long gesture
@@ -392,6 +393,8 @@ ReaProject* CurrentProject()
     return EnumProjects(-1, nullptr, 0);
 }
 
+}  // namespace
+
 // The selected animation items that have a sound record (F10).
 std::vector<MediaItem*> RepopulateItems(ReaProject* proj, int* placed_out)
 {
@@ -445,6 +448,7 @@ void Repopulate(ReaProject* proj)
     UpdateArrange();
 }
 
+namespace {
 
 const char* KindText(ReportKind k)
 {
@@ -459,7 +463,6 @@ const char* KindText(ReportKind k)
     return "";
 }
 
-bool g_confirm_reset = false;
 
 // 13-13: the Tracks menu only picks; the store gesture runs after the menu (picked_gestures.h).
 PickedGestures g_track_picks;
@@ -487,7 +490,7 @@ void DrawTracksRow(ReaProject* proj)
     // 13-37: what the setting changes, then when it applies.
     ui::ItemTipText("Which track each placed sound lands on: its source's (or its Lands-in) track,\n"
                     "one track per Switch path, or folders by Switch.\n"
-                    "Applies to new placements. Repopulate (reset) moves the existing ones.");
+                    "Applies to new placements. Repopulate (Tagging footer) moves the existing ones.");
     if (ui::BeginMenuPopup("##sndtracks")) {
         ui::MenuCaption("PLACED SOUNDS LAND ON");
         for (int i = 0; i < 3; ++i)
@@ -1091,29 +1094,7 @@ void DrawSoundsMenuSection()
         DrawHandEditRow(proj);  // 13-35
         g_track_picks.Run();    // after its menu: the gesture replaces the store
 
-        int                           placed = 0;
-        const std::vector<MediaItem*> items = RepopulateItems(proj, &placed);
-        if (items.empty()) g_confirm_reset = false;
-        if (g_confirm_reset) {
-            ui::ConfirmBand band;
-            ui::BeginConfirmBand(band);
-            ImGui::Text("Remove %d placed sound%s and populate again?", placed, placed == 1 ? "" : "s");
-            if (ui::ConfirmButton("Repopulate##sndreset")) {
-                g_confirm_reset = false;
-                Repopulate(proj);
-            }
-            ImGui::SameLine();
-            if (ui::SolidButton("Cancel##sndresetcancel")) g_confirm_reset = false;
-            ui::EndConfirmBand(band);
-        } else {
-            ImGui::BeginDisabled(items.empty());
-            if (ui::SolidButton("Repopulate (reset)##sndreset", ImVec2(-1.0f, 0.0f))) g_confirm_reset = true;
-            ImGui::EndDisabled();
-            ui::ItemTipText(items.empty() ? "Select animation items that have sounds"
-                                          : "Removes the populated sounds of the selected animation items,\n"
-                                            "forgets the ones deleted by hand and draws again.\n"
-                                            "Attached and spread sounds stay.");
-        }
+        // Story 10-10f: Repopulate moved to the Tagging footer's Populate row.
 
         const std::vector<ReportLine> rep = FollowReport(proj);
         if (rep.empty()) {

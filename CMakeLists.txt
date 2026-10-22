@@ -209,10 +209,24 @@ if(WIN32)
             src/bone_sampling.cpp
             src/footstep_measure.cpp
             src/motion_physics.cpp
+            src/motion_whoosh.cpp  # 10-9c
             src/auto_detect.cpp
             src/auto_types.cpp  # 10-9-0
+            src/auto_type_picker.cpp  # 10-10e
             src/auto_types_legs.cpp
             src/auto_types_arms.cpp
+            src/auto_types_jolt.cpp  # 10-9g
+            src/auto_types_spin.cpp  # 10-9f
+            src/foot_taps.cpp  # 10-9e
+            src/auto_types_body.cpp  # 10-9b
+            src/body_contacts.cpp
+            src/hand_touch.cpp  # 10-9d
+            src/auto_types_whoosh.cpp  # 10-9c
+            src/heel_taps.cpp  # 10-9i
+            src/auto_types_arm_jump.cpp  # 10-9k
+            src/scuff_peak.cpp  # 10-9j
+            src/auto_types_slap.cpp  # 10-9l
+            src/auto_types_strike.cpp  # 10-9n
             src/detection_measure.cpp
             src/rule_record.cpp
             src/preset_store.cpp

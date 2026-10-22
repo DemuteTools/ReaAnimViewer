@@ -407,7 +407,9 @@ ZoneRef AnchorZone(const SoundData& data, const std::vector<ZoneRef>& zones)
     return zones.front();
 }
 
-// 13-62h: the pieces of a zoned placement (PieceApplyFor).
+// 13-62h: the pieces of a zoned placement (PieceApplyFor). 2026-10-21 (Antho): a combined event (no part) on a
+// divided Sound places each run of touching zones of the same gain as one piece (Heel | Toe = one item); a Gap or a
+// gain change still cuts it.
 std::vector<PieceApply> ZonePieces(const SoundData& data, int variation, const std::string& part_value,
                                    const PeakData* peaks)
 {
@@ -416,11 +418,22 @@ std::vector<PieceApply> ZonePieces(const SoundData& data, int variation, const s
     if (zones.empty()) return out;
     const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
     const ZoneRef     anchor = AnchorZone(data, zones);
+    const bool        merge = part_value.empty() && IsDivided(data);
+    std::vector<std::vector<ZoneRef>> runs;  // the zones of each piece, in time order
+    for (const ZoneRef& r : zones) {
+        if (merge && !runs.empty() && Butted(data, runs.back().back(), r) &&
+            std::fabs(ZoneOf(data, runs.back().back())->db - ZoneOf(data, r)->db) < 0.01)
+            runs.back().push_back(r);
+        else
+            runs.push_back({r});
+    }
     std::vector<double> heard;  // each piece's start in heard time
     auto placed = [&](const ZoneRef& q) { return std::find(zones.begin(), zones.end(), q) != zones.end(); };
-    for (const ZoneRef& r : zones) {
+    for (const std::vector<ZoneRef>& run : runs) {
+        const ZoneRef   r = run.front(), re = run.back();  // its left side is r's, its right side re's
         const EditZone& z = *ZoneOf(data, r);
-        const ZoneRef   lgr = GapBefore(data, r), rgr = GapAfter(data, r);
+        const EditZone& ze = *ZoneOf(data, re);
+        const ZoneRef   lgr = GapBefore(data, r), rgr = GapAfter(data, re);
         const EditZone* lg = ZoneOf(data, lgr);
         const EditZone* rg = ZoneOf(data, rgr);
         // 13-62h review (R3): a side whose Gap leads to a zone this event does not place (another part) is cut at
@@ -428,7 +441,7 @@ std::vector<PieceApply> ZonePieces(const SoundData& data, int variation, const s
         const bool   cut_in = lg && !placed(GapLeft(data, lgr));
         const bool   cut_out = rg && !placed(GapRight(data, rgr));
         const double a = lg && !cut_in ? lg->b - lg->xr : z.a;  // as HeardPieces cuts it
-        const double b = rg && !cut_out ? rg->a + rg->xl : z.b;
+        const double b = rg && !cut_out ? rg->a + rg->xl : ze.b;
         if (!(b > a)) continue;
         double jumped = 0.0;  // the Gaps before it, jumped at playback
         for (const EditZone& g : f.zones)
@@ -440,19 +453,19 @@ std::vector<PieceApply> ZonePieces(const SoundData& data, int variation, const s
         pa.fades.set_in = pa.fades.set_out = true;
         pa.fades.shape_in = pa.fades.shape_out = true;
         const ZoneFadeInfo fi = cut_in ? ZoneCutFade(data, r, -1) : ZoneFade(data, r, -1);
-        const ZoneFadeInfo fo = cut_out ? ZoneCutFade(data, r, 1) : ZoneFade(data, r, 1);
+        const ZoneFadeInfo fo = cut_out ? ZoneCutFade(data, re, 1) : ZoneFade(data, re, 1);
         pa.fades.in = fi.s;
         pa.fades.out = fo.s;
         // 13-75: each side on its curve (ZoneFadeCurve: a Gap's crossfade on the Gap's), heard as placed.
-        const FadeCurve ci = ZoneFadeCurve(data, r, -1, cut_in), co = ZoneFadeCurve(data, r, 1, cut_out);
+        const FadeCurve ci = ZoneFadeCurve(data, r, -1, cut_in), co = ZoneFadeCurve(data, re, 1, cut_out);
         pa.fades.in_shape = ci.shape;
         pa.fades.in_dir = ci.dir;
         pa.fades.out_shape = co.shape;
         pa.fades.out_dir = co.dir;
         pa.db = std::isfinite(z.db) ? z.db : 0.0;
-        if (r == anchor) {  // the anchor, at its snap offset
+        if (std::find(run.begin(), run.end(), anchor) != run.end()) {  // the anchor, at its snap offset
             pa.anchor = true;
-            const double t = ZoneSnap(data, r, peaks).t;
+            const double t = ZoneSnap(data, anchor, peaks).t;
             pa.slice.snap_offset = std::isfinite(t) ? std::min(std::max(t - a, 0.0), b - a) : 0.0;
         }
         heard.push_back(a - jumped);

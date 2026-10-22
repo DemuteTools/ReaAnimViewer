@@ -121,5 +121,13 @@ float GlyphButtonMinWidth(const std::string& label, float label_w);
 // fading smoothly to nothing at the spread. `peak` is clamped to [0, 0.95].
 void ShadowLayerAlphas(float peak, int bands, float* out);
 
+// Story 10-10f: which segments of a one-line status fit `avail` px (the line never wraps: what does
+// not fit drops whole). `widths[i]` is segment i's width, `priority[i]` how long it stays (higher =
+// longer), `sep_w` the separator drawn between two kept segments. The lowest priority drops first
+// (the later one on a tie); the highest-priority segment (the first on a tie) is always kept (the
+// caller ellipsizes it). One flag per segment; a missing priority reads as 0.
+std::vector<bool> FitSegments(const std::vector<float>& widths, const std::vector<int>& priority, float sep_w,
+                              float avail);
+
 }  // namespace flow
 }  // namespace rav

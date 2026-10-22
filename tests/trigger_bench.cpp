@@ -23,9 +23,12 @@
 // first, +-kMatchWindowS, inside '# visible' only; confirmed / draft counted apart.
 //
 // The run is saved to <out>/last.tsv (the previous one read first), and every row that changed
-// is listed. <out>/review.json holds what the review page shows (per clip: joints at 30 Hz, the
-// parents, foot / hand / hips heights at 60 Hz, the found events of both configurations, the
-// references).
+// is listed. Story 10-13a: <out>/matches.tsv holds every pair of every row of both matrices
+// (config, clip, kind, side, ref_s, det_s, err_ms, ref_status): a match fills both sides of the
+// pair, a missed reference leaves det_s / err_ms empty, an extra detection leaves ref_s / err_ms /
+// ref_status empty (tools/physics_bench/summary.py reads it). <out>/review.json holds what the
+// review page shows (per clip: joints at 30 Hz, the parents, foot / hand / hips heights at 60 Hz,
+// the found events of both configurations, the references).
 //
 // --old-refs: prints the csv dump's old REF markers as reference lines (ref_file.h OldRefLines),
 // then '# skipped <label>' lines; tools/ref_draft merges them.
@@ -46,6 +49,7 @@
 #include "auto_types.h"
 #include "bone_roles.h"
 #include "dump_clip.h"
+#include "event_list.h"  // story 10-10a: IsDoubtful
 #include "footstep_measure.h"
 #include "motion_physics.h"
 #include "ref_file.h"
@@ -221,6 +225,9 @@ struct Found {
     std::string target;
     char        side = 'L';
     double      t = 0.0;
+    double      strength = 0.0;  // story 10-10b: the event's strength (its type's unit)
+    AutoType    type = AutoType::Step;
+    double      conf = 1.0;  // story 10-10a: Event::confidence
 };
 
 struct Raised {
@@ -238,11 +245,14 @@ ConfigRun RunConfig(BenchConfig cfg, const std::vector<BoneTrack>& role_tracks, 
 {
     ConfigRun                 r;
     const std::vector<Block>  blocks = AutoBlocks(BenchSettings(cfg));
-    std::vector<AutoAnalysis> cache;
-    for (const Event& e : DetectAutoEvents(blocks, role_tracks, &cache, false)) {
+    std::vector<AutoAnalysis> cache, probes;
+    // Story 10-10a: the product path rates the events (their confidence).
+    for (const Event& e : DetectRatedAutoEvents(blocks, role_tracks, &cache, &probes, false)) {
         if (e.block < 0 || static_cast<size_t>(e.block) >= blocks.size()) continue;
         const Block& b = blocks[static_cast<size_t>(e.block)];
-        r.found.push_back({FoundTarget(b.auto_type), b.auto_side, e.time_s});
+        AutoKind     k = AutoKind::Step;
+        AutoBlockKind(b, &k, nullptr);
+        r.found.push_back({FoundTarget(b.auto_type), b.auto_side, e.time_s, e.strength, AutoTypeOfKind(k), e.confidence});
     }
     // Detect's raise, on a copy.
     std::vector<Block>          copy = blocks;
@@ -261,6 +271,27 @@ ConfigRun RunConfig(BenchConfig cfg, const std::vector<BoneTrack>& role_tracks, 
         }
     }
     return r;
+}
+
+// Story 10-9j: the scuffs (the types whose markers sit at the start by default, AutoStartDefault)
+// switched to Peak, in that configuration: their events only (Detect, rated as the matrices').
+std::vector<Found> RunScuffPeak(BenchConfig cfg, const std::vector<BoneTrack>& role_tracks)
+{
+    AutoSettings s = BenchSettings(cfg);
+    for (int t = 0; t < kAutoTypeCount; ++t)
+        if (AutoStartDefault(static_cast<AutoType>(t))) s.at_start[t] = false;
+    const std::vector<Block>  blocks = AutoBlocks(s);
+    std::vector<AutoAnalysis> cache, probes;
+    std::vector<Found>        out;
+    for (const Event& e : DetectRatedAutoEvents(blocks, role_tracks, &cache, &probes, false)) {
+        if (e.block < 0 || static_cast<size_t>(e.block) >= blocks.size()) continue;
+        const Block& b = blocks[static_cast<size_t>(e.block)];
+        AutoKind     k = AutoKind::Step;
+        AutoBlockKind(b, &k, nullptr);
+        if (!AutoStartDefault(AutoTypeOfKind(k))) continue;
+        out.push_back({FoundTarget(b.auto_type), b.auto_side, e.time_s, e.strength, AutoTypeOfKind(k), e.confidence});
+    }
+    return out;
 }
 
 // ---- Rows --------------------------------------------------------------------------------------
@@ -305,6 +336,7 @@ struct ClipResult {
     dump::Clip            clip;
     std::vector<int>      role_bone;
     ConfigRun             run[2];
+    std::vector<Found>    scuff_peak[2];  // story 10-9j: the scuffs at Peak, per configuration
     bool                  has_ref = false;
     std::vector<RefLine>  refs;
     std::vector<std::string> ref_errors;
@@ -341,6 +373,31 @@ std::string TsvValue(const RowScore& s)
                   s.matched_d, s.missed_c, s.missed_d, s.extra, st.n ? Fmt("%+.1f", st.mean_ms).c_str() : "-",
                   st.n ? Fmt("%.1f", st.sd_ms).c_str() : "-", st.n ? Fmt("%.1f", st.med_abs_ms).c_str() : "-");
     return b;
+}
+
+// Story 10-13a: the row's pairs as matches.tsv lines (prefix = "config\tclip\tkind\tside"),
+// from ScoreRow's own result (its scoring untouched): the references inside [lo, hi] in its order
+// (by time, stable), the missed ones taken out in order; the rest pair with err_s in order.
+void MatchLines(const std::string& prefix, std::vector<RowRef> refs, const RowScore& s, double lo, double hi,
+                std::vector<std::string>* out)
+{
+    refs.erase(std::remove_if(refs.begin(), refs.end(), [&](const RowRef& r) { return r.t < lo || r.t > hi; }),
+               refs.end());
+    std::stable_sort(refs.begin(), refs.end(), [](const RowRef& a, const RowRef& b) { return a.t < b.t; });
+    size_t mi = 0, ei = 0;
+    for (const RowRef& r : refs) {
+        const char* st = r.confirmed ? "confirmed" : "draft";
+        if (mi < s.missed_t.size() && s.missed_t[mi] == r.t) {
+            out->push_back(prefix + "\t" + Fmt("%.4f", r.t) + "\t\t\t" + st);
+            ++mi;
+            continue;
+        }
+        if (ei >= s.err_s.size()) continue;  // cannot happen: every reference is matched or missed
+        const double e = s.err_s[ei++];
+        out->push_back(prefix + "\t" + Fmt("%.4f", r.t) + "\t" + Fmt("%.4f", r.t + e) + "\t" + Fmt("%+.1f", e * 1000.0) +
+                       "\t" + st);
+    }
+    for (double t : s.extra_t) out->push_back(prefix + "\t\t" + Fmt("%.4f", t) + "\t\t");
 }
 
 std::map<std::string, std::string> ReadLast(const std::string& path, bool* had)
@@ -517,7 +574,10 @@ int main(int argc, char** argv)
                 for (int i : idx) t.push_back(d.tracks.at(static_cast<size_t>(i)));
                 return t;
             });
-            for (int cfg = 0; cfg < 2; ++cfg) c.run[cfg] = RunConfig(static_cast<BenchConfig>(cfg), rt, c.role_bone);
+            for (int cfg = 0; cfg < 2; ++cfg) {
+                c.run[cfg] = RunConfig(static_cast<BenchConfig>(cfg), rt, c.role_bone);
+                c.scuff_peak[cfg] = RunScuffPeak(static_cast<BenchConfig>(cfg), rt);
+            }
             c.has_ref = ReadRefFile((dir / fs::u8path(s.id + ".ref.tsv")).u8string(), &c.refs, &c.ref_errors);
         }
         clips.push_back(std::move(c));
@@ -526,7 +586,7 @@ int main(int argc, char** argv)
     std::printf("=== trigger_bench: every auto type ticked, Detect path (DetectAutoEvents) ===\n");
     std::printf("%zu clips in %s; match +-%g ms inside # visible; exp / matched / missed = confirmed/draft\n",
                 clips.size(), fixtures.c_str(), kMatchWindowS * 1000.0);
-    std::vector<std::string> tsv;
+    std::vector<std::string> tsv, matches;
     std::map<std::string, std::string> now;
     for (int cfg = 0; cfg < 2; ++cfg) {
         const BenchConfig bc = static_cast<BenchConfig>(cfg);
@@ -547,6 +607,7 @@ int main(int argc, char** argv)
                                         "\t" + std::string(1, kv.first.side);
                 now[key] = TsvValue(s);
                 tsv.push_back(key + "\t" + now[key]);
+                MatchLines(key, kv.second.refs, s, c.clip.lo, c.clip.hi, &matches);
                 if (!c.has_ref) continue;  // the summary sums clips with a reference only
                 RowScore& t = sum[kv.first.target];
                 t.exp_c += s.exp_c, t.exp_d += s.exp_d, t.found += s.found, t.matched_c += s.matched_c;
@@ -587,6 +648,225 @@ int main(int argc, char** argv)
     for (const char* k : {"jump", "land"}) std::printf(" %s %d / %d,", k, false_events[k], false_blocks[k]);
     std::printf(" every kind %d / %d\n", [&] { int n = 0; for (const auto& kv : false_events) n += kv.second; return n; }(),
                 [&] { int n = 0; for (const auto& kv : false_blocks) n += kv.second; return n; }());
+
+    // Story 10-10b: the strength of every event (default matrix), per type over every clip (its
+    // distribution, and where the level cuts of the type table fall), then per clip.
+    {
+        std::printf("\n--- STRENGTH (default matrix, every clip; levels Soft < medium <= Medium < hard <= Hard) ---\n");
+        std::map<int, std::vector<double>> all;
+        // Each clip weighs the same in the clip-weighted cuts (wp33 / wp67): a long treadmill run
+        // does not set a type's levels alone.
+        std::map<int, std::vector<std::pair<double, double>>> weighted;
+        for (const ClipResult& c : clips) {
+            if (!c.read) continue;
+            std::map<int, int> n;
+            for (const Found& f : c.run[0].found) ++n[static_cast<int>(f.type)];
+            for (const Found& f : c.run[0].found) {
+                all[static_cast<int>(f.type)].push_back(f.strength);
+                weighted[static_cast<int>(f.type)].push_back({f.strength, 1.0 / n[static_cast<int>(f.type)]});
+            }
+        }
+        const auto wpct = [](std::vector<std::pair<double, double>> v, double q) {
+            if (v.empty()) return 0.0;
+            std::sort(v.begin(), v.end());
+            double total = 0.0, acc = 0.0;
+            for (const auto& x : v) total += x.second;
+            for (const auto& x : v) {
+                acc += x.second;
+                if (acc >= q * total - 1e-12) return x.first;
+            }
+            return v.back().first;
+        };
+        const auto pct = [](std::vector<double> v, double q) {
+            if (v.empty()) return 0.0;
+            std::sort(v.begin(), v.end());
+            const double x = q * static_cast<double>(v.size() - 1);
+            const size_t i = static_cast<size_t>(x);
+            const double f = x - static_cast<double>(i);
+            return i + 1 < v.size() ? v[i] * (1.0 - f) + v[i + 1] * f : v[i];
+        };
+        std::printf("  %-12s %4s %8s %8s %8s %8s %8s %8s %8s %8s %8s | %8s %8s | %5s %5s %5s\n", "type", "n", "min", "p10",
+                    "p33", "p50", "p67", "p90", "max", "wp33", "wp67", "medium", "hard", "soft", "med", "hard");
+        for (int t = 0; t < kAutoTypeCount; ++t) {
+            const auto it = all.find(t);
+            const AutoStrengthCuts& cut = AutoStrengthRow(static_cast<AutoType>(t));
+            const char* word = AutoTypeRow(static_cast<AutoType>(t)).sound_word;
+            if (it == all.end()) {
+                std::printf("  %-12s %4d %80s | %8.3g %8.3g |\n", word, 0, "(no event on the fixtures)", cut.medium, cut.hard);
+                continue;
+            }
+            const std::vector<double>& v = it->second;
+            int lv[4] = {};
+            for (double x : v) ++lv[AutoStrengthLevel(static_cast<AutoType>(t), x)];
+            const auto& w = weighted[t];
+            std::printf("  %-12s %4zu %8.3g %8.3g %8.3g %8.3g %8.3g %8.3g %8.3g %8.3g %8.3g | %8.3g %8.3g | %5d %5d %5d%s\n",
+                        word, v.size(), pct(v, 0.0), pct(v, 0.10), pct(v, 1.0 / 3.0), pct(v, 0.5), pct(v, 2.0 / 3.0),
+                        pct(v, 0.90), pct(v, 1.0), wpct(w, 1.0 / 3.0), wpct(w, 2.0 / 3.0), cut.medium, cut.hard, lv[1], lv[2],
+                        lv[3], lv[0] ? "  (some with no strength)" : "");
+        }
+        std::printf("Per clip (type: n, min / median / max, Soft / Medium / Hard):\n");
+        for (const ClipResult& c : clips) {
+            if (!c.read) continue;
+            std::map<int, std::vector<double>> by;
+            for (const Found& f : c.run[0].found) by[static_cast<int>(f.type)].push_back(f.strength);
+            if (by.empty()) continue;
+            std::printf("  %s\n", c.src.id.c_str());
+            for (const auto& kv : by) {
+                int lv[4] = {};
+                for (double x : kv.second) ++lv[AutoStrengthLevel(static_cast<AutoType>(kv.first), x)];
+                std::printf("    %-12s %3zu  %7.3g / %7.3g / %7.3g   %d / %d / %d\n",
+                            AutoTypeRow(static_cast<AutoType>(kv.first)).sound_word, kv.second.size(), pct(kv.second, 0.0),
+                            pct(kv.second, 0.5), pct(kv.second, 1.0), lv[1], lv[2], lv[3]);
+            }
+        }
+    }
+
+    // Story 10-10a: each found event's confidence (RateAutoEvents), by what the reference says of
+    // it: matched to a confirmed line, to a draft, extra (a clip with a reference, no line near),
+    // or no reference. Per clip, the events under full confidence; then the counts per level.
+    std::printf("\n--- Confidence (story 10-10a; default matrix; doubtful below %.2f) ---\n", kDefaultDoubtLimit);
+    {
+        const int                 nl = kAutoConfidenceSteps + 1;
+        std::map<std::string, std::vector<int>> hist;  // class -> count per level
+        const char*               classes[4] = {"confirmed", "draft", "extra", "no ref"};
+        for (const char* k : classes) hist[k].assign(static_cast<size_t>(nl), 0);
+        for (const ClipResult& c : clips) {
+            if (!c.read) continue;
+            std::string lines;
+            int         full = 0;  // confirmed at full confidence (not listed)
+            for (const auto& kv : Ordered(Rows(c, BenchConfig::Default))) {
+                std::vector<RowRef> conf_refs;
+                for (const RowRef& r : kv.second.refs)
+                    if (r.confirmed) conf_refs.push_back(r);
+                const RowScore all = ScoreRow(kv.second.refs, kv.second.det, kMatchWindowS, c.clip.lo, c.clip.hi);
+                const RowScore only_c = ScoreRow(conf_refs, kv.second.det, kMatchWindowS, c.clip.lo, c.clip.hi);
+                auto in = [](const std::vector<double>& v, double t) {
+                    return std::find(v.begin(), v.end(), t) != v.end();
+                };
+                for (const Found& f : c.run[0].found) {
+                    if (f.target != kv.first.target || f.side != kv.first.side) continue;
+                    if (f.t < c.clip.lo || f.t > c.clip.hi) continue;
+                    const char* cls = !c.has_ref                ? "no ref"
+                                      : in(all.extra_t, f.t)    ? "extra"
+                                      : !in(only_c.extra_t, f.t) ? "confirmed"
+                                                                 : "draft";
+                    const int lvl = std::clamp(static_cast<int>(std::lround(f.conf * kAutoConfidenceSteps)), 0, nl - 1);
+                    ++hist[cls][static_cast<size_t>(lvl)];
+                    if (f.conf >= 1.0 && std::string(cls) == "confirmed") {
+                        ++full;
+                        continue;
+                    }
+                    char buf[200];
+                    std::snprintf(buf, sizeof(buf), "  %-16s %7.3f s  conf %.1f  %s%s\n",
+                                  RowName(kv.first.target, kv.first.side).c_str(), f.t, f.conf, cls,
+                                  IsDoubtful(f.conf) ? "  DOUBTFUL" : "");
+                    lines += buf;
+                }
+            }
+            if (!lines.empty() || full) std::printf("%s  (%d confirmed at 1.0)\n%s", c.src.id.c_str(), full, lines.c_str());
+        }
+        std::printf("Events per confidence level (0.0 .. 1.0, step %.1f):\n", 1.0 / kAutoConfidenceSteps);
+        for (const char* k : classes) {
+            std::printf("  %-10s", k);
+            for (int v : hist[k]) std::printf(" %5d", v);
+            std::printf("\n");
+        }
+    }
+
+    // Story 10-9j: the scuffs (slide, pivot, hand pivot) at Peak against Start (the default, the
+    // matrices'): per clip and configuration, each event's Start time and Peak time (paired in
+    // order per row and side: the same scuffs, only their time moves), then Hip Hop Dancing's
+    // seven scuffs by ear (Antho, 2026-10-21) against the nearest pivot of that foot.
+    std::printf("\n--- Scuff Peak (story 10-9j; Start = the matrices', Peak = the rub's speed peak) ---\n");
+    {
+        std::map<std::string, std::vector<double>> deltas;  // per row kind: Peak - Start (ms)
+        int                                        unpaired = 0, conf_moved = 0;
+        for (const ClipResult& c : clips) {
+            if (!c.read) continue;
+            for (int cfg = 0; cfg < 2; ++cfg) {
+                std::map<RowKey, std::vector<double>>                    st, pk;
+                std::map<RowKey, std::vector<std::pair<double, double>>> stc, pkc;  // (time, confidence)
+                for (const Found& f : c.run[cfg].found)
+                    if (AutoStartDefault(f.type)) {
+                        st[{f.target, f.side}].push_back(f.t);
+                        stc[{f.target, f.side}].push_back({f.t, f.conf});
+                    }
+                for (const Found& f : c.scuff_peak[cfg]) {
+                    pk[{f.target, f.side}].push_back(f.t);
+                    pkc[{f.target, f.side}].push_back({f.t, f.conf});
+                }
+                for (const auto& kv : pk)
+                    if (!st.count(kv.first)) st[kv.first];
+                std::string lines;
+                for (const auto& kv : st) {
+                    std::vector<double> a = kv.second, b = pk[kv.first];
+                    std::sort(a.begin(), a.end());
+                    std::sort(b.begin(), b.end());
+                    if (a.size() != b.size()) {
+                        ++unpaired;
+                        lines += "    " + RowName(kv.first.target, kv.first.side) + "  UNPAIRED (" +
+                                 std::to_string(a.size()) + " start, " + std::to_string(b.size()) + " peak)\n";
+                        continue;
+                    }
+                    std::vector<std::pair<double, double>> ac = stc[kv.first], bc = pkc[kv.first];
+                    std::sort(ac.begin(), ac.end());
+                    std::sort(bc.begin(), bc.end());
+                    for (size_t i = 0; i < a.size(); ++i) {
+                        const double d = (b[i] - a[i]) * 1000.0;
+                        const bool conf = i < ac.size() && i < bc.size() && ac[i].second != bc[i].second;
+                        conf_moved += conf ? 1 : 0;
+                        deltas[kv.first.target].push_back(d);
+                        char buf[200];
+                        std::snprintf(buf, sizeof(buf), "    %-16s start %7.3f  peak %7.3f  %+6.0f ms",
+                                      RowName(kv.first.target, kv.first.side).c_str(), a[i], b[i], d);
+                        lines += buf;
+                        if (conf) {
+                            std::snprintf(buf, sizeof(buf), "  conf %.1f -> %.1f", ac[i].second, bc[i].second);
+                            lines += buf;
+                        }
+                        lines += "\n";
+                    }
+                }
+                if (!lines.empty())
+                    std::printf("  %s [%s]\n%s", c.src.id.c_str(), BenchConfigName(static_cast<BenchConfig>(cfg)), lines.c_str());
+            }
+        }
+        std::printf("Peak - Start per row kind (ms): n, min / median / max\n");
+        for (auto& kv : deltas) {
+            std::vector<double>& v = kv.second;
+            std::sort(v.begin(), v.end());
+            std::printf("  %-20s %3zu  %6.0f / %6.0f / %6.0f\n", kv.first.c_str(), v.size(), v.front(), v[v.size() / 2],
+                        v.back());
+        }
+        std::printf("Unpaired rows: %d; events whose confidence differs at Peak: %d\n", unpaired, conf_moved);
+        // Antho's seven Hip Hop Dancing scuffs by ear (story 10-9j), against the nearest pivot of
+        // that foot (default matrix, combined): its Start and its Peak.
+        const struct {
+            char   side;
+            double t;
+        } kHipHopScuffs[] = {{'L', 1.40}, {'L', 3.38}, {'L', 6.81}, {'R', 1.56}, {'R', 3.25}, {'R', 5.13}, {'R', 6.75}};
+        for (const ClipResult& c : clips) {
+            if (!c.read || c.src.id != "Hip Hop Dancing.fbx") continue;
+            std::printf("Hip Hop Dancing, Antho's scuffs by ear vs the nearest pivot of that foot (default matrix):\n");
+            double sum_s = 0.0, sum_p = 0.0;
+            int    n = 0;
+            for (const auto& h : kHipHopScuffs) {
+                const auto nearest = [&](const std::vector<Found>& v, bool peak) {
+                    double best = 1e9;
+                    for (const Found& f : v)
+                        if (f.target == "pivot" && f.side == h.side && (peak || AutoStartDefault(f.type)) &&
+                            std::fabs(f.t - h.t) < std::fabs(best - h.t))
+                            best = f.t;
+                    return best;
+                };
+                const double st = nearest(c.run[0].found, false), pk = nearest(c.scuff_peak[0], true);
+                std::printf("  %c %5.2f  start %7.3f (%+5.0f ms)  peak %7.3f (%+5.0f ms)\n", h.side, h.t, st,
+                            (st - h.t) * 1000.0, pk, (pk - h.t) * 1000.0);
+                sum_s += std::fabs(st - h.t), sum_p += std::fabs(pk - h.t), ++n;
+            }
+            std::printf("  mean |error|: start %.0f ms, peak %.0f ms\n", sum_s / n * 1000.0, sum_p / n * 1000.0);
+        }
+    }
 
     std::printf("\n--- Not benched ---\n");
     bool any_fail = false;
@@ -634,9 +914,15 @@ int main(int argc, char** argv)
         for (const std::string& l : tsv) f << l << "\n";
     }
     {
+        std::ofstream f((out / "matches.tsv").u8string(), std::ios::binary);
+        f << "# config\tclip\tkind\tside\tref_s\tdet_s\terr_ms\tref_status\n";
+        for (const std::string& l : matches) f << l << "\n";
+    }
+    {
         std::ofstream f((out / "review.json").u8string(), std::ios::binary);
         f << ReviewJson(clips);
     }
-    std::printf("Saved %s and %s\n", last.c_str(), (out / "review.json").u8string().c_str());
+    std::printf("Saved %s, %s and %s\n", last.c_str(), (out / "matches.tsv").u8string().c_str(),
+                (out / "review.json").u8string().c_str());
     return 0;
 }

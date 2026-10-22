@@ -992,5 +992,8 @@ bool  LoadPrefBool(const char* key, bool def);
 void  SavePrefBool(const char* key, bool value);
 float LoadPrefFloat(const char* key, float def);
 void  SavePrefFloat(const char* key, float value);
+// Story 10-10e: a free text value (the Smart Detection presets); "" when missing.
+std::string LoadPrefString(const char* key);
+void        SavePrefString(const char* key, const std::string& value);
 
 }  // namespace rav

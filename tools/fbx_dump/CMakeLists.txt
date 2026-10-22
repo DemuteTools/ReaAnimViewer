@@ -39,6 +39,7 @@ add_executable(fbx_dump
     stubs/plugin_gltf_skin.cpp
     stubs/plugin_bone_sampling.cpp
     stubs/linux_stubs.cpp
+    stubs/watchdog_stub.cpp
     "${RAV_ROOT}/src/texture_locate.cpp")
 # stubs/ first: it supplies <windows.h> and <gl/GL.h>.
 target_include_directories(fbx_dump PRIVATE

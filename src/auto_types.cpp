@@ -245,9 +245,13 @@ bool AutoMissingArmJump(char side, const std::vector<int>& role_to_bone);
 void AutoLanesArmJump(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
 void AutoLanesArmLand(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
 
-// auto_types_strike.cpp (story 10-9n: arc blows; parts, match and roles are Swing's)
-std::vector<PhysicsEvent> AutoSourceStrike(const PhysicsAnalysis& a, const PhysicsParams& p);
-void AutoLanesStrike(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+// auto_types_punch.cpp (story 10-9o: every fist blow, straight or arc; Swing's counter-arm)
+std::vector<PhysicsEvent> AutoSourcePunchStop(const PhysicsAnalysis& a, const PhysicsParams& p);
+std::vector<PhysicsEvent> AutoSourcePunchPeak(const PhysicsAnalysis& a, const PhysicsParams& p);
+std::vector<PhysicsEvent> AutoSourcePunchStart(const PhysicsAnalysis& a, const PhysicsParams& p);
+std::vector<PhysicsEvent> AutoSourceSwing(const PhysicsAnalysis& a, const PhysicsParams& p);
+std::vector<PhysicsEvent> AutoSourceSwingStart(const PhysicsAnalysis& a, const PhysicsParams& p);
+void AutoLanesPunchBlow(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
 
 namespace {
 
@@ -375,13 +379,23 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "kick", {{&P::kick_speed, S::Divide}, {}}, &AutoPartsKick, false, true, false, true, true},
     {T::Swing, "Swing", "Swing", C::Arms,
      "A marker where a hand whips through the air (Swing L / Swing R), at its fastest,\n"
-     "or where the motion starts (Start). A straight thrust is a Punch.",
+     "or where the motion starts (Start): an arm movement that is no blow (a follow-through,\n"
+     "a running arm). A blow is a Punch; the arm pulled back while the other hand punches is none.",
      "swing", {{&P::swing_speed, S::Divide}, {}}, &AutoPartsWhooshHand, false, false, false, true, true},
+    // Story 10-9o: any fist blow, straight (punch_speed) or arc (punch_arc_speed: 10-9n's
+    // Strike); higher sensitivity = slower blows count. With Swing ticked it replaces that
+    // hand's Swing over its run (`replaces_in_span`), with Arms Land that hand's Arms Land at the
+    // same time (`replaces`: a blow landing with a jump hits, Jump Attack's sword).
     {T::Punch, "Punch", "Punch", C::Arms,
-     "A marker where a hand thrusts straight out from the shoulder (Punch L / Punch R),\n"
-     "at its fastest, or where the motion starts (Start).",
-     "punch", {{&P::punch_speed, S::Divide}, {}}, &AutoPartsWhooshHand, false, false, false, true, true, -1, -1,
-     false, 0u, 0.5},  // story 10-9h: half steps for the confidence (conf_scale)
+     "A marker where a hand's blow stops (Punch L / Punch R): a straight punch, a hook, an\n"
+     "uppercut, a hammer fist, hitting something or in the air. Stop: where the arm stops (full\n"
+     "extension, or the contact); Peak: at the hand's fastest (a whoosh); Start: where the\n"
+     "motion starts. L / R is the character's own side: seen from the front, its left hand is\n"
+     "on the screen's right. Fist or weapon: pick the sound with a Switch on the character\n"
+     "(e.g. its outfit or weapon).",
+     "punch", {{&P::punch_speed, S::Divide}, {&P::punch_arc_speed, S::Divide}}, &AutoPartsWhooshHand, false, false,
+     false, true, true, static_cast<int>(T::ArmLand), static_cast<int>(T::Swing), true, 0u,
+     0.5, true},  // conf_scale: half steps (a jab's 2.34 leg/s over punch_speed 2.0, the elbow blow's 5.1 over punch_arc_speed 5.0)
     // Story 10-9i: higher sensitivity = a smaller heel rise counts (heel_tap_min_rise / f).
     {T::HeelTap, "Heel Tap", "Heel Tap", C::Legs,
      "A marker where the heel drops back onto the floor while the ball of the foot stays down\n"
@@ -419,21 +433,6 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "without them, a slap cannot be told apart and the contacts stay Grabs.",
      "slap", {{&P::hand_contact_speed, S::Times}, {&P::body_min_speed, S::Divide}}, &AutoPartsSlap, false, false, false,
      true, false, static_cast<int>(T::Grab), static_cast<int>(T::HandOnBody), true},
-    // Story 10-9n: an arc blow that stops (auto_types_strike.cpp); higher sensitivity = slower
-    // blows count (strike_speed / f). With Swing ticked it replaces that hand's Swing over its run
-    // (`replaces_in_span`), with Arms Land that hand's Arms Land at its peak (`replaces`: a blow
-    // landing with a jump hits, Jump Attack's sword). Never raised by Detect: most clips hold no
-    // blow, a raise would turn a running arm's reversal into one. conf_scale 0.25: the speed is
-    // not what sets a blow apart (its stop and its arc are), so its line sits close under the real
-    // ones: Jump Attack's right hand on the sword 5.42 leg/s over 5.0 (0.4 at quarter steps, 0.2
-    // at half steps), the uppercut 6.47.
-    {T::Strike, "Strike", "Strike", C::Arms,
-     "A marker where a hand's fast arc blow stops, at its fastest (Strike L / Strike R): a hammer\n"
-     "fist, a hook, an uppercut, a weapon blow. A straight thrust is a Punch, an arm swinging on\n"
-     "is a Swing. With Swing or Arms Land ticked, it replaces that hand's swing or landing arm\n"
-     "there. Fist or weapon: pick the sound with the character's Gear switch (Movement library).",
-     "strike", {{&P::strike_speed, S::Divide}, {}}, &AutoPartsWhooshHand, false, false, false, true, false,
-     static_cast<int>(T::ArmLand), static_cast<int>(T::Swing), true, 0u, 0.25},
 };
 
 // ---- Strength levels (story 10-10b) ------------------------------------------------------------
@@ -480,9 +479,11 @@ constexpr AutoStrengthCuts kStrengthRows[] = {
     {T::HandOnBody, 2.0, 5.0},  // 2 events (1.5, 2.8): the clap's cuts (the same closing speed)
     {T::Kick, 9.0, 15.0},       // 2 events (10.5, 20, the dance clips): unmeasured beyond them
     {T::Swing, 7.4, 8.0},       // 10 on 6 clips: wp33 7.37, wp67 8.03 leg/s (the hand's peak speed)
-    // 9 on 4 clips (story 10-9h; the radial extending speed, not the hand's): the jabs 2.34-2.44
-    // Soft, the crosses 2.66-2.79 Medium, the wound-up punch 4.69 Hard.
-    {T::Punch, 2.6, 3.5},
+    // Story 10-9o: 17 on 9 clips, straight and arc blows (the hand's peak speed relative to the
+    // torso, no longer the radial speed): wp33 6.45, wp67 9.71 leg/s. The jabs (SimplePunch 3.8,
+    // ComboPunch 4.4-5.3) Soft, the crosses and the low punch (6.5-7.8) Medium, the hook, the
+    // hammer fist and the weapon blows (10.6-14.9) Hard; the Kyokushin punches 4.6-7.7.
+    {T::Punch, 6.5, 9.7},
     // 11 on 2 clips: wp33 0.259, wp67 0.308 leg/s (the heel's fastest descent); Hip Hop Dancing's
     // 9 from 0.12 (slow drops) to 0.34, Clap_Normal's seated heel pops 0.26 and 0.31.
     {T::HeelTap, 0.26, 0.31},
@@ -496,10 +497,6 @@ constexpr AutoStrengthCuts kStrengthRows[] = {
     // AirPunch's landing on the hands 2.97 and 8.21 leg/s; the hand's approach, as Grab): wp33 1.42,
     // wp67 2.61.
     {T::Slap, 1.4, 2.6},
-    // Story 10-9n: 6 on 5 clips (Jump Attack's right hand 5.42, the uppercut 6.47, the sword 8.03,
-    // the hook 10.6, the hammer fist 11.6, Lvl_TopDown 14.9 leg/s; the hand's peak speed): wp33
-    // 8.03, wp67 11.6 (11.5: the hammer fist on the high side; review: Fist Fight's left 7.88 snaps back, a Swing).
-    {T::Strike, 8.0, 11.5},
 };
 
 // ---- Kinds -------------------------------------------------------------------------------------
@@ -640,16 +637,16 @@ constexpr AutoKindInfo kKindRows[] = {
      {{"start", &AutoSourceWhooshStart, &AutoMatchKickToe}}, &AutoMissingKickToe, &AutoLanesKick, &AutoRolesKick,
      nullptr, true},
     {K::Swing, "swing", T::Swing, "Swing", {0x3CA0DD, 0xDD3CA0}, kNo, false, false, "hand", K::Swing,
-     {{"speed peak", &AutoSourceWhoosh, &AutoMatchSwing}}, &AutoMissingWhooshHand, &AutoLanesSwing,
+     {{"speed peak", &AutoSourceSwing, &AutoMatchSwing}}, &AutoMissingWhooshHand, &AutoLanesSwing,
      &AutoRolesWhooshHand},
     {K::SwingStart, "swing_start", T::Swing, "Swing", {0x3CA0DD, 0xDD3CA0}, kNo, false, false, "hand", K::Swing,
-     {{"start", &AutoSourceWhooshStart, &AutoMatchSwing}}, &AutoMissingWhooshHand, &AutoLanesSwing,
+     {{"start", &AutoSourceSwingStart, &AutoMatchSwing}}, &AutoMissingWhooshHand, &AutoLanesSwing,
      &AutoRolesWhooshHand, nullptr, true},
     {K::Punch, "punch", T::Punch, "Punch", {0xDD503C, 0x3CDD8C}, kNo, false, false, "hand", K::Punch,
-     {{"speed peak", &AutoSourceWhoosh, &AutoMatchPunch}}, &AutoMissingWhooshHand, &AutoLanesPunch,
+     {{"blow", &AutoSourcePunchStop, &AutoMatchPunch}}, &AutoMissingWhooshHand, &AutoLanesPunchBlow,
      &AutoRolesWhooshHand},
     {K::PunchStart, "punch_start", T::Punch, "Punch", {0xDD503C, 0x3CDD8C}, kNo, false, false, "hand", K::Punch,
-     {{"start", &AutoSourceWhooshStart, &AutoMatchPunch}}, &AutoMissingWhooshHand, &AutoLanesPunch,
+     {{"start", &AutoSourcePunchStart, &AutoMatchPunch}}, &AutoMissingWhooshHand, &AutoLanesPunchBlow,
      &AutoRolesWhooshHand, nullptr, true},
     // Story 10-9i: the heel tap, on the heel (dark blue / brown: away from Scuff's teal / sand, 10-9j).
     {K::HeelTap, "heel_tap", T::HeelTap, "Heel Tap", {0x1E5A8C, 0x8C5A1E}, kNo, false, false, "heel", K::HeelTap,
@@ -707,9 +704,9 @@ constexpr AutoKindInfo kKindRows[] = {
     {K::Slap, "slap", T::Slap, "Slap", {0x46B4DC, 0xDC7846}, kNo, false, false, "hand", K::Slap,
      {{"contact", &AutoSourceSlapContact, &AutoMatchSlapContact}, {"on body", &AutoSourceSlapBody, &AutoMatchSlapBody}},
      &AutoMissingSlap, &AutoLanesSlap, &AutoRolesSlap},
-    // Story 10-9n: the strike, on the hand (a violet / gold, away from Punch's red / green).
-    {K::Strike, "strike", T::Strike, "Strike", {0x6E46DC, 0xDCB446}, kNo, false, false, "hand", K::Strike,
-     {{"arc blow", &AutoSourceStrike, &AutoMatchSwing}}, &AutoMissingWhooshHand, &AutoLanesStrike,
+    // Story 10-9o: the punch at the hand's fastest (Peak; Punch marks the stop), a mode of its own.
+    {K::PunchPeak, "punch_peak", T::Punch, "Punch", {0xDD503C, 0x3CDD8C}, kNo, false, false, "hand", K::Punch,
+     {{"blow", &AutoSourcePunchPeak, &AutoMatchPunch}}, &AutoMissingWhooshHand, &AutoLanesPunchBlow,
      &AutoRolesWhooshHand},
 };
 
@@ -792,6 +789,13 @@ constexpr bool StartTwinsPaired()
             const AutoKindInfo* a = NthOfFlavour(t.type, false, n);
             const AutoKindInfo* b = NthOfFlavour(t.type, true, n);
             if (!a && !b) break;
+            // Story 10-9o: Punch's Peak kind, a mode beside its Stop kind, has no Start twin of its
+            // own (StartTwin gives it the first's): one word the first's plus "_peak", the same
+            // marker and sound key.
+            const AutoKindInfo* f = NthOfFlavour(t.type, false, 0);
+            if (a && !b && n > 0 && TwinWords(f->word, a->word) && SameText(f->marker, a->marker) &&
+                f->sound_key == a->sound_key && t.type == AutoType::Punch)
+                continue;
             if (!a || !b || !TwinWords(a->word, b->word) || !SameText(a->marker, b->marker) ||
                 a->sound_key != b->sound_key || a->scuff != b->scuff || a->scuff_heel != b->scuff_heel)
                 return false;

@@ -15,7 +15,9 @@ References (one per blow, the striking limb's side; punch part hand, kick part a
             (hand) / >= 4 m/s (foot) approach; contacts < 300 ms apart merge
   opponent  per effector speed peak (>= 3 / 4 m/s, the strongest within +-300 ms), its closest
             approach to any partner marker in [peak - 50 ms, peak + 100 ms]; under 80 mm: the
-            first frame within closest + 30 mm (closest 50-80 mm: draft, "maybe no contact")
+            first frame within closest + 30 mm (closest 50-80 mm: draft, "maybe no contact"); story
+            10-9o: a hand blow that passes the air rule but comes within 80 mm of no one (Punch is
+            the movement, hit or not) gets the air rule's reference (no contact within 0.3 s)
   air       per effector speed peak >= 4 m/s (hand) / 6 m/s (foot) with the reach rising, the max
             reach (effector to shoulder / hip) within 200 ms after the peak
 Then draft (with its reason in doubtful.tsv): a side whose blow count differs from the mode of
@@ -263,6 +265,14 @@ def air_refs(reach, v, limb, rate):
     return out
 
 
+def opponent_air_refs(contacts, air, rate):
+    """Story 10-9o: the air references (frames) of an opponent trial that are no contact: those
+    with no contact reference (frames) within MERGE_S (a punch that misses the partner is still a
+    punch, its reference the full extension)."""
+    M = MERGE_S * rate
+    return [f for f in air if all(abs(f - c) > M for c in contacts)]
+
+
 def gap_frac(raw_tracks, frame, rate):
     W = int(round(GAP_WIN_S * rate))
     lo, hi = max(0, frame - W), frame + W + 1
@@ -316,6 +326,10 @@ def analyse(path, p):
                 r = Ref(side, f, rate, note=f"closest {cl:.0f} mm")
                 closest[id(r)] = cl
                 new.append(r)
+            if limb == "hand":
+                air = air_refs(effector_reach(eff, L(side + "CLO")), v, limb, rate)
+                new += [Ref(side, f, rate, note="air, no contact")
+                        for f in opponent_air_refs([r.frame for r in new], air, rate)]
         else:
             if limb == "hand":
                 root = L(side + "CLO")

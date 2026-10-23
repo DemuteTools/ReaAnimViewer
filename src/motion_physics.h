@@ -677,7 +677,7 @@ struct PhysicsParams {
     double     kick_min_reach = 1.0;
     double     punch_radial_frac = 0.4;
     double     punch_start_reach = 0.65;
-    double     punch_end_reach = 0.90;
+    double     punch_end_reach = 0.87;
     double     punch_min_rise = -0.6;
     double     punch_max_rise = 0.6;
     // Story 10-9k: the arms of a jump (auto_types_arm_jump.cpp). Per take-off (Jump's events) and
@@ -697,36 +697,67 @@ struct PhysicsParams {
     double     arm_land_speed = 3.0;
     double     arm_land_before_s = 0.10;
     double     arm_land_after_s = 0.20;
-    // Story 10-9n: strikes, a fast arc blow that stops (auto_types_strike.cpp). A hand speed peak
-    // relative to the torso of strike_speed at least (leg/s; the sensitivity divides it) whose
-    // speed falls under strike_stop_frac of the peak within strike_stop_s after it, and that hits
-    // (under strike_hit_frac within strike_hit_s: a sword into the floor) or travels an arc (the
-    // arm raised at the peak, the shoulder -> hand direction's vertical share at strike_min_rise
-    // at least, and the hand moving forward, its velocity's share along the body's facing at
-    // strike_min_fwd at least). A clap or a hand on body within strike_touch_s of the run (before
-    // its start: the hands parting after a clap; after its end: the hands meeting) is that touch.
-    // Measured on the fixtures (spec 10-9n): the blows 5.4-14.9 leg/s (the uppercut 6.47),
-    // stopping to 30 % within 0.05-0.15 s; the air blows' arm at -0.38..+0.03, forward
-    // +0.63..+0.96; the hits down to 10-29 % within 70 ms. A follow-through (Armada, Roue) takes
-    // 0.20-0.27 s to stop, a counter-arm pull (AirPunch R) moves backward (-0.95), running arms and
-    // jump swings pass the bottom of the arc (-0.7..-1.0); the running arms' reversals stop at
-    // 3.9-4.9 leg/s and keep 41-58 % of their speed after 70 ms.
-    // Review of 10-9n: a hit leaves the hand stopped: within strike_rebound_s of the slowest
-    // point of the hit window, the speed stays under strike_rebound_frac of the peak (a blade in
-    // the floor 13-15 %, Lvl_TopDown's recovery 45 %); a hand coming straight back is a reversal
-    // (a feint, a dance pop: 65-162 %), no hit. strike_min_rise -0.5 (was -0.6): halfway between
-    // the air blows' lowest arm (the hook, -0.38) and the nearest arm that is no blow (a running
-    // arm -0.59, Fist Fight's swing -0.61), so neither sits on the line.
-    double     strike_speed = 5.0;
-    double     strike_stop_s = 0.175;
-    double     strike_stop_frac = 0.3;
-    double     strike_hit_s = 0.07;
-    double     strike_hit_frac = 0.32;
-    double     strike_min_rise = -0.5;
-    double     strike_min_fwd = 0.3;
-    double     strike_touch_s = 0.10;
-    double     strike_rebound_s = 0.10;
-    double     strike_rebound_frac = 0.55;
+    // Story 10-9o: Punch is any fist blow (straight, hook, uppercut, hammer fist; hitting or in the
+    // air), marked where the arm stops. Straight (motion_whoosh.cpp): the extension runs split where
+    // the extending speed dips under punch_split_frac of the run's peak (a wind-up, then the blow:
+    // Fist Fight's left 0.52-0.65 then 0.78); the hand moving forward at its peak (its velocity
+    // relative to the torso, its share along the body's facing at punch_min_fwd at least: the air
+    // and shield clips' arms dropping at the end of a take, -0.45..+0.08, the Kyokushin punches
+    // +0.53..+0.96; read at the hand's fastest or at its fastest opening); the arm's most open
+    // read up to punch_end_after_s after the marker span's end (an arm
+    // dropping after the blow does not move it), at punch_end_reach of its length at least (was
+    // 0.90: 0.87 keeps 5 more Kyokushin shield punches, whose arm stops at 0.83-0.90 on the pad;
+    // Fist Fight's right 3.52, a Swing for Antho, opens to 0.85 only).
+    // The stop: the first sample from the hand's speed peak where the arm reaches
+    // punch_stop_reach_frac of its farthest reach within punch_stop_window_s after the peak, or
+    // its speed falls under punch_stop_frac of the peak (an arc blow: that share only). Kyokushin's
+    // punches (10-13a): the peak sits 62 ms before full extension in the air, 21 ms before the
+    // contact on a shield, 25 ms on an opponent; the hand slows as sharply in the air as on a pad,
+    // so no rule fits both within 15 ms. Searched (spec 10-9o): speed share alone, reach stops
+    // growing, a share of the farthest reach, the elbow stopping, the deceleration peak, and
+    // their min / max; this one gives the smallest worst mean over the air, shield, opponent and
+    // the game clips' full-extension drafts: -14 / +27 / +28 / -33 ms (the first build's
+    // speed 0.6 or reach growing: -26 / +17 / +12 / -50).
+    // Arc (auto_types_punch.cpp, 10-9n's Strike): a hand speed peak relative to the torso of
+    // punch_arc_speed at least (leg/s; the sensitivity divides it) whose speed falls under
+    // punch_arc_stop_frac of the peak within punch_arc_stop_s after it, and that hits (under
+    // punch_hit_frac within punch_hit_s, then under punch_rebound_frac for punch_rebound_s: a
+    // hand coming straight back is a reversal) or travels an arc in front (the arm raised at the
+    // peak, the shoulder -> hand direction's vertical share at punch_arc_min_rise at least, and
+    // the hand moving forward, at punch_min_fwd at least). A clap or a hand on body within
+    // punch_touch_s of the run is that touch. Measured on the fixtures (spec 10-9n): the blows
+    // 5.4-14.9 leg/s (the uppercut 6.47), stopping to 30 % within 0.05-0.15 s; the air blows' arm
+    // at -0.38..+0.03, forward +0.63..+0.96; the hits down to 10-29 % within 70 ms; a
+    // follow-through (Armada, Roue) takes 0.20-0.27 s to stop, a counter-arm pull (AirPunch R)
+    // moves backward (-0.95), running arms and jump swings pass the bottom of the arc
+    // (-0.7..-1.0); a hit's rebound: a blade in the floor 13-15 %, a feint or a dance pop 65-162 %.
+    // Swing (story 10-9o): a swing of a hand moving backward at its peak (forward share under 0)
+    // within swing_counter_s of the other hand's punch is the counter-arm pulled back: none
+    // (AirPunch R 1.242, 16 ms from the left hammer fist).
+    double     punch_split_frac = 0.5;
+    double     punch_min_fwd = 0.3;
+    double     punch_end_after_s = 0.05;
+    double     punch_stop_frac = 0.4;
+    double     punch_stop_reach_frac = 0.99;
+    double     punch_stop_window_s = 0.2;
+    double     punch_arc_speed = 5.0;
+    double     punch_arc_stop_s = 0.175;
+    double     punch_arc_stop_frac = 0.3;
+    double     punch_hit_s = 0.07;
+    double     punch_hit_frac = 0.32;
+    double     punch_arc_min_rise = -0.5;
+    double     punch_touch_s = 0.10;
+    double     punch_rebound_s = 0.10;
+    double     punch_rebound_frac = 0.55;
+    double     swing_counter_s = 0.10;
+    // Story 10-9o: an arc in the air ending with the hand's rise above punch_arc_max_end_rise is a
+    // guard raised (Fist Fight's left 0.787 ends at +0.30; the elbow blow +0.11, the hook -0.12,
+    // the uppercut -0.17, the hammer fist -0.64); a clap after which the hands stay within punch_hold_gap leg of
+    // their distance for punch_hold_s is a hold (ElbowPunch: 0.45 s; the claps part within
+    // 0.05-0.09 s), not a clap that ends a blow.
+    double     punch_arc_max_end_rise = 0.2;
+    double     punch_hold_s = 0.25;
+    double     punch_hold_gap = 0.05;
 };
 
 // One contact of a part, in samples [start, end).
@@ -1011,6 +1042,10 @@ void AnalyseWhooshTracks(const std::vector<BoneTrack>& role_tracks, const Physic
 // peak (`at_start`: the start), start_s / end_s the span. Kicks above p.kick_speed, swings above
 // p.swing_speed, punches above p.punch_speed. Strength = the peak speed (leg/s).
 std::vector<PhysicsEvent> WhooshEvents(const PhysicsAnalysis& a, const PhysicsParams& p, bool at_start);
+// Story 10-9o: the same, the time each marks: the peak, the start, or (punches only; the others at
+// the peak) the stop. at_start = Start, else Peak.
+enum class WhooshMark { Peak, Start, Stop };
+std::vector<PhysicsEvent> WhooshEvents(const PhysicsAnalysis& a, const PhysicsParams& p, WhooshMark mark);
 // "whooshes: kicks 1, swings 2, punches 0" plus "; missing: ..." ("whooshes: skipped: <error>").
 std::string WhooshSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEvent>& ev);
 // One line per event ("   1.234 s  PHY L heel 1.8", a scuff or hand pivot "... (to 1.456 s)"), each with

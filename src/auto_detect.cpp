@@ -67,6 +67,10 @@ AutoKind StartTwin(AutoKind k, bool at_start)
     }
     for (AutoKind o : kinds)
         if (AutoKindRow(o).at_start == at_start && pos-- == 0) return o;
+    // Story 10-9o: a kind with no twin at its place (Punch's Peak, a mode of its own beside the
+    // Stop kind): the type's first kind of that flavour.
+    for (AutoKind o : kinds)
+        if (AutoKindRow(o).at_start == at_start) return o;
     return k;
 }
 
@@ -106,6 +110,8 @@ std::vector<AutoKind> ModeKindsOf(AutoType t, const AutoSettings& s)
         }
         return {AutoKind::Pivot};
     case AutoType::HandPivot: return {s.hand_pivot_any ? AutoKind::HandPivotAny : AutoKind::HandPivot};
+    // Story 10-9o: Stop (punch) or Peak (punch_peak); Start is the twin of either (KindsOf).
+    case AutoType::Punch: return {s.punch_peak ? AutoKind::PunchPeak : AutoKind::Punch};
     default: break;
     }
     return AutoKindsOf(t);
@@ -284,7 +290,7 @@ bool operator==(const AutoSettings& a, const AutoSettings& b)
         if (!(a.type[t] == b.type[t]) || a.separate_parts[t] != b.separate_parts[t] || a.at_start[t] != b.at_start[t])
             return false;
     return a.separate_steps == b.separate_steps && a.hand_pivot_any == b.hand_pivot_any &&
-           a.slide_parts == b.slide_parts && a.pivot_parts == b.pivot_parts;
+           a.slide_parts == b.slide_parts && a.pivot_parts == b.pivot_parts && a.punch_peak == b.punch_peak;
 }
 
 bool AutoCategoryInBlocks(const std::vector<Block>& blocks, AutoCategory c)
@@ -325,6 +331,10 @@ bool AutoPending(const AutoSettings& ui, const AutoSettings& item)
     }
     const int step = static_cast<int>(AutoType::Step), hp = static_cast<int>(AutoType::HandPivot);
     const int sl = static_cast<int>(AutoType::Slide), pv = static_cast<int>(AutoType::Pivot);
+    const int pu = static_cast<int>(AutoType::Punch);
+    // Story 10-9o: Punch switched between Stop and Peak (not at the start, where neither shows).
+    if (ui.type[pu].on && item.type[pu].on && !ui.at_start[pu] && !item.at_start[pu] && ui.punch_peak != item.punch_peak)
+        return true;
     return (ui.type[step].on && item.type[step].on && ui.separate_steps != item.separate_steps) ||
            (ui.type[hp].on && item.type[hp].on && ui.hand_pivot_any != item.hand_pivot_any) ||
            (ui.type[sl].on && item.type[sl].on && ui.slide_parts != item.slide_parts) ||
@@ -361,7 +371,7 @@ std::vector<Block> AutoBlocks(const AutoSettings& s)
 AutoSettings ReadAutoSettings(const std::vector<Block>& blocks)
 {
     AutoSettings s;
-    bool combined = false, separate = false, strict = false, any = false;
+    bool combined = false, separate = false, strict = false, any = false, punch_stop = false, punch_peak = false;
     bool scuff_mode[2][3] = {};  // story 10-8m: per scuff type (slide, pivot), the modes its blocks say
     bool split[kAutoTypeCount][2] = {};  // story 10-9a-3: per part_split type, combined / part blocks seen
     bool start[kAutoTypeCount][2] = {};  // story 10-9c: per start_option type, peak / start blocks seen
@@ -378,6 +388,8 @@ AutoSettings ReadAutoSettings(const std::vector<Block>& blocks)
         if (k == AutoKind::Heel || k == AutoKind::Toe) separate = true;
         if (DefaultTwin(k) == AutoKind::HandPivot) strict = true;  // story 10-9j: either flavour
         if (DefaultTwin(k) == AutoKind::HandPivotAny) any = true;
+        if (k == AutoKind::Punch) punch_stop = true;  // story 10-9o
+        if (k == AutoKind::PunchPeak) punch_peak = true;
         if (AutoTypeRow(AutoTypeOfKind(k)).part_split) split[t][PartSplitKind(k) ? 1 : 0] = true;
         if (AutoTypeRow(AutoTypeOfKind(k)).start_option) start[t][AutoKindRow(k).at_start ? 1 : 0] = true;
         if (t == static_cast<int>(AutoType::Slide) || t == static_cast<int>(AutoType::Pivot))
@@ -393,6 +405,7 @@ AutoSettings ReadAutoSettings(const std::vector<Block>& blocks)
     }
     s.separate_steps = separate && !combined;
     s.hand_pivot_any = any && !strict;
+    s.punch_peak = punch_peak && !punch_stop;
     for (int t = 0; t < kAutoTypeCount; ++t) {
         s.separate_parts[t] = split[t][1] && !split[t][0];
         // Story 10-9j: the flavour its blocks say; none or both, the type's default.
@@ -772,8 +785,10 @@ std::vector<Event> AutoEventsImpl(const std::vector<AutoAnalysis>& analyses, con
                 if (!at_time && !in_span) continue;
                 if (tr.replaces_own_side && sides[j] != sides[i]) continue;
                 if (*part[i] && *part[j] && std::strcmp(part[i], part[j]) != 0) continue;
-                // The distance to the event's time (at_time) or to its span [start, end] (in_span).
-                const double lo = in_span ? raw_start[i] : raw[i], hi = in_span ? raw_end[i] : raw[i];
+                // The distance to the event's time (at_time) or to its span [start, end] (in_span;
+                // story 10-9o: at_time too with the row's replaces_span).
+                const bool   span = in_span || (at_time && tr.replaces_span);  // story 10-9o
+                const double lo = span ? raw_start[i] : raw[i], hi = span ? raw_end[i] : raw[i];
                 double d = std::fabs(raw[j] - raw[i]);
                 if (raw[j] >= lo && raw[j] <= hi) d = 0.0;
                 else d = std::min(std::fabs(raw[j] - lo), std::fabs(raw[j] - hi));

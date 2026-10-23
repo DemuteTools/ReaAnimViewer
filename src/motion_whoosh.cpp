@@ -18,17 +18,24 @@
 //           hips when it is up, and low when the leg is extended. Part = that fastest part.
 //   swing   a hand, not in contact at the peak (a climbing hand pulls the torso past it), and
 //           whose run does not overlap a punch's extension (one motion is one or the other).
-//   punch   (story 10-9h) an extension, not a speed peak: a run where the hand's speed along the
-//           shoulder -> hand line (radial) stays positive, peaking at punch_speed at least (the
-//           sensitivity divides it), there at least punch_radial_frac of the hand's speed (a
-//           straight thrust, not an arc that also opens the arm), the arm opening from at most
-//           punch_start_reach of its length to at least punch_end_reach (bent -> straight), its
-//           end no lower than punch_min_rise (the shoulder -> hand direction's vertical share: an
-//           arm thrown down to a support or for balance is none) nor higher than punch_max_rise
-//           (an arm reaching up, a climb's reach for the next hold, is none) and the hand not in contact
-//           at its peak. Peak = the hand's fastest sample within start / end, those where the
-//           extending speed falls under whoosh_edge_frac of its peak; strength = the radial peak
-//           (leg/s).
+//   punch   (story 10-9h, 10-9o) a straight punch: an extension, not a speed peak: a run where
+//           the hand's speed along the shoulder -> hand line (radial) stays positive (split where
+//           that speed dips under punch_split_frac of the run's peak: a wind-up, then the blow),
+//           peaking at punch_speed at least (the sensitivity divides it), there at least
+//           punch_radial_frac of the hand's speed (a straight thrust, not an arc that also opens
+//           the arm); the hand moving forward (its share along
+//           the body's facing, body_facing.h, at punch_min_fwd at least, at its fastest or its
+//           fastest opening); the arm opening from at most punch_start_reach of its length to at
+//           least punch_end_reach (bent -> straight; read up to punch_end_after_s after the
+//           span), its end no lower than punch_min_rise (the shoulder -> hand direction's
+//           vertical share: an arm thrown down to a support or for balance is none) nor higher
+//           than punch_max_rise (an arm reaching up, a climb's reach for the next hold, is none)
+//           and the hand not in contact at its peak. Peak = the hand's fastest sample within
+//           start / end, those where the extending speed falls under whoosh_edge_frac of its
+//           peak; stop = the first sample from the peak where the arm reaches
+//           punch_stop_reach_frac of its farthest reach within punch_stop_window_s, or the hand's
+//           speed falls under punch_stop_frac of its peak (WhooshMark::Stop marks it); strength
+//           = the hand's peak speed (leg/s). Arc blows are Punch too: auto_types_punch.cpp.
 // Looping clips: read on the unrolled track as the other events, kept when the peak lies in the
 // clip (its start wrapped into [0, T)). Not looping, a peak on the first or last sample, or a
 // whoosh already under way on the clip's first sample (its speed there at whoosh_edge_frac of the
@@ -40,6 +47,7 @@
 #include <cmath>
 #include <cstdio>
 
+#include "body_facing.h"
 #include "motion_physics.h"
 
 namespace rav {
@@ -122,6 +130,7 @@ struct WhooshRun {
     int    end = 0;
     double speed = 0.0;
     bool   cut_start = false;  // the speed still at the edge share of the peak on the first sample
+    int    stop = 0;           // story 10-9o: a punch's stop (PunchRuns); the peak otherwise
 };
 
 // The runs above `thr` (dips above kWhooshMergeFrac x thr joined), each with its peak and span.
@@ -172,10 +181,6 @@ std::vector<WhooshRun> FindRuns(const std::vector<double>& v, double thr, double
     return out;
 }
 
-// Story 10-9h: a hand's punches (see the header): its extension runs (radial speed > 0) that pass
-// the punch's tests. Peak = the fastest sample between start and end; start / end = where the radial speed
-// falls under whoosh_edge_frac of its peak; speed = the radial peak; cut_start when the run
-// starts on the clip's first sample.
 // The arm's length (leg): the median of shoulder -> elbow -> hand, else the hand's farthest reach,
 // over the clip's own samples (a loop: its middle cycle; the others are shifted copies).
 double ArmLength(const PhysicsAnalysis& a, const WhooshTrack& h)
@@ -192,39 +197,63 @@ double ArmLength(const PhysicsAnalysis& a, const WhooshTrack& h)
     return *std::max_element(h.reach.begin() + static_cast<std::ptrdiff_t>(w0), h.reach.begin() + static_cast<std::ptrdiff_t>(w0 + wn));
 }
 
-template <class Touching>
-std::vector<WhooshRun> PunchRuns(const WhooshTrack& h, double arm, const PhysicsParams& p, Touching touching)
+// Story 10-9o: the extension runs of a hand: where its radial speed stays positive, each split
+// where the extending speed dips (a local low under punch_split_frac of the run's peak: a wind-up
+// that bends the arm back a little, then the blow), as [first, last] sample pairs.
+std::vector<std::pair<int, int>> ExtensionRuns(const std::vector<double>& rad, double split_frac)
 {
-    std::vector<WhooshRun> out;
-    const int              n = static_cast<int>(h.radial.size());
-    if (n < 3 || !(arm > 0.0)) return out;
-    int i = 0;
-    while (i < n) {
-        if (!(h.radial[static_cast<size_t>(i)] > 0.0)) {
+    std::vector<std::pair<int, int>> out, todo;
+    const int                        n = static_cast<int>(rad.size());
+    for (int i = 0; i < n;) {
+        if (!(rad[static_cast<size_t>(i)] > 0.0)) {
             ++i;
             continue;
         }
         const int st = i;
-        int       rp = i;
-        while (i < n && h.radial[static_cast<size_t>(i)] > 0.0) {
-            if (h.radial[static_cast<size_t>(i)] > h.radial[static_cast<size_t>(rp)]) rp = i;
-            ++i;
-        }
-        const int    en = i - 1;
-        const size_t r = static_cast<size_t>(rp), e = static_cast<size_t>(en);
+        while (i < n && rad[static_cast<size_t>(i)] > 0.0) ++i;
+        todo.push_back({st, i - 1});
+    }
+    auto at = [&](int j) { return rad[static_cast<size_t>(j)]; };
+    while (!todo.empty()) {
+        const std::pair<int, int> r = todo.back();
+        todo.pop_back();
+        int rp = r.first;
+        for (int j = r.first; j <= r.second; ++j)
+            if (at(j) > at(rp)) rp = j;
+        const double dip = split_frac * at(rp);
+        int          a = rp, b = rp;
+        while (a > r.first && !(at(a) < dip && at(a - 1) > at(a))) --a;
+        while (b < r.second && !(at(b) < dip && at(b + 1) > at(b))) ++b;
+        out.push_back({a, b});
+        if (a > r.first) todo.push_back({r.first, a - 1});
+        if (b < r.second) todo.push_back({b + 1, r.second});
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+// Story 10-9h, 10-9o: a hand's punches (see the header). The extension runs (ExtensionRuns) that
+// pass the punch's tests. Peak = the fastest sample between start and end (those where the radial
+// speed falls under whoosh_edge_frac of its peak); stop = the first sample from the peak where the
+// arm reaches punch_stop_reach_frac of its farthest reach within punch_stop_window_s, or the hand's
+// speed falls under punch_stop_frac of its peak; speed = the hand's peak speed (story 10-9o; was the radial
+// peak); cut_start when the run starts on the clip's first sample.
+template <class Touching>
+std::vector<WhooshRun> PunchRuns(const PhysicsAnalysis& a, int s, const WhooshTrack& h, double arm, const PhysicsParams& p,
+                                 Touching touching)
+{
+    std::vector<WhooshRun> out;
+    const int              n = static_cast<int>(h.radial.size());
+    if (n < 3 || !(arm > 0.0)) return out;
+    const FacingFrame f = FacingFrameOf(a, s);
+    const int         after = static_cast<int>(std::lround(p.punch_end_after_s * a.rate_hz));
+    for (const std::pair<int, int>& run : ExtensionRuns(h.radial, p.punch_split_frac)) {
+        const int st = run.first, en = run.second;
+        int       rp = st;
+        for (int j = st; j <= en; ++j)
+            if (h.radial[static_cast<size_t>(j)] > h.radial[static_cast<size_t>(rp)]) rp = j;
+        const size_t r = static_cast<size_t>(rp);
         if (h.radial[r] < p.punch_speed || h.radial[r] < p.punch_radial_frac * h.speed[r]) continue;
-        // The arm's least reach before the peak, its most after (a slow drift at the run's ends
-        // does not move them), and the direction where it is the most open.
-        double lo = h.reach[r], hi = h.reach[r];
-        size_t top = r;
-        for (int j = st; j <= rp; ++j) lo = std::min(lo, h.reach[static_cast<size_t>(j)]);
-        for (size_t j = r; j <= e; ++j)
-            if (h.reach[j] > hi) {
-                hi = h.reach[j];
-                top = j;
-            }
-        if (lo > p.punch_start_reach * arm || hi < p.punch_end_reach * arm) continue;
-        if (h.rise[top] < p.punch_min_rise || h.rise[top] > p.punch_max_rise) continue;
         // The marker span: where the extending speed, walking away from its peak, falls under
         // whoosh_edge_frac of it (inside the run).
         WhooshRun w;
@@ -235,8 +264,38 @@ std::vector<WhooshRun> PunchRuns(const WhooshTrack& h, double arm, const Physics
         w.peak = w.start;
         for (int j = w.start; j <= w.end; ++j)
             if (h.speed[static_cast<size_t>(j)] > h.speed[static_cast<size_t>(w.peak)]) w.peak = j;
+        // Forward (story 10-9o): the hand moves along the body's facing at its fastest or at its
+        // fastest opening (a wind-up, an arm thrown back or out, is none; a blow that sweeps
+        // across after it opened is one); not read without the facing.
+        const double f0 = ForwardShare(a, f, w.peak), f1 = ForwardShare(a, f, rp);
+        const double fw = std::isnan(f0) ? f1 : std::isnan(f1) ? f0 : std::max(f0, f1);
+        if (fw < p.punch_min_fwd) continue;
+        // The arm's least reach before the peak, its most from the peak to the span's end +
+        // punch_end_after_s (a slow drift, an arm dropping after the blow, does not move them),
+        // and the direction where it is the most open.
+        double lo = h.reach[r], hi = h.reach[r];
+        size_t top = r;
+        for (int j = st; j <= rp; ++j) lo = std::min(lo, h.reach[static_cast<size_t>(j)]);
+        const int last = std::min(en, w.end + after);
+        for (int j = rp; j <= last; ++j)
+            if (h.reach[static_cast<size_t>(j)] > hi) {
+                hi = h.reach[static_cast<size_t>(j)];
+                top = static_cast<size_t>(j);
+            }
+        if (lo > p.punch_start_reach * arm || hi < p.punch_end_reach * arm) continue;
+        if (h.rise[top] < p.punch_min_rise || h.rise[top] > p.punch_max_rise) continue;
         if (touching(w.peak)) continue;
-        w.speed = h.radial[r];
+        // The stop: the arm all but fully open (punch_stop_reach_frac of its farthest reach within
+        // punch_stop_window_s after the peak), or the hand slowed under punch_stop_frac of its peak.
+        const double v = h.speed[static_cast<size_t>(w.peak)];
+        const int    win = std::min(n - 1, w.peak + static_cast<int>(std::lround(p.punch_stop_window_s * a.rate_hz)));
+        double       far = h.reach[static_cast<size_t>(w.peak)];
+        for (int j = w.peak; j <= win; ++j) far = std::max(far, h.reach[static_cast<size_t>(j)]);
+        w.stop = w.peak;
+        while (w.stop + 1 < n && !(h.speed[static_cast<size_t>(w.stop)] < p.punch_stop_frac * v) &&
+               h.reach[static_cast<size_t>(w.stop)] < p.punch_stop_reach_frac * far)
+            ++w.stop;
+        w.speed = v;  // story 10-9o: the hand's peak speed (an arc blow's unit too)
         w.cut_start = st == 0;
         out.push_back(w);
     }
@@ -353,6 +412,11 @@ void AnalyseWhooshTracks(const std::vector<BoneTrack>& rt, const PhysicsParams& 
 
 std::vector<PhysicsEvent> WhooshEvents(const PhysicsAnalysis& a, const PhysicsParams& p, bool at_start)
 {
+    return WhooshEvents(a, p, at_start ? WhooshMark::Start : WhooshMark::Peak);
+}
+
+std::vector<PhysicsEvent> WhooshEvents(const PhysicsAnalysis& a, const PhysicsParams& p, WhooshMark mark)
+{
     std::vector<PhysicsEvent> ev;
     if (!a.ok) return ev;
     const int    n = static_cast<int>(a.samples);
@@ -388,7 +452,18 @@ std::vector<PhysicsEvent> WhooshEvents(const PhysicsAnalysis& a, const PhysicsPa
         e.start_s = clip_of(r.start);
         e.end_s = a.looping ? tp + (r.end - r.peak) / rate : r.end / rate;
         if (a.looping && e.start_s > tp) e.start_s -= T;  // the start before the seam
-        e.time_s = at_start ? clip_of(r.start) : tp;
+        e.time_s = mark == WhooshMark::Start ? clip_of(r.start) : tp;
+        // Story 10-9o: a punch at its stop (the peak for the others).
+        if (mark == WhooshMark::Stop && k == PhysicsKind::Punch) {
+            e.time_s = tp + (r.stop - r.peak) / rate;
+            e.end_s = std::max(e.end_s, e.time_s);
+            // Past the seam: the whole event one cycle back (start <= time <= end on one cycle).
+            if (a.looping && T > 0.0 && e.time_s >= T) {
+                e.time_s -= T;
+                e.start_s -= T;
+                e.end_s -= T;
+            }
+        }
         e.strength = r.speed;
         ev.push_back(e);
     };
@@ -407,7 +482,7 @@ std::vector<PhysicsEvent> WhooshEvents(const PhysicsAnalysis& a, const PhysicsPa
         if (!h.present) continue;
         const std::vector<char>& hc = a.hand[s].part.contact;
         auto touching = [&](int i) { return static_cast<size_t>(i) < hc.size() && hc[static_cast<size_t>(i)]; };
-        const std::vector<WhooshRun> punches = PunchRuns(h, ArmLength(a, h), p, touching);
+        const std::vector<WhooshRun> punches = PunchRuns(a, s, h, ArmLength(a, h), p, touching);
         for (const WhooshRun& r : punches) push(PhysicsKind::Punch, kWhooshSide[s], -1, r);
         for (const WhooshRun& r : FindRuns(h.speed, p.swing_speed, p.whoosh_edge_frac)) {
             if (touching(r.peak)) continue;

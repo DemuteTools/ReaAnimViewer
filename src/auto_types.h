@@ -96,10 +96,15 @@ struct AutoTypeInfo {
     unsigned        conf_probe = 0;
     // Story 10-9h: the share of each probe step the probed fields take (1 = the full
     // kAutoConfidenceStepSens points). Under 1 for a type whose threshold sits close under its
-    // real events by nature, its shape (not its speed) setting it apart: Punch, 0.5 (a jab's
-    // extending speed 2.34-2.44 leg/s over a 2.0 threshold that cannot come lower, Hip Hop
-    // reading as a punch from 1.7; at a full step the jabs would read as doubtful).
+    // real events by nature, its shape (not its speed) setting it apart: Punch, 0.5 (its two
+    // probed fields, story 10-9o: the straight punch's extending speed punch_speed, where a jab's
+    // 2.34-2.44 leg/s sits over a 2.0 that cannot come lower, Hip Hop reading as a punch from
+    // 1.7; and the arc blow's hand speed punch_arc_speed, 5.0, under the elbow blow's 5.1 and Jump
+    // Attack's right hand's 5.4; at a full step those would read as doubtful).
     double          conf_scale = 1.0;
+    // Story 10-9o: `replaces` read over the event's span [start, end] too, not only at its time
+    // (Punch: its marker at the arm's stop, the landing arm it replaces at the blow's peak).
+    bool            replaces_span = false;
 };
 
 // An event source: the physics events of one analysis a kind reads (FootEvents, HandEvents...).

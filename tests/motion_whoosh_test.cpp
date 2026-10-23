@@ -213,9 +213,9 @@ void TestPhysics()
     arcs.punch_radial_frac = 1.01;
     const std::vector<PhysicsEvent> ar = WhooshEvents(a, arcs, false);
     CHECK(Count(ar, PhysicsKind::Punch) == 0 && Count(ar, PhysicsKind::Swing) == 2);
-    // Story 10-9h: a punch is an extension (bent -> straight, along the shoulder -> hand line):
-    // strength = its extending speed's peak (0.55 m in 0.08 s, smoothstep: 1.5 x 0.55 / 0.08 =
-    // 10.3 m/s at most, along the line a little less).
+    // Story 10-9h: a punch is an extension (bent -> straight, along the shoulder -> hand line);
+    // story 10-9o: strength = the hand's peak speed relative to the torso (0.55 m in 0.08 s,
+    // smoothstep: 1.5 x 0.55 / 0.08 = 10.3 m/s at most).
     if (pu) CHECK(pu->strength > p.punch_speed && pu->strength < 10.4 / kLeg);
     // The arm must end straight: with the end reach above 1, none (the peak is a swing).
     PhysicsParams bent = p;
@@ -234,7 +234,8 @@ void TestPhysics()
         CHECK(da.whoosh_hand[1].rise.back() < p.punch_min_rise);
     }
     // Review 10-9h: the same thrust driven up (a climb's arm reaching for the next hold): no punch,
-    // and a punch again with the cap lifted (the rise is the only test it fails).
+    // and a punch again with the cap lifted (the rise is the only test it fails; story 10-9o: and
+    // the forward share, the hand moving up).
     {
         Body up;
         up.punch = up.punch_up = true;
@@ -243,6 +244,7 @@ void TestPhysics()
         CHECK(ua.whoosh_hand[1].rise.back() > p.punch_max_rise);
         PhysicsParams any_rise = p;
         any_rise.punch_max_rise = 1.0;
+        any_rise.punch_min_fwd = -2.0;
         CHECK(Count(WhooshEvents(ua, any_rise, false), PhysicsKind::Punch) == 1);
     }
     // A kick must be raised: with the minimum height at 2 leg, none.

@@ -109,9 +109,7 @@ inline bool NormaliseRefKind(const std::string& kind, const std::string& part, s
                  // story 10-9i: a heel tap (side L / R, part heel), one row in both configurations
                  kind == "heel_tap" ||
                  // story 10-9k: the arms of a jump (side L / R)
-                 kind == "arm_jump" || kind == "arm_land" ||
-                 // story 10-9n: a strike (side L / R)
-                 kind == "strike")) {
+                 kind == "arm_jump" || kind == "arm_land")) {
         return false;
     }
     if (base) *base = b;

@@ -4,8 +4,8 @@
 For every fixtures/_physics/<corpus>/ holding clips.tsv and _bench/matches.tsv (default matrix):
 per corpus x condition x kind, then per technique, the expected references (confirmed / draft),
 matched, recall, found, precision, the signed error (det - ref) mean / SD and the median |error|;
-then the unreferenced punch / strike / swing / kick events found on those clips (type
-confusions). Written to fixtures/_physics/report.txt.
+then the unreferenced punch / swing / kick events found on those clips (type confusions; story
+10-9o removed Strike, folded into Punch). Written to fixtures/_physics/report.txt.
 
     python tools/physics_bench/summary.py [fixtures/_physics]
 """
@@ -14,7 +14,7 @@ import statistics
 import sys
 from collections import defaultdict
 
-ARM_LEG_KINDS = ("punch", "strike", "swing", "kick")
+ARM_LEG_KINDS = ("punch", "swing", "kick")
 
 
 def read_tsv(path):

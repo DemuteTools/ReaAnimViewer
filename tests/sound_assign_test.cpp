@@ -70,15 +70,14 @@ static void TestTable()
               parts[0].types[6].word == "tap" && parts[0].types[7].word == "drag" && parts[0].types[8].word == "knee" &&
               parts[0].types[9].word == "kick" && parts[0].types[10].word == "heel_tap" &&
               parts[0].types[11].word == "rules");
-    // Story 10-9k: Arms > Jump, Land (the arms of a jump); story 10-9l: Arms > Slap; 10-9n: Strike.
-    CHECK(parts[1].id == "arms" && parts[1].types.size() == 13);
-    if (parts[1].types.size() == 13)
+    // Story 10-9k: Arms > Jump, Land (the arms of a jump); story 10-9l: Arms > Slap (10-9o: no Strike).
+    CHECK(parts[1].id == "arms" && parts[1].types.size() == 12);
+    if (parts[1].types.size() == 12)
         CHECK(parts[1].types[2].word == "hand_pivot" && parts[1].types[3].word == "elbow" &&
               parts[1].types[4].word == "clap" && parts[1].types[5].word == "hand_body" &&
               parts[1].types[6].word == "swing" && parts[1].types[7].word == "punch" &&
               parts[1].types[8].word == "arm_jump" && parts[1].types[9].word == "arm_land" &&
-              parts[1].types[10].word == "slap" && parts[1].types[11].word == "strike" &&
-              parts[1].types[12].word == "rules");
+              parts[1].types[10].word == "slap" && parts[1].types[11].word == "rules");
     CHECK(TypeLabel("arms", "arm_jump") == "Jump" && TypeLabel("arms", "arm_land") == "Land");
     CHECK(parts[2].id == "body" && parts[2].label == "Body" && parts[2].has_category &&
           parts[2].category == AutoCategory::Body && parts[2].types.size() == 5);
@@ -126,7 +125,7 @@ static void TestEventRoleKey()
                                         "",     "heel", "toe",  "heel", "toe",               // pivot
                                         "hand", "hand",                                  // hand pivot
                                         "hand", "hand", "hand",                          // 10-9k: arms jump, land; 10-9l: slap
-                                        "hand"};                                         // 10-9n: strike
+                                        "hand"};                                         // 10-9o: punch at its peak
     for (int k = 0; k < kAutoKindCount; ++k)
         for (char side : {'L', 'R'}) CHECK(EventRoleKey(AutoB(static_cast<AutoKind>(k), side, "x")) == want[k]);
     Block unknown = AutoB(AutoKind::Heel, 'L', "x");
@@ -200,7 +199,7 @@ static void TestPartOfBlock()
                                         "arms.hand_pivot", "arms.hand_pivot",
                                         "arms.arm_jump", "arms.arm_land",
                                         "arms.slap",  // story 10-9k, 10-9l
-                                        "arms.strike"};  // story 10-9n
+                                        "arms.punch"};  // story 10-9o: punch at its peak
     for (int k = 0; k < kAutoKindCount; ++k) {
         const Block b = AutoB(static_cast<AutoKind>(k), 'L', "x");
         CHECK(PartOf(b) == want[k]);

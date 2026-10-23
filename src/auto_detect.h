@@ -69,8 +69,11 @@
 //              (hand_touch.h): one marker, on the faster hand (Clap L / R).
 //   hand on body (story 10-9d) a hand lands at speed on the trunk, the head or a thigh, on that
 //              hand (Hand on body L / R). Strength = the closing speed (leg/s), both.
-//   swing      (story 10-9c) a hand's speed peak relative to the torso (Swing L / R).
-//   punch      (story 10-9c) the same, a straight thrust away from the shoulder (Punch L / R).
+//   swing      (story 10-9c) a hand's speed peak relative to the torso (Swing L / R): an arm
+//              movement that is no blow (story 10-9o: a counter-arm pulled back is none).
+//   punch      (story 10-9c, 10-9o) any fist blow, straight or arc, hitting or in the air (Punch
+//              L / R), marked where the arm stops (Stop, the default), at the hand's fastest (Peak)
+//              or where the motion starts (Start).
 //   Body
 //   jolt       (story 10-9g) an impact that shakes the gear and cloth: a foot step, a jump's
 //              landing or a body contact (a knee, a sit, a fall: 10-9b) where the centre of
@@ -85,7 +88,9 @@
 //   and punch put their marker at the peak, or at the motion's start (AutoSettings::at_start, the
 //   types whose row says `start_option`: kinds kick_start, swing_start... sharing the peak kind's
 //   marker, colour and sound key; a block switched between them keeps its place, marker and
-//   edits). Strength = the peak speed (leg/s); see WhooshEvents (motion_physics.h).
+//   edits). Strength = the peak speed (leg/s); see WhooshEvents (motion_physics.h). Story 10-9o:
+//   punch marks the arm's stop by default (kind punch), its Peak is a mode (kind punch_peak,
+//   AutoSettings::punch_peak), its Start the twin of either (punch_start).
 //   Story 10-9j: the scuffs (slide, pivot, hand pivot) have the same choice, Start by default
 //   (their markers as before, at the scuff's start), Peak at the rub's speed peak (scuff_peak.h):
 //   kinds slide_peak, pivot_heel_peak, hand_pivot_peak... sharing the Start kind's marker, colour
@@ -133,14 +138,15 @@ namespace rav {
 // ---- Types and block kinds ---------------------------------------------------------------------
 
 // The types the section ticks (story 10-9e appends Tap and Drag, story 10-9b Knee, Elbow, Sit, Fall,
-// story 10-9d Clap and Hand on body, story 10-9c Kick, Swing and Punch, story 10-9l Slap, story 10-9n Strike).
+// story 10-9d Clap and Hand on body, story 10-9c Kick, Swing and Punch, story 10-9l Slap; story 10-9o
+// removed 10-9n's Strike, folded into Punch).
 enum class AutoType : int { Step = 0, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land, Jolt, Spin, Tap, Drag,
-                            Knee, Elbow, Sit, Fall, Clap, HandOnBody, Kick, Swing, Punch, HeelTap, ArmJump, ArmLand, Slap, Strike };
-constexpr int kAutoTypeCount = 27;  // story 10-9g: Jolt; 10-9f: Spin (Body, sideless); 10-9e: Tap, Drag; 10-9b; 10-9d; 10-9c; 10-9i: Heel Tap; 10-9k: Arms Jump, Land; 10-9l: Slap; 10-9n: Strike
+                            Knee, Elbow, Sit, Fall, Clap, HandOnBody, Kick, Swing, Punch, HeelTap, ArmJump, ArmLand, Slap };
+constexpr int kAutoTypeCount = 26;  // story 10-9g: Jolt; 10-9f: Spin (Body, sideless); 10-9e: Tap, Drag; 10-9b; 10-9d; 10-9c; 10-9i: Heel Tap; 10-9k: Arms Jump, Land; 10-9l: Slap
 // "Step", "Lift-off", "Slide scuff", "Pivot scuff", "Grab", "Release", "Pivot scuff" (the hand's),
 // "Jump", "Land", "Jolt" (story 10-9g, Body), "Spin" (story 10-9f, Body), "Tap", "Drag";
 // story 10-9b: "Knee", "Elbow", "Sit", "Fall"; story 10-9d: "Clap", "Hand on body"; story 10-9c:
-// "Kick", "Swing", "Punch"; story 10-9i: "Heel Tap"; story 10-9k: "Jump", "Land" (Arms); story 10-9l: "Slap"; story 10-9n: "Strike"
+// "Kick", "Swing", "Punch"; story 10-9i: "Heel Tap"; story 10-9k: "Jump", "Land" (Arms); story 10-9l: "Slap"
 const char* AutoTypeLabel(AutoType t);
 
 // Story 10-9-0: every type, category and kind has one descriptor row in auto_types.cpp (labels,
@@ -177,7 +183,7 @@ enum class AutoKind : int {
     HandPivotPeak, HandPivotAnyPeak,
     ArmJump, ArmLand,  // story 10-9k
     Slap,  // story 10-9l
-    Strike  // story 10-9n
+    PunchPeak  // story 10-9o: the punch at the hand's fastest (Punch marks the stop)
 };
 constexpr int kAutoKindCount = 64;
 // "step", "heel", "toe", "lift", "slide", "pivot", "grab", "release", "hand_pivot", "hand_pivot_any",
@@ -188,7 +194,8 @@ constexpr int kAutoKindCount = 64;
 // "kick_start", "kick_heel_start", "kick_toe_start", "swing", "swing_start", "punch", "punch_start" (10-9c), "heel_tap" (10-9i),
 // "slide_peak", "slide_heel_peak", "slide_toe_peak", "slide_heel_longest_peak", "slide_toe_longest_peak",
 // "pivot_peak", "pivot_heel_peak", "pivot_toe_peak", "pivot_heel_longest_peak", "pivot_toe_longest_peak",
-// "hand_pivot_peak", "hand_pivot_any_peak" (10-9j), "arm_jump", "arm_land" (10-9k), "slap" (10-9l), "strike" (10-9n)
+// "hand_pivot_peak", "hand_pivot_any_peak" (10-9j), "arm_jump", "arm_land" (10-9k), "slap" (10-9l), "punch_peak" (10-9o; a saved "strike" block of
+// 10-9n is an unknown word: it stays inert)
 const char* AutoKindWord(AutoKind k);
 bool AutoKindFromWord(const std::string& w, AutoKind* out);
 AutoType AutoTypeOfKind(AutoKind k);
@@ -258,6 +265,9 @@ struct AutoSettings {
     // ignored for the others. Default: the type's own (AutoStartDefault: Peak for kick, swing and
     // punch, Start for the scuffs).
     bool             at_start[kAutoTypeCount] = {};
+    // Story 10-9o: a punch not at the start sits at the arm's stop (kind punch, the default) or,
+    // with punch_peak, at the hand's fastest (kind punch_peak). Ignored when at_start.
+    bool             punch_peak = false;
     AutoSettings();  // every type off, its modes the defaults (at_start: AutoStartDefault)
 };
 // Story 10-9j: whether a `start_option` type's markers sit at the start by default: the flavour of

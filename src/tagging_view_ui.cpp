@@ -3873,6 +3873,10 @@ void SyncAutoSettings(const TaggingModel& m)
         if (AutoTypeRow(static_cast<AutoType>(t)).start_option && cur.type[t].on &&
             (!g_auto_seen.type[t].on || cur.at_start[t] != g_auto_seen.at_start[t]))
             g_auto_ui.at_start[t] = cur.at_start[t];
+    // Story 10-9o: Punch at its Stop or its Peak, as the steps' mode.
+    const int pu = static_cast<int>(AutoType::Punch);
+    if (cur.type[pu].on && (!g_auto_seen.type[pu].on || cur.punch_peak != g_auto_seen.punch_peak))
+        g_auto_ui.punch_peak = cur.punch_peak;
     g_auto_seen = cur;
 }
 
@@ -4318,7 +4322,20 @@ void DrawStripTypeBody(const TaggingModel& m, const ItemRules& rules, AutoType t
                         "holds longest.");
         }
     }
-    if (row.start_option) {
+    if (row.start_option && t == AutoType::Punch) {
+        // Story 10-9o: a punch's marker where the arm stops (the default), at its fastest, or
+        // where it starts.
+        static const char* const kPunchModes[] = {"Stop", "Peak", "Start"};
+        ui::LabelRow("Marker at", ui::Dp(90.0f), lcol);
+        int               sel = g_auto_ui.at_start[ti] ? 2 : g_auto_ui.punch_peak ? 1 : 0;
+        const std::string id = std::string("##startmode") + std::to_string(ti);
+        if (ui::Segmented(id.c_str(), kPunchModes, 3, &sel)) {
+            g_auto_ui.at_start[ti] = sel == 2;
+            g_auto_ui.punch_peak = sel == 1;
+        }
+        ui::ItemTip("Stop: the marker where the arm stops (full extension, or the contact).\n"
+                    "Peak: where the hand is fastest (a whoosh).\nStart: where the motion starts.");
+    } else if (row.start_option) {
         // Story 10-9c (10-9j: the scuffs too): the marker at the motion's fastest point, or where it starts.
         static const char* const kStartModes[] = {"Peak", "Start"};
         ui::LabelRow("Marker at", ui::Dp(90.0f), lcol);

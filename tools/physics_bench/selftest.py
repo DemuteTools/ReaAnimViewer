@@ -127,6 +127,9 @@ def test_opponent_band():
     check("opponent: closest 90 mm is no contact", K.opponent_refs(dist(90), v, "hand", RATE) == [])
     # The band's status: analyse() drafts 50-80 mm; the constants hold the band.
     check("opponent: draft band is 50-80 mm", (K.OPP_SURE_MM, K.OPP_CONTACT_MM) == (50.0, 80.0))
+    # Story 10-9o: a blow that misses the partner gets its air reference; one near a contact none.
+    got = K.opponent_air_refs([107], [130, 400], RATE)
+    check("opponent: an air blow with no contact within 0.3 s is a reference", got == [400], str(got))
 
 
 def test_count_mode():
@@ -291,7 +294,7 @@ def test_summary():
                     "default\tc1\tpunch\tR\t4.0000\t\t\tconfirmed\n"
                     "default\tc1\tpunch\tL\t5.0000\t\t\tdraft\n"
                     "default\tc1\tpunch\tR\t\t6.0000\t\t\n"
-                    "default\tc1\tstrike\tR\t\t4.0100\t\t\n"
+                    "default\tc1\tswing\tR\t\t4.0100\t\t\n"
                     "parts\tc1\tpunch\tL\t1.0000\t\t\tconfirmed\n")
         text = summary.corpus_report("kyokushin", d)
         row = next(l for l in text.splitlines() if l.startswith("punch / shield"))
@@ -302,7 +305,7 @@ def test_summary():
         check("summary: found and precision", w[4] == "4" and w[5] == "75.0%", row)
         check("summary: mean / SD / median |err|", w[6] == "-16.7" and w[7] == "25.2" and w[8] == "20.0", row)
         conf = next(l for l in text.splitlines() if "punch clips / shield" in l)
-        check("summary: a type confusion counted", "strike 1" in conf and "swing 0" in conf, conf)
+        check("summary: a type confusion counted", "swing 1" in conf and "kick 0" in conf, conf)
 
 
 for f in (test_quad_distance, test_shield_contact, test_air_max_reach, test_opponent_band, test_count_mode,

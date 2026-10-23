@@ -518,7 +518,7 @@ Smart Detection reads the body as physics: it measures the legs to know the char
 
 ### Tagging your own events
 
-<img width="2434" height="867" alt="image" src="https://github.com/user-attachments/assets/1a61339c-d6d9-4ac0-b82b-49d350397c2a" />
+<img width="2434" height="867" alt="image" src="https://github.com/user-attachments/assets/6f3772d7-2891-4932-84ae-f0032958ab36" />
 
 1. In the Tagging view, put the playhead over the item and click **+ Rule**. Give the rule the name you want on the markers (for example `Whoosh R`) and a colour.
 2. Set its condition: pick the **bone** to watch, **what** to measure (position, speed, acceleration, stillness, relative drop), in **which direction** (vertical, horizontal, total...), and **from** what (the floor or another bone). The bone menu lists the roles first, then every bone of the skeleton, including a weapon or prop bone if it is part of the rig. Not sure which bone is which? Switch the 3D view to **Skeleton** (bottom left), click the bone on the character, then click **+** next to the condition's bone menu: it uses that bone, or its role when the bone plays one. When it plays several, it uses the role the bone is named for (`ball_l` is the toe, not the toe end), else the bone.

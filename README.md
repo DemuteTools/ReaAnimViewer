@@ -235,6 +235,8 @@ Each file should contain **one skinned mesh and its animation**. Animations buil
 
 ## Model / Skeleton
 
+<img width="627" height="673" alt="reaper_tcqlGbjdsn" src="https://github.com/user-attachments/assets/8897479e-d334-4386-a186-e106e9b2a71b" />
+
 The **Model | Skeleton** switch at the bottom left of the viewer (RAV view and Tagging view) shows the character's bones.
 
 - **Skeleton** fades the character and draws its bones and joints on top.
@@ -298,6 +300,10 @@ If the viewer feels slow on a laptop, lower **MSAA** and **Shadow** first.
 ---
 
 ## Shortcuts
+
+<img width="195" height="87" alt="reaper_4IAKAOB24v" src="https://github.com/user-attachments/assets/37c31d5b-8f7b-47f1-acf1-6145c1b594eb" />
+<img width="1405" height="844" alt="reaper_PhK3dPmvGV" src="https://github.com/user-attachments/assets/21d3abff-ffa7-4234-93e9-9e8d83e5372d" />
+
 
 Click the **keyboard icon** in the top-right corner of the viewer (left of the FPS readout) to open the **Shortcuts** window, a large panel over the viewer. **Esc**, its **✕** or a click outside it closes it. The keys work while the viewer has the focus; every other key stays REAPER's.
 
@@ -369,6 +375,8 @@ Animation items produce no audio: you can place them on the same tracks as your 
 
 ## Rendering Video
 
+<img width="2962" height="914" alt="reaper_L5Kb0uE6yK" src="https://github.com/user-attachments/assets/b63fe8e1-d7f6-4c60-97b5-53b9c1232a1d" />
+
 ReaAnimViewer can put the animation in the videos you render from REAPER, with the session's audio, through REAPER's usual Render dialog and Region Render Matrix. Nothing is screen-recorded and RAV writes no video file: a small video FX, **RAV Video FX**, installed with the extension, hands REAPER the picture of its track's animation for every frame REAPER draws, in playback and in renders.
 
 ### Adding the video FX
@@ -380,6 +388,8 @@ ReaAnimViewer can put the animation in the videos you render from REAPER, with t
 One FX shows the animation items of its own track. Where that track has no item, the FX shows nothing, so the video tracks below show through. Add the FX to every animation track you want in the video. REAPER's Video window (**View > Video**) shows the result too.
 
 ### Video view
+
+<img width="1405" height="844" alt="reaper_NjJIn9njeV" src="https://github.com/user-attachments/assets/c30d1265-9b1a-4450-a99e-ed60e4d778b1" />
 
 - **RAV view** is your free camera. **Video view** is the render's camera. Switching between them never changes the free camera.
 - In Video view the frame shows exactly what the video will show, at the output's shape. The size and frame rate sit above it on the left, the current shot's name on the right. Nothing is drawn inside the frame.
@@ -436,6 +446,8 @@ To report a problem, click **Copy error log** in the viewer menu and paste it in
 ---
 
 ## Auto-Tagging (Event Markers)
+
+<img width="2434" height="1203" alt="reaper_0ykzO7vl7F" src="https://github.com/user-attachments/assets/fea0b432-9532-4871-a975-a432a888d3f2" />
 
 ReaAnimViewer can find events in an animation from the way its bones move, and mark them on your timeline: footsteps, a hand hitting something, a sword swing, a body falling, a head turn, a clap... Feet, and hands that grab or let go, are found for you by **Smart Detection**. For anything else you can describe as "this bone goes above or below this value", you write **rules** (or load a preset). You check the result in the **Tagging view**, and commit. Each event becomes a marker named after its rule, on the item (take marker), on the timeline (project marker), or both. Then place your sounds on the markers instead of hunting for each frame by eye.
 

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="ReaAnimViewer" commit="8dc50d601a6462d0585f93100b2bc9d1e1acbb89">
+<index version="1" name="ReaAnimViewer" commit="e29846119abf1638f48abec99e835152e05d308b">
   <category name="Scripts">
     <reapack name="RAV_Launcher.lua" type="script" desc="ReaAnimViewer">
       <metadata>
@@ -40,6 +40,15 @@
         <changelog><![CDATA[- Fix: Run said "installed" without installing anything when ReaPack still listed a deleted copy of the extension. It now opens ReaPack and tells you which package to uninstall]]></changelog>
         <source main="main">https://github.com/DemuteTools/ReaAnimViewer/raw/8dc50d601a6462d0585f93100b2bc9d1e1acbb89/Scripts/RAV_Launcher.lua</source>
         <source platform="win64" type="extension" file="reaper_animviewer.dll">https://github.com/DemuteTools/ReaAnimViewer/releases/download/v0.2.2/reaper_animviewer.dll</source>
+      </version>
+      <version name="0.4.0" author="Anthony Deneyer" time="2026-10-21T07:53:45Z">
+        <changelog><![CDATA[New since 0.2.2:
+- Auto-Tagging (event markers): footsteps, lift-offs, scuffs, jumps, landings, grabs and releases found from the bones' motion, plus your own rules, written as take or project markers
+- Video rendering: frame camera shots in Video view and render picture + audio with REAPER's Render dialog
+- Shortcuts window, Model / Skeleton switch and clip list; the viewer options in one tabbed menu]]></changelog>
+        <source>https://github.com/DemuteTools/ReaAnimViewer/raw/e29846119abf1638f48abec99e835152e05d308b/Scripts/RAV_Launcher.lua</source>
+        <source platform="win64" type="extension" file="reaper_animviewer.dll">https://github.com/DemuteTools/ReaAnimViewer/releases/download/v0.4.0/reaper_animviewer.dll</source>
+        <source platform="win64" type="extension" file="FX/rav_video_fx.clap">https://github.com/DemuteTools/ReaAnimViewer/releases/download/v0.4.0/rav_video_fx.clap</source>
       </version>
     </reapack>
   </category>

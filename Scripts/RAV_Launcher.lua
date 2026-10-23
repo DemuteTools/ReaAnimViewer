@@ -1,5 +1,5 @@
 -- @description ReaAnimViewer
--- @version 0.4.0-beta
+-- @version 0.4.0
 -- @author Anthony Deneyer
 -- @about
 --   # ReaAnimViewer
@@ -12,16 +12,7 @@
 -- @links
 --   GitHub https://github.com/DemuteTools/ReaAnimViewer
 -- @changelog
---   - Auto-Tagging (event markers): RAV finds events from the bones' motion and writes them as take or project markers, plus any event you describe with your own rules
---   - Legs: steps, lift-offs, scuffs, taps, heel taps, drags, kicks, knees, jumps and landings
---   - Arms: grabs and releases, slaps, claps, hands on the body, punches, strikes, swings, elbows and the arms of a jump
---   - Body: spins, jolts, sits and falls
---   - Smart Detection panel: one chip per event type, a search, your own presets of ticked types, and per-type sensitivity and offset
---   - Doubtful events show in amber (strip and marker) so you can check them by ear
---   - Markers stay attached to their item (move, trim, split, duplicate, delete) and edits made on REAPER's timeline update the events
---   - Copies of one animation share their tagging: tag once, every copy follows
---   - Video rendering: frame camera shots in Video view and render picture + audio with REAPER's Render dialog
---   - Shortcuts window, Model / Skeleton switch and clip list; the viewer options in one tabbed menu
+--   - Release version
 -- @provides
 --   [nomain] .
 --   [win64 extension] reaper_animviewer.dll https://github.com/DemuteTools/ReaAnimViewer/releases/download/v$version/$path

@@ -585,6 +585,10 @@ Loading another preset on an item replaces its rules and starts its event list o
 
 ### Roles
 
+<img width="598" height="141" alt="image" src="https://github.com/user-attachments/assets/e5254365-14e6-4dd5-b0db-0c0c3c6375bb" />
+<img width="480" height="832" alt="{34134CB7-8433-4EC7-9F89-202D1A62AE5B}" src="https://github.com/user-attachments/assets/6217eb7c-e6bf-47f6-a209-d2ac53a3d3c3" />
+
+
 Presets don't name bones: they name **roles**. RAV's built-in roles come in three groups:
 
 - **Legs:** left and right heel, toe, toe end, knee and hip (up leg).

@@ -29,7 +29,7 @@ ReaAnimViewer is a native REAPER extension (a `.dll`, plus a small video FX that
 
 New since 0.2.2:
 
-- **Auto-Tagging (event markers):** RAV finds footsteps, lift-offs, scuffs, jumps, landings, grabs and releases from the way the bones move, plus any event you describe with your own rules, and writes them as take or project markers. See [Auto-Tagging (Event Markers)](#auto-tagging-event-markers).
+- **Auto-Tagging (event markers):** RAV finds events from the way the bones move and writes them as take or project markers. Legs: steps, lift-offs, scuffs, taps, heel taps, drags, kicks, knees, jumps and landings. Arms: grabs and releases, slaps, claps, hands on the body, punches, strikes, swings, elbows and the arms of a jump. Body: spins, jolts, sits and falls. Add any event you describe with your own rules. A doubtful event shows in amber, so you can check it by ear. See [Auto-Tagging (Event Markers)](#auto-tagging-event-markers).
 - **Video rendering:** frame camera shots in Video view and render picture + audio with REAPER's own Render dialog. See [Rendering Video](#rendering-video).
 - **Shortcuts window**, the **Model / Skeleton** switch and a clip list, with the viewer options in one tabbed menu.
 

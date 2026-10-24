@@ -159,14 +159,14 @@ void TestTurns()
         CHECK(Run(tr).start.empty());
         const Found f = Run(tr, false, 100.0);
         CHECK(f.start.size() == 1 && f.end.size() == 1);
-        // Review 10-9f: Detect's search never raises a silent Spin block (a 30 deg twist stays none);
-        // the block counts as searched (review 10-9g), so Detect is not lit for it.
+        // Story 10-9q: Detect's search raises a silent Spin block as any type's (the 30 deg turn
+        // at 80 %).
         const std::vector<Block> blocks = SpinBlocks();
         std::vector<int>         role_to_bone(static_cast<size_t>(Role::Count), 0);
         const std::vector<AutoSensResult> r =
             SearchAutoSensitivity(blocks, tr, std::vector<int>(blocks.size(), 0), role_to_bone, false);
         CHECK(r.size() == blocks.size());
-        for (const AutoSensResult& x : r) CHECK(x.searched && !x.raised && x.sens == kAutoDefaultSens);
+        for (const AutoSensResult& x : r) CHECK(x.searched && x.raised && !x.none && x.sens == 80.0);
     }
     // A sudden turn (90 deg/s from 1 s to 2 s, no easing): the markers sit on the turn's start and
     // end, not 80 ms out where the smoothed rate passes 5 deg/s.

@@ -1051,15 +1051,6 @@ std::vector<AutoSensResult> SearchAutoSensitivity(const std::vector<Block>& bloc
         if (!IsActiveAutoBlock(b) || AutoBlockPartMissing(b, role_to_bone)) continue;
         if (i >= event_counts.size() || event_counts[i] != 0) continue;  // has events (or unknown): untouched
         if (GroupHasEvents(blocks, event_counts, i)) continue;  // story 10-9a-3: its sibling holds the event
-        {  // stories 10-9f / 10-9g / 10-9e / 10-9d / 10-9c: a type its row keeps out of the search
-           // (Spin, Jolt, Tap, Drag, Clap, Hand on body, Kick, Swing, Punch): counted as searched
-           // (Detect is not lit for it), neither raised nor none
-            AutoKind k;
-            if (AutoBlockKind(b, &k, nullptr) && AutoTypeRow(AutoTypeOfKind(k)).no_sens_raise) {
-                r.searched = true;
-                continue;
-            }
-        }
         const double start = std::isfinite(b.sens) ? std::clamp(b.sens, 0.0, 100.0) : kAutoDefaultSens;
         if (CountAt(b, start, role_tracks, runs, looping) != 0) continue;  // a failed analysis, or events after all
         const int at100 = CountAt(b, 100.0, role_tracks, runs, looping);

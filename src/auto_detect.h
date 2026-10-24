@@ -447,9 +447,8 @@ struct AutoSensResult {
 // 10-9a-3: nor a block whose group holds the event: another active block of the same `part_split`
 // type and side has events (Lift Heel L is silent when the toe leaves last), or, for a type whose
 // row says `shared_sides` (jump, land: one event per jump for both feet), another active block of
-// that type on either side. Story 10-9g: a type whose row says `no_sens_raise` (jolt) is never
-// raised: `searched`, not `none`, its value unchanged. Uses a
-// local analysis cache. One result per block.
+// that type on either side. Story 10-9q: every type is searched (a ticked type is one the user
+// sees; 10-9c to 10-9l kept some out). Uses a local analysis cache. One result per block.
 std::vector<AutoSensResult> SearchAutoSensitivity(const std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
                                                   const std::vector<int>& event_counts, const std::vector<int>& role_to_bone,
                                                   bool looping);

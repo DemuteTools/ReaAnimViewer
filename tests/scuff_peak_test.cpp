@@ -131,7 +131,6 @@ void TestSettings()
     // Rows: Start by default for the scuffs (their kinds of before), Peak for the whooshes.
     for (AutoType t : {AutoType::Slide, AutoType::Pivot, AutoType::HandPivot}) {
         CHECK(AutoTypeRow(t).start_option && AutoStartDefault(t) && AutoSettings().at_start[static_cast<int>(t)]);
-        CHECK(!AutoTypeRow(t).no_sens_raise);
     }
     CHECK(!AutoStartDefault(AutoType::Kick) && !AutoStartDefault(AutoType::Step));
     // Each Peak twin: its Start kind's marker, colour, role key, sound key and part mode.

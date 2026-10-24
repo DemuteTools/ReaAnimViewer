@@ -363,8 +363,8 @@ void TestDetect()
     CHECK(count(ev_tap, "Lift L") == count(ev_lifts, "Lift L"));
 }
 
-// Detect's sensitivity search never raises a silent Tap or Drag block (a walk's toe skims drag
-// from 67 %): searched, not raised, its value unchanged.
+// Story 10-9q: Detect's sensitivity search runs on a silent Tap or Drag block as on any type;
+// this walk holds none up to 100 %: searched, none, its value unchanged.
 void TestNoRaise()
 {
     const std::vector<BoneTrack> rt = Rig(Walk(0.4, -0.1), Walk(-0.1, 0.1), 4.0);
@@ -374,12 +374,10 @@ void TestNoRaise()
     std::vector<Block>     blocks = AutoBlocks(s);
     const std::vector<int> counts(blocks.size(), 0);
     const std::vector<int> bones(static_cast<size_t>(Role::Count), 0);
-    CHECK(AutoTypeRow(AutoType::Tap).no_sens_raise && AutoTypeRow(AutoType::Drag).no_sens_raise);
-    CHECK(!AutoTypeRow(AutoType::Step).no_sens_raise && !AutoTypeRow(AutoType::Land).no_sens_raise);
     const std::vector<AutoSensResult> r = SearchAutoSensitivity(blocks, rt, counts, bones, false);
     CHECK(r.size() == blocks.size() && !blocks.empty());
     for (size_t i = 0; i < r.size() && i < blocks.size(); ++i) {
-        CHECK(r[i].searched && !r[i].raised && !r[i].none);
+        CHECK(r[i].searched && !r[i].raised && r[i].none);  // story 10-9q: searched, none up to 100 %
         CHECK(r[i].sens == blocks[i].sens);
     }
 }

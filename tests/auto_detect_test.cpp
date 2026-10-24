@@ -2367,8 +2367,8 @@ int main()
             CHECK(lanes.size() == 1);
             if (lanes.size() == 1) CHECK(lanes[0].unit == "g" && lanes[0].above && lanes[0].threshold == 1.0);
         }
-        // Review: Detect never raises Jolt: a walk with no jolt is searched (Detect not lit for it),
-        // neither raised nor "none up to 100 %", its sensitivity unchanged.
+        // Story 10-9q: Detect raises Jolt as every ticked type: a walk with no jolt at the default
+        // gets its softest step's jolt at 75 %.
         {
             Options wo;
             wo.dur = 4.3;
@@ -2379,10 +2379,7 @@ int main()
             for (int r = 0; r < static_cast<int>(Role::Count); ++r) full[static_cast<size_t>(r)] = r;
             const std::vector<AutoSensResult> sr = SearchAutoSensitivity(jb, walk, {0}, full, false);
             CHECK(sr.size() == 1);
-            if (sr.size() == 1) CHECK(sr[0].searched && !sr[0].raised && !sr[0].none && sr[0].sens == jb[0].sens);
-            CHECK(AutoTypeRow(AutoType::Jolt).no_sens_raise);
-            for (int t = 0; t <= static_cast<int>(AutoType::Land); ++t)  // the Legs and Arms types still raise
-                CHECK(!AutoTypeRow(static_cast<AutoType>(t)).no_sens_raise);
+            if (sr.size() == 1) CHECK(sr[0].searched && sr[0].raised && !sr[0].none && sr[0].sens == 75.0);
         }
         // Review: on a loop, a landing just before the seam and the other foot's just after it
         // (100 ms apart through the seam) make one jolt, at the earlier one (before the seam).
@@ -2506,8 +2503,7 @@ int main()
         rest.hand[0] = toward(Vec3d{-0.6, 0.75, 0.3}, Vec3d{-0.1, 0.75, -0.02}, 0.5, 0.5);
         CHECK(HandOnBodyEvents(AnalyseMotion(Rig(Planted(-0.1, 0.0), Planted(0.1, 0.0), rest))).empty());
         // Review 10-9d: a slower touch (1 m/s, 1.15 leg/s) is none at the default sensitivity and
-        // found at 100 %, but Detect's search never raises a touch type (no_sens_raise): the
-        // block counts as searched, neither raised nor none. Clap is kept out the same way.
+        // found at 100 %. Story 10-9q: Detect raises it (70 %); the right hand and Clap find none.
         {
             Options                      soft = o;
             soft.hand[0] = toward(Vec3d{-0.1, 0.75, 0.4}, Vec3d{-0.1, 0.75, -0.02}, 0.5, 1.0);  // head-on
@@ -2524,8 +2520,11 @@ int main()
             const std::vector<Block>          sb = AutoBlocks(ss);
             const std::vector<AutoSensResult> res = SearchAutoSensitivity(sb, srig, std::vector<int>(sb.size(), 0), smap, false);
             CHECK(res.size() == sb.size() && sb.size() == 4);
-            for (const AutoSensResult& r : res) CHECK(r.searched && !r.raised && !r.none && r.sens == 50.0);
-            CHECK(AutoTypeRow(AutoType::HandOnBody).no_sens_raise && AutoTypeRow(AutoType::Clap).no_sens_raise);
+            for (size_t i = 0; i < res.size() && i < sb.size(); ++i) {
+                const bool touch_l = sb[i].auto_type == "hand_body" && sb[i].auto_side == 'L';
+                CHECK(res[i].searched && res[i].raised == touch_l && res[i].none == !touch_l);
+                CHECK(res[i].sens == (touch_l ? 70.0 : 50.0));
+            }
         }
         // Review 10-9d: the body coming onto a hand held still (a climb's last pull) is no touch:
         // the same closing, but made by the body. The whole body moves 0.4 m forward at 2 m/s and

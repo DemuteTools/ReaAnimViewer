@@ -187,7 +187,7 @@ void TestRows()
     AutoKind k;
     CHECK(AutoKindFromWord("heel_tap", &k) && k == AutoKind::HeelTap);
     const AutoTypeInfo& row = AutoTypeRow(AutoType::HeelTap);
-    CHECK(row.no_sens_raise && row.replaces == static_cast<int>(AutoType::Step) && row.replaces_own_side);
+    CHECK(row.replaces == static_cast<int>(AutoType::Step) && row.replaces_own_side);
     CHECK(row.replaces_in_span == -1 && row.conf_scale == 0.5);
     // Sensitivity: divides the heel rise.
     const PhysicsParams hi = AutoPhysicsParams(AutoType::HeelTap, 100.0, false);
@@ -250,8 +250,8 @@ void TestDetect()
     }
 }
 
-// Detect's sensitivity search never raises a silent Heel Tap block (a weight shift's heel lift
-// reads as one from about 75 %): searched, not raised, its value unchanged.
+// Story 10-9q: Detect's sensitivity search raises a silent Heel Tap block as any type's (a
+// ticked type is one the user sees): the right heel's 0.9 cm drop at 67 %, the left none.
 void TestNoRaise()
 {
     const std::vector<BoneTrack> rt = Rig(Planted(-0.2), HeelDrop(0.065, 0.2), 3.0);
@@ -263,9 +263,16 @@ void TestNoRaise()
     const std::vector<AutoSensResult> r = SearchAutoSensitivity(blocks, rt, counts, bones, false);
     CHECK(r.size() == blocks.size() && !blocks.empty());
     for (size_t i = 0; i < r.size() && i < blocks.size(); ++i) {
-        CHECK(r[i].searched && !r[i].raised && !r[i].none);
-        CHECK(r[i].sens == blocks[i].sens);
+        const bool right = blocks[i].auto_side == 'R';
+        CHECK(r[i].searched && r[i].raised == right && r[i].none == !right);
+        CHECK(r[i].sens == (right ? 67.0 : blocks[i].sens));
+        blocks[i].sens = r[i].sens;
     }
+    // The raised find sits just over its threshold: doubtful (under event_list.h's default 0.4).
+    std::vector<AutoAnalysis> cache, probes;
+    const std::vector<Event>  ev = DetectRatedAutoEvents(blocks, rt, &cache, &probes, false);
+    CHECK(ev.size() == 1);
+    for (const Event& e : ev) CHECK(e.marker == "Heel Tap R" && e.confidence < 0.4);
 }
 
 }  // namespace

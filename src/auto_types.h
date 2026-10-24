@@ -67,13 +67,6 @@ struct AutoTypeInfo {
     // foot that names it): Detect's sensitivity search skips a block when a block of the type on
     // either side has the event.
     bool            shared_sides = false;
-    // Story 10-9f: Detect's sensitivity search never raises this type's silent blocks (a motion
-    // most clips never hold, a spin: a raise would turn a clip's sway or twist into one). The
-    // user's own sensitivity still applies. Story 10-9g: Jolt too (a walk or a climb has no jolt;
-    // a raise would make its softest step one); the block counts as searched (Detect not lit).
-    // Story 10-9e: Tap and Drag too (a walk's toe skims drag from 67 %). Story 10-9d: Clap and
-    // Hand on body too. Story 10-9c: Kick, Swing and Punch too.
-    bool            no_sens_raise = false;
     // Story 10-9c: Peak / Start (AutoSettings::at_start): each kind has a twin of the other flavour
     // (same type, marker, colour, role key and sound key), Start making the kinds whose row says
     // `at_start` (kick, swing, punch: the twins; story 10-9j: slide, pivot, hand pivot, whose own

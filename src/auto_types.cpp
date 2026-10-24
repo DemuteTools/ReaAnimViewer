@@ -34,8 +34,8 @@
 //     marker, colour, role key and sound key), in the order of the kinds it pairs with; the type's
 //     first kind's flavour is the default (story 10-9j: the scuffs' kinds say `at_start`, their
 //     Peak twins do not, so Start stays their default); the widget, the settings and the block
-//     kept across a switch follow the row. `no_sens_raise` keeps Detect from raising a silent block
-//     of a type most clips do not have.
+//     kept across a switch follow the row. Story 10-9q: Detect's search raises every ticked type
+//     (a ticked type is one the user sees; a find after a raise reads doubtful).
 // Adding a signature to a kind (story 10-9a-2): a new way to recognise the same event, for an
 // edge case the kind's other signatures miss. Append {name, event source, match} to the kind's
 // `sigs` (at most kAutoMaxSignatures, contiguous); its source and match live in the category's
@@ -284,13 +284,13 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "A marker where a planted foot slides: Slide L / Slide R (combined),\n"
      "or Slide Heel L / Slide Toe L... (separate). At the slide's start, or where it rubs\n"
      "fastest (Peak).",
-     "slide", {{&P::slide_speed, S::Divide}, {}}, &AutoPartsFootSplit, false, false, false, false, true},
+     "slide", {{&P::slide_speed, S::Divide}, {}}, &AutoPartsFootSplit, false, false, false, true},
     {T::Pivot, "Pivot scuff", "Pivot scuff", C::Legs,
      "A marker where a planted foot turns on its ball or heel: Pivot L / Pivot R (combined),\n"
      "or Pivot Heel L / Pivot Toe L... (separate). At the turn's start, or where the planted\n"
      "part rubs fastest (Peak).",
      "pivot", {{&P::pivot_min_deg, S::Divide}, {&P::pivot_rate_dps, S::Divide}}, &AutoPartsFootBoth, false, false, false,
-     false, true},
+     true},
     {T::Grab, "Grab", "Grab", C::Arms, "A marker where the hand lands on something: Grab L / Grab R.", "grab",
      {{&P::hand_contact_speed, S::Times}, {}}, &AutoPartsHands},
     {T::Release, "Release", "Release", C::Arms, "A marker where the hand leaves its support: Release L / Release R.",
@@ -300,7 +300,7 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "A marker where a planted hand turns: Hand Pivot L / Hand Pivot R. At the turn's start,\n"
      "or where the hand rubs fastest (Peak).", "hand_pivot",
      {{&P::hand_pivot_min_deg, S::Divide}, {&P::hand_pivot_rate_dps, S::Divide}}, &AutoPartsHands, false, false, false,
-     false, true},
+     true},
     // Story 10-9a: higher sensitivity = shorter flights count; story 10-9a-2: and a softer
     // push-off (jump_impulse_g) counts. Story 10-9a-3: on the foot that leaves last / touches
     // first (L / R), Combined / Separate.
@@ -309,13 +309,13 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "both feet off while the body falls freely, right after a hard push off the ground,\n"
      "or into a free fall (a fall on the back). Separate: Jump Heel L / Jump Toe L...\n"
      "With Lift-off ticked, it replaces the lifts there.",
-     "jump", {{&P::jump_min_flight_s, S::Divide}, {&P::jump_impulse_g, S::Divide}}, &AutoPartsJump, false, true, true, false, false,
+     "jump", {{&P::jump_min_flight_s, S::Divide}, {&P::jump_impulse_g, S::Divide}}, &AutoPartsJump, false, true, true, false,
      static_cast<int>(T::LiftOff)},
     {T::Land, "Land", "Land", C::Legs,
      "A marker where a jump lands, on the first foot to touch, at its step (Land L / Land R).\n"
      "Separate: Land Heel L / Land Toe L...\n"
      "With Step ticked, it replaces the steps there.",
-     "land", {{&P::jump_min_flight_s, S::Divide}, {}}, &AutoPartsJump, false, true, true, false, false, static_cast<int>(T::Step),
+     "land", {{&P::jump_min_flight_s, S::Divide}, {}}, &AutoPartsJump, false, true, true, false, static_cast<int>(T::Step),
      static_cast<int>(T::Step)},  // review 10-9m: over its span too (a landing together: up to the other foot's step)
     // Story 10-9g: the gear jolt, Body, sideless; higher sensitivity = softer impacts count.
     {T::Jolt, "Jolt", "Jolt", C::Body,
@@ -323,25 +323,25 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "a knee coming down, a sit or a fall, where the body's acceleration peaks above the\n"
      "sensitivity's threshold.\n"
      "Raise the sensitivity for softer steps, lower it for only the hard impacts.",
-     "jolt", {{&P::jolt_min_g, S::Divide}, {}}, &AutoPartsJolt, true, false, false, true},
+     "jolt", {{&P::jolt_min_g, S::Divide}, {}}, &AutoPartsJolt, true, false, false},
     // Story 10-9f: the Body's first type, sideless (a turn of the whole body has no foot).
-    // Higher sensitivity = a smaller turn counts (the sweep / f). Never raised by Detect.
+    // Higher sensitivity = a smaller turn counts (the sweep / f).
     {T::Spin, "Spin", "Spin", C::Body,
      "A spin of the whole body (the hips turning about the vertical):\n"
      "Spin where it starts turning, Spin End where it stops (45 deg or more).",
-     "spin", {{&P::spin_min_deg, S::Divide}, {}}, &AutoPartsSpin, true, false, false, true},
+     "spin", {{&P::spin_min_deg, S::Divide}, {}}, &AutoPartsSpin, true, false, false},
     // Story 10-9e: higher sensitivity = longer toe contacts count as taps, and shorter toe
     // slides (a lower minimum length) as drags.
     {T::Tap, "Tap", "Tap", C::Legs,
      "A marker where the toes touch the ground lightly while the other foot carries the body\n"
      "(a toe contact under 150 ms, the heel up): Tap L / Tap R.\n"
      "With Step / Lift-off ticked, it replaces that foot's step / lift-off there.",
-     "tap", {{&P::tap_max_s, S::Times}, {}}, &AutoPartsFootBoth, false, false, false, true, false, static_cast<int>(T::Step),
+     "tap", {{&P::tap_max_s, S::Times}, {}}, &AutoPartsFootBoth, false, false, false, false, static_cast<int>(T::Step),
      static_cast<int>(T::LiftOff), true},
     {T::Drag, "Drag", "Drag", C::Legs,
      "A marker where the toes slide on the ground during a swing, the heel up\n"
      "(a foot dragged behind, a crawl, a kneel): Drag L / Drag R.",
-     "drag", {{&P::drag_min_s, S::Divide}, {}}, &AutoPartsFootBoth, false, false, false, true},
+     "drag", {{&P::drag_min_s, S::Divide}, {}}, &AutoPartsFootBoth, false, false, false},
     // Story 10-9b: body contacts, segmented as the hands (higher sensitivity = a faster part
     // still counts as at rest); a fall: a slower descent counts. Sit and Fall are the body's
     // (sideless).
@@ -359,30 +359,29 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "such as a fall on the back after a free fall.",
      "fall", {{&P::fall_min_speed, S::Divide}, {}}, &AutoPartsFall, true},
     // Story 10-9d: touches (hand_touch.h). Higher sensitivity = slower touches count and the reach
-    // grows. Clap: one event for both hands, on the faster one (shared_sides). Neither is raised by
-    // Detect (no_sens_raise): most clips hold no touch, a raise would make a swing's turn one.
+    // grows. Clap: one event for both hands, on the faster one (shared_sides).
     {T::Clap, "Clap", "Clap", C::Arms,
      "A marker where the two hands meet at speed and stop against each other,\n"
      "on the faster hand (Clap L / Clap R).",
-     "clap", {{&P::clap_min_speed, S::Divide}, {&P::clap_reach, S::Times}}, &AutoPartsClap, false, false, true, true,
+     "clap", {{&P::clap_min_speed, S::Divide}, {&P::clap_reach, S::Times}}, &AutoPartsClap, false, false, true,
      false, -1, -1, false, 0b01u},  // story 10-10a: the confidence probes the approach speed, not the reach
     {T::HandOnBody, "Hand on body", "Hand on body", C::Arms,
      "A marker where a hand lands at speed on the body (trunk, head or thigh) and stops there:\n"
      "Hand on body L / Hand on body R.",
      "hand_body", {{&P::body_min_speed, S::Divide}, {&P::body_reach, S::Times}}, &AutoPartsHandOnBody, false, false,
-     false, true, false, -1, -1, false, 0b01u},  // story 10-10a: the speed only, as Clap
+     false, false, -1, -1, false, 0b01u},  // story 10-10a: the speed only, as Clap
     // Story 10-9c: the whooshes; higher sensitivity = slower motions count (their speed / f).
     {T::Kick, "Kick", "Kick", C::Legs,
      "A marker where a foot whips through the air, raised off the ground (Kick L / Kick R),\n"
      "at its fastest, or where the motion starts (Start). Separate: on the part fastest\n"
      "at the peak (Kick Heel L / Kick Toe L...).",
-     "kick", {{&P::kick_speed, S::Divide}, {}}, &AutoPartsKick, false, true, false, true, true},
+     "kick", {{&P::kick_speed, S::Divide}, {}}, &AutoPartsKick, false, true, false, true},
     {T::Swing, "Swing", "Swing", C::Arms,
      "A marker where a hand whips through the air (Swing L / Swing R): the arm's whoosh, with or\n"
      "without a blow, at its fastest, or where the motion starts (Start). A blow's stop is a\n"
      "Punch: tick both for the whoosh and the hit. The arm pulled back while the other hand\n"
      "punches is no Swing.",
-     "swing", {{&P::swing_speed, S::Divide}, {}}, &AutoPartsWhooshHand, false, false, false, true, true},
+     "swing", {{&P::swing_speed, S::Divide}, {}}, &AutoPartsWhooshHand, false, false, false, true},
     // Story 10-9o: any fist blow, straight (punch_speed) or arc (punch_arc_speed: 10-9n's
     // Strike); higher sensitivity = slower blows count. With Arms Land ticked it replaces that
     // hand's Arms Land at the same time (`replaces`: a blow landing with a jump hits, Jump
@@ -396,37 +395,35 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "on the screen's right. Fist or weapon: pick the sound with a Switch on the character\n"
      "(e.g. its outfit or weapon). With Swing ticked too, the blow's whoosh is a Swing.",
      "punch", {{&P::punch_speed, S::Divide}, {&P::punch_arc_speed, S::Divide}}, &AutoPartsWhooshHand, false, false,
-     false, true, true, static_cast<int>(T::ArmLand), -1, true, 0u,
+     false, true, static_cast<int>(T::ArmLand), -1, true, 0u,
      0.5, true},  // conf_scale: half steps (a jab's 2.34 leg/s over punch_speed 2.0, the elbow blow's 5.1 over punch_arc_speed 5.0)
     // Story 10-9i: higher sensitivity = a smaller heel rise counts (heel_tap_min_rise / f).
     {T::HeelTap, "Heel Tap", "Heel Tap", C::Legs,
      "A marker where the heel drops back onto the floor while the ball of the foot stays down\n"
      "(the foot rolls onto its ball, then the heel comes down): Heel Tap L / Heel Tap R.\n"
      "With Step ticked, it replaces that foot's step there.",
-     "heel_tap", {{&P::heel_tap_min_rise, S::Divide}, {}}, &AutoPartsFootBoth, false, false, false, true, false,
+     "heel_tap", {{&P::heel_tap_min_rise, S::Divide}, {}}, &AutoPartsFootBoth, false, false, false, false,
      static_cast<int>(T::Step), -1, true, 0u, 0.5},  // conf_scale: Hip Hop's softest drops rise 0.017 over 0.013
     // Story 10-9k: the arms of a jump (auto_types_arm_jump.cpp); higher sensitivity = slower arms
     // count (their speed / f). With Swing ticked, each replaces the Swing of that hand within its
-    // run (one motion, one sound). Not raised by Detect (no_sens_raise): a clip with no jump has
-    // none, and a raise would turn an arm's sway at a step into one.
+    // run (one motion, one sound).
     {T::ArmJump, "Jump", "Arms Jump", C::Arms,
      "A marker where an arm is thrown up into a jump's take-off (Arms Jump L / Arms Jump R),\n"
      "at the hand's fastest. It follows the take-offs Legs > Jump finds (ticked or not).\n"
      "With Swing ticked, it replaces that hand's Swing there.",
-     "arm_jump", {{&P::arm_jump_speed, S::Divide}, {}}, &AutoPartsArmJump, false, false, false, true, false, -1,
+     "arm_jump", {{&P::arm_jump_speed, S::Divide}, {}}, &AutoPartsArmJump, false, false, false, false, -1,
      static_cast<int>(T::Swing), true, 0u, 0.5},  // conf_scale: Jump Attack's left arm 4.76 over 4.0
     {T::ArmLand, "Land", "Arms Land", C::Arms,
      "A marker where an arm comes down at a jump's landing, reaching for the floor or the knees\n"
      "(Arms Land L / Arms Land R), at the hand's fastest. It follows the landings Legs > Land\n"
      "finds (ticked or not). With Swing ticked, it replaces that hand's Swing there.",
-     "arm_land", {{&P::arm_land_speed, S::Divide}, {}}, &AutoPartsArmJump, false, false, false, true, false, -1,
+     "arm_land", {{&P::arm_land_speed, S::Divide}, {}}, &AutoPartsArmJump, false, false, false, false, -1,
      static_cast<int>(T::Swing), true, 0u, 0.5},  // conf_scale: the hand to the floor 3.7-3.9 over 3.0
     // Story 10-9l: a hand contact (Grab's) or a touch on the body (Hand on body's) whose fingers
     // stay extended (hand_slap.h). Higher sensitivity = the slower contacts and touches count, as
     // Grab's and Hand on body's (so a slap and the grab / touch it replaces line up). It replaces
     // that hand's Grab (`replaces`) and Hand on body (`replaces_in_span`: its span is its time) at
-    // the same contact. Never raised by Detect: most clips hold no slap, a raise would turn a
-    // slow resting hand into one.
+    // the same contact.
     {T::Slap, "Slap", "Slap", C::Arms,
      "A marker where a flat hand hits something (the floor, a wall, the body) and the fingers\n"
      "stay extended: Slap L / Slap R. A hand whose fingers close after the contact is a Grab.\n"
@@ -434,7 +431,7 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "Needs finger bones that move in the clip (a knuckle and a fingertip per hand):\n"
      "without them, a slap cannot be told apart and the contacts stay Grabs.",
      "slap", {{&P::hand_contact_speed, S::Times}, {&P::body_min_speed, S::Divide}}, &AutoPartsSlap, false, false, false,
-     true, false, static_cast<int>(T::Grab), static_cast<int>(T::HandOnBody), true},
+     false, static_cast<int>(T::Grab), static_cast<int>(T::HandOnBody), true},
 };
 
 // ---- Strength levels (story 10-10b) ------------------------------------------------------------

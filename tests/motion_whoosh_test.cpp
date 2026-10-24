@@ -429,17 +429,17 @@ void TestDetect()
     for (const Event& e : DetectAutoEvents(sb, rt, &c2, false))
         if (e.marker == "Swing L") CHECK(e.time_s >= 0.5 && e.time_s < 0.6);
 
-    // Detect never raises a silent whoosh block (the right kick, the left punch...).
+    // Story 10-9q: Detect searches a silent whoosh block as any type's (the right kick, the left
+    // punch: none up to 100 %).
     std::vector<int> counts(blocks.size(), 0);
     for (const Event& e : ev)
         if (e.block >= 0 && static_cast<size_t>(e.block) < counts.size()) ++counts[static_cast<size_t>(e.block)];
-    // Review 10-9c: such a block counts as searched (Detect is not left lit for it).
     const std::vector<AutoSensResult> sr = SearchAutoSensitivity(blocks, rt, counts, map, false);
     CHECK(sr.size() == blocks.size());
     for (size_t i = 0; i < sr.size(); ++i) {
-        CHECK(!sr[i].raised && !sr[i].none && sr[i].sens == blocks[i].sens);
+        CHECK(!sr[i].raised && sr[i].none == sr[i].searched && sr[i].sens == blocks[i].sens);
         // (a silent kick part whose sibling part holds the kick is left alone, as any part type's)
-        if (counts[i] == 0 && blocks[i].auto_type.rfind("kick", 0) != 0) CHECK(sr[i].searched);
+        if (counts[i] == 0 && blocks[i].auto_type.rfind("kick", 0) != 0) CHECK(sr[i].searched && sr[i].none);
     }
 
     // Lanes: the speed vs torso against the type's speed.

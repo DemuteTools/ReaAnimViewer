@@ -265,12 +265,12 @@ void TestLanes()
           why.find("do not move") != std::string::npos);
 }
 
-// The rows: Arms, L / R, after Heel Tap; replaces its hand's Grab and Hand on body; never raised.
+// The rows: Arms, L / R, after Heel Tap; replaces its hand's Grab and Hand on body.
 void TestRows()
 {
     const AutoTypeInfo& t = AutoTypeRow(AutoType::Slap);
     CHECK(t.type == AutoType::Slap && std::string(t.label) == "Slap" && t.category == AutoCategory::Arms);
-    CHECK(std::string(t.sound_word) == "slap" && !t.sideless && t.no_sens_raise && !t.start_option);
+    CHECK(std::string(t.sound_word) == "slap" && !t.sideless && !t.start_option);
     CHECK(t.replaces == static_cast<int>(AutoType::Grab) && t.replaces_in_span == static_cast<int>(AutoType::HandOnBody) &&
           t.replaces_own_side);
     CHECK(std::string(t.hint).find("finger") != std::string::npos);

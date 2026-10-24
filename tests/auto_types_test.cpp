@@ -186,7 +186,7 @@ void TestKnownValues()
         CHECK(AutoPhysicsParams(AutoType::Knee, 100.0, false).contact_speed == d0.contact_speed);
     }
     // Story 10-9k: Arms > Jump, Land: markers apart from Legs Jump / Land, replacing the Swing of
-    // their hand within their run, never raised by Detect, the sensitivity dividing the arm speed.
+    // their hand within their run, the sensitivity dividing the arm speed.
     {
         CHECK(std::string(AutoTypeLabel(AutoType::ArmJump)) == "Jump" &&
               std::string(AutoTypeLabel(AutoType::ArmLand)) == "Land");
@@ -201,7 +201,7 @@ void TestKnownValues()
         for (AutoType t : {AutoType::ArmJump, AutoType::ArmLand}) {
             const AutoTypeInfo& r = AutoTypeRow(t);
             CHECK(r.replaces == -1 && r.replaces_in_span == static_cast<int>(AutoType::Swing) && r.replaces_own_side);
-            CHECK(r.no_sens_raise && !r.start_option && !r.part_split && !r.sideless && !r.shared_sides);
+            CHECK(!r.start_option && !r.part_split && !r.sideless && !r.shared_sides);
             CHECK(AutoKindsOf(t).size() == 1);
         }
         const PhysicsParams d0;
@@ -210,7 +210,7 @@ void TestKnownValues()
         CHECK(AutoPhysicsParams(AutoType::ArmJump, 100.0, false).swing_speed == d0.swing_speed);
     }
     // Story 10-9o: Arms > Punch, every blow (10-9n's Strike folded in): replacing its hand's Swing
-    // over its run and its Arms Land over its span, never raised by Detect, the sensitivity
+    // over its run and its Arms Land over its span, the sensitivity
     // dividing both its speeds (straight and arc); Stop (punch), Peak (punch_peak), Start.
     {
         CHECK(std::string(AutoTypeLabel(AutoType::Punch)) == "Punch" && kAutoTypeCount == 26);
@@ -220,7 +220,7 @@ void TestKnownValues()
         const AutoTypeInfo& r = AutoTypeRow(AutoType::Punch);
         CHECK(r.replaces == static_cast<int>(AutoType::ArmLand) && r.replaces_in_span == -1 &&
               r.replaces_own_side && r.replaces_span);
-        CHECK(r.no_sens_raise && r.start_option && !r.part_split && !r.sideless && !r.shared_sides);
+        CHECK(r.start_option && !r.part_split && !r.sideless && !r.shared_sides);
         CHECK(AutoKindsOf(AutoType::Punch).size() == 3 && AutoKindRow(AutoKind::PunchPeak).sound_key == AutoKind::Punch);
         CHECK(r.hint && std::string(r.hint).find("Switch") != std::string::npos);
         const PhysicsParams d0;
@@ -242,14 +242,12 @@ void TestKnownValues()
                                            tt == AutoType::Fall));  // stories 10-9g, 10-9f, 10-9b
         CHECK(AutoTypeRow(tt).part_split ==
               (tt == AutoType::LiftOff || tt == AutoType::Jump || tt == AutoType::Land || tt == AutoType::Kick));
-        // Story 10-9c: Peak / Start on the whooshes, and Detect never raises them. Story 10-9j:
+        // Story 10-9c: Peak / Start on the whooshes. Story 10-9j:
         // and on the scuffs, Start by default.
         const bool whoosh = tt == AutoType::Kick || tt == AutoType::Swing || tt == AutoType::Punch;
         const bool scuff = tt == AutoType::Slide || tt == AutoType::Pivot || tt == AutoType::HandPivot;
         CHECK(AutoTypeRow(tt).start_option == (whoosh || scuff));
         CHECK(AutoStartDefault(tt) == scuff);
-        if (whoosh) CHECK(AutoTypeRow(tt).no_sens_raise);
-        if (scuff) CHECK(!AutoTypeRow(tt).no_sens_raise);
         CHECK(AutoSettings().at_start[t] == scuff);
     }
     CHECK(AutoCategoryOf(AutoType::Jump) == AutoCategory::Legs && AutoCategoryOf(AutoType::Land) == AutoCategory::Legs);

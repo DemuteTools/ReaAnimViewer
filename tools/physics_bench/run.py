@@ -3,9 +3,12 @@
 # dependencies = ["numpy", "c3d", "cmake", "ninja", "ziglang"]
 # ///
 # SPDX-License-Identifier: MIT
-"""Story 10-13a: the physics bench in one command.
+"""Stories 10-13a / 10-13b: the physics bench in one command.
 
-    uv run tools/physics_bench/run.py [--corpus=kyokushin] [--subjects=12|N|all] [--no-fetch]
+    uv run tools/physics_bench/run.py [--corpus=kyokushin|kds] [--subjects=N|all] [--no-fetch]
+
+Corpora: kyokushin (default; --subjects default 12, the first N with a complete set) and kds
+(Karate Dataset Stances, air gyaku-tsuki in three stances; --subjects default all, 12 karateka).
 
 Fetches the corpus' trials on demand into a cache outside the repo ($RAV_PHYSICS_CACHE, default
 ~/.cache/rav-physics), converts them to RAV detection csvs with references written from the
@@ -25,11 +28,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 
+import kds  # noqa: E402
 import kyokushin  # noqa: E402
 import summary  # noqa: E402
 from remotezip import FetchError, RemoteZip  # noqa: E402
 
-CORPORA = {"kyokushin": kyokushin}
+CORPORA = {"kyokushin": kyokushin, "kds": kds}
 
 
 def cache_dir():
@@ -110,10 +114,13 @@ def bench_section(text, title):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--corpus", default="kyokushin", choices=sorted(CORPORA))
-    ap.add_argument("--subjects", default=str(kyokushin.DEFAULT_SUBJECTS),
-                    help="the first N subjects with a complete set, or 'all' (default %(default)s)")
+    ap.add_argument("--subjects", default=None,
+                    help="the first N subjects (kyokushin: with a complete set), or 'all' "
+                         "(default: kyokushin 12, kds all)")
     ap.add_argument("--no-fetch", action="store_true", help="use the cached trials only")
     a = ap.parse_args()
+    if a.subjects is None:
+        a.subjects = str(CORPORA[a.corpus].DEFAULT_SUBJECTS)
     if a.subjects != "all" and not (a.subjects.isdigit() and int(a.subjects) > 0):
         ap.error("--subjects: a positive number or 'all'")
     mod = CORPORA[a.corpus]

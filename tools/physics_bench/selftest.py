@@ -106,6 +106,219 @@ def test_air_max_reach():
     check("air: a foot needs a 6 m/s peak", K.air_refs(reach_mm, np.minimum(v, 5.5), "foot", RATE) == [])
 
 
+def held_punch(F, rate, t_peak=0.6, top=478.0):
+    """A reach (mm) rising to `top` around t_peak (speed peak there), then held on a +-1 mm noisy
+    plateau whose argmax is late (the KDS held gyaku-tsuki)."""
+    t = np.arange(F) / rate
+    reach = 300 + (top - 300) / (1 + np.exp(-(t - t_peak) / 0.008))   # 5.6 m/s peak
+    plateau = t > t_peak + 0.03
+    reach[plateau] = np.minimum(reach[plateau], top - 1.0 + np.sin(t[plateau] * 40.0) * 0.8)
+    late = int(round((t_peak + 0.16) * rate))
+    reach[late] = top + 0.5                       # the plateau's argmax, on noise, 160 ms after the peak
+    return reach
+
+
+def test_kds_arrival():
+    import kds as D
+
+    R = 180.0
+    F = 400
+    reach = held_punch(F, R)
+    eff = np.stack([reach, np.zeros(F), np.zeros(F)], 1)
+    v = np.linalg.norm(np.gradient(eff, axis=0), axis=1) * R / 1000.0
+    refs = D.arrival_refs(reach, v, R)
+    p = int(np.argmax(v))
+    seg = reach[p:p + int(round(0.2 * R)) + 1]
+    want = p + int(np.argmax(seg >= seg.max() - 5.0))
+    check("kds: held punch, the arrival is the first frame within 5 mm of the max reach",
+          refs == [want] and want < p + int(round(0.16 * R)), f"{refs} vs {want} (peak {p})")
+    check("kds: the arrival is not the plateau's argmax", refs != [p + int(np.nanargmax(seg))])
+    # Hikite: the hand pulled back to the hip, as fast, with the reach falling: no reference.
+    back = reach[::-1].copy()
+    eb = np.stack([back, np.zeros(F), np.zeros(F)], 1)
+    vb = np.linalg.norm(np.gradient(eb, axis=0), axis=1) * R / 1000.0
+    check("kds: hikite (reach falling, >= 4 m/s) is no blow", D.arrival_refs(back, vb, R) == [],
+          str(D.arrival_refs(back, vb, R)))
+    check("kds: under 4 m/s is no blow", D.arrival_refs(reach, np.minimum(v, 3.9), R) == [])
+    # Hikite blip: the reach falls 478 -> 270 mm at >= 4 m/s, with a 30 mm rise in the middle
+    # (the masked speed peak passes): the reach gained < 100 mm, no blow.
+    t = np.arange(F) / R
+    fold = 478 - 208 / (1 + np.exp(-(t - 0.6) / 0.01))
+    bump = (t > 0.58) & (t < 0.62)
+    fold[bump] += 30 * np.sin((t[bump] - 0.58) / 0.04 * np.pi)
+    ef = np.stack([fold, np.zeros(F), np.zeros(F)], 1)
+    vf = np.maximum(np.linalg.norm(np.gradient(ef, axis=0), axis=1) * R / 1000.0, 4.5 * bump)
+    check("kds: hikite with a brief reach rise (gain < 100 mm) is no blow", D.arrival_refs(fold, vf, R) == [],
+          str(D.arrival_refs(fold, vf, R)))
+    small = 300 + 90 / (1 + np.exp(-(t - 0.6) / 0.004))   # a 90 mm jab at > 4 m/s
+    es = np.stack([small, np.zeros(F), np.zeros(F)], 1)
+    vs = np.linalg.norm(np.gradient(es, axis=0), axis=1) * R / 1000.0
+    check("kds: a 90 mm extension is no punch, 178 mm is", D.arrival_refs(small, vs, R) == [] and refs != [],
+          f"{D.arrival_refs(small, vs, R)} (peak {vs.max():.1f} m/s)")
+
+
+def test_kds_drafts():
+    import kds as D
+
+    R = 180.0
+
+    def refs(*st):
+        return [K.Ref(s, int(round(t * R)), R) for s, t in st]
+
+    a = refs(("R", 4.5833))
+    check("kds: in [peak - 50 ms, peak + 250 ms] is confirmed",
+          D.cross_check(a, ("R", 4.55)) == [] and a[0].status == "confirmed", str(a[0].reasons))
+    b = refs(("L", 4.5833))
+    D.cross_check(b, ("R", 4.55))
+    check("kds: the authors' other hand is no draft, only counted",
+          b[0].status == "confirmed" and D.side_differs(b, ("R", 4.55)) and not D.side_differs(a, ("R", 4.55)),
+          str(b[0].reasons))
+    c = refs(("R", 2.0), ("L", 4.5833))
+    D.cross_check(c, ("R", 4.55))
+    check("kds: two in a trial (any hands), both drafts, count 2", all("count 2, usual 1" in r.reasons for r in c)
+          and not D.side_differs(c, ("R", 4.55)), str([r.reasons for r in c]))
+    check("kds: the one off the authors' window says so",
+          c[0].reasons == ["count 2, usual 1", "authors' peak at 4.550 s"], str(c[0].reasons))
+    d = refs(("R", 4.85))
+    D.cross_check(d, ("R", 4.55))
+    check("kds: 300 ms after the authors' peak is a draft", d[0].reasons == ["authors' peak at 4.550 s"], str(d[0].reasons))
+    e = refs(("R", 4.5333))
+    D.cross_check(e, ("R", 4.55))
+    check("kds: 17 ms before the authors' peak is confirmed", e[0].status == "confirmed", str(e[0].reasons))
+    g = refs(("R", 4.4833))
+    D.cross_check(g, ("R", 4.55))
+    check("kds: 67 ms before the authors' peak is a draft", g[0].status == "draft")
+    f = refs(("R", 4.5833))
+    check("kds: no authors' row keeps the references", D.cross_check(f, None) == ["no authors' row"]
+          and f[0].status == "confirmed")
+    h = refs(("R", 2.0), ("R", 4.5833))
+    D.cross_check(h, None)
+    check("kds: no authors' row, two in a trial are still drafts", all(r.reasons == ["count 2, usual 1"] for r in h),
+          str([r.reasons for r in h]))
+
+
+def test_kds_trial_refs():
+    import kds as D
+    import pig_rig
+
+    R = 180.0
+    F = 400
+    t = np.arange(F)
+    ext = held_punch(F, R)                                   # the right wrist's reach (mm), extending
+    fold = ext[::-1].copy()                                   # the left one folds (hikite)
+    zero = np.zeros(F)
+    S = {n: np.zeros((F, 3)) for n in ("pelvis", "torso", "head", "l_thigh", "l_shank", "l_foot", "l_toes",
+                                       "r_thigh", "r_shank", "r_foot", "r_toes")}
+    S["torso"][:, 2] = 450.0
+    S["l_toes"][:, 1] = 100.0
+    S["r_toes"][:, 1] = 100.0
+    for s, reach in (("l", fold), ("r", ext)):
+        S[s + "_uarm"] = np.stack([zero, zero, zero + 400.0], 1)
+        S[s + "_hand"] = np.stack([zero, reach, zero + 400.0], 1)
+        S[s + "_larm"] = np.stack([zero, reach * 0.5, zero + 400.0], 1)
+    refs = D.trial_refs(S, R)
+    want = D.arrival_refs(ext, pig_rig.speed(S["r_hand"], R), R)
+    check("kds: trial_refs, one reference on the extending hand (R), none on the hikite",
+          [(r.side, r.frame) for r in refs] == [("R", f) for f in want] and len(want) == 1,
+          str([(r.side, r.frame) for r in refs]))
+    B = D.bones(S)
+    k = int(t[-1])
+    check("kds: bones fill pig_rig's set", set(B) == set(pig_rig.PARENT), str(set(pig_rig.PARENT) ^ set(B)))
+    check("kds: HandMiddle1 / 4 beyond the wrist along the forearm",
+          B["RightHandMiddle1"][k, 1] > B["RightHand"][k, 1] and B["RightHandMiddle4"][k, 1] > B["RightHandMiddle1"][k, 1],
+          f"{B['RightHand'][k]} {B['RightHandMiddle1'][k]} {B['RightHandMiddle4'][k]}")
+    check("kds: Neck at the torso origin, Spine1 halfway pelvis -> torso, Toe_End past the toes",
+          B["Neck"][0, 2] == 450.0 and B["Spine1"][0, 2] == 225.0 and B["LeftToe_End"][0, 1] == 115.0)
+
+
+def test_summary_air_rows():
+    import tempfile
+
+    import summary
+
+    def corpus(root, name, clips, matches):
+        d = os.path.join(root, name)
+        os.makedirs(os.path.join(d, "_bench"))
+        with open(os.path.join(d, "clips.tsv"), "w") as f:
+            f.write("# clip\ttechnique\tcondition\tkind\tsubject\n" + "".join(c + "\n" for c in clips))
+        with open(os.path.join(d, "_bench", "matches.tsv"), "w") as f:
+            f.write("# config\tclip\tkind\tside\tref_s\tdet_s\terr_ms\tref_status\n" + "".join(m + "\n" for m in matches))
+
+    with tempfile.TemporaryDirectory() as root:
+        corpus(root, "kyokushin", ["a1\tS01 gyaku-zuki\tair\tpunch\tB1", "a2\tS01 gyaku-zuki\tshield\tpunch\tB1",
+                                    "k1\tS02 mae-geri\tair\tkick\tB1"],
+               ["default\ta1\tpunch\tR\t1.0\t0.98\t-20.0\tconfirmed",
+                "default\ta2\tpunch\tR\t1.0\t1.05\t+50.0\tconfirmed",
+                "default\tk1\tkick\tR\t1.0\t0.9\t-100.0\tconfirmed"])
+        check("summary: one corpus with air punches, no per-corpus section",
+              "per corpus" not in summary.write_report(root))
+        corpus(root, "kds", ["z1\tgyaku-tsuki\tZEN\tpunch\tID1", "b1\tgyaku-tsuki\tKIB\tpunch\tID1"],
+               ["default\tz1\tpunch\tR\t4.0\t4.01\t+10.0\tconfirmed",
+                "default\tb1\tpunch\tL\t4.0\t4.03\t+30.0\tconfirmed"])
+        text = summary.write_report(root)
+        rows = {l.split(" / ")[0]: l[34:].split() for l in text.split("=== punches in the air")[-1].splitlines()
+                if " / punch / air" in l}
+        check("summary: per-corpus air row, KDS stances summed", rows.get("kds", [])[:2] == ["2/0", "2/0"]
+              and rows["kds"][6] == "+20.0", str(rows))
+        check("summary: Kyokushin air row leaves shield punches and kicks out", rows.get("kyokushin", [])[:2] == ["1/0", "1/0"]
+              and rows["kyokushin"][6] == "-20.0", str(rows))
+
+
+def test_kds_no_authors_table():
+    import tempfile
+    import types
+
+    import kds as D
+
+    with tempfile.TemporaryDirectory() as d:
+        z = types.SimpleNamespace(cache_dir=d, offline=True)   # no cached analysis listing
+        logs = []
+        tab, why = D.authors_table(z, logs.append)
+        check("kds: analysis zip unreachable, the run goes on without the cross-check",
+              tab is None and why is not None and why.startswith("authors' table (") and logs, f"{tab} {why}")
+
+
+def test_kds_names():
+    import tempfile
+
+    import kds as D
+
+    p = D.parse_name("Kinematic Timeseries/ID003_ZEN_T1_kinematics.csv")
+    check("kds: name parse", p == dict(subject="ID003", base="ZEN", trial=1), str(p))
+    check("kds: clip id", D.clip_id(p) == "kds-ID003-ZEN-T1", D.clip_id(p))
+    check("kds: __MACOSX and static skipped",
+          D.parse_name("__MACOSX/Kinematic Timeseries/._ID003_ZEN_T1_kinematics.csv") is None
+          and D.parse_name("Kinematic Timeseries/static/ID003_STATIC_T1_kinematics.csv") is None)
+    check("kds: KUK is KOK", D.parse_name("Kinematic Timeseries/ID004_KUK_T2_kinematics.csv")["base"] == "KOK")
+    ents = [dict(name="Kinematic Timeseries/", usize=None)]
+    for s in ("ID004", "ID003", "ID005"):
+        for b in ("KIB", "ZEN", "KOK"):
+            for t in range(1, 6):
+                ents.append(dict(name=f"Kinematic Timeseries/{s}_{b}_T{t}_kinematics.csv", usize=10))
+    sel = D.select(ents, "2")
+    check("kds: first N subjects, 15 trials each, ZEN KOK KIB order",
+          len(sel) == 30 and sel[0][1] == dict(subject="ID003", base="ZEN", trial=1)
+          and sel[5][1]["base"] == "KOK" and {p["subject"] for _, p in sel} == {"ID003", "ID004"}, str(len(sel)))
+    check("kds: 'all' keeps every subject", len(D.select(ents, "all")) == 45)
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "w.csv")
+        with open(path, "w") as f:
+            f.write("subject,base,trial,strike_hand,strike_peak_time_s\n"
+                    "ID003,ZEN,1,r_hand,4.55\nID003,KUK,2,l_hand,3.861111111111111\nID003,KIB,3,,\n")
+        kin = os.path.join(d, "k.csv")
+        with open(kin, "w") as f:
+            f.write("frame,time_s,r_hand_x,r_hand_y,r_hand_z\n")
+            for i in range(1620):
+                f.write(f"{i},{i / 180.0:.6f},{i * 0.001:.6f},0.5,1.0\n")
+        rate, segs = D.load(kin)
+        check("kds: load, 180 Hz from 6-decimal times, metres to mm",
+              rate == 180.0 and abs(segs["r_hand"][10, 0] - 10.0) < 1e-9 and abs(segs["r_hand"][0, 2] - 1000.0) < 1e-9,
+              f"{rate} {segs['r_hand'][10]}")
+        tab = D.read_authors(path)
+        check("kds: the authors' table", tab == {("ID003", "ZEN", 1): ("R", 4.55),
+                                                 ("ID003", "KOK", 2): ("L", 3.861111111111111)}, str(tab))
+
+
 def test_opponent_band():
     F = 300
     v = np.zeros(F)
@@ -310,7 +523,8 @@ def test_summary():
 
 for f in (test_quad_distance, test_shield_contact, test_air_max_reach, test_opponent_band, test_count_mode,
           test_selection, test_marker_gap, test_fetch_failure, test_draft_reasons, test_antho_lines,
-          test_marker_dropout_speed, test_summary):
+          test_marker_dropout_speed, test_summary, test_kds_arrival, test_kds_drafts, test_kds_no_authors_table, test_kds_names,
+          test_kds_trial_refs, test_summary_air_rows):
     f()
 print(f"\n{'all checks pass' if not failures else str(len(failures)) + ' FAILED'}")
 sys.exit(1 if failures else 0)

@@ -5,7 +5,9 @@ For every fixtures/_physics/<corpus>/ holding clips.tsv and _bench/matches.tsv (
 per corpus x condition x kind, then per technique, the expected references (confirmed / draft),
 matched, recall, found, precision, the signed error (det - ref) mean / SD and the median |error|;
 then the unreferenced punch / swing / kick events found on those clips (type confusions; story
-10-9o removed Strike, folded into Punch). Written to fixtures/_physics/report.txt.
+10-9o removed Strike, folded into Punch). Story 10-13b: when two corpora have punches in the air,
+one row per corpus compares them (Kyokushin air, KDS stances). Written to
+fixtures/_physics/report.txt.
 
     python tools/physics_bench/summary.py [fixtures/_physics]
 """
@@ -15,6 +17,8 @@ import sys
 from collections import defaultdict
 
 ARM_LEG_KINDS = ("punch", "swing", "kick")
+COND_ORDER = ("air", "shield", "opponent", "ZEN", "KOK", "KIB")   # Kyokushin, then KDS stances
+AIR_CONDS = ("air", "ZEN", "KOK", "KIB")   # blows in the air (story 10-13b: KDS punches are all air)
 
 
 def read_tsv(path):
@@ -69,7 +73,8 @@ HEADER = (f"{'':34s} {'exp c/d':>10s} {'matched c/d':>10s} {'recall':>6s} {'rec 
           f"{'mean':>7s} {'SD':>6s} {'med|e|':>6s}")
 
 
-def corpus_report(name, folder):
+def corpus_cells(folder):
+    """(clips, seen, by_cond, by_tech, confusions) of one corpus folder."""
     clips = {r[0]: dict(tech=r[1], cond=r[2], kind=r[3]) for r in read_tsv(os.path.join(folder, "clips.tsv"))}
     matches = [r for r in read_tsv(os.path.join(folder, "_bench", "matches.tsv")) if r[0] == "default"]
     by_cond = defaultdict(Cell)        # (cond, kind)
@@ -88,20 +93,30 @@ def corpus_report(name, folder):
                 cell.add(status if ref_s else "", det_s, err)
         elif det_s and not ref_s and kind in ARM_LEG_KINDS:
             confusions[(c["cond"], c["kind"])][kind] += 1
+    return clips, seen, by_cond, by_tech, confusions
+
+
+def total(cells):
+    tot = Cell()
+    for cell in cells:
+        for x in ("exp_c", "exp_d", "match_c", "match_d", "extra"):
+            setattr(tot, x, getattr(tot, x) + getattr(cell, x))
+        tot.err += cell.err
+    return tot
+
+
+def corpus_report(name, folder):
+    clips, seen, by_cond, by_tech, confusions = corpus_cells(folder)
     lines = [f"=== {name}: {len(seen)} of {len(clips)} clips benched (default matrix, match +-150 ms; "
              f"error = detection - reference, ms) ===", HEADER]
-    conds = sorted({k[0] for k in by_cond}, key=lambda x: ("air", "shield", "opponent").index(x)
-                   if x in ("air", "shield", "opponent") else 9)
+    conds = sorted({k[0] for k in by_cond}, key=lambda x: COND_ORDER.index(x) if x in COND_ORDER else 9)
     for kind in sorted({k[1] for k in by_cond}):
-        tot = Cell()
+        cells = [by_cond[(cond, kind)] for cond in conds if (cond, kind) in by_cond]
         for cond in conds:
             cell = by_cond.get((cond, kind))
-            if not cell:
-                continue
-            lines.append(f"{kind + ' / ' + cond:34s} {cell.text()}")
-            for x in ("exp_c", "exp_d", "match_c", "match_d", "extra"):
-                setattr(tot, x, getattr(tot, x) + getattr(cell, x))
-            tot.err += cell.err
+            if cell:
+                lines.append(f"{kind + ' / ' + cond:34s} {cell.text()}")
+        tot = total(cells)
         lines.append(f"{kind + ' / all':34s} {tot.text()}")
     lines.append("Per technique:")
     for (cond, kind, tech) in sorted(by_tech, key=lambda k: (k[2], conds.index(k[0]) if k[0] in conds else 9)):
@@ -118,12 +133,29 @@ def corpus_report(name, folder):
     return "\n".join(lines)
 
 
+def air_punch_rows(folders):
+    """Story 10-13b: each corpus' punches in the air on one row (shown when two corpora have some)."""
+    rows = []
+    for name, folder in folders:
+        by_cond = corpus_cells(folder)[2]
+        cells = [c for (cond, kind), c in by_cond.items() if kind == "punch" and cond in AIR_CONDS]
+        if cells:
+            rows.append(f"{name + ' / punch / air':34s} {total(cells).text()}")
+    if len(rows) < 2:
+        return None
+    return "\n".join(["=== punches in the air, per corpus ===", HEADER] + rows)
+
+
 def write_report(phys):
-    parts = []
+    parts, folders = [], []
     for name in sorted(os.listdir(phys)) if os.path.isdir(phys) else []:
         folder = os.path.join(phys, name)
         if os.path.exists(os.path.join(folder, "clips.tsv")) and os.path.exists(os.path.join(folder, "_bench", "matches.tsv")):
             parts.append(corpus_report(name, folder))
+            folders.append((name, folder))
+    air = air_punch_rows(folders)
+    if air:
+        parts.append(air)
     text = "\n\n".join(parts) if parts else "(no corpus benched)"
     with open(os.path.join(phys, "report.txt"), "w", encoding="utf-8", newline="\n") as f:
         f.write(text + "\n")

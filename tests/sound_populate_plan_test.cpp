@@ -515,6 +515,76 @@ static void TestLoopPassFillRecord()
     CHECK(draws.size() == 1 && draws[0].node == "a");
 }
 
+// 13-35 fix: a Sync draws what is placed. A record drawn again apart from its sounds (Random pick 1 stored, child 0
+// placed) is repaired, every pick kept against avoid repeat, a variation no longer on drawn again; the record keeps
+// the hand flags as stored and a pass's entries untouched.
+static void TestSyncKeptDraws()
+{
+    // Random(a, b), each with 3 variations; the event stored pick 1 (b, variation 0) but a, variation 2 plays.
+    SoundLibrary lib;
+    lib.uid = "L";
+    lib.root = "r";
+    lib.nodes = {Node("r", "", SoundNodeType::Random), Leaf("a", "r", 3), Leaf("b", "r", 3)};
+    const SoundStore empty;
+    const std::string pass_key = PassDrawKey("r", 2);
+    const std::vector<SoundDraw> stored = {SoundDraw{"r", 1, false, {}, ""}, SoundDraw{"b", 0, true, {}, ""},
+                                           SoundDraw{pass_key, 1, false, {}, ""}};
+    const std::vector<SoundDraw> kept = SyncKeptDraws(lib, stored, {PlacedPick{"a", 2, ""}});
+    CHECK(kept.size() == 4);
+    CHECK(kept[0].node == "r" && kept[0].pick == 0 && !kept[0].hand);  // repaired: child 0 plays
+    CHECK(kept[1].node == "b" && kept[1].pick == 0 && kept[1].hand);    // not on the way: as stored, hand kept
+    CHECK(kept[2].node == pass_key && kept[2].pick == 1);               // a pass's entry untouched
+    CHECK(kept[3].node == "a" && kept[3].pick == 2 && !kept[3].hand);   // added, never by hand
+    // A part's draw is left as stored.
+    CHECK(SyncKeptDraws(lib, {}, {PlacedPick{"a", 1, "p"}}).size() == 1);
+    // Whatever the history (avoid repeat would draw 0 and 2 again), the Sync keeps what plays: a, variation 2.
+    auto sync_draw = [&](const std::vector<SoundDraw>& k, const std::vector<int>& hist_r, const std::vector<int>& hist_a,
+                         EventDraw& ed) {
+        std::vector<SoundDraw> as_hand = k;
+        for (SoundDraw& d : as_hand)
+            if (!ParsePassDrawKey(d.node, nullptr, nullptr)) d.hand = true;
+        PopulateDrawState ps;
+        ps.lib = &lib;
+        ps.seed = 99;
+        ps.history["r"] = hist_r;
+        ps.history["a"] = hist_a;
+        ed.rid = "r1";
+        ed.t = 1.0;
+        ed.prev = &as_hand;
+        return ResolveEvent(empty, lib, ValueLayers(), MakeDrawHooks(ps, ed, nullptr));
+    };
+    {
+        EventDraw ed;
+        const Resolution res = sync_draw(kept, {0}, {2, 1}, ed);
+        CHECK(res.sounds.size() == 1 && res.sounds[0].node == "a" && res.sounds[0].variation == 2);
+        const std::vector<SoundDraw> rec = SyncRecordDraws(kept, ed.out);
+        CHECK(rec.size() == 3);  // the pass's entry is the caller's
+        CHECK(rec[0].node == "r" && rec[0].pick == 0 && !rec[0].hand);
+        CHECK(rec[1].node == "b" && rec[1].hand);  // the hand flag exactly as stored
+        CHECK(rec[2].node == "a" && rec[2].pick == 2 && !rec[2].hand);
+    }
+    {  // Variation 2 switched off: drawn again (0 or 1), recorded as drawn (never by hand).
+        SoundLibrary off = lib;
+        for (SoundNode& n : off.nodes)
+            if (n.uid == "a") n.sound.frames[2].on = false;
+        std::vector<SoundDraw> as_hand = kept;
+        for (SoundDraw& d : as_hand)
+            if (!ParsePassDrawKey(d.node, nullptr, nullptr)) d.hand = true;
+        PopulateDrawState ps;
+        ps.lib = &off;
+        ps.seed = 99;
+        EventDraw ed;
+        ed.rid = "r1";
+        ed.t = 1.0;
+        ed.prev = &as_hand;
+        const Resolution res = ResolveEvent(empty, off, ValueLayers(), MakeDrawHooks(ps, ed, nullptr));
+        CHECK(res.sounds.size() == 1 && res.sounds[0].node == "a" && res.sounds[0].variation >= 0 &&
+              res.sounds[0].variation != 2);
+        const std::vector<SoundDraw> rec = SyncRecordDraws(kept, ed.out);
+        CHECK(rec.size() == 3 && rec[2].node == "a" && rec[2].pick == res.sounds[0].variation && !rec[2].hand);
+    }
+}
+
 // ---- 13-62i (D): Blend layers placed as heard (the spec's Blend matrix rows) ------------------------
 
 // One event of the item, as Populate walks them (time order): its rule, role, stored draws, placed or not.
@@ -1447,6 +1517,7 @@ int main()
     TestBlendMatrix();
     TestLoopPassDraws();
     TestLoopPassFillRecord();
+    TestSyncKeptDraws();  // 13-35 fix
     // ---- P1: orphan rules ----
     {
         ItemSounds it;

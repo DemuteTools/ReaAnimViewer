@@ -766,7 +766,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
         // P10: the draw.
         st.lib = lib;
         st.at = at;
-        const std::vector<SoundDraw> prev = ev->draws;
+        std::vector<SoundDraw> prev = ev->draws;
         EventDraw ed;
         ed.rid = rid;
         ed.t = ev->t;
@@ -782,13 +782,45 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
         };
         ValueLayers layers = ea.layers;
         if (const auto ro = role_of.find(rid); ro != role_of.end()) layers.role = ro->second;  // 13-23: picks the part
+        // 13-35 fix: a Sync keeps the draw that plays. Its stored draws, each Random's child and each Sound's variation
+        // read from what is placed (a record drawn again apart from its sounds is repaired: SyncKeptDraws), every pick
+        // kept as is (read as by hand: avoid repeat never draws it again) unless no longer on.
+        std::vector<SoundDraw> sync_prev;
+        if (o.sync) {
+            std::vector<double> pass_t;
+            for (const FollowPass& fp : e.passes) pass_t.push_back(fp.project_t);
+            std::vector<PlacedPick> main;
+            for (const SoundPlacement& p : ev->placed) {
+                if (p.own != Ownership::Populated) continue;
+                MediaItem* it = FindItemByGuid(p.item_guid);
+                if (!it) continue;
+                PlacedTag tag;
+                const bool has_tag = ReadPlacedTag(it, &tag);
+                if (pass_draws) {  // New variation per pass: the event's own draw is what its first pass plays
+                    double anchor = 0.0, sync = 0.0;
+                    PlacedPileAnchor(it, &anchor, &sync);
+                    const int x = NearestPassOfItem(pass_t, anchor, sync, BlendOffsetMs(*lib, p.node, layers.role));
+                    if (x < 0 || static_cast<size_t>(x) >= e.passes.size() || e.passes[static_cast<size_t>(x)].id != 0) continue;
+                }
+                main.push_back(PlacedPick{p.node, p.variation, has_tag ? tag.pt : std::string()});
+            }
+            prev = SyncKeptDraws(*lib, ev->draws, main);
+            sync_prev = prev;
+            for (SoundDraw& d : sync_prev)
+                if (!ParsePassDrawKey(d.node, nullptr, nullptr)) d.hand = true;  // this draw's only, never recorded
+            ed.prev = &sync_prev;
+        }
         const Resolution res = ResolveEvent(store, *lib, layers, MakeDrawHooks(st, ed, is_missing));
         std::vector<SoundDraw> draws = ed.out;
-        for (const SoundDraw& d : prev) {  // a hand pick on a branch not walked now is kept
-            bool have = false;
-            for (const SoundDraw& x : draws)
-                if (x.node == d.node) have = true;
-            if (!have && d.hand) draws.push_back(d);
+        if (o.sync) {
+            draws = SyncRecordDraws(prev, ed.out);  // what plays, and what the Sync drew again (hand flags as stored)
+        } else {
+            for (const SoundDraw& d : prev) {  // a hand pick on a branch not walked now is kept
+                bool have = false;
+                for (const SoundDraw& x : draws)
+                    if (x.node == d.node) have = true;
+                if (!have && d.hand) draws.push_back(d);
+            }
         }
         if (!o.fill_passes) {  // 13-56 review: a fill keeps the event's draw as it is
             // 13-59: the loop passes' own picks are kept (those drawn below replace theirs). Review: only

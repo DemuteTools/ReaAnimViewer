@@ -733,7 +733,8 @@ std::string SyncToastText(const SyncCounts& c, bool remembered)
     if (c.redrawn) parts += ", " + std::to_string(c.redrawn) + " redrawn";
     if (c.kept) parts += ", " + SyncPlural(c.kept, "hand edit") + " kept";
     if (c.overwritten) parts += ", " + std::to_string(c.overwritten) + " overwritten";
-    if (c.skipped) parts += ", " + std::to_string(c.skipped) + " skipped";
+    if (c.skipped)
+        parts += ", " + std::to_string(c.skipped) + " skipped (their sound no longer matches the library's draw: Populate them again)";
     if (c.repopulated) parts += ", " + SyncPlural(c.repopulated, "item") + " placed again";  // 13-35b
     std::string out = "One undo point \xE2\x80\x9CRAV: Sync placed sounds\xE2\x80\x9D: " + parts;
     if (remembered) out += " \xC2\xB7 remembered in \xE2\x98\xB0 \xE2\x80\xBA Sounds";

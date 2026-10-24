@@ -498,6 +498,51 @@ std::vector<SoundDraw> PassDrawsFromPlaced(const SoundLibrary& lib, const std::v
     return out;
 }
 
+std::vector<SoundDraw> SyncKeptDraws(const SoundLibrary& lib, const std::vector<SoundDraw>& stored,
+                                     const std::vector<PlacedPick>& placed)
+{
+    std::vector<SoundDraw> out = stored;
+    for (const SoundDraw& p : PassDrawsFromPlaced(lib, placed)) {
+        if (!p.part.empty()) continue;  // a part's draw: as stored
+        SoundDraw* d = nullptr;
+        for (SoundDraw& x : out)
+            if (x.node == p.node) d = &x;  // a pass's entry is keyed "uid#pN": never this one
+        if (!d) {
+            out.push_back(p);
+            continue;
+        }
+        if (d->pick == p.pick) continue;
+        d->pick = p.pick;
+        d->kept.clear();
+    }
+    return out;
+}
+
+std::vector<SoundDraw> SyncRecordDraws(const std::vector<SoundDraw>& kept, const std::vector<SoundDraw>& out)
+{
+    std::vector<SoundDraw> rec;
+    for (const SoundDraw& k : kept) {
+        if (ParsePassDrawKey(k.node, nullptr, nullptr)) continue;
+        SoundDraw d = k;
+        for (const SoundDraw& o : out)
+            if (o.node == k.node && o.pick != k.pick) {
+                d = o;
+                d.hand = false;
+            }
+        rec.push_back(d);
+    }
+    for (const SoundDraw& o : out) {
+        bool have = false;
+        for (const SoundDraw& k : kept)
+            if (k.node == o.node) have = true;
+        if (have) continue;
+        SoundDraw d = o;
+        d.hand = false;
+        rec.push_back(d);
+    }
+    return rec;
+}
+
 void PrunePassDraws(std::vector<SoundDraw>& draws, const std::set<long long>& keep)
 {
     draws.erase(std::remove_if(draws.begin(), draws.end(),

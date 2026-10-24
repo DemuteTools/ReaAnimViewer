@@ -290,6 +290,16 @@ struct PlacedPick {
 // Sound's variation (none when -1, as copied) and, above it, each Random's child on its way. A fill that
 // finds a pass already playing seeds that pass's entries from it, so a later Populate keeps it.
 std::vector<SoundDraw> PassDrawsFromPlaced(const SoundLibrary& lib, const std::vector<PlacedPick>& placed);
+// 13-35 fix: what a Sync reads as an event's stored draws: `stored`, each Random's child on the way of a sound
+// `placed` (the main draw's) and each placed Sound's variation (its whole: part "") taken from what is placed, so a
+// record drawn again apart from its sounds draws what plays. Hand flags as stored (a pick missing from `stored`
+// added, never by hand); a pass's entries and a part's draws as stored.
+std::vector<SoundDraw> SyncKeptDraws(const SoundLibrary& lib, const std::vector<SoundDraw>& stored,
+                                     const std::vector<PlacedPick>& placed);
+// 13-35 fix: a Sync's record of an event: the event's own entries of `kept` (SyncKeptDraws; a pass's left out:
+// the caller keeps them), each replaced by the entry of `out` (its EventDraw::out) for that node only when the Sync
+// drew it again (another pick: never by hand), the nodes `out` walked that `kept` lacks added (never by hand).
+std::vector<SoundDraw> SyncRecordDraws(const std::vector<SoundDraw>& kept, const std::vector<SoundDraw>& out);
 // 13-59 review: drops the pass entries whose pass is not in `keep` (a pass cut off; every pass when
 // `keep` is empty), so the record does not grow with passes that no longer play.
 void PrunePassDraws(std::vector<SoundDraw>& draws, const std::set<long long>& keep);

@@ -87,6 +87,8 @@ struct TreeState {
     // Drag.
     std::string              drag_lib;
     std::vector<LibraryRow>  drag_rows;
+    DropTarget               drop_to;          // the allowed target under the drag (the bubble's)
+    int                      drop_frame = -1;  // the frame it was noted on
     std::string              hover_uid;
     double                   hover_since = 0.0;
     // Menus.
@@ -142,16 +144,6 @@ bool SoundMissing(const SoundNode& n)
 
 // The library's missing Sounds with their reason: the row's count and tooltip, and the Missing sounds window.
 std::vector<MissingSound> MissingOf(const SoundLibrary& lib) { return ListMissingSounds(lib); }
-
-const char* TypeWord(SoundNodeType t)
-{
-    switch (t) {
-    case SoundNodeType::Sound:  return "Sound";
-    case SoundNodeType::Random: return "Random";
-    case SoundNodeType::Blend:  return "Blend";
-    default:                    return "Switch";
-    }
-}
 
 // 13-72: a node as menus and toasts name it (its name, else its type).
 std::string NodeName(const SoundNode& n) { return n.name.empty() ? std::string(TypeWord(n.type)) : n.name; }
@@ -985,13 +977,9 @@ void RowMenu(const SoundLibrary& lib)
 
 // ---- Drag and drop ------------------------------------------------------------------------------
 
-std::string DragGhost(const SoundLibrary& lib, const std::vector<LibraryRow>& rows)
-{
-    if (rows.size() > 1) return std::to_string(rows.size()) + " rows";
-    const SoundNode* n = rows.empty() ? nullptr : FindNode(lib, RowNode(lib, rows.front()));
-    return n ? n->name : std::string("1 sound");
-}
-
+// The drag's bubble (spec library-drag-move-not-swap, the 13-69 pattern): what the drop on the
+// target the mouse was over (recorded by RootDropOn / RowDropTarget this frame or last) does, with
+// Alt read live; elsewhere or on a refused target, the dragged name(s) only.
 void RowDragSource(const SoundLibrary& lib, const TreeRow& r)
 {
     if (r.node.empty() || r.node == lib.root) return;
@@ -999,12 +987,30 @@ void RowDragSource(const SoundLibrary& lib, const TreeRow& r)
     if (ImGui::GetDragDropPayload() == nullptr || !ImGui::GetDragDropPayload()->IsDataType(kRowsPayload)) {
         g.drag_lib = lib.uid;
         g.drag_rows = IsSel(r.row) ? g.sel : std::vector<LibraryRow>{r.row};
+        g.drop_frame = -1;
     }
     const int dummy = 1;
     ImGui::SetDragDropPayload(kRowsPayload, &dummy, sizeof(dummy));
-    ImGui::TextUnformatted(DragGhost(lib, g.drag_rows).c_str());
+    const SoundLibrary* src = FindLibrary(GetSoundStore(nullptr), g.drag_lib);
+    if (g.drop_frame >= ImGui::GetFrameCount() - 1) {
+        const DropHintText h = DropHint(GetSoundStore(nullptr), g.drag_lib, g.drag_rows, g.drop_to, ImGui::GetIO().KeyAlt);
+        ImGui::TextUnformatted(h.text.c_str());
+        if (!h.swap_hint.empty()) ui::ToneText(h.swap_hint);
+    } else {
+        ImGui::TextUnformatted(DragLabel(src ? *src : lib, g.drag_rows).c_str());
+    }
     ImGui::EndDragDropSource();
 }
+
+// An allowed rows drag is over `to` this frame: the bubble's target.
+void NoteDropTarget(const DropTarget& to)
+{
+    g.drop_to = to;
+    g.drop_frame = ImGui::GetFrameCount();
+}
+
+// Alt held at the drop swaps with a taken value's content (when a swap can be).
+TakenValue DropTakenValue() { return ImGui::GetIO().KeyAlt ? TakenValue::Swap : TakenValue::Default; }
 
 // Bug 6: a Media Explorer drag (LibraryTreeHooks::media_payload_type, set by the media panel) onto
 // a row or the empty space (the root): highlighted while over it, handed to media_drop on release.
@@ -1049,10 +1055,11 @@ void RootDropOn(const SoundLibrary& lib, ImVec2 p0, ImVec2 p1)
             ImDrawList* dl = ImGui::GetWindowDrawList();
             dl->AddRectFilled(p0, p1, ui::kAccentSoft, ui::kRadiusMd);
             dl->AddRect(ImVec2(p0.x + 1.0f, p0.y + 1.0f), ImVec2(p1.x - 1.0f, p1.y - 1.0f), ui::kAccent, ui::kRadiusMd, 0, 2.0f);
+            NoteDropTarget(to);
             if (ImGui::AcceptDragDropPayload(kRowsPayload, ImGuiDragDropFlags_AcceptNoDrawDefaultRect)) {
-                Later([src = g.drag_lib, rows = g.drag_rows, lib_uid = lib.uid, to] {
+                Later([src = g.drag_lib, rows = g.drag_rows, lib_uid = lib.uid, to, taken = DropTakenValue()] {
                     std::vector<std::string> moved;
-                    if (Gesture("Move", [&](SoundStore& s) { return MoveRows(s, src, rows, to, &moved); }))
+                    if (Gesture("Move", [&](SoundStore& s) { return MoveRows(s, src, rows, to, &moved, taken); }))
                         FocusNew(lib_uid, moved, false);
                 });
                 g.drag_rows.clear();
@@ -1115,10 +1122,11 @@ void RowDropTarget(const SoundLibrary& lib, const TreeRow& r, ImVec2 p0, ImVec2 
                 dl->AddRectFilled(p0, p1, ui::kAccentSoft, ui::kRadiusSm);
                 dl->AddRect(ImVec2(p0.x + 1.0f, p0.y + 1.0f), ImVec2(p1.x - 1.0f, p1.y - 1.0f), ui::kAccent, ui::kRadiusSm, 0, 2.0f);
             }
+            NoteDropTarget(to);
             if (ImGui::AcceptDragDropPayload(kRowsPayload, ImGuiDragDropFlags_AcceptNoDrawDefaultRect)) {
-                Later([src = g.drag_lib, rows = g.drag_rows, lib_uid = lib.uid, to] {
+                Later([src = g.drag_lib, rows = g.drag_rows, lib_uid = lib.uid, to, taken = DropTakenValue()] {
                     std::vector<std::string> moved;
-                    if (!Gesture("Move", [&](SoundStore& s) { return MoveRows(s, src, rows, to, &moved); })) return;
+                    if (!Gesture("Move", [&](SoundStore& s) { return MoveRows(s, src, rows, to, &moved, taken); })) return;
                     if (const SoundLibrary* dl2 = FindLibrary(GetSoundStore(nullptr), lib_uid)) {
                         g.sel.clear();
                         for (const std::string& m : moved) {

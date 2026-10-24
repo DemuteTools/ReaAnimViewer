@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 
+#include "library_tree_edit.h"  // SlotLabel, TypeWord
 #include "sound_entries.h"  // 13-67c: RefreshParts
 #include "sound_record.h"
 
@@ -25,30 +26,7 @@ LibraryRow RowOrRoot(const SoundLibrary& lib, const LibraryRow* row)
     return *row;
 }
 
-// The name a slot is shown with: a value row's value name, else its node's name.
-std::string SlotLabel(const SoundStore& store, const SoundLibrary& lib, const LibraryRow& r)
-{
-    if (RowIsValue(lib, r)) {
-        const SoundNode* sw = FindNode(lib, r.parent);
-        const SwitchGroup* g = sw ? FindGroup(store, sw->group_uid) : nullptr;
-        if (g)
-            for (const SwitchValue& v : g->values)
-                if (v.uid == r.key) return v.name;
-        return "the value";
-    }
-    const SoundNode* n = FindNode(lib, RowNode(lib, r));
-    return n ? n->name : std::string();
-}
-
-const char* TypeWord(SoundNodeType t)
-{
-    switch (t) {
-    case SoundNodeType::Random: return "Random";
-    case SoundNodeType::Blend: return "Blend";
-    case SoundNodeType::Switch: return "Switch";
-    default: return "Sound";
-    }
-}
+// SlotLabel and TypeWord: library_tree_edit.h (shared with the tree's drag bubble).
 
 std::string Plural(int n, const char* word)
 {

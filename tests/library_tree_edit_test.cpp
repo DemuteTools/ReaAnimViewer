@@ -136,6 +136,7 @@ static void TestMultiDropOnValue()
     CHECK(moved.size() == 3);
 }
 
+// Alt at the drop (TakenValue::Swap): one row of the same library swaps with the value's content.
 static void TestSwapOnTakenValue()
 {
     SoundStore s = Store();
@@ -144,20 +145,136 @@ static void TestSwapOnTakenValue()
     l->nodes.push_back(Node("z", "gr", SoundNodeType::Sound, "Z"));
     // X from Random gr onto Wood (holds y): Wood = x, y in gr at x's place (before z).
     DropTarget to{"L", {"sw", "vwood"}, DropMode::OntoValue};
-    CHECK(MoveRows(s, "L", {{"gr", "x"}}, to, nullptr));
+    const std::string before = SerializeSoundStore(s);
+    CHECK(MoveRows(s, "L", {{"gr", "x"}}, to, nullptr, TakenValue::Swap));
     CHECK(Case(s, "L", "sw", "vwood") == "x");
     std::vector<const SoundNode*> kids = ChildrenOf(*FindLibrary(s, "L"), "gr");
     CHECK(kids.size() == 3 && kids[1]->uid == "y" && kids[2]->uid == "z");
     CHECK(N(s, "L", "y")->parent == "gr");
     CHECK(N(s, "L", "x")->parent == "sw");
-    // From another library: the old content goes to Unassigned.
+    CHECK(N(s, "L", "sw")->unassigned.empty());
+    CHECK(SerializeSoundStore(s) != before);
+    // From another library, Alt held: as without Alt (keep both: X + O in a new Random "Wood").
     SoundLibrary* m = FindLibrary(s, "M");
     m->nodes.push_back(Node("o", "mr", SoundNodeType::Sound, "O"));
-    CHECK(MoveRows(s, "M", {{"mr", "o"}}, to, nullptr));
-    CHECK(Has(N(s, "L", "sw")->unassigned, "x"));
+    CHECK(MoveRows(s, "M", {{"mr", "o"}}, to, nullptr, TakenValue::Swap));
     CHECK(N(s, "M", "o") == nullptr);
     const std::string nw = Case(s, "L", "sw", "vwood");
-    CHECK(!nw.empty() && nw != "o" && N(s, "L", nw)->name == "O");
+    const SoundNode* h = N(s, "L", nw);
+    CHECK(h && h->type == SoundNodeType::Random && h->name == "Wood");
+    std::vector<const SoundNode*> hk = ChildrenOf(*FindLibrary(s, "L"), nw);
+    CHECK(hk.size() == 2 && hk[0]->uid == "x" && hk[1]->name == "O");
+    CHECK(N(s, "L", "sw")->unassigned.empty());
+}
+
+// Spec library-drag-move-not-swap (Antho 2026-10-24): a move onto a taken value keeps both.
+static void TestMoveOntoTakenValue()
+{
+    // Sound there: a new Random named after the value, the old Sound then the moved one.
+    SoundStore s = Store();
+    SoundLibrary* l = FindLibrary(s, "L");
+    l->nodes.push_back(Node("x", "gr", SoundNodeType::Sound, "X"));
+    l->nodes.push_back(Node("z", "gr", SoundNodeType::Sound, "Z"));
+    DropTarget wood{"L", {"sw", "vwood"}, DropMode::OntoValue};
+    std::vector<std::string> moved;
+    CHECK(MoveRows(s, "L", {{"gr", "x"}}, wood, &moved));
+    std::string hu = Case(s, "L", "sw", "vwood");
+    const SoundNode* h = N(s, "L", hu);
+    CHECK(h && h->type == SoundNodeType::Random && h->name == "Wood" && h->parent == "sw");
+    std::vector<const SoundNode*> k = ChildrenOf(*FindLibrary(s, "L"), hu);
+    CHECK(k.size() == 2 && k[0]->uid == "y" && k[1]->uid == "x");
+    CHECK(moved.size() == 1 && moved[0] == "x");
+    CHECK(N(s, "L", "sw")->unassigned.empty());
+    CHECK(ChildrenOf(*FindLibrary(s, "L"), "gr").size() == 2);  // g1, z
+    // Now a Random there: Z goes into it, last.
+    CHECK(MoveRows(s, "L", {{"gr", "z"}}, wood, nullptr));
+    CHECK(Case(s, "L", "sw", "vwood") == hu);
+    k = ChildrenOf(*FindLibrary(s, "L"), hu);
+    CHECK(k.size() == 3 && k[2]->uid == "z");
+
+    // Several rows onto a Sound: one new Random holding Y, X, Z.
+    SoundStore t = Store();
+    FindLibrary(t, "L")->nodes.push_back(Node("x", "gr", SoundNodeType::Sound, "X"));
+    FindLibrary(t, "L")->nodes.push_back(Node("z", "gr", SoundNodeType::Sound, "Z"));
+    CHECK(MoveRows(t, "L", {{"gr", "x"}, {"gr", "z"}}, wood, nullptr));
+    hu = Case(t, "L", "sw", "vwood");
+    k = ChildrenOf(*FindLibrary(t, "L"), hu);
+    CHECK(N(t, "L", hu)->name == "Wood" && k.size() == 3 && k[0]->uid == "y" && k[1]->uid == "x" && k[2]->uid == "z");
+    // Several rows onto a Random (Grass holds gr): both go into it.
+    FindLibrary(t, "L")->nodes.push_back(Node("a", "sw", SoundNodeType::Sound, "A"));
+    FindNode(*FindLibrary(t, "L"), "sw")->unassigned.push_back("a");
+    CHECK(MoveRows(t, "L", {{"sw", "a"}, {hu, "x"}}, {"L", {"sw", "vgrass"}, DropMode::OntoValue}, nullptr));
+    CHECK(Case(t, "L", "sw", "vgrass") == "gr");
+    k = ChildrenOf(*FindLibrary(t, "L"), "gr");
+    CHECK(k.size() == 3 && k[1]->uid == "a" && k[2]->uid == "x");
+    CHECK(N(t, "L", "sw")->unassigned.empty());
+
+    // A Switch there: a new Random holding the Switch then the moved row.
+    SoundStore u = Store();
+    SoundLibrary* ul = FindLibrary(u, "L");
+    SoundNode inner = Node("isw", "sw", SoundNodeType::Switch, "Inner");
+    inner.group_uid = "gmat";
+    ul->nodes.push_back(inner);
+    FindNode(*ul, "sw")->cases.push_back({"vconc", "isw", {}});
+    CHECK(MoveRows(u, "L", {{"gr", "g1"}}, {"L", {"sw", "vconc"}, DropMode::OntoValue}, nullptr));
+    hu = Case(u, "L", "sw", "vconc");
+    k = ChildrenOf(*FindLibrary(u, "L"), hu);
+    CHECK(N(u, "L", hu)->name == "Concrete" && k.size() == 2 && k[0]->uid == "isw" && k[1]->uid == "g1");
+
+    // A child of the value's Random dropped onto that same value: it stays in the Random, last (Alt too).
+    for (int alt = 0; alt < 2; ++alt) {
+        SoundStore g = Store();
+        FindLibrary(g, "L")->nodes.push_back(Node("x", "gr", SoundNodeType::Sound, "X"));
+        FindLibrary(g, "L")->nodes.push_back(Node("z", "gr", SoundNodeType::Sound, "Z"));
+        CHECK(MoveRows(g, "L", {{"gr", "x"}}, {"L", {"sw", "vgrass"}, DropMode::OntoValue}, nullptr,
+                       alt ? TakenValue::Swap : TakenValue::Default));
+        CHECK(Case(g, "L", "sw", "vgrass") == "gr");
+        k = ChildrenOf(*FindLibrary(g, "L"), "gr");
+        CHECK(k.size() == 3 && k.back()->uid == "x");
+        CHECK(std::count_if(k.begin(), k.end(), [](const SoundNode* n) { return n->uid == "x"; }) == 1);
+        CHECK(N(g, "L", "sw")->unassigned.empty());
+    }
+
+    // A copy onto a taken value keeps 13-70's rule: the old content goes to Unassigned.
+    SoundStore c = Store();
+    CHECK(CopyRows(c, "L", {{"gr", "g1"}}, wood, nullptr));
+    CHECK(Has(N(c, "L", "sw")->unassigned, "y"));
+}
+
+static void TestDropHint()
+{
+    SoundStore s = Store();
+    SoundLibrary* l = FindLibrary(s, "L");
+    l->nodes.push_back(Node("x", "gr", SoundNodeType::Sound, "X"));
+    l->nodes.push_back(Node("z", "gr", SoundNodeType::Sound, "Z"));
+    FindLibrary(s, "M")->nodes.push_back(Node("o", "mr", SoundNodeType::Sound, "O"));
+    const DropTarget wood{"L", {"sw", "vwood"}, DropMode::OntoValue};
+    const DropTarget conc{"L", {"sw", "vconc"}, DropMode::OntoValue};
+    const DropTarget grass{"L", {"sw", "vgrass"}, DropMode::OntoValue};
+    DropHintText h = DropHint(s, "L", {{"gr", "x"}}, conc, false);
+    CHECK(h.text == "Move to Concrete" && h.swap_hint.empty());
+    h = DropHint(s, "L", {{"gr", "x"}, {"gr", "z"}}, conc, false);
+    CHECK(h.text == "Move to Concrete: 2 rows in a new Random" && h.swap_hint.empty());
+    h = DropHint(s, "L", {{"gr", "x"}}, wood, false);
+    CHECK(h.text == "Move to Wood: Y + X in a new Random" && h.swap_hint == "Hold Alt: swap with Y");
+    h = DropHint(s, "L", {{"gr", "x"}}, wood, true);
+    CHECK(h.text == "Swap with Y" && h.swap_hint.empty());
+    // Onto a Random there: into it; a swap is impossible from inside it (x is in gr).
+    h = DropHint(s, "L", {{"gr", "x"}}, grass, true);
+    CHECK(h.text == "Move into Grass" && h.swap_hint.empty());
+    // Several rows / another library: no swap line, Alt changes nothing.
+    h = DropHint(s, "L", {{"gr", "x"}, {"gr", "z"}}, wood, true);
+    CHECK(h.text == "Move to Wood: Y + 2 rows in a new Random" && h.swap_hint.empty());
+    h = DropHint(s, "M", {{"mr", "o"}}, wood, false);
+    CHECK(h.text == "Move to Wood: Y + O in a new Random" && h.swap_hint.empty());
+    // Before / After / Into.
+    CHECK(DropHint(s, "L", {{"gr", "x"}}, {"L", {"gr", "z"}, DropMode::Before}, false).text == "Move before Z");
+    CHECK(DropHint(s, "L", {{"gr", "z"}}, {"L", {"gr", "g1"}, DropMode::After}, true).text == "Move after G1");
+    CHECK(DropHint(s, "L", {{"gr", "x"}}, {"M", {"", "mr"}, DropMode::Into}, false).text == "Move into Other");
+    // Refused (a container into itself): the dragged name only.
+    h = DropHint(s, "L", {{"sw", "vgrass"}}, {"L", {"sw", "vgrass"}, DropMode::Into}, true);
+    CHECK(h.text == "GrassR" && h.swap_hint.empty());
+    CHECK(DropHint(s, "L", {{"gr", "x"}, {"gr", "z"}}, {"L", {"gr", "x"}, DropMode::Before}, false).text == "2 rows");
 }
 
 static void TestRemoveSubtree()
@@ -1072,6 +1189,8 @@ int main()
     TestMoveIntoDescendant();
     TestMultiDropOnValue();
     TestSwapOnTakenValue();
+    TestMoveOntoTakenValue();
+    TestDropHint();
     TestRemoveSubtree();
     TestDeleteGroupInUse();
     TestShiftRangeByLevel();

@@ -838,9 +838,40 @@ bool CanDrop(const SoundStore& store, const std::string& src_lib, const std::vec
 
 namespace {
 
+// What a placing does with a taken value's old content: 13-70's Copy / Paste sends it to that
+// Switch's Unassigned; a move keeps both (TakenValue::Default) or swaps (TakenValue::Swap).
+enum class TakenRule { ToUnassigned, KeepBoth, Swap };
+
+// The content of the value `to` points at, unless it is one of the moved nodes ("" = none).
+std::string TakenContent(const SoundLibrary& src, const std::vector<std::string>& nodes, const SoundLibrary& dst,
+                         const DropTarget& to, const ResolvedDrop& d, bool copy)
+{
+    if (to.mode != DropMode::OntoValue) return {};
+    const SoundNode* sw = FindNode(dst, d.container);
+    std::string old = sw ? CaseChild(*sw, to.row.key) : std::string();
+    if (!copy && &src == &dst && std::find(nodes.begin(), nodes.end(), old) != nodes.end()) old.clear();
+    return old;
+}
+
+// A swap is possible: one row of the same library, the old content can take its place (the place
+// is not inside the old content).
+bool SwapPossible(const SoundLibrary& src, const std::vector<std::string>& nodes, const SoundLibrary& dst,
+                  const std::string& old)
+{
+    if (&src != &dst || nodes.size() != 1 || old.empty()) return false;
+    const SoundNode* n = FindNode(src, nodes.front());
+    if (!n || n->uid == src.root || n->parent.empty() || !FindNode(src, n->parent)) return false;
+    return !IsInSubtree(dst, n->parent, old);
+}
+
+bool HoldsRows(const SoundNode* n)
+{
+    return n && (n->type == SoundNodeType::Random || n->type == SoundNodeType::Blend);
+}
+
 // MoveRows' body; `copy` = Copy / Paste (CopySubtree each row, the originals stay).
 bool PlaceRows(SoundStore& store, const std::string& src_lib, const std::vector<LibraryRow>& rows, const DropTarget& to,
-               bool copy, std::vector<std::string>* moved)
+               bool copy, TakenRule rule, std::vector<std::string>* moved)
 {
     std::vector<std::string> out;
     bool ok = Transact(store, [&](SoundStore& s) {
@@ -853,14 +884,11 @@ bool PlaceRows(SoundStore& store, const std::string& src_lib, const std::vector<
         const bool same = src == dst;
 
         // Onto a value: what it held before (unless it is one of the moved rows).
-        std::string old;
-        if (to.mode == DropMode::OntoValue) {
-            const SoundNode* sw = FindNode(*dst, d.container);
-            old = sw ? CaseChild(*sw, to.row.key) : std::string();
-            if (!copy && same && std::find(nodes.begin(), nodes.end(), old) != nodes.end()) old.clear();
-        }
+        const std::string old = TakenContent(*src, nodes, *dst, to, d, copy);
+        const bool swap = !copy && rule == TakenRule::Swap && SwapPossible(*src, nodes, *dst, old);
+        const bool keep_both = !copy && !old.empty() && !swap;  // a Swap that cannot be: as Default
         Slot from;
-        if (!copy && same && nodes.size() == 1) from = SlotOf(*src, nodes.front());
+        if (swap) from = SlotOf(*src, nodes.front());
 
         // Take the moved nodes out (or copy them over).
         std::vector<std::string> placed;
@@ -876,14 +904,23 @@ bool PlaceRows(SoundStore& store, const std::string& src_lib, const std::vector<
             }
         }
 
-        if (to.mode == DropMode::OntoValue) {
+        if (to.mode == DropMode::OntoValue && keep_both && HoldsRows(FindNode(*dst, old))) {
+            // Default onto a Random / Blend: the moved rows go into it, last.
+            for (const std::string& p : placed) {
+                Detach(*dst, p);
+                FindNode(*dst, p)->parent = old;
+                MoveLineBefore(*dst, p, "");
+            }
+        } else if (to.mode == DropMode::OntoValue) {
             Slot vs;
             vs.parent = d.container;
             vs.value = to.row.key;
             if (!old.empty()) Detach(*dst, old);
-            if (placed.size() == 1) {
+            if (placed.size() == 1 && !keep_both) {
                 Attach(*dst, placed.front(), vs);
             } else {
+                // Several rows, or (Default) a Sound / Switch there: a new Random named after the
+                // value, holding the old content first, then the moved rows.
                 const SoundNode* sw = FindNode(*dst, d.container);
                 const SwitchValue* v = sw ? FindValue(s, sw->group_uid, to.row.key) : nullptr;
                 NewNodeSpec rs;
@@ -893,18 +930,19 @@ bool PlaceRows(SoundStore& store, const std::string& src_lib, const std::vector<
                 std::string hu = holder.uid;
                 dst->nodes.push_back(std::move(holder));
                 Attach(*dst, hu, vs);
-                for (const std::string& p : placed) {
+                std::vector<std::string> kids;
+                if (keep_both) kids.push_back(old);
+                kids.insert(kids.end(), placed.begin(), placed.end());
+                for (const std::string& p : kids) {
                     FindNode(*dst, p)->parent = hu;
                     MoveLineBefore(*dst, p, "");
                 }
             }
-            if (!old.empty()) {
-                Slot back;
+            if (!old.empty() && !keep_both) {
+                Slot back;  // Copy / Paste: that Switch's Unassigned; Swap: the moved row's place
                 back.parent = d.container;
                 back.unassigned = true;
-                const bool can_swap = same && placed.size() == 1 && !from.parent.empty() &&
-                                      !IsInSubtree(*dst, from.parent, old) && FindNode(*dst, from.parent);
-                if (can_swap) back = from;
+                if (swap) back = from;
                 Attach(*dst, old, back);
             }
         } else if (to.mode == DropMode::Into || to.row.key == kHintKey) {  // a hint row = into its container
@@ -948,15 +986,91 @@ bool PlaceRows(SoundStore& store, const std::string& src_lib, const std::vector<
 }  // namespace
 
 bool MoveRows(SoundStore& store, const std::string& src_lib, const std::vector<LibraryRow>& rows, const DropTarget& to,
-              std::vector<std::string>* moved)
+              std::vector<std::string>* moved, TakenValue taken)
 {
-    return PlaceRows(store, src_lib, rows, to, false, moved);
+    return PlaceRows(store, src_lib, rows, to, false,
+                     taken == TakenValue::Swap ? TakenRule::Swap : TakenRule::KeepBoth, moved);
 }
 
 bool CopyRows(SoundStore& store, const std::string& src_lib, const std::vector<LibraryRow>& rows, const DropTarget& to,
               std::vector<std::string>* created)
 {
-    return PlaceRows(store, src_lib, rows, to, true, created);
+    return PlaceRows(store, src_lib, rows, to, true, TakenRule::ToUnassigned, created);
+}
+
+std::string SlotLabel(const SoundStore& store, const SoundLibrary& lib, const LibraryRow& r)
+{
+    if (RowIsValue(lib, r)) {
+        const SoundNode* sw = FindNode(lib, r.parent);
+        const SwitchGroup* g = sw ? FindGroup(store, sw->group_uid) : nullptr;
+        if (g)
+            for (const SwitchValue& v : g->values)
+                if (v.uid == r.key) return v.name;
+        return "the value";
+    }
+    const SoundNode* n = FindNode(lib, RowNode(lib, r));
+    return n ? n->name : std::string();
+}
+
+const char* TypeWord(SoundNodeType t)
+{
+    switch (t) {
+    case SoundNodeType::Random: return "Random";
+    case SoundNodeType::Blend: return "Blend";
+    case SoundNodeType::Switch: return "Switch";
+    default: return "Sound";
+    }
+}
+
+std::string DragLabel(const SoundLibrary& lib, const std::vector<LibraryRow>& rows)
+{
+    if (rows.size() > 1) return std::to_string(rows.size()) + " rows";
+    const SoundNode* n = rows.empty() ? nullptr : FindNode(lib, RowNode(lib, rows.front()));
+    return n ? n->name : std::string("1 sound");
+}
+
+DropHintText DropHint(const SoundStore& store, const std::string& src_lib, const std::vector<LibraryRow>& rows,
+                      const DropTarget& to, bool alt)
+{
+    DropHintText h;
+    const SoundLibrary* src = FindLibrary(store, src_lib);
+    const SoundLibrary* dst = FindLibrary(store, to.lib);
+    if (!src) return h;
+    h.text = DragLabel(*src, rows);
+    if (!dst) return h;
+    const std::vector<std::string> nodes = RowNodes(*src, rows, false);
+    const ResolvedDrop d = ResolveDrop(*dst, to);
+    if (!DropAllowed(*src, nodes, *dst, to, d, false)) return h;
+    auto name_of = [&](const std::string& uid) {
+        const SoundNode* n = FindNode(*dst, uid);
+        return !n ? std::string() : n->name.empty() ? std::string(TypeWord(n->type)) : n->name;
+    };
+    if (to.mode == DropMode::OntoValue) {
+        const std::string label = SlotLabel(store, *dst, to.row);
+        const std::string old = TakenContent(*src, nodes, *dst, to, d, false);
+        if (old.empty()) {
+            h.text = "Move to " + label;
+            if (nodes.size() > 1) h.text += ": " + DragLabel(*src, rows) + " in a new Random";
+            return h;
+        }
+        const std::string old_name = name_of(old);
+        if (SwapPossible(*src, nodes, *dst, old)) {
+            if (alt) {
+                h.text = "Swap with " + old_name;
+                return h;
+            }
+            h.swap_hint = "Hold Alt: swap with " + old_name;
+        }
+        if (HoldsRows(FindNode(*dst, old))) h.text = "Move into " + label;
+        else h.text = "Move to " + label + ": " + old_name + " + " + DragLabel(*src, rows) + " in a new Random";
+        return h;
+    }
+    if (to.mode == DropMode::Into || to.row.key == kHintKey) {
+        h.text = "Move into " + name_of(d.container);
+        return h;
+    }
+    h.text = std::string(to.mode == DropMode::After ? "Move after " : "Move before ") + name_of(d.sibling);
+    return h;
 }
 
 // ---- Wrap / group / duplicate -------------------------------------------------------------------

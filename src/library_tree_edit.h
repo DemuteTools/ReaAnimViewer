@@ -102,14 +102,36 @@ struct DropTarget {
 // is allowed (the copy is taken before it is placed); onto its own value still is not.
 bool CanDrop(const SoundStore& store, const std::string& src_lib, const std::vector<LibraryRow>& rows,
              const DropTarget& to, bool copy = false);
-// Moves the rows (drag and drop, Cut / Paste). Onto a value: one row swaps with what was there
-// (the old content takes the moved row's place; from another library or several rows: it goes
-// to Unassigned); several rows become a new Random there. Across libraries the subtrees get
-// new uids. `moved` gets the moved nodes' uids in the destination.
+// What a move onto a value that already plays something does with that content.
+// Default (Antho 2026-10-24, keep both): a Random / Blend there takes the moved rows (last); a Sound
+// or a Switch there goes, with the moved rows after it, into a new Random named after the value.
+// Swap (Alt held at the drop): one row of the same library swaps with what was there (the old
+// content takes the moved row's place); several rows or another library: as Default.
+enum class TakenValue { Default, Swap };
+// Moves the rows (drag and drop, Cut / Paste). Onto an empty value: one row plays it, several
+// rows become a new Random named after the value. Onto a taken value: see TakenValue. Across
+// libraries the subtrees get new uids. `moved` gets the moved nodes' uids in the destination.
 bool MoveRows(SoundStore& store, const std::string& src_lib, const std::vector<LibraryRow>& rows, const DropTarget& to,
-              std::vector<std::string>* moved);
+              std::vector<std::string>* moved, TakenValue taken = TakenValue::Default);
+// The drag's bubble: what a move of `rows` dropped at `to` does (`alt` = Alt held), e.g. "Move
+// before Step_02", "Move into Wood", "Move to Run", "Move to Wood: Y + X in a new Random", "Swap
+// with Y". `swap_hint` = "Hold Alt: swap with Y" when a swap is possible and Alt is not held, else
+// "". A refused drop: the dragged name(s) only (DragLabel).
+struct DropHintText {
+    std::string text;
+    std::string swap_hint;
+};
+DropHintText DropHint(const SoundStore& store, const std::string& src_lib, const std::vector<LibraryRow>& rows,
+                      const DropTarget& to, bool alt);
+// The dragged rows as the drag shows them: one node's name, else "N rows".
+std::string DragLabel(const SoundLibrary& lib, const std::vector<LibraryRow>& rows);
+// The name a slot is shown with: a value row's value name, else its node's name.
+std::string SlotLabel(const SoundStore& store, const SoundLibrary& lib, const LibraryRow& row);
+// "Sound", "Random", "Blend", "Switch".
+const char* TypeWord(SoundNodeType t);
 // 13-70: Copy / Paste. Places a deep copy of each row's subtree (CopySubtree, new uids: children,
-// sounds, settings, Switch cases) at `to` with MoveRows' placing rules; the originals stay. A Switch
+// sounds, settings, Switch cases) at `to` with MoveRows' placing rules, except onto a taken value:
+// the old content goes to that Switch's Unassigned (13-70); the originals stay. A Switch
 // keeps its Switch Group uid: the groups are the store's, shared by every library, so the group
 // always exists in the target library. Assignments do not follow (the copies' uids are new).
 // `created` gets the copies' top uids.

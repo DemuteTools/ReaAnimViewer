@@ -516,11 +516,11 @@ struct SyncRun {
 };
 
 // 13-35: the tag's Library prints and what RAV wrote, stamped from the store now (the item as it is).
-void StampPlaced(MediaItem* it, const SoundLibrary& lib, const std::string& node, int variation)
+void StampPlaced(MediaItem* it, const SoundStore& store, const SoundLibrary& lib, const std::string& node, int variation)
 {
     PlacedTag tag;
     if (!it || !ReadPlacedTag(it, &tag)) return;
-    tag.lib = PathPrints(lib, node, variation);
+    tag.lib = PathPrints(store, lib, node, variation);
     tag.va = variation;
     tag.has_wr = true;
     tag.wr = ReadPlacedWritten(it);
@@ -550,12 +550,14 @@ void SyncMovedFollow(MediaItem* it, double was_pos)
     GetSetMediaItemInfo_String(it, kFollowStoreKey, &text[0], true);
 }
 
-// 13-35: a placed item a Sync touches: its tag behind on a node of the run's scope.
+// 13-35: a placed item a Sync touches: its tag behind on a node of the run's scope. 13-35b: never a reshaped one (a
+// structure change: Sync would place it from a stale shape; Populate places it again).
 bool InSyncScope(MediaItem* it, const SoundStore& store, const SyncRun& run, PlacedTag* tag_out = nullptr)
 {
     PlacedTag tag;
     if (!it || !ReadPlacedTag(it, &tag) || tag.own != Ownership::Populated) return false;
     if (tag_out) *tag_out = tag;
+    if (ReshapeOf(tag, store).kind != Reshape::None) return false;
     for (const std::string& b : BehindNodes(tag, store))
         if (run.scope.count(b)) return true;
     return false;
@@ -1102,7 +1104,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                 t.has_anchor = true;
                 t.ao = GetMediaItemInfo_Value(one.it, "D_POSITION") - at;
                 t.sy = sync;
-                t.lib = PathPrints(*lib, kd.node, v);
+                t.lib = PathPrints(store, *lib, kd.node, v);
                 t.va = v;
                 t.has_wr = true;
                 t.wr = wr;
@@ -1136,7 +1138,17 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                 if (!o.fill_passes)  // 13-35: a placement older than the prints: stamped as it plays now (Sync then follows it)
                     for (MediaItem* it : kept_items) {
                         PlacedTag tag;
-                        if (ReadPlacedTag(it, &tag) && tag.lib.empty()) StampPlaced(it, *lib, kd.node, kd.variation);
+                        if (!ReadPlacedTag(it, &tag)) continue;
+                        if (tag.lib.empty()) {
+                            StampPlaced(it, store, *lib, kd.node, kd.variation);
+                        } else if (AdoptStructure(tag.lib, PathPrints(store, *lib, kd.node, tag.va))) {
+                            // 13-35b: Populate kept it where the Library's structure now puts it: its path and structure
+                            // prints are the current ones (the reshaped mark clears), its settings stay as placed.
+                            tag.kept.erase(std::remove_if(tag.kept.begin(), tag.kept.end(),
+                                                          [](const std::string& k) { return k.compare(0, 4, "lib=") == 0; }),
+                                           tag.kept.end());
+                            WritePlacedTag(it, tag);
+                        }
                     }
                 CrossfadeAsButted as_butted(kept_items);
                 for (MediaItem* it : kept_items) FixLaneOverlap(nullptr, it);
@@ -1151,7 +1163,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                     if (!tagged) continue;
                     // 13-35: the Library's volume is on it now: the prints that only changed their volume take it, and
                     // what RAV wrote follows (a hand edit of its volume stays one).
-                    KeptTagAfterVolume(tag, PathPrints(*lib, kd.node, tag.va), vol_was, kv.vol);
+                    KeptTagAfterVolume(tag, PathPrints(store, *lib, kd.node, tag.va), vol_was, kv.vol);
                     tag.has_g = true;
                     tag.g = kv.g;
                     tag.pi = kv.pi;
@@ -1306,7 +1318,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                 const int sync_old_var = old.variation;
                 r = ReplacePlacement(nullptr, old.item_guid, req);
                 if (o.sync && r.ok) {
-                    for (size_t k = 0; k < r.items.size(); ++k) StampPlaced(r.items[k], *lib, n->uid, s.variation);
+                    for (size_t k = 0; k < r.items.size(); ++k) StampPlaced(r.items[k], store, *lib, n->uid, s.variation);
                     if (sync_hand.Any() && !sync_over && !r.items.empty()) {  // Keep: the user's volume (relative), fades, length stay
                         if (sync_hand.vol && sync_has_ratio)
                             for (MediaItem* it : r.items) SetPlacedVolume(it, GetMediaItemInfo_Value(it, "D_VOL") * sync_ratio);
@@ -1377,7 +1389,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                     (*g_items)[GuidKey(r.item_guids[k])] = r.items[k];
             CheckOwners(r.item_guids, guid, rep, n->uid, e.t);
             if (!o.sync)  // 13-35: what the Library looked like (a Sync stamped them before its kept edits)
-                for (size_t k = 0; k < r.items.size(); ++k) StampPlaced(r.items[k], *lib, n->uid, s.variation);
+                for (size_t k = 0; k < r.items.size(); ++k) StampPlaced(r.items[k], store, *lib, n->uid, s.variation);
             for (size_t k = 0; k < r.item_guids.size(); ++k) {
                 SoundPlacement p;
                 p.item_guid = r.item_guids[k];
@@ -1886,6 +1898,25 @@ SoundReport SyncPlacedSounds(const SyncPlacedRequest& request, SyncCounts* count
                 ModifySoundStore(nullptr, nullptr, [rule](SoundStore& st) { return SetHandEditRule(st, rule); });
             }
             const SoundStore store = GetSoundStore(nullptr);
+            std::map<std::string, std::vector<int>> carried;  // a redraw avoids repeating across the items
+            // 13-35b: the items holding a reshaped sound in scope: the usual Populate (a new draw), in this undo point.
+            std::set<std::string> again;
+            {
+                std::vector<MediaItem*> items;
+                for (const std::string& g : request.populate)
+                    if (MediaItem* it = FindItemByGuid(g))
+                        if (RavTakeOf(it) && again.insert(GuidKey(g)).second) items.push_back(it);
+                items = ByPosition(items);
+                PopOpts p;
+                p.report_replaced = false;
+                p.carry = &carried;
+                for (size_t k = 0; k < items.size(); ++k) {
+                    busy.Item(static_cast<int>(k), static_cast<int>(items.size()));
+                    PopulateOne(items[k], store, p, rep, nullptr);
+                    ++c.repopulated;
+                }
+                if (!items.empty()) RefreshRavTrackNames(nullptr);  // 13-17 N3, as a Populate
+            }
             SyncRun          run;
             run.scope.insert(request.scope.begin(), request.scope.end());
             for (const auto& kv : request.overwrite) run.overwrite[GuidKey(kv.first)] = kv.second;
@@ -1894,12 +1925,11 @@ SoundReport SyncPlacedSounds(const SyncPlacedRequest& request, SyncCounts* count
             o.sync = &run;
             o.report_replaced = false;
             o.only_populated = true;
-            std::map<std::string, std::vector<int>> carried;  // a redraw avoids repeating across the items
             o.carry = &carried;
             std::vector<MediaItem*> items;
             for (const std::string& g : request.owners)
                 if (MediaItem* it = FindItemByGuid(g))
-                    if (RavTakeOf(it)) items.push_back(it);
+                    if (RavTakeOf(it) && !again.count(GuidKey(g))) items.push_back(it);
             items = ByPosition(items);
             for (size_t k = 0; k < items.size(); ++k) {
                 busy.Item(static_cast<int>(k), static_cast<int>(items.size()));

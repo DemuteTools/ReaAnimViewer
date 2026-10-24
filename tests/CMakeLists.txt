@@ -274,7 +274,7 @@ add_executable(sound_record_test sound_record_test.cpp ../src/sound_record.cpp .
 target_include_directories(sound_record_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_record COMMAND sound_record_test)
 # 13-35 -- Sync placed sounds: prints, behind, hand edits, the Library's view (src/sound_sync_plan.h).
-add_executable(sound_sync_plan_test sound_sync_plan_test.cpp ../src/sound_sync_plan.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/sound_entries.cpp ../src/rule_record.cpp)
+add_executable(sound_sync_plan_test sound_sync_plan_test.cpp ../src/sound_sync_plan.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/sound_entries.cpp ../src/rule_record.cpp ../src/sound_switch.cpp ../src/library_tree_edit.cpp)
 target_include_directories(sound_sync_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_sync_plan COMMAND sound_sync_plan_test)
 

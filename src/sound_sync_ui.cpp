@@ -48,6 +48,7 @@ struct Dialog {
     std::set<std::string>    on;                 // the checked animation items
     bool                     seeded = false;     // `on` filled from the first lines
     std::vector<std::string> chosen;
+    std::vector<std::string> again;              // 13-35b: the chosen items placed again by Populate
     std::vector<HandRow>     hand;
     bool                     dna = false;
     bool                     close = false;
@@ -123,7 +124,7 @@ std::vector<std::string> ChipNodes(const SyncState& st)
     if (!g.node.empty()) out.push_back(g.node);
     for (const SyncSound& s : st.sounds) {
         if (!SyncInScope(s, g.lib, g.node)) continue;
-        for (const std::string& b : s.behind)
+        for (const std::string& b : SyncSoundMarks(s))
             if (std::find(out.begin(), out.end(), b) == out.end()) out.push_back(b);
     }
     return out;
@@ -131,9 +132,9 @@ std::vector<std::string> ChipNodes(const SyncState& st)
 
 std::string ChipText(const SyncState& st, const std::string& node)
 {
-    std::string t = PathOf(g.lib, node);
-    const auto  w = st.what.find(node);
-    if (w != st.what.end() && !w->second.empty()) t += " \xC2\xB7 " + w->second;
+    std::string       t = PathOf(g.lib, node);
+    const std::string w = SyncMarkWhat(st, node);
+    if (!w.empty()) t += " \xC2\xB7 " + w;
     if (st.redraws.count(node)) t += " \xC2\xB7 redraws the sounds that played it";
     return t;
 }
@@ -171,15 +172,20 @@ void Run(const SyncState& st, const std::vector<std::string>& owners, const std:
     g_run.set = true;
     g_run.rq = SyncPlacedRequest{};
     g_run.rq.owners = owners;
+    g_run.rq.populate = g.again;  // 13-35b
     g_run.rq.scope = ScopeNodes(st);
     g_run.rq.overwrite = overwrite;
     g_run.rq.remember = remember;
     g_run.rq.rule = rule;
 }
 
-// Apply to `owners`: the hand dialog when some chosen sound was edited by hand and the rule asks, else the Sync.
-void Apply(const SyncState& st, const std::vector<std::string>& owners)
+// Apply to `owners`: the hand dialog when some chosen sound was edited by hand and the rule asks, else the Sync. 13-35b:
+// the items holding a reshaped sound in scope are placed again by Populate; the question covers the Synced items only.
+void Apply(const SyncState& st, const std::vector<std::string>& chosen)
 {
+    const SyncSplit split = SplitSyncOwners(st, g.lib, g.node, chosen);
+    g.again = split.populate;
+    const std::vector<std::string>& owners = split.sync;
     g.chosen = owners;
     const std::set<std::string>         set(owners.begin(), owners.end());
     const std::vector<const SyncSound*> hs = SyncHandSounds(st, g.lib, g.node, set);
@@ -287,7 +293,8 @@ void DrawWhere(const SyncState& st)
                 else g.on.erase(l.owner);
             }
             ImGui::SameLine();
-            const std::string count = SyncPlural(l.sounds, "sound");
+            std::string count = SyncPlural(l.sounds, "sound");
+            if (l.reshaped > 0) count += " \xC2\xB7 Populate again: " + std::to_string(l.reshaped) + " reshaped";  // 13-35b
             const float       cw = ImGui::CalcTextSize(count.c_str()).x;
             const bool        selected = IsSelectedNow(sel_now, l.owner);
             const float       tagw = selected ? ui::SmallTagWidth("selected in REAPER") + ui::Dp(6.0f) : 0.0f;
@@ -298,7 +305,9 @@ void DrawWhere(const SyncState& st)
                 ui::SmallTag("selected in REAPER");
             }
             ImGui::SameLine(0.0f, ui::Dp(8.0f));
-            ui::ToneText(count, ui::kMuted);
+            ui::ToneText(count, l.reshaped > 0 ? ui::kWarn : ui::kMuted, true);
+            if (l.reshaped > 0)  // 13-35b
+                ui::ItemTipText("The Library's structure changed here: Apply places this item again with Populate (a new draw)");
             std::string nodes;
             for (const std::string& n : l.nodes) nodes += (nodes.empty() ? "" : " \xC2\xB7 ") + PathOf(g.lib, n);
             ImGui::Indent(ui::Dp(20.0f));
@@ -531,9 +540,12 @@ float DrawSyncMark(const std::string& lib, const std::string& node, float right_
     dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), WarnSoft(hot), h * 0.5f);
     dl->AddRect(a, ImVec2(a.x + w, a.y + h), ui::kWarnLine, h * 0.5f);
     ui::AddTextIn(dl, f, ImVec2(a.x + ui::Dp(6.0f), std::floor(a.y + (h - f->FontSize) * 0.5f)), ui::kWarn, text);
-    const auto        what = st.what.find(node);
-    const std::string tip = "Changed since placed: " + (what == st.what.end() ? std::string("settings") : what->second) +
-                            " \xC2\xB7 " + SyncPlural(hit->second, "placed sound") + ". Click to sync this node.";
+    const std::string what = SyncMarkWhat(st, node);
+    const bool        reshaped = SyncMarkReshaped(st, node);  // 13-35b
+    std::string       tip = "Changed since placed: " + (what.empty() ? std::string("settings") : what) + " \xC2\xB7 " +
+                      SyncPlural(hit->second, "placed sound") + ".";
+    if (reshaped && what.find("Populate again") == std::string::npos) tip += " Populate again to update them.";
+    tip += reshaped ? " Click to choose the items to update." : " Click to sync this node.";
     ui::ItemTipText(tip.c_str());
     if (clicked) OpenSyncDialog(lib, node);
     return w;
@@ -545,9 +557,9 @@ void DrawSyncPendingLine(const std::string& lib, const std::string& node)
     const std::map<std::string, int>& marks = MarksNow(st, lib);
     const auto                        hit = marks.find(node);
     if (hit == marks.end() || hit->second <= 0) return;
-    const auto        what = st.what.find(node);
+    const std::string what = SyncMarkWhat(st, node);
     const std::string text = std::string(kSyncGlyph) + " Not yet on " + SyncPlural(hit->second, "placed sound") + ": " +
-                             (what == st.what.end() ? std::string("settings changed") : what->second);
+                             (what.empty() ? std::string("settings changed") : what);
     ImGui::Dummy(ImVec2(1.0f, ui::Dp(2.0f)));
     ui::ToneText(text, ui::kWarn, true);
     const char* kBtn = "Sync this node\xE2\x80\xA6##syncnode";

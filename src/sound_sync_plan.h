@@ -29,13 +29,38 @@ using PlacedWrite = PlacedTag::Written;
 // places for variation `variation` (fades, sync point, zones, level) and whether that variation is on. Measured data
 // (sync points, trims, automatic snaps) is left out: measuring it again never makes a sound behind.
 NodePrint PrintOf(const SoundNode& n, int variation);
-// The prints of the node's path in `lib`: the node first, the library's root last. Empty when it is not in `lib`.
-std::vector<NodePrint> PathPrints(const SoundLibrary& lib, const std::string& node_uid, int variation);
+// 13-35b: the structure of node `n` as it shapes its path child `child` ("" = n is the placed node): a Switch's group,
+// the values whose case plays the child, the child unassigned, its effective default playing the child; a Blend's
+// children in order with their layer roles and keep-offset; a Random's avoid-repeat and children (sorted: it picks at
+// random). 0 for a Sound. Never 0 otherwise. Names, colours, lands_in and was_* fields are left out.
+uint32_t StructureOf(const SoundStore& store, const SoundLibrary& lib, const SoundNode& n, const std::string& child);
+// The prints of the node's path in `lib` (13-35b: with their structure, NodePrint::st): the node first, the library's
+// root last. Empty when it is not in `lib`.
+std::vector<NodePrint> PathPrints(const SoundStore& store, const SoundLibrary& lib, const std::string& node_uid, int variation);
 // The library holding node `uid` (nullptr when none).
 const SoundLibrary* LibraryOfNode(const SoundStore& store, const std::string& uid);
 // The nodes of the tag's path whose print now differs, node first. None for a tag without prints, a node gone or a
-// path that changed (a structure change: Populate's).
+// path that changed (a structure change: Populate's, ReshapedNodes). The structure print (st) is not compared.
 std::vector<std::string> BehindNodes(const PlacedTag& tag, const SoundStore& store);
+// 13-35b: a placed sound whose path or structure changed since it was placed is reshaped: Sync never adjusts it (it would
+// place it from a stale shape), a Populate places it again. `mark` = where the Library shows it: the first node, from
+// the root down, where the path now leaves the stored one (a container new on the path, else the one the sound now sits
+// in); the first node whose structure print differs (a stored st of 0, an older tag, never does); the library's root
+// when the node is gone (`lib` "" when its library is gone too). Kind None for a tag without prints.
+enum class Reshape { None, Content, Moved, Removed };
+struct ReshapeVerdict {
+    Reshape     kind = Reshape::None;
+    std::string lib, mark;
+};
+ReshapeVerdict ReshapeOf(const PlacedTag& tag, const SoundStore& store);
+// The mark node of a reshaped tag ({} when not reshaped).
+std::vector<std::string> ReshapedNodes(const PlacedTag& tag, const SoundStore& store);
+// "content changed (Populate again to update)", "moved", "removed" ("" for None).
+const char* ReshapeText(Reshape r);
+// A Populate that keeps a placed sound: its stored prints take the path and structure now (`now`, its path's prints),
+// each node keeping its settings as placed (a setting changed stays behind), a node new on the path taken as it is now.
+// True when they changed.
+bool AdoptStructure(std::vector<NodePrint>& stored, const std::vector<NodePrint>& now);
 // The stored print of `node` in `tag` (nullptr when none).
 const NodePrint* TagPrint(const PlacedTag& tag, const std::string& node);
 // One node's change: "Volume −3 → −6 dB", "Blend offset 12 → 18 ms", "fades", "sync", "zones",
@@ -120,7 +145,9 @@ struct SyncOwner {
 // One placed sound behind (its items: a placement's pieces).
 struct SyncSound {
     std::string              owner, lib, node;
-    std::vector<std::string> behind;  // its behind nodes, node first
+    std::vector<std::string> behind;  // its behind nodes, node first (13-35b: none when reshaped)
+    bool                     reshaped = false;      // 13-35b: a structure change (Populate again)
+    std::vector<std::string> reshaped_at;           // its reshape mark(s)
     std::vector<std::string> items;   // its placed items' GUIDs
     std::string              name;
     double                   t = 0.0;  // its event's clip time
@@ -133,18 +160,33 @@ struct SyncState {
     std::map<std::string, std::string> what;    // behind node -> its change (the first sound's)
     std::set<std::string>              redraws; // behind nodes whose change redraws
     std::set<std::string>              libs_placed;  // the libraries some stamped placed sound plays (the card shows)
+    std::set<std::string>              reshaped;      // 13-35b: the reshape marks
+    std::map<std::string, std::string> reshape_what;  // reshape mark -> ReshapeText
 };
 // The behind sounds of `items` (grouped by owner, event, node, part and anchor), with what changed on each node.
 SyncState BuildSyncState(const SoundStore& store, const std::vector<SyncPlacedItem>& items, const std::vector<SyncOwner>& owners);
 
-// A sound in the scope of library `lib` and node `node` ("" = every behind node of the library).
+// A sound's marks: its behind nodes, then its reshape marks.
+std::vector<std::string> SyncSoundMarks(const SyncSound& s);
+// A sound in the scope of library `lib` and node `node` ("" = every marked node of the library).
 bool SyncInScope(const SyncSound& s, const std::string& lib, const std::string& node);
+// What changed on a marked node: its settings change and its reshape text, joined with ", ".
+std::string SyncMarkWhat(const SyncState& st, const std::string& node);
+// Whether some sound is reshaped at `node`.
+bool SyncMarkReshaped(const SyncState& st, const std::string& node);
+// 13-35b (Antho 2026-10-24): the chosen items holding a reshaped sound in scope are placed again by Populate, the others
+// get the Sync (in one undo point).
+struct SyncSplit {
+    std::vector<std::string> populate, sync;
+};
+SyncSplit SplitSyncOwners(const SyncState& st, const std::string& lib, const std::string& node, const std::vector<std::string>& owners);
 // The card of library `lib`: its behind nodes, sounds and the items holding them.
 struct SyncCard {
     int changes = 0, sounds = 0, items = 0;
+    int reshaped = 0;  // 13-35b: of `sounds`
 };
 SyncCard SyncCardOf(const SyncState& st, const std::string& lib);
-// "1 change not yet on 26 placed sounds in 3 items."
+// "1 change not yet on 26 placed sounds in 3 items." (13-35b: then what of them a Populate updates.)
 std::string SyncCardText(const SyncCard& c);
 // The ↻ marks: behind node -> its behind sounds, for library `lib`.
 std::map<std::string, int> SyncMarksOf(const SyncState& st, const std::string& lib);
@@ -153,10 +195,11 @@ struct SyncItemLine {
     std::string              owner, name, track;
     bool                     selected = false;
     int                      sounds = 0, hand = 0;
+    int                      reshaped = 0;  // 13-35b: of `sounds` (Apply places the item again)
     std::vector<std::string> nodes;  // its behind nodes in scope
 };
 std::vector<SyncItemLine> SyncItemLines(const SyncState& st, const std::string& lib, const std::string& node);
-// The hand-edited sounds of the chosen items in scope.
+// The hand-edited sounds of the chosen items in scope (a reshaped one never: Populate places it again).
 std::vector<const SyncSound*> SyncHandSounds(const SyncState& st, const std::string& lib, const std::string& node,
                                              const std::set<std::string>& owners);
 // "Apply to N items" only for a strict non-empty subset.
@@ -167,6 +210,7 @@ bool SyncRememberEnabled(const std::vector<char>& overwrite);
 // What a Sync did (per sound).
 struct SyncCounts {
     int adjusted = 0, redrawn = 0, kept = 0, overwritten = 0, skipped = 0;
+    int repopulated = 0;  // 13-35b: items placed again by Populate
 };
 // "One undo point “RAV: Sync placed sounds”: 26 adjusted, 3 redrawn, 1 hand edit kept, 2 overwritten".
 std::string SyncToastText(const SyncCounts& c, bool remembered);

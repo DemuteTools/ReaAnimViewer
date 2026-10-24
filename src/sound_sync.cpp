@@ -78,8 +78,9 @@ SyncState Scan()
         x.tag = tag;
         x.owner = tag.owner;
         x.guid = ItemGuidOf(it);
-        // Only the ones behind are read further (the card counts the libraries they play from the tags alone).
-        if (BehindNodes(tag, store).empty()) {
+        // Only the ones behind or reshaped (13-35b) are read further (the card counts the libraries they play from the
+        // tags alone).
+        if (BehindNodes(tag, store).empty() && ReshapeOf(tag, store).kind == Reshape::None) {
             items.push_back(x);
             continue;
         }

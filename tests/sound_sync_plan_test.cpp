@@ -7,10 +7,12 @@
 
 #include "sound_sync_plan.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <string>
 
+#include "library_tree_edit.h"  // 13-35b: MoveRows (fd304ef: a drag onto a taken value)
 #include "sound_record.h"
 
 using namespace rav;
@@ -119,7 +121,7 @@ static SyncPlacedItem Placed(const SoundStore& st, const char* guid, const char*
     it.tag.node = node;
     it.tag.own = Ownership::Populated;
     it.tag.va = va;
-    it.tag.lib = PathPrints(*LibraryOfNode(st, node), node, va);
+    it.tag.lib = PathPrints(st, *LibraryOfNode(st, node), node, va);
     it.tag.has_wr = true;
     it.tag.wr = Wr();
     it.now = Wr();
@@ -127,8 +129,238 @@ static SyncPlacedItem Placed(const SoundStore& st, const char* guid, const char*
     return it;
 }
 
+// 13-35b: a Surface Switch (Wood -> y, Grass -> Random gr {x, z}) and a Blend B {a}, under a Random root.
+static SoundStore Tree()
+{
+    SoundStore  st;
+    SwitchGroup mat;
+    mat.uid = "gmat";
+    mat.name = "Surface";
+    mat.values = {SwitchValue{"vwood", "Wood", {}, {}}, SwitchValue{"vgrass", "Grass", {}, {}},
+                  SwitchValue{"vconc", "Concrete", {}, {}}};
+    st.groups = {mat};
+    SoundLibrary lib;
+    lib.uid = "L";
+    lib.name = "Steps";
+    lib.root = "root";
+    lib.nodes.push_back(Node("root", "", SoundNodeType::Random, "Steps"));
+    SoundNode sw = Node("sw", "root", SoundNodeType::Switch, "Surface");
+    sw.group_uid = "gmat";
+    sw.cases = {SwitchCase{"vwood", "y", {}}, SwitchCase{"vgrass", "gr", {}}};
+    lib.nodes.push_back(sw);
+    lib.nodes.push_back(Sound("y", "sw", "Y", 2));
+    lib.nodes.push_back(Node("gr", "sw", SoundNodeType::Random, "GrassR"));
+    lib.nodes.push_back(Sound("x", "gr", "X", 2));
+    lib.nodes.push_back(Sound("z", "gr", "Z", 2));
+    lib.nodes.push_back(Node("B", "root", SoundNodeType::Blend, "B"));
+    lib.nodes.push_back(Sound("a", "B", "A", 2));
+    st.libraries.push_back(lib);
+    return st;
+}
+
+static std::string CaseOf(const SoundStore& st, const char* sw, const char* value)
+{
+    for (const SwitchCase& c : FindNode(st.libraries[0], sw)->cases)
+        if (c.value_uid == value) return c.child_uid;
+    return {};
+}
+
+static void TestReshaped()
+{
+    const SoundStore base = Tree();
+    const PlacedTag  ty = Placed(base, "y1", "i1", "y", 0, 1.0).tag;
+    const PlacedTag  tz = Placed(base, "z1", "i2", "z", 1, 1.0).tag;
+    const PlacedTag  ta = Placed(base, "a1", "i3", "a", 0, 1.0).tag;
+    // Every print of a container has a structure (never 0); a Sound's is 0.
+    CHECK(ty.lib.size() == 3 && ty.lib[0].st == 0 && ty.lib[1].st != 0 && ty.lib[2].st != 0);
+    CHECK(ReshapeOf(ty, base).kind == Reshape::None && ReshapedNodes(tz, base).empty() && ReshapedNodes(ta, base).empty());
+    const DropTarget wood{"L", {"sw", "vwood"}, DropMode::OntoValue};
+    // Drag onto a taken value: X onto Wood (plays Y) -> Random "Wood" {Y, X}: Y's sounds reshaped, marked on that Random;
+    // Z's too (its Random lost X), marked on GrassR.
+    {
+        SoundStore s = base;
+        CHECK(MoveRows(s, "L", {{"gr", "x"}}, wood, nullptr));
+        const std::string hu = CaseOf(s, "sw", "vwood");
+        CHECK(!hu.empty() && hu != "y");
+        ReshapeVerdict v = ReshapeOf(ty, s);
+        CHECK(v.kind == Reshape::Moved && v.mark == hu && v.lib == "L");
+        CHECK(std::string(ReshapeText(v.kind)) == "moved");
+        v = ReshapeOf(tz, s);
+        CHECK(v.kind == Reshape::Content && v.mark == "gr");
+        CHECK(ReshapedNodes(ta, s).empty());
+        CHECK(BehindNodes(ty, s).empty() && BehindNodes(tz, s).empty());  // 13-35 unchanged: not behind
+        // The card and the marks count them, the text says to Populate again.
+        std::vector<SyncPlacedItem> items = {Placed(base, "y1", "i1", "y", 0, 1.0), Placed(base, "z1", "i2", "z", 1, 1.0),
+                                             Placed(base, "a1", "i3", "a", 0, 1.0)};
+        const std::vector<SyncOwner> owners = {{"i1", "Run", "T", false}, {"i2", "Walk", "T", false}, {"i3", "Jump", "T", false}};
+        const SyncState st = BuildSyncState(s, items, owners);
+        CHECK(st.sounds.size() == 2 && st.sounds[0].reshaped && st.sounds[0].behind.empty());
+        const SyncCard c = SyncCardOf(st, "L");
+        CHECK(c.sounds == 2 && c.reshaped == 2 && c.items == 2 && c.changes == 2);
+        CHECK(SyncCardText(c) == "2 changes not yet on 2 placed sounds in 2 items. They follow a structure change of the library: "
+                                 "Populate again to update them.");
+        const std::map<std::string, int> marks = SyncMarksOf(st, "L");
+        CHECK(marks.size() == 2 && marks.at(hu) == 1 && marks.at("gr") == 1);
+        CHECK(SyncMarkWhat(st, hu) == "moved" && SyncMarkReshaped(st, hu));
+        CHECK(SyncMarkWhat(st, "gr") == "content changed (Populate again to update)");
+        std::vector<SyncItemLine> lines = SyncItemLines(st, "L", "");
+        CHECK(lines.size() == 2 && lines[0].reshaped == 1 && lines[0].sounds == 1 && lines[0].nodes.size() == 1 &&
+              lines[0].nodes[0] == hu);
+        CHECK(SyncItemLines(st, "L", "gr").size() == 1);
+    }
+    // Alt swap: X onto Wood, Y goes to X's place in GrassR: Y's sounds reshaped, marked on GrassR.
+    {
+        SoundStore s = base;
+        CHECK(MoveRows(s, "L", {{"gr", "x"}}, wood, nullptr, TakenValue::Swap));
+        CHECK(CaseOf(s, "sw", "vwood") == "x" && FindNode(s.libraries[0], "y")->parent == "gr");
+        const ReshapeVerdict v = ReshapeOf(ty, s);
+        CHECK(v.kind == Reshape::Moved && v.mark == "gr");
+    }
+    // The value now plays another (Wood re-pointed to W), Y stays under the Switch (Unassigned): marked on the Switch.
+    {
+        SoundStore s = base;
+        s.libraries[0].nodes.push_back(Sound("w", "sw", "W", 2));
+        SoundNode* sw = FindNode(s.libraries[0], "sw");
+        sw->cases[0].child_uid = "w";
+        sw->unassigned.push_back("y");
+        const ReshapeVerdict v = ReshapeOf(ty, s);
+        CHECK(v.kind == Reshape::Content && v.mark == "sw");
+        CHECK(std::string(ReshapeText(v.kind)) == "content changed (Populate again to update)");
+        // The default value now played by another: Y played Wood (the default, the group's first value).
+        SoundStore d = base;
+        FindNode(d.libraries[0], "sw")->default_value = "vgrass";
+        CHECK(ReshapeOf(ty, d).kind == Reshape::Content && ReshapeOf(ty, d).mark == "sw");
+        // Another value given to Y too: its case changed.
+        SoundStore e = base;
+        FindNode(e.libraries[0], "sw")->cases.push_back(SwitchCase{"vconc", "y", {}});
+        CHECK(ReshapeOf(ty, e).kind == Reshape::Content);
+    }
+    // The node deleted: counted on the library's root row.
+    {
+        SoundStore s = base;
+        std::vector<SoundNode>& ns = s.libraries[0].nodes;
+        ns.erase(std::remove_if(ns.begin(), ns.end(), [](const SoundNode& n) { return n.uid == "y"; }), ns.end());
+        const ReshapeVerdict v = ReshapeOf(ty, s);
+        CHECK(v.kind == Reshape::Removed && v.mark == "root" && v.lib == "L" && std::string(ReshapeText(v.kind)) == "removed");
+        const SyncState st = BuildSyncState(s, {Placed(base, "y1", "i1", "y", 0, 1.0)}, {{"i1", "Run", "T", false}});
+        CHECK(st.sounds.size() == 1 && SyncMarksOf(st, "L").at("root") == 1 && SyncCardOf(st, "L").reshaped == 1);
+        // Its library gone too: nowhere to show it.
+        SoundStore g = base;
+        g.libraries.clear();
+        CHECK(ReshapeOf(ty, g).kind == Reshape::Removed && ReshapeOf(ty, g).lib.empty());
+        CHECK(BuildSyncState(g, {Placed(base, "y1", "i1", "y", 0, 1.0)}, {{"i1", "Run", "T", false}}).sounds.empty());
+    }
+    // A Blend layer added: A's sounds marked on the Blend; a layer's role or keep-offset too.
+    {
+        SoundStore s = base;
+        s.libraries[0].nodes.push_back(Sound("b", "B", "Bb", 1));
+        CHECK(ReshapeOf(ta, s).kind == Reshape::Content && ReshapeOf(ta, s).mark == "B");
+        SoundStore r = base;
+        FindNode(r.libraries[0], "a")->layer_roles = {"heel"};
+        CHECK(ReshapeOf(ta, r).mark == "B");
+        SoundStore k = base;
+        FindNode(k.libraries[0], "a")->layer_keep_offset = true;
+        CHECK(ReshapeOf(ta, k).kind == Reshape::Content);
+    }
+    // A Random gaining or losing a sound, or its avoid-repeat: reshaped. Its children's order: not (it picks at random).
+    {
+        SoundStore s = base;
+        s.libraries[0].nodes.push_back(Sound("q", "gr", "Q", 1));
+        CHECK(ReshapeOf(tz, s).mark == "gr");
+        SoundStore o = base;
+        std::vector<SoundNode>& ns = o.libraries[0].nodes;
+        std::iter_swap(std::find_if(ns.begin(), ns.end(), [](const SoundNode& n) { return n.uid == "x"; }),
+                       std::find_if(ns.begin(), ns.end(), [](const SoundNode& n) { return n.uid == "z"; }));
+        CHECK(ReshapeOf(tz, o).kind == Reshape::None);
+        SoundStore a = base;
+        FindNode(a.libraries[0], "gr")->avoid_repeat = 1;
+        CHECK(ReshapeOf(tz, a).kind == Reshape::Content);
+    }
+    // Renames, colours, lands_in, was_* fields, settings and measured data: never reshaped.
+    {
+        SoundStore s = base;
+        FindNode(s.libraries[0], "gr")->name = "Grass bits";
+        FindNode(s.libraries[0], "sw")->name = "Mat";
+        FindNode(s.libraries[0], "y")->name = "Y2";
+        FindNode(s.libraries[0], "gr")->lands_in = "folder";
+        FindNode(s.libraries[0], "gr")->was_path = "a > b";
+        FindNode(s.libraries[0], "sw")->preview_value = "vgrass";
+        s.libraries[0].color = 0x1ff0000;
+        s.groups[0].values[0].name = "Oak";
+        FindNode(s.libraries[0], "y")->sound.frames[0].syncs = {0.1};
+        CHECK(ReshapeOf(ty, s).kind == Reshape::None && ReshapeOf(tz, s).kind == Reshape::None && BehindNodes(ty, s).empty());
+        FindNode(s.libraries[0], "sw")->volume_db = -3.0;  // a setting: behind (13-35), not reshaped
+        CHECK(ReshapeOf(ty, s).kind == Reshape::None && BehindNodes(ty, s).size() == 1);
+    }
+    // An older tag (no st): only the path / gone checks.
+    {
+        PlacedTag old = ty;
+        for (NodePrint& p : old.lib) p.st = 0;
+        SoundStore s = base;
+        FindNode(s.libraries[0], "sw")->cases.push_back(SwitchCase{"vconc", "y", {}});
+        CHECK(ReshapeOf(old, s).kind == Reshape::None);
+        SoundStore m = base;
+        CHECK(MoveRows(m, "L", {{"gr", "x"}}, wood, nullptr));
+        CHECK(ReshapeOf(old, m).kind == Reshape::Moved);
+    }
+    // Both behind and reshaped: reshaped only (Sync would place it from a stale shape); never asked about by hand; the
+    // item is placed again (SplitSyncOwners), the others synced.
+    {
+        SoundStore s = base;
+        FindNode(s.libraries[0], "a")->volume_db = -4.0;  // a: behind only
+        FindNode(s.libraries[0], "y")->volume_db = -4.0;  // y: behind ...
+        CHECK(MoveRows(s, "L", {{"gr", "x"}}, wood, nullptr));  // ... and reshaped
+        std::vector<SyncPlacedItem> items = {Placed(base, "y1", "i1", "y", 0, 1.0), Placed(base, "a1", "i3", "a", 0, 1.0)};
+        items[0].now.vol = 0.25;  // edited by hand
+        items[1].now.vol = 0.25;
+        const SyncState st = BuildSyncState(s, items, {{"i1", "Run", "T", false}, {"i3", "Jump", "T", false}});
+        CHECK(st.sounds.size() == 2 && st.sounds[0].reshaped && st.sounds[0].behind.empty() && !st.sounds[1].reshaped &&
+              st.sounds[1].behind.size() == 1);
+        CHECK(!SyncMarksOf(st, "L").count("y"));
+        const SyncCard c = SyncCardOf(st, "L");
+        CHECK(c.sounds == 2 && c.reshaped == 1);
+        CHECK(SyncCardText(c) == "2 changes not yet on 2 placed sounds in 2 items. 1 of them follows a structure change of the "
+                                 "library: Populate again to update it.");
+        CHECK(SyncHandSounds(st, "L", "", {"i1", "i3"}).size() == 1 && SyncHandSounds(st, "L", "", {"i1"}).empty());
+        const std::vector<SyncItemLine> lines = SyncItemLines(st, "L", "");
+        CHECK(lines.size() == 2 && lines[0].reshaped == 1 && lines[0].hand == 0 && lines[1].reshaped == 0 && lines[1].hand == 1);
+        // An item holding a reshaped sound: its other hand-edited sounds are not asked about (Populate places it again).
+        std::vector<SyncPlacedItem> mixed = items;
+        mixed.push_back(Placed(base, "a2", "i1", "a", 0, 2.0));
+        mixed.back().now.vol = 0.25;
+        const std::vector<SyncItemLine> ml = SyncItemLines(BuildSyncState(s, mixed, {{"i1", "Run", "T", false}}), "L", "");
+        CHECK(ml.size() == 1 && ml[0].reshaped == 1 && ml[0].sounds == 2 && ml[0].hand == 0);
+        SyncSplit sp = SplitSyncOwners(st, "L", "", {"i1", "i3"});
+        CHECK(sp.populate.size() == 1 && sp.populate[0] == "i1" && sp.sync.size() == 1 && sp.sync[0] == "i3");
+        sp = SplitSyncOwners(st, "L", "a", {"i1", "i3"});  // a node-scoped dialog: i1's reshaped sound is not in it
+        CHECK(sp.populate.empty() && sp.sync.size() == 2);
+        SyncCounts n;
+        n.adjusted = 1;
+        n.repopulated = 2;
+        CHECK(SyncToastText(n, false) == "One undo point \xE2\x80\x9CRAV: Sync placed sounds\xE2\x80\x9D: 1 adjusted, 2 items placed again");
+    }
+    // Populate after: the kept sound takes the path and structure now (the mark clears), its settings as placed (a
+    // setting changed stays behind).
+    {
+        SoundStore s = base;
+        CHECK(MoveRows(s, "L", {{"gr", "x"}}, wood, nullptr));
+        FindNode(s.libraries[0], "sw")->volume_db = -2.0;
+        PlacedTag kept = ty;
+        CHECK(AdoptStructure(kept.lib, PathPrints(s, s.libraries[0], "y", 0)));
+        CHECK(ReshapeOf(kept, s).kind == Reshape::None);
+        const std::vector<std::string> b = BehindNodes(kept, s);
+        CHECK(b.size() == 1 && b[0] == "sw");
+        CHECK(!AdoptStructure(kept.lib, PathPrints(s, s.libraries[0], "y", 0)));  // nothing left to adopt
+        // A fresh stamp (a sound placed again) clears both.
+        PlacedTag fresh = ty;
+        fresh.lib = PathPrints(s, s.libraries[0], "y", 0);
+        CHECK(ReshapeOf(fresh, s).kind == Reshape::None && BehindNodes(fresh, s).empty());
+    }
+}
+
 int main()
 {
+    TestReshaped();
     // ---- Prints and behind ---------------------------------------------------------------------
     {
         SoundStore     st = Store();
@@ -191,13 +423,13 @@ int main()
         std::vector<NodePrint> stored = tag.lib;
         SoundStore             v = Store();
         N(v, "runStone")->volume_db = -6.0;
-        CHECK(AdoptVolumes(stored, PathPrints(v.libraries[0], "runStone", 1)) && stored[0].vol == -6.0);
+        CHECK(AdoptVolumes(stored, PathPrints(v, v.libraries[0], "runStone", 1)) && stored[0].vol == -6.0);
         PlacedTag adopted = tag;
         adopted.lib = stored;
         CHECK(BehindNodes(adopted, v).empty());
         std::vector<NodePrint> s2 = tag.lib;
         N(v, "runStone")->sound.frames[1].zones[0].db = 1.0;
-        CHECK(AdoptVolumes(s2, PathPrints(v.libraries[0], "runStone", 1)) && s2[0].vol == -6.0);
+        CHECK(AdoptVolumes(s2, PathPrints(v, v.libraries[0], "runStone", 1)) && s2[0].vol == -6.0);
         PlacedTag still = tag;
         still.lib = s2;
         CHECK(BehindNodes(still, v).size() == 1 &&
@@ -211,7 +443,7 @@ int main()
             kt.wr = Wr(0.5);
             N(w, "runStone")->volume_db = -6.0;
             const double was = 0.5, now_vol = 0.5 * std::pow(10.0, -3.0 / 20.0);
-            KeptTagAfterVolume(kt, PathPrints(w.libraries[0], "runStone", 1), was, now_vol);
+            KeptTagAfterVolume(kt, PathPrints(w, w.libraries[0], "runStone", 1), was, now_vol);
             CHECK(BehindNodes(kt, w).empty());
             PlacedWrite item = Wr(now_vol);
             CHECK(Near(kt.wr.vol, now_vol) && !HandEdits(kt.wr, item, 0.0).Any());
@@ -220,7 +452,7 @@ int main()
             ut.has_wr = true;
             ut.wr = Wr(0.5);
             const double user = 0.5 * std::pow(10.0, -4.0 / 20.0);
-            KeptTagAfterVolume(ut, PathPrints(w.libraries[0], "runStone", 1), user, user * std::pow(10.0, -3.0 / 20.0));
+            KeptTagAfterVolume(ut, PathPrints(w, w.libraries[0], "runStone", 1), user, user * std::pow(10.0, -3.0 / 20.0));
             PlacedWrite uitem = Wr(user * std::pow(10.0, -3.0 / 20.0));
             const HandEdit uh = HandEdits(ut.wr, uitem, 0.0);
             CHECK(uh.vol && Near(uh.vol_db, -4.0, 1e-6));

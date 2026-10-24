@@ -9,7 +9,8 @@
 #include <cstdio>
 #include <cstring>
 
-#include "sound_record.h"  // FindNode, FindGroup
+#include "sound_record.h"  // FindNode, FindGroup, ChildrenOf
+#include "sound_switch.h"  // DefaultValue
 
 namespace rav {
 
@@ -197,13 +198,59 @@ NodePrint PrintOf(const SoundNode& n, int variation)
     return p;
 }
 
-std::vector<NodePrint> PathPrints(const SoundLibrary& lib, const std::string& node_uid, int variation)
+uint32_t StructureOf(const SoundStore& store, const SoundLibrary& lib, const SoundNode& n, const std::string& child)
+{
+    Hasher h;
+    h.Int(static_cast<int>(n.type));
+    switch (n.type) {
+    case SoundNodeType::Sound: return 0;
+    case SoundNodeType::Switch: {
+        h.Str(n.group_uid);
+        std::vector<std::string> values;
+        for (const SwitchCase& c : n.cases)
+            if (c.child_uid == child) values.push_back(c.value_uid);
+        std::sort(values.begin(), values.end());
+        for (const std::string& v : values) h.Str(v);
+        h.Int(std::find(n.unassigned.begin(), n.unassigned.end(), child) != n.unassigned.end() ? 1 : 0);
+        const std::string def = DefaultValue(store, n);
+        bool              plays_default = false;
+        for (const SwitchCase& c : n.cases)
+            if (c.value_uid == def && c.child_uid == child) plays_default = true;
+        h.Int(plays_default ? 1 : 0);
+        break;
+    }
+    case SoundNodeType::Blend:
+        for (const SoundNode* c : ChildrenOf(lib, n.uid)) {
+            h.Str(c->uid);
+            h.Int(static_cast<long long>(c->layer_roles.size()));
+            for (const std::string& r : c->layer_roles) h.Str(r);
+            h.Int(c->layer_keep_offset ? 1 : 0);
+        }
+        break;
+    case SoundNodeType::Random: {
+        h.Int(n.avoid_repeat);
+        std::vector<std::string> kids;
+        for (const SoundNode* c : ChildrenOf(lib, n.uid)) kids.push_back(c->uid);
+        std::sort(kids.begin(), kids.end());  // a Random picks at random: its order shapes nothing
+        for (const std::string& k : kids) h.Str(k);
+        break;
+    }
+    }
+    return h.Get();
+}
+
+std::vector<NodePrint> PathPrints(const SoundStore& store, const SoundLibrary& lib, const std::string& node_uid, int variation)
 {
     std::vector<NodePrint> out;
     std::set<std::string>  seen;
+    std::string            child;  // the path's child of the node walked
     for (const SoundNode* n = FindNode(lib, node_uid); n && seen.insert(n->uid).second;
-         n = n->parent.empty() || n->parent == n->uid ? nullptr : FindNode(lib, n->parent))
-        out.push_back(PrintOf(*n, n->uid == node_uid ? variation : -1));
+         n = n->parent.empty() || n->parent == n->uid ? nullptr : FindNode(lib, n->parent)) {
+        NodePrint p = PrintOf(*n, n->uid == node_uid ? variation : -1);
+        p.st = StructureOf(store, lib, *n, child);
+        out.push_back(p);
+        child = n->uid;
+    }
     return out;
 }
 
@@ -221,13 +268,89 @@ std::vector<std::string> BehindNodes(const PlacedTag& tag, const SoundStore& sto
     if (tag.lib.empty()) return out;
     const SoundLibrary* lib = LibraryOfNode(store, tag.node);
     if (!lib) return out;
-    const std::vector<NodePrint> now = PathPrints(*lib, tag.node, tag.va);
+    const std::vector<NodePrint> now = PathPrints(store, *lib, tag.node, tag.va);
     if (now.size() != tag.lib.size()) return out;
     for (size_t i = 0; i < now.size(); ++i)
         if (now[i].node != tag.lib[i].node) return {};
     for (size_t i = 0; i < now.size(); ++i)
         if (now[i] != tag.lib[i]) out.push_back(now[i].node);
     return out;
+}
+
+const char* ReshapeText(Reshape r)
+{
+    switch (r) {
+    case Reshape::Content: return "content changed (Populate again to update)";
+    case Reshape::Moved: return "moved";
+    case Reshape::Removed: return "removed";
+    default: return "";
+    }
+}
+
+ReshapeVerdict ReshapeOf(const PlacedTag& tag, const SoundStore& store)
+{
+    ReshapeVerdict v;
+    if (tag.lib.empty()) return v;
+    const SoundLibrary* lib = LibraryOfNode(store, tag.node);
+    if (!lib) {  // the node gone (or its library): the library's root row
+        v.kind = Reshape::Removed;
+        const std::string& root = tag.lib.back().node;
+        for (const SoundLibrary& l : store.libraries)
+            if (l.root == root) v.lib = l.uid;
+        v.mark = root;
+        return v;
+    }
+    v.lib = lib->uid;
+    const std::vector<NodePrint>& was = tag.lib;
+    const std::vector<NodePrint>  now = PathPrints(store, *lib, tag.node, tag.va);
+    const size_t                  n = now.size(), m = was.size();
+    // From the root down: the first node where the path now leaves the stored one.
+    for (size_t i = 0; i < n && i < m; ++i) {
+        if (now[n - 1 - i].node == was[m - 1 - i].node) continue;
+        v.kind = Reshape::Moved;
+        // A container new on the path is the one touched; the sound itself there: the container it now sits in.
+        v.mark = i + 1 < n || i == 0 ? now[n - 1 - i].node : now[n - i].node;
+        return v;
+    }
+    if (n != m) {
+        v.kind = Reshape::Moved;
+        v.mark = now.empty() ? was.back().node : now.back().node;
+        return v;
+    }
+    for (size_t i = n; i-- > 0;)
+        if (was[i].st != 0 && was[i].st != now[i].st) {  // st 0 = an older tag: unknown
+            v.kind = Reshape::Content;
+            v.mark = now[i].node;
+            return v;
+        }
+    return v;
+}
+
+std::vector<std::string> ReshapedNodes(const PlacedTag& tag, const SoundStore& store)
+{
+    const ReshapeVerdict v = ReshapeOf(tag, store);
+    if (v.kind == Reshape::None) return {};
+    return {v.mark};
+}
+
+bool AdoptStructure(std::vector<NodePrint>& stored, const std::vector<NodePrint>& now)
+{
+    if (now.empty()) return false;
+    std::vector<NodePrint> out;
+    for (const NodePrint& p : now) {
+        NodePrint q = p;
+        for (const NodePrint& s : stored)
+            if (s.node == p.node) {
+                q = s;  // its settings as placed (a setting changed stays behind)
+                q.st = p.st;
+                break;
+            }
+        out.push_back(q);
+    }
+    bool changed = out.size() != stored.size();
+    for (size_t i = 0; !changed && i < out.size(); ++i) changed = out[i] != stored[i] || out[i].st != stored[i].st;
+    if (changed) stored = out;
+    return changed;
 }
 
 const NodePrint* TagPrint(const PlacedTag& tag, const std::string& node)
@@ -413,10 +536,18 @@ SyncState BuildSyncState(const SoundStore& store, const std::vector<SyncPlacedIt
         if (it.tag.own != Ownership::Populated) continue;
         if (!it.tag.lib.empty())
             if (const SoundLibrary* l = LibraryOfNode(store, it.tag.node)) st.libs_placed.insert(l->uid);
-        const std::vector<std::string> behind = BehindNodes(it.tag, store);
-        if (behind.empty()) continue;
-        const SoundLibrary* lib = LibraryOfNode(store, it.tag.node);
-        if (!lib) continue;
+        // 13-35b: a structure change reshapes it (Populate's); a sound both behind and reshaped is reshaped only.
+        const ReshapeVerdict           rs = ReshapeOf(it.tag, store);
+        const bool                     reshaped = rs.kind != Reshape::None;
+        const std::vector<std::string> behind = reshaped ? std::vector<std::string>{} : BehindNodes(it.tag, store);
+        if (!reshaped && behind.empty()) continue;
+        const SoundLibrary* lib = reshaped ? FindLibrary(store, rs.lib) : LibraryOfNode(store, it.tag.node);
+        if (!lib) continue;  // its library gone: no row to show it on
+        if (reshaped) {
+            st.libs_placed.insert(lib->uid);
+            st.reshaped.insert(rs.mark);
+            if (!st.reshape_what.count(rs.mark)) st.reshape_what[rs.mark] = ReshapeText(rs.kind);
+        }
         char anchor[64];
         std::snprintf(anchor, sizeof anchor, "%.4f|%.4f", it.tag.t, it.anchor);
         const std::string key = it.owner + "|" + it.tag.rid + "|" + it.tag.node + "|" + it.tag.pt + "|" + anchor;
@@ -429,7 +560,8 @@ SyncState BuildSyncState(const SoundStore& store, const std::vector<SyncPlacedIt
             s.behind = behind;
             s.name = it.name;
             s.t = it.tag.t;
-            const std::vector<NodePrint> now = PathPrints(*lib, it.tag.node, it.tag.va);
+            const std::vector<NodePrint> now =
+                reshaped ? std::vector<NodePrint>{} : PathPrints(store, *lib, it.tag.node, it.tag.va);
             for (size_t i = 0; i < now.size() && i < it.tag.lib.size(); ++i) {
                 if (now[i] == it.tag.lib[i]) continue;
                 if (ChangeRedraws(it.tag.lib[i], now[i])) {
@@ -444,20 +576,63 @@ SyncState BuildSyncState(const SoundStore& store, const std::vector<SyncPlacedIt
         }
         SyncSound& s = st.sounds[hit->second];
         s.items.push_back(it.guid);
+        if (reshaped) {
+            s.reshaped = true;
+            if (std::find(s.reshaped_at.begin(), s.reshaped_at.end(), rs.mark) == s.reshaped_at.end()) s.reshaped_at.push_back(rs.mark);
+        }
         for (const std::string& b : behind)
             if (std::find(s.behind.begin(), s.behind.end(), b) == s.behind.end()) s.behind.push_back(b);
         if (it.tag.has_wr) MergeHandEdit(s.hand, HandEdits(it.tag.wr, it.now, it.nudge_s));
         owners_behind.insert(it.owner);
     }
+    for (SyncSound& s : st.sounds)
+        if (s.reshaped) {  // reshaped only (Sync would place it from a stale shape)
+            s.behind.clear();
+            s.redraw = false;
+        }
     for (const SyncOwner& o : owners)
         if (owners_behind.count(o.guid)) st.owners.push_back(o);
     return st;
 }
 
+std::vector<std::string> SyncSoundMarks(const SyncSound& s)
+{
+    std::vector<std::string> out = s.behind;
+    for (const std::string& r : s.reshaped_at)
+        if (std::find(out.begin(), out.end(), r) == out.end()) out.push_back(r);
+    return out;
+}
+
 bool SyncInScope(const SyncSound& s, const std::string& lib, const std::string& node)
 {
     if (s.lib != lib) return false;
-    return node.empty() || std::find(s.behind.begin(), s.behind.end(), node) != s.behind.end();
+    const std::vector<std::string> marks = SyncSoundMarks(s);
+    return node.empty() || std::find(marks.begin(), marks.end(), node) != marks.end();
+}
+
+std::string SyncMarkWhat(const SyncState& st, const std::string& node)
+{
+    std::string t;
+    const auto  w = st.what.find(node);
+    if (w != st.what.end()) Add(t, w->second);
+    const auto r = st.reshape_what.find(node);
+    if (r != st.reshape_what.end()) Add(t, r->second);
+    return t;
+}
+
+bool SyncMarkReshaped(const SyncState& st, const std::string& node) { return st.reshaped.count(node) > 0; }
+
+SyncSplit SplitSyncOwners(const SyncState& st, const std::string& lib, const std::string& node,
+                          const std::vector<std::string>& owners)
+{
+    SyncSplit out;
+    for (const std::string& o : owners) {
+        bool again = false;
+        for (const SyncSound& s : st.sounds)
+            if (s.owner == o && s.reshaped && SyncInScope(s, lib, node)) again = true;
+        (again ? out.populate : out.sync).push_back(o);
+    }
+    return out;
 }
 
 SyncCard SyncCardOf(const SyncState& st, const std::string& lib)
@@ -467,8 +642,10 @@ SyncCard SyncCardOf(const SyncState& st, const std::string& lib)
     for (const SyncSound& s : st.sounds) {
         if (s.lib != lib) continue;
         ++c.sounds;
+        if (s.reshaped) ++c.reshaped;
         items.insert(s.owner);
-        nodes.insert(s.behind.begin(), s.behind.end());
+        const std::vector<std::string> marks = SyncSoundMarks(s);
+        nodes.insert(marks.begin(), marks.end());
     }
     c.changes = static_cast<int>(nodes.size());
     c.items = static_cast<int>(items.size());
@@ -482,8 +659,12 @@ std::string SyncPlural(int n, const char* word)
 
 std::string SyncCardText(const SyncCard& c)
 {
-    return SyncPlural(c.changes, "change") + " not yet on " + SyncPlural(c.sounds, "placed sound") + " in " +
-           SyncPlural(c.items, "item") + ".";
+    std::string t = SyncPlural(c.changes, "change") + " not yet on " + SyncPlural(c.sounds, "placed sound") + " in " +
+                    SyncPlural(c.items, "item") + ".";
+    if (c.reshaped > 0)  // 13-35b
+        t += " " + std::string(c.reshaped == c.sounds ? (c.reshaped == 1 ? "It follows" : "They follow") : std::to_string(c.reshaped) + (c.reshaped == 1 ? " of them follows" : " of them follow")) +
+             " a structure change of the library: Populate again to update " + (c.reshaped == 1 ? "it." : "them.");
+    return t;
 }
 
 std::map<std::string, int> SyncMarksOf(const SyncState& st, const std::string& lib)
@@ -491,7 +672,7 @@ std::map<std::string, int> SyncMarksOf(const SyncState& st, const std::string& l
     std::map<std::string, int> out;
     for (const SyncSound& s : st.sounds)
         if (s.lib == lib)
-            for (const std::string& b : s.behind) ++out[b];
+            for (const std::string& b : SyncSoundMarks(s)) ++out[b];
     return out;
 }
 
@@ -508,11 +689,13 @@ std::vector<SyncItemLine> SyncItemLines(const SyncState& st, const std::string& 
         for (const SyncSound& s : st.sounds) {
             if (s.owner != o.guid || !SyncInScope(s, lib, node)) continue;
             ++l.sounds;
-            if (s.hand.Any()) ++l.hand;
-            for (const std::string& b : s.behind)
+            if (s.reshaped) ++l.reshaped;  // 13-35b: placed again by Populate, never asked about
+            else if (s.hand.Any()) ++l.hand;
+            for (const std::string& b : SyncSoundMarks(s))
                 if ((node.empty() || b == node) && std::find(l.nodes.begin(), l.nodes.end(), b) == l.nodes.end()) l.nodes.push_back(b);
         }
         if (l.sounds == 0) continue;
+        if (l.reshaped > 0) l.hand = 0;  // 13-35b: the whole item is placed again by Populate, never asked about
         if (std::find(tracks.begin(), tracks.end(), l.track) == tracks.end()) tracks.push_back(l.track);
         lines.push_back(l);
     }
@@ -530,7 +713,7 @@ std::vector<const SyncSound*> SyncHandSounds(const SyncState& st, const std::str
     for (const SyncOwner& o : st.owners) {
         if (!owners.count(o.guid)) continue;
         for (const SyncSound& s : st.sounds)
-            if (s.owner == o.guid && s.hand.Any() && SyncInScope(s, lib, node)) out.push_back(&s);
+            if (s.owner == o.guid && !s.reshaped && s.hand.Any() && SyncInScope(s, lib, node)) out.push_back(&s);
     }
     return out;
 }
@@ -551,6 +734,7 @@ std::string SyncToastText(const SyncCounts& c, bool remembered)
     if (c.kept) parts += ", " + SyncPlural(c.kept, "hand edit") + " kept";
     if (c.overwritten) parts += ", " + std::to_string(c.overwritten) + " overwritten";
     if (c.skipped) parts += ", " + std::to_string(c.skipped) + " skipped";
+    if (c.repopulated) parts += ", " + SyncPlural(c.repopulated, "item") + " placed again";  // 13-35b
     std::string out = "One undo point \xE2\x80\x9CRAV: Sync placed sounds\xE2\x80\x9D: " + parts;
     if (remembered) out += " \xC2\xB7 remembered in \xE2\x98\xB0 \xE2\x80\xBA Sounds";
     return out;

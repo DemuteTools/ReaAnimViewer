@@ -1704,7 +1704,7 @@ std::string SerializeItemSounds(const ItemSounds& s)
 
 namespace {
 
-// 13-35: the tag's Library prints (`lib`: "node/vol/off/fades/sync/zones/level/on" per node, comma separated, then
+// 13-35: the tag's Library prints (`lib`: "node/vol/off/fades/sync/zones/level/on/st" per node (13-35b: st appended), comma separated, then
 // percent-encoded as one value) and what RAV wrote (`wr`: "vol/fin/fis/fid/fout/fos/fod/len").
 std::string Hex32(uint32_t v)
 {
@@ -1745,7 +1745,7 @@ std::string TagPrintsText(const std::vector<PlacedTag::NodePrint>& prints)
     for (const PlacedTag::NodePrint& p : prints) {
         if (!out.empty()) out += ',';
         out += p.node + '/' + FormatNumber(p.vol) + '/' + FormatNumber(p.off) + '/' + Hex32(p.fades) + '/' + Hex32(p.sync) +
-               '/' + Hex32(p.zones) + '/' + Hex32(p.level) + '/' + (p.on ? "1" : "0");
+               '/' + Hex32(p.zones) + '/' + Hex32(p.level) + '/' + (p.on ? "1" : "0") + '/' + Hex32(p.st);
     }
     return out;
 }
@@ -1763,6 +1763,7 @@ bool ReadTagPrints(const std::string& text, std::vector<PlacedTag::NodePrint>* o
                 return false;
             p.node = f[0];
             p.on = f[7] == "1";
+            if (f.size() >= 9 && !ReadHex32(f[8], &p.st)) return false;  // 13-35b; an older tag: 0 = unknown
             v.push_back(p);
         }
     *out = std::move(v);

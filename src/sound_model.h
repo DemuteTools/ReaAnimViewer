@@ -586,6 +586,10 @@ struct PlacedTag {
         double      off = 0.0;   // its offset_ms in its Blend parent
         uint32_t    fades = 0, sync = 0, zones = 0, level = 0;  // hashes of its user settings (a Sound's: of its variation)
         bool        on = true;   // a Sound: the variation it played is on
+        // 13-35b: a hash of the node's structure as it shaped the placed sound (a Switch's case for the path child, a
+        // Random's children, a Blend's layers; 0 = a Sound, or an older tag: unknown). Not in operator==, which stays the
+        // settings verdict (behind); a differing st makes the sound reshaped (sound_sync_plan.h ReshapedNodes).
+        uint32_t    st = 0;
         bool operator==(const NodePrint& o) const
         {
             return node == o.node && vol == o.vol && off == o.off && fades == o.fades && sync == o.sync && zones == o.zones &&

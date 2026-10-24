@@ -478,6 +478,7 @@ int main()
             p1.zones = 0x0000ffffu;
             p1.level = 0x80000000u;
             p1.on = false;
+            p1.st = 0x12345678u;  // 13-35b: its structure print
             PlacedTag::NodePrint p2;
             p2.node = "root000000000001";
             a.lib = {p1, p2};
@@ -498,6 +499,21 @@ int main()
                   b.wr.vol == 0.5 && b.wr.fade_in == 0.001 && b.wr.fade_out == 0.04 && b.wr.in_shape == 1 &&
                   b.wr.out_shape == 6 && b.wr.in_dir == -0.25 && b.wr.out_dir == 0.75 && b.wr.length == 1.5);
             CHECK(SerializePlacedTag(b) == at);
+            CHECK(b.lib[0].st == 0x12345678u && b.lib[1].st == 0u);
+            // 13-35b: an older tag (8 fields a print, no st) reads with st 0 (unknown).
+            {
+                std::string  old = at;
+                const size_t k = old.find("/12345678");  // p1's st
+                CHECK(k != std::string::npos);
+                if (k != std::string::npos) {
+                    old.erase(k, 9);
+                    const size_t k2 = old.rfind("/00000000", old.find(' ', old.find("root000000000001")));  // p2's st
+                    if (k2 != std::string::npos) old.erase(k2, 9);
+                    PlacedTag o;
+                    CHECK(ParsePlacedTag(old, &o) && o.lib.size() == 2 && o.lib[0].st == 0u && o.lib[0] == p1 && o.lib[1] == p2 &&
+                          o.kept == b.kept);
+                }
+            }
             CHECK(SerializePlacedTag(t).find("lib=") == std::string::npos && SerializePlacedTag(t).find("wr=") == std::string::npos);
             // A print that does not read is kept as an unknown field (written back as read).
             PlacedTag bad;

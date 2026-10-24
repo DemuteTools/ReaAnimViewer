@@ -46,8 +46,12 @@ SoundReport PopulateLoopPassesNoUndo(const std::vector<MediaItem*>& items);
 // case) gets the Library's values and its nudge back to 0 when true, else keeps the user's edits (volume relative, fades,
 // length, nudge) and takes the rest. `remember` writes the rule `rule` (Don't ask again) in the same undo point
 // "RAV: Sync placed sounds". `counts` (optional) = what it did, per sound.
+// 13-35b: `populate` = the chosen items holding a reshaped sound (a Library structure change): they get the usual Populate
+// (PopulateOne, normal mode: a new draw, their behind sounds covered too), in the same undo point; an item in both lists
+// is placed again only. counts->repopulated = how many.
 struct SyncPlacedRequest {
     std::vector<std::string>    owners;
+    std::vector<std::string>    populate;
     std::vector<std::string>    scope;
     std::map<std::string, bool> overwrite;
     bool                        remember = false;

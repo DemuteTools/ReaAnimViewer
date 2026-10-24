@@ -8,7 +8,8 @@
 // weapon blow, a low straight), or the hook pulled back; its left arm a windmill swing that slows
 // over 0.3 s (a follow-through), or a mirrored hook. Through Detect (DetectAutoEvents): the Punch
 // at the arm's stop (Stop, the default), at the hand's fastest (Peak), at the start (Start); the
-// Swing it replaces when both are ticked; the counter-arm's Swing dropped; nothing for no blow.
+// Swing kept beside it when both are ticked (the whoosh at the peak, the Punch at the stop); the
+// counter-arm's Swing dropped; nothing for no blow.
 //   cmake -S tests -B build-tests && cmake --build build-tests && ctest --test-dir build-tests
 
 #include "auto_detect.h"
@@ -70,7 +71,8 @@ enum class Blow { Hook, PulledBack, Chop, Bounce, Thrust, WindUpThrust, Cross, N
                   HookUp,      // the hook ending with the hand over the shoulder (a guard raised)
                   SideThrust,  // the straight thrust out to the side (no forward)
                   LoopThrust,  // a thrust whose stop passes the loop seam (2.88 s of a 3 s cycle)
-                  Hammer };    // a downward blow stopping dead (60 ms) at the landing of a jump
+                  Hammer,      // a downward blow stopping dead (60 ms) at the landing of a jump
+                  Whip };      // the hand sweeping from the side to the front while the elbow opens
 
 struct Body {
     Blow   right = Blow::Hook;
@@ -201,6 +203,16 @@ Vec3d RightHand(const Body& b, const Vec3d& sh, double t)
         const Vec3d a = Plus(sh, V(0.0, -0.15, 0.2)), z = Plus(sh, V(0.0, -0.05, 0.587));
         return Lerp(a, z, ThrustU(b.right, t));
     }
+    case Blow::Whip: {
+        // Over 0.25 s (smoothstep) from kThrust0: the hand sweeps 120 deg about the shoulder, from
+        // behind the side to the front, a little under the shoulder, while the elbow opens from 70
+        // to 165 deg (reach 0.34 -> 0.59 m): fast (about 6 leg/s), its opening speed slow (about
+        // 1.7 leg/s, under punch_speed and under punch_radial_frac of the hand's).
+        const double u = Smooth((t - kThrust0) / 0.25);
+        const double th = (-30.0 + 120.0 * u) * kPi / 180.0, el = (70.0 + 95.0 * u) * kPi / 180.0;
+        const double r = 2.0 * 0.3 * std::sin(el / 2.0);
+        return Plus(sh, V(-std::cos(th) * r * 0.99, -0.1 * r, std::sin(th) * r * 0.99));
+    }
     case Blow::Cross: {
         // The hand travels 0.6 m while the shoulder travels 0.4: the arm opens 0.41 -> 0.54 m.
         // Low, the arm under the shoulder (rise about -0.6, as Fist Fight's left 2.8625).
@@ -249,7 +261,7 @@ std::vector<BoneTrack> MakeBody(const Body& b)
     const size_t           n = static_cast<size_t>(kDur * kRate) + 1;
     std::vector<BoneTrack> rt(static_cast<size_t>(Role::Count));
     const bool             elbows = b.right == Blow::Thrust || b.right == Blow::WindUpThrust || b.right == Blow::Cross ||
-                        b.right == Blow::LoopThrust;
+                        b.right == Blow::LoopThrust || b.right == Blow::Whip;
     for (size_t i = 0; i < n; ++i) {
         const double t = static_cast<double>(i) / kRate;
         const Vec3d  lift = V(0.0, Lift(b, t), 0.0);
@@ -351,13 +363,25 @@ void TestArcBlows()
 
     // Swing alone: both are swings (a user who wants arm foley ticks Swing).
     CHECK((Markers(Detect(Body{}, On({AutoType::Swing}))) == std::vector<std::string>{"Swing R", "Swing L"}));
-    // Both ticked: the punch takes the hook's swing (one motion, one sound), the windmill stays;
-    // at its stop, its peak or its start, and with Swing at its start too.
+    // Both ticked: Swing and Punch are independent (2026-10-24): the hook keeps its swing beside
+    // its punch, the windmill stays; at its stop, its peak or its start, and with Swing at its
+    // start too.
     for (Mark m : {Mark::Stop, Mark::Peak, Mark::Start})
         for (bool ss : {false, true}) {
-            const std::vector<std::string> got = Markers(Detect(Body{}, On({AutoType::Swing, AutoType::Punch}, m, ss)));
-            CHECK((got == std::vector<std::string>{"Punch R", "Swing L"}));
+            std::vector<std::string> got = Markers(Detect(Body{}, On({AutoType::Swing, AutoType::Punch}, m, ss)));
+            std::sort(got.begin(), got.end());
+            CHECK((got == std::vector<std::string>{"Punch R", "Swing L", "Swing R"}));
         }
+    // The hook, both ticked: the Swing at the hand's fastest, the Punch at the arm's stop, apart.
+    const std::vector<Found> both = Detect(Body{}, On({AutoType::Swing, AutoType::Punch}));
+    const Found*             bs = Get(both, "Swing R");
+    const Found*             bp = Get(both, "Punch R");
+    CHECK(bs && bp);
+    if (bs && bp) {
+        CHECK(std::fabs(bs->t - peak_t) < 0.03);
+        CHECK(bp->t > peak_t + 0.07 && bp->t < peak_t + 0.12);
+        CHECK(bp->t - bs->t > 0.05);
+    }
 
     // The same hook pulled back (the hand moving backward): no punch. A hook slowing over 0.3 s
     // swings on: no punch.
@@ -396,13 +420,16 @@ void TestArcBlows()
 void TestCounterArm()
 {
     // The left hand hooks while the right is pulled back at the same moment: the left is a
-    // Punch; the right, moving backward within 0.1 s of it, is the counter-arm: no Swing, no
-    // Punch. Swing alone: the right's swing stays dropped (it is no blow's whoosh either).
+    // Punch (and its hook's Swing L, the whoosh); the right, moving backward within 0.1 s of it,
+    // is the counter-arm: no Swing, no Punch. Swing alone: the right's swing stays dropped (it is
+    // no blow's whoosh either).
     Body b;
     b.right = Blow::PulledBack;
     b.left = Blow::Hook;
     b.windmill = false;
-    CHECK((Markers(Detect(b, On({AutoType::Punch, AutoType::Swing}))) == std::vector<std::string>{"Punch L"}));
+    std::vector<std::string> cb = Markers(Detect(b, On({AutoType::Punch, AutoType::Swing})));
+    std::sort(cb.begin(), cb.end());
+    CHECK((cb == std::vector<std::string>{"Punch L", "Swing L"}));
     const std::vector<std::string> sw = Markers(Detect(b, On({AutoType::Swing})));
     CHECK(std::find(sw.begin(), sw.end(), "Swing R") == sw.end());
     // Without the other hand's blow, the arm pulled back is a Swing.
@@ -426,7 +453,8 @@ void TestStraight()
     const std::vector<Found> pk = Detect(th, On({AutoType::Punch}, Mark::Peak));
     CHECK(Markers(pk) == kPunchR);
     if (const Found* e = Get(pk, "Punch R")) CHECK(std::fabs(e->t - peak_t) < 0.015);
-    // Swing ticked too: a straight punch is never a Swing.
+    // Swing ticked too: this thrust's hand stays under Swing's speed, so no Swing (Swing is read
+    // on its own, Punch does not remove it).
     CHECK(Markers(Detect(th, On({AutoType::Punch, AutoType::Swing}))) == kPunchR);
 
     // A wind-up (a slow drift forward whose extending speed dips) then the blow: one Punch, on
@@ -607,12 +635,58 @@ void TestRows()
 
 }  // namespace
 
+// Story 10-9o: a straight blow read from the elbow (the radial test failing) and the contact stop.
+void TestElbowAndContact()
+{
+    // The whip: the hand fast, its opening slow; the elbow opens 95 deg and ends straight: a
+    // straight punch (motion_whoosh.cpp's runs, not an arc blow). Without the elbow test: none.
+    Body wb;
+    wb.right = Blow::Whip;
+    wb.windmill = false;
+    const PhysicsParams   p = AutoPhysicsParams(AutoType::Punch, kAutoDefaultSens, false);
+    const PhysicsAnalysis a = AnalyseMotion(MakeBody(wb), p);
+    CHECK(CountPunch(WhooshEvents(a, p, WhooshMark::Peak)) == 1);
+    PhysicsParams no_open = p;
+    no_open.punch_open_deg = 360.0;
+    CHECK(CountPunch(WhooshEvents(a, no_open, WhooshMark::Peak)) == 0);
+    // Its hand never reaching punch_arc_speed: none (a slow opening needs a fast hand).
+    PhysicsParams slow = p;
+    slow.punch_arc_speed = 50.0;
+    CHECK(CountPunch(WhooshEvents(a, slow, WhooshMark::Peak)) == 0);
+    // Nor when the elbow must end straighter than it does.
+    PhysicsParams bent = p;
+    bent.punch_open_end_deg = 170.0;
+    CHECK(CountPunch(WhooshEvents(a, bent, WhooshMark::Peak)) == 0);
+
+    // The contact stop on a hand track: the speed rising to its peak at sample 20, on a plateau
+    // (96 %) to 30, then braking to 10 % by 40.
+    WhooshTrack h;
+    for (int i = 0; i < 80; ++i) {
+        double v = i <= 20 ? 6.0 * i / 20.0 : i <= 30 ? 6.0 - 0.024 * (i - 20) : std::max(0.6, 5.76 - 0.516 * (i - 30));
+        h.speed.push_back(v);
+        h.elbow.push_back(std::min(175.0, 60.0 + 2.0 * i));  // 100 deg at the peak, 120 at 30
+    }
+    // The elbow at 120 deg as the hand brakes (over punch_contact_elbow_deg): a blow in the air.
+    CHECK(PunchContactStop(h, 20, kRate, p) == -1);
+    // Bent at the brake (104 deg) and never past 140: a hit, stopped where the speed first falls
+    // under 90 % of the peak (5.4: sample 31).
+    for (int i = 0; i < 80; ++i) h.elbow[static_cast<size_t>(i)] = std::min(140.0, 70.0 + i);
+    CHECK(PunchContactStop(h, 20, kRate, p) == 31);
+    // The elbow passing punch_contact_max_elbow_deg within the stop window: in the air.
+    h.elbow[60] = 155.0;
+    CHECK(PunchContactStop(h, 20, kRate, p) == -1);
+    // No elbow: the caller's stop.
+    h.elbow.clear();
+    CHECK(PunchContactStop(h, 20, kRate, p) == -1);
+}
+
 int main()
 {
     TestArcBlows();
     TestCounterArm();
     TestStraight();
     TestDetails();
+    TestElbowAndContact();
     TestRows();
     if (g_fails) {
         std::printf("%d check(s) failed\n", g_fails);

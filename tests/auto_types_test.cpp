@@ -218,7 +218,7 @@ void TestKnownValues()
         CHECK(std::string(AutoKindWord(AutoKind::PunchPeak)) == "punch_peak" && AutoTypeOfKind(AutoKind::PunchPeak) == AutoType::Punch);
         CHECK(!AutoKindFromWord("strike", nullptr));
         const AutoTypeInfo& r = AutoTypeRow(AutoType::Punch);
-        CHECK(r.replaces == static_cast<int>(AutoType::ArmLand) && r.replaces_in_span == static_cast<int>(AutoType::Swing) &&
+        CHECK(r.replaces == static_cast<int>(AutoType::ArmLand) && r.replaces_in_span == -1 &&
               r.replaces_own_side && r.replaces_span);
         CHECK(r.no_sens_raise && r.start_option && !r.part_split && !r.sideless && !r.shared_sides);
         CHECK(AutoKindsOf(AutoType::Punch).size() == 3 && AutoKindRow(AutoKind::PunchPeak).sound_key == AutoKind::Punch);

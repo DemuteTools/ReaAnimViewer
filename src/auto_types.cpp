@@ -378,23 +378,25 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "at the peak (Kick Heel L / Kick Toe L...).",
      "kick", {{&P::kick_speed, S::Divide}, {}}, &AutoPartsKick, false, true, false, true, true},
     {T::Swing, "Swing", "Swing", C::Arms,
-     "A marker where a hand whips through the air (Swing L / Swing R), at its fastest,\n"
-     "or where the motion starts (Start): an arm movement that is no blow (a follow-through,\n"
-     "a running arm). A blow is a Punch; the arm pulled back while the other hand punches is none.",
+     "A marker where a hand whips through the air (Swing L / Swing R): the arm's whoosh, with or\n"
+     "without a blow, at its fastest, or where the motion starts (Start). A blow's stop is a\n"
+     "Punch: tick both for the whoosh and the hit. The arm pulled back while the other hand\n"
+     "punches is no Swing.",
      "swing", {{&P::swing_speed, S::Divide}, {}}, &AutoPartsWhooshHand, false, false, false, true, true},
     // Story 10-9o: any fist blow, straight (punch_speed) or arc (punch_arc_speed: 10-9n's
-    // Strike); higher sensitivity = slower blows count. With Swing ticked it replaces that
-    // hand's Swing over its run (`replaces_in_span`), with Arms Land that hand's Arms Land at the
-    // same time (`replaces`: a blow landing with a jump hits, Jump Attack's sword).
+    // Strike); higher sensitivity = slower blows count. With Arms Land ticked it replaces that
+    // hand's Arms Land at the same time (`replaces`: a blow landing with a jump hits, Jump
+    // Attack's sword). Swing stays (2026-10-24): the arm's whoosh and the blow's stop are two
+    // sounds, both kept when both are ticked.
     {T::Punch, "Punch", "Punch", C::Arms,
      "A marker where a hand's blow stops (Punch L / Punch R): a straight punch, a hook, an\n"
      "uppercut, a hammer fist, hitting something or in the air. Stop: where the arm stops (full\n"
      "extension, or the contact); Peak: at the hand's fastest (a whoosh); Start: where the\n"
      "motion starts. L / R is the character's own side: seen from the front, its left hand is\n"
      "on the screen's right. Fist or weapon: pick the sound with a Switch on the character\n"
-     "(e.g. its outfit or weapon).",
+     "(e.g. its outfit or weapon). With Swing ticked too, the blow's whoosh is a Swing.",
      "punch", {{&P::punch_speed, S::Divide}, {&P::punch_arc_speed, S::Divide}}, &AutoPartsWhooshHand, false, false,
-     false, true, true, static_cast<int>(T::ArmLand), static_cast<int>(T::Swing), true, 0u,
+     false, true, true, static_cast<int>(T::ArmLand), -1, true, 0u,
      0.5, true},  // conf_scale: half steps (a jab's 2.34 leg/s over punch_speed 2.0, the elbow blow's 5.1 over punch_arc_speed 5.0)
     // Story 10-9i: higher sensitivity = a smaller heel rise counts (heel_tap_min_rise / f).
     {T::HeelTap, "Heel Tap", "Heel Tap", C::Legs,

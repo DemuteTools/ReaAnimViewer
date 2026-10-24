@@ -27,7 +27,9 @@
 //         hand on body within punch_touch_s of the run (the hands meeting or parting, a hand on
 //         the body); a clap after which the hands stay together (HandsHeld: one hand holding the
 //         other's fist, an elbow blow pushed into the palm) does not count.
-//     Its stop: the first sample from the peak where the speed falls under punch_stop_frac of it.
+//     Its stop: the first sample from the peak where the speed falls under punch_stop_frac of it;
+//     a blow that hits (PunchContactStop: the elbow still bent as the hand brakes), where the
+//     speed falls under punch_contact_frac of it.
 // Time = the stop (default), the peak or the start; span = the run (to the stop at least);
 // strength = the hand's peak speed relative to the torso (leg/s), straight or arc.
 //
@@ -160,6 +162,9 @@ std::vector<PhysicsEvent> ArcEvents(const PhysicsAnalysis& a, const PhysicsParam
             // Story 10-9o: an arc in the air that ends with the hand above punch_arc_max_end_rise
             // (the arm swung up over the shoulder: a guard raised, a block) is no blow.
             if (!hit && h.rise.size() == a.samples && h.rise[static_cast<size_t>(stop)] > p.punch_arc_max_end_rise) continue;
+            // A blow that hits: its marker at the contact (PunchContactStop; the span keeps `stop`).
+            const int  contact = PunchContactStop(h, static_cast<int>(k), rate, p);
+            const long mstop = contact >= 0 ? static_cast<long>(contact) : stop;
             PhysicsEvent e;
             e.kind = PhysicsKind::Punch;
             e.side = side;
@@ -168,7 +173,7 @@ std::vector<PhysicsEvent> ArcEvents(const PhysicsAnalysis& a, const PhysicsParam
             e.start_s = peak_s - static_cast<double>(k - st) / rate;
             e.end_s = peak_s + static_cast<double>(std::max(en, stop) - k) / rate;
             e.time_s = mark == WhooshMark::Start ? e.start_s
-                       : mark == WhooshMark::Stop ? peak_s + static_cast<double>(stop - k) / rate
+                       : mark == WhooshMark::Stop ? peak_s + static_cast<double>(mstop - k) / rate
                                                   : peak_s;
             // Past the seam (a stop) or before it (a start): the whole event shifted by one cycle
             // (start <= time <= end on one cycle).

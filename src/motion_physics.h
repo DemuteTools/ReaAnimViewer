@@ -756,6 +756,30 @@ struct PhysicsParams {
     // their distance for punch_hold_s is a hold (ElbowPunch: 0.45 s; the claps part within
     // 0.05-0.09 s), not a clap that ends a blow.
     double     punch_arc_max_end_rise = 0.2;
+    // Story 10-9o: a straight blow whose opening is not the hand's main motion (its radial speed
+    // under punch_speed or under punch_radial_frac of the hand's): the elbow opens punch_open_deg
+    // at least over the run; under punch_speed, the hand at punch_arc_speed and the elbow ending at
+    // punch_open_end_deg at least. Fist Fight's left 3.005 (Antho's Punch L): radial 1.12 leg/s,
+    // hand 9.7 leg/s, the elbow 64 -> 163 deg.
+    double     punch_open_deg = 40.0;
+    double     punch_open_end_deg = 150.0;
+    // Story 10-9o: a blow that hits brakes on the target with the elbow still bent; one in the air
+    // brakes itself while the arm straightens. When the hand has slowed to punch_contact_brake_frac
+    // of its peak speed with the elbow still under punch_contact_elbow_deg, and the elbow never
+    // passes punch_contact_max_elbow_deg within punch_stop_window_s of the peak, the blow hits:
+    // its stop is where the speed first falls under punch_contact_frac of the peak (on the raw
+    // Kyokushin markers the fist is at 86-90 % of its peak at the contact, then brakes at ~13 g on
+    // a shield, ~5 g on a body; this share's first crossing is the contact, shield 0 ms, opponent
+    // +2 ms). Else the stop stays the air one (the arm all but fully open or the speed under
+    // punch_stop_frac). Measured on RAV's smoothed speed (Kyokushin S01, 12 subjects): the elbow
+    // at 70 % of the peak speed is 123-134 deg in the air (10th-90th pct), 99-129 on a shield,
+    // 113-139 on an opponent, so only the clearly bent ones read as hits; shield +27 -> +14 ms,
+    // opponent +28 -> +25, air and the game clips unchanged. Wider (a 125 deg cut) or an elbow-stop
+    // air branch moved more shield punches but sent 10-30 % of the air and game ones 40+ ms off.
+    double     punch_contact_brake_frac = 0.7;
+    double     punch_contact_elbow_deg = 112.0;
+    double     punch_contact_max_elbow_deg = 150.0;
+    double     punch_contact_frac = 0.9;
     double     punch_hold_s = 0.25;
     double     punch_hold_gap = 0.05;
 };
@@ -858,6 +882,8 @@ struct WhooshTrack {
     std::vector<double> reach;   // the anchor -> limb distance (leg; a foot: its fastest part's)
     std::vector<double> rise;    // a hand: the shoulder -> hand direction's vertical share (-1 down .. +1 up)
     std::vector<double> arm_len;    // a hand: shoulder -> elbow + elbow -> hand (leg); empty without an elbow
+    std::vector<double> elbow;      // a hand: the elbow's angle (shoulder - elbow - hand, degrees, 180 = straight;
+                                    // smoothed as the speed); empty without a shoulder and an elbow
     std::vector<double> height;
     std::vector<int>    part;
 };
@@ -1046,6 +1072,10 @@ std::vector<PhysicsEvent> WhooshEvents(const PhysicsAnalysis& a, const PhysicsPa
 // the peak) the stop. at_start = Start, else Peak.
 enum class WhooshMark { Peak, Start, Stop };
 std::vector<PhysicsEvent> WhooshEvents(const PhysicsAnalysis& a, const PhysicsParams& p, WhooshMark mark);
+// Story 10-9o: a blow that hits (see PhysicsParams::punch_contact_elbow_deg): its stop, the first
+// sample from `peak` where the hand's speed falls under punch_contact_frac of its peak; -1 for a
+// blow in the air (or without an elbow), whose stop stays the caller's.
+int PunchContactStop(const WhooshTrack& h, int peak, double rate, const PhysicsParams& p);
 // "whooshes: kicks 1, swings 2, punches 0" plus "; missing: ..." ("whooshes: skipped: <error>").
 std::string WhooshSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEvent>& ev);
 // One line per event ("   1.234 s  PHY L heel 1.8", a scuff or hand pivot "... (to 1.456 s)"), each with

@@ -176,9 +176,11 @@ void TestPhysics()
     CHECK(a.torso_missing.empty());
     for (int s = 0; s < 2; ++s) CHECK(a.whoosh_hand[s].present && a.whoosh_foot[s].present);
     const std::vector<PhysicsEvent> ev = WhooshEvents(a, p, false);
-    // One of each: the swing (L hand), the punch (R hand), the kick (L foot); the folded shank
-    // whips as fast but is no kick (up leg -> foot under 1 leg).
-    CHECK(Count(ev, PhysicsKind::Swing) == 1 && Count(ev, PhysicsKind::Punch) == 1 && Count(ev, PhysicsKind::Kick) == 1);
+    // The swing (L hand), the punch (R hand) and its own swing (story 10-9o, 2026-10-24: Swing
+    // and Punch are independent, a blow's whoosh is a swing too), the kick (L foot); the folded
+    // shank whips as fast but is no kick (up leg -> foot under 1 leg).
+    CHECK(Count(ev, PhysicsKind::Swing) == 2 && Count(ev, PhysicsKind::Punch) == 1 && Count(ev, PhysicsKind::Kick) == 1);
+    CHECK(Find(ev, PhysicsKind::Swing, 'R'));
     const PhysicsEvent* sw = Find(ev, PhysicsKind::Swing, 'L');
     const PhysicsEvent* pu = Find(ev, PhysicsKind::Punch, 'R');
     const PhysicsEvent* ki = Find(ev, PhysicsKind::Kick, 'L');
@@ -251,7 +253,7 @@ void TestPhysics()
     PhysicsParams low = p;
     low.kick_min_height = 2.0;
     CHECK(Count(WhooshEvents(a, low, false), PhysicsKind::Kick) == 0);
-    CHECK(WhooshSummary(a, ev) == "whooshes: kicks 1, swings 1, punches 1");
+    CHECK(WhooshSummary(a, ev) == "whooshes: kicks 1, swings 2, punches 1");
 
     // Review 10-9c: a running arm pump driving forward while the elbow opens is fast (a swing),
     // never a punch: its speed along the shoulder -> hand line stays far under the thrust's share
@@ -417,7 +419,7 @@ void TestDetect()
     const std::vector<Event>     ev = DetectAutoEvents(blocks, rt, &cache, false);
     std::vector<std::string>     names;
     for (const Event& e : ev) names.push_back(e.marker);
-    CHECK((names == std::vector<std::string>{"Swing L", "Punch R", "Kick Toe L"}));
+    CHECK((names == std::vector<std::string>{"Swing L", "Swing R", "Punch R", "Kick Toe L"}));  // 10-9o: the punch's swing too
     for (const Event& e : ev)
         if (e.marker == "Swing L") CHECK(std::fabs(e.time_s - 0.65) < 0.01 && e.strength > 7.0);
 

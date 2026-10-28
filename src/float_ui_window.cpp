@@ -127,6 +127,9 @@ bool FloatUiWindow::Create()
     hwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW, kClass, title_, WS_POPUP | WS_THICKFRAME | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, x,
                             y, w, h, owner, nullptr, hi, this);
     if (!hwnd_) return false;
+    // The frame computed again (WM_NCCALCSIZE, wParam TRUE) before the DC and the GL surface exist: the client
+    // area is the whole window from the first frame on.
+    SetWindowPos(hwnd_, nullptr, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
     dc_ = GetDC(hwnd_);
     // The viewer's pixel format: the shared GL context renders into either DC.
     const int             pf = GetPixelFormat(viewer_dc_);
@@ -353,8 +356,10 @@ LRESULT FloatUiWindow::Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
     switch (msg) {
     case WM_NCCALCSIZE:
-        if (wp) return 0;  // no system frame: the client area is the whole window (the edges still resize)
-        break;
+        // No system frame: the client area is the whole window (the edges still resize), with either wParam.
+        // FALSE is the call made by CreateWindowExW: left to DefWindowProc it took off the resize border, so the
+        // first frames drew into a smaller client area than the window until a real resize (cut off at the right).
+        return 0;
     case WM_NCHITTEST: {
         POINT pt = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         ScreenToClient(hwnd, &pt);

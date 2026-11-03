@@ -689,6 +689,9 @@ struct ResolvedMeshSkin {
     std::vector<glm::vec4>  weights;   // per local vertex — weights (top-4, unnormalized)
     std::vector<glm::vec3>  positions; // per local vertex — mesh-local, straight from file
     std::vector<uint32_t>   indices;   // triangle list (empty → keep assimp faces)
+    // per FILE vertex — the assimp vertex holding its normal/UV (assimp renumbers glTF
+    // vertices, so file vertex i is generally NOT assimp vertex i). Set when valid.
+    std::vector<uint32_t>   assimpVertex;
 };
 
 // Appends one aiMesh, baked into model space by `world`, as a SceneMesh's CPU
@@ -708,23 +711,27 @@ void AppendMesh(const aiMesh* mesh, const glm::mat4& world,
     // For a matched glTF mesh, positions come straight from the file (assimp's Windows
     // build mis-reads a few, spiking them); assimp is the source only for its (untouched)
     // normals/UVs. A skinned mesh's `world` is identity, so file mesh-local == baked.
+    // The vertices are emitted in FILE order (the file's weights and triangle list index
+    // them so); normals/UVs are fetched from the assimp vertex the file vertex maps to.
     const bool use_gltf_pos =
-        gltf_skin && gltf_skin->valid && gltf_skin->positions.size() == mesh->mNumVertices;
+        gltf_skin && gltf_skin->valid && gltf_skin->positions.size() == mesh->mNumVertices &&
+        gltf_skin->assimpVertex.size() == mesh->mNumVertices;
 
     for (unsigned vi = 0; vi < mesh->mNumVertices; ++vi) {
         SceneVertex v{};
+        const unsigned src = use_gltf_pos ? gltf_skin->assimpVertex[vi] : vi;
         const glm::vec3 lp = use_gltf_pos
             ? gltf_skin->positions[vi]
             : glm::vec3(mesh->mVertices[vi].x, mesh->mVertices[vi].y, mesh->mVertices[vi].z);
         const glm::vec3 wp = glm::vec3(world * glm::vec4(lp, 1.0f));
         v.pos = wp;
         if (mesh->HasNormals()) {
-            const aiVector3D& n = mesh->mNormals[vi];
+            const aiVector3D& n = mesh->mNormals[src];
             v.normal = glm::normalize(normal_mat * glm::vec3(n.x, n.y, n.z));
         }
         if (mesh->HasTextureCoords(0)) {
-            v.uv = glm::vec2(mesh->mTextureCoords[0][vi].x,
-                             mesh->mTextureCoords[0][vi].y);
+            v.uv = glm::vec2(mesh->mTextureCoords[0][src].x,
+                             mesh->mTextureCoords[0][src].y);
         }
         // boneIds / boneWeights left zero (SceneVertex v{}); the skin scatter below
         // fills them for skinned meshes, and a boneless mesh keeps the static path.
@@ -940,8 +947,10 @@ bool ComputePosedBounds(const SceneSkeleton& skel, const SceneAnimation& clip,
 // assimp's meshes — the work-around for the assimp 6.0.5 Windows glTF weight bug (see
 // gltf_skin.h). Returns a per-scene-mesh table; every entry is `valid=false` (→ assimp
 // weights) for non-glTF files, an unparseable glTF, or a mesh we cannot confidently
-// pair to a file primitive. Matching is by vertex count + first vertex position, which
-// is unambiguous because assimp keeps skinned verts mesh-local and in file order.
+// pair to a file primitive. assimp keeps skinned verts mesh-local but NOT in file order:
+// it renumbers them in first-use order of the triangle list (verified on a Godot GLB,
+// 2026-11-03), so a same-count pair is only accepted once BuildVertexMap has derived the
+// file-vertex -> assimp-vertex correspondence from the triangles both sides share.
 std::vector<ResolvedMeshSkin> ResolveGltfSkins(
     const aiScene* scene, const std::string& path,
     const std::unordered_map<std::string, int>& bone_index,
@@ -978,25 +987,59 @@ std::vector<ResolvedMeshSkin> ResolveGltfSkins(
         dst = g.inverseBind[local];
     }
 
+    // file vertex -> assimp vertex, read off the triangles: assimp's faces and the file's
+    // index list are the same triangles in the same order, so corner k of one is corner k
+    // of the other. False when they are not (different triangle count, a vertex reached
+    // from two places, a vertex no triangle uses): the pair is then not the same mesh.
+    auto build_vertex_map = [](const aiMesh* m, const GltfMeshSkin& ms,
+                               std::vector<uint32_t>& map) {
+        const size_t n = m->mNumVertices;
+        const size_t corners = ms.indices.empty() ? n : ms.indices.size();
+        if (corners != static_cast<size_t>(m->mNumFaces) * 3) return false;
+        map.assign(n, UINT32_MAX);
+        for (unsigned fi = 0; fi < m->mNumFaces; ++fi) {
+            const aiFace& f = m->mFaces[fi];
+            if (f.mNumIndices != 3) return false;
+            for (unsigned k = 0; k < 3; ++k) {
+                const size_t corner = static_cast<size_t>(fi) * 3 + k;
+                const uint32_t fv = ms.indices.empty() ? static_cast<uint32_t>(corner)
+                                                       : ms.indices[corner];
+                const uint32_t av = f.mIndices[k];
+                if (fv >= n || av >= n) return false;
+                if (map[fv] == UINT32_MAX) map[fv] = av;
+                else if (map[fv] != av) return false;
+            }
+        }
+        for (uint32_t av : map) if (av == UINT32_MAX) return false;
+        return true;
+    };
+
     std::vector<bool> used(g.meshes.size(), false);
     unsigned matched = 0;
+    unsigned reordered = 0;  // matched meshes whose assimp vertex order differs from the file
     size_t pos_fixed = 0;   // verts whose assimp position disagreed with the file
     for (unsigned mi = 0; mi < scene->mNumMeshes; ++mi) {
         const aiMesh* m = scene->mMeshes[mi];
         if (!m || m->mNumBones == 0 || m->mNumVertices == 0) continue;
-        // Match by vertex count (unique here) first — assimp may have corrupted vertex 0's
-        // position, so only lean on firstPos to break ties between same-count candidates.
-        int found = -1, ncand = 0;
+        // A same-count primitive whose triangles map onto assimp's; between several, the
+        // one whose positions agree most under that map (assimp may misread a few).
+        int found = -1;
+        size_t best_agree = 0;
+        std::vector<uint32_t> best_map, map;
         for (size_t c = 0; c < g.meshes.size(); ++c) {
             if (used[c] || g.meshes[c].vertexCount != m->mNumVertices) continue;
-            ++ncand; if (found < 0) found = static_cast<int>(c);
-        }
-        if (ncand > 1) {
-            found = -1;
-            const glm::vec3 p0(m->mVertices[0].x, m->mVertices[0].y, m->mVertices[0].z);
-            for (size_t c = 0; c < g.meshes.size(); ++c)
-                if (!used[c] && g.meshes[c].vertexCount == m->mNumVertices &&
-                    glm::length(p0 - g.meshes[c].firstPos) < 1e-3f) { found = static_cast<int>(c); break; }
+            if (!build_vertex_map(m, g.meshes[c], map)) continue;
+            size_t agree = 0;
+            for (size_t v = 0; v < map.size(); ++v) {
+                const aiVector3D& a = m->mVertices[map[v]];
+                if (glm::length(glm::vec3(a.x, a.y, a.z) - g.meshes[c].positions[v]) < 1e-3f)
+                    ++agree;
+            }
+            if (found < 0 || agree > best_agree) {
+                found = static_cast<int>(c);
+                best_agree = agree;
+                best_map.swap(map);
+            }
         }
         if (found < 0) continue;  // leave invalid → this mesh uses assimp's data
         used[found] = true;
@@ -1007,6 +1050,9 @@ std::vector<ResolvedMeshSkin> ResolveGltfSkins(
         r.weights.assign(m->mNumVertices, glm::vec4(0.0f));
         r.positions = ms.positions;   // file positions replace assimp's (spike fix)
         r.indices   = ms.indices;     // file triangle list replaces assimp's
+        r.assimpVertex = std::move(best_map);
+        for (size_t v = 0; v < r.assimpVertex.size(); ++v)
+            if (r.assimpVertex[v] != v) { ++reordered; break; }
         for (unsigned vi = 0; vi < m->mNumVertices; ++vi) {
             for (int k = 0; k < 4; ++k) {
                 const float w = ms.weight[vi][k];
@@ -1019,7 +1065,8 @@ std::vector<ResolvedMeshSkin> ResolveGltfSkins(
                 r.weights[vi][k] = w;
             }
             // Diagnostic: how far did assimp's position drift from the file's?
-            const glm::vec3 ap(m->mVertices[vi].x, m->mVertices[vi].y, m->mVertices[vi].z);
+            const aiVector3D& a = m->mVertices[r.assimpVertex[vi]];
+            const glm::vec3 ap(a.x, a.y, a.z);
             if (glm::length(ap - ms.positions[vi]) > 1e-3f) ++pos_fixed;
         }
         r.valid = true;
@@ -1027,9 +1074,9 @@ std::vector<ResolvedMeshSkin> ResolveGltfSkins(
     }
     if (matched)
         LogInfo("gltf skin: read geometry+weights directly for %u/%u mesh(es) "
-                "(assimp glTF work-around; assimp got %zu vert positions and "
-                "%zu inverse-bind matrices wrong)", matched, scene->mNumMeshes,
-                pos_fixed, ibm_fixed);
+                "(assimp glTF work-around; %u renumbered by assimp; assimp got %zu vert "
+                "positions and %zu inverse-bind matrices wrong)", matched,
+                scene->mNumMeshes, reordered, pos_fixed, ibm_fixed);
     else if (g.ok)
         // We parsed skinned primitives from the file but paired none to an assimp mesh
         // (e.g. JoinIdenticalVertices welded verts so the vertex counts differ). The mesh

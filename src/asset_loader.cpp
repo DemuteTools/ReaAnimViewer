@@ -31,6 +31,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include <assimp/GltfMaterial.h>  // AI_MATKEY_GLTF_ALPHAMODE (tells a glTF material apart)
 #include <assimp/Importer.hpp>
 #include <assimp/config.h>
 #include <assimp/postprocess.h>
@@ -463,6 +464,23 @@ SceneMaterial ConvertMaterial(const aiMaterial* mat)
         // std::clamp(NaN,…) returns NaN, which would poison pow() in the shader;
         // gate on isfinite so a garbage exponent falls back to the safe default.
         out.shininess = std::isfinite(s) ? std::clamp(s, 2.0f, 1000.0f) : 32.0f;
+
+    // glTF only (the glTF importer always writes alphaMode; FBX/Collada keep the above):
+    // assimp's (1-roughness)^2*1000 makes a rough surface far too glossy (roughness 0.75
+    // -> 62.5, a tight wet highlight, seen on a Godot GLB on 2026-11-04). The usual
+    // roughness -> Blinn-Phong mapping is alpha = roughness^2, exponent = 2/alpha^2 - 2
+    // (0.75 -> 4.3, 0.5 -> 30, 0.3 -> 245; roughness 1 stays at the floor of 2).
+    // Specular-glossiness materials carry glossiness instead: roughness = 1 - glossiness.
+    aiString alpha_mode;
+    if (mat->Get(AI_MATKEY_GLTF_ALPHAMODE, alpha_mode) == AI_SUCCESS) {
+        float r = -1.0f, g = 0.0f;
+        if (mat->Get(AI_MATKEY_GLOSSINESS_FACTOR, g) == AI_SUCCESS) r = 1.0f - g;
+        else mat->Get(AI_MATKEY_ROUGHNESS_FACTOR, r);
+        if (std::isfinite(r) && r >= 0.0f) {
+            const float a = std::max(r * r, 1e-3f);
+            out.shininess = std::clamp(2.0f / (a * a) - 2.0f, 2.0f, 1000.0f);
+        }
+    }
 
     // Specular color — ALWAYS derived from metalness (Story 6.5.1 gate fix), NEVER from
     // an authored COLOR_SPECULAR. FBX/OBJ Phong exports (notably Mixamo — the documented

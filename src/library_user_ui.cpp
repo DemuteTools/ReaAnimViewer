@@ -3405,7 +3405,7 @@ void DrawLibraryNodeTracksSection()
     // line only (DrawLocateButtons), never twice in the column.
     if (!lib || !n || lib->attached) return;
     ui::Section sec;
-    if (ui::BeginSection(sec, "Tracks", ImTextureID(), false)) {
+    if (ui::BeginSection(sec, "Tracks")) {  // foldable, like the panel's other sections
         const bool is_root = n->uid == lib->root || n->parent.empty();
         {
             const std::string inherit =

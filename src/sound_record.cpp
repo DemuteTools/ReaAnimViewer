@@ -405,6 +405,7 @@ Fields LibraryFields(const SoundLibrary& l)
     if (!l.attached_type.empty()) f.push_back({"atype", Enc(l.attached_type)});
     if (!l.ravlib_path.empty()) f.push_back({"ravlib", Enc(l.ravlib_path)});
     if (!l.track_levels.empty()) f.push_back({"tpl", JoinEncoded(l.track_levels)});  // 13-39
+    if (l.overlaps_beside) f.push_back({"ovl", "beside"});  // 13-39d
     return f;
 }
 
@@ -436,6 +437,10 @@ Got SetLibrary(SoundLibrary& l, const std::string& k, const std::string& v)
     if (k == "atype") return G(ReadStr(v, &l.attached_type));
     if (k == "ravlib") return G(ReadStr(v, &l.ravlib_path));
     if (k == "tpl") return G(ReadTemplate(v, &l.track_levels));
+    if (k == "ovl") {  // 13-39d: "beside"; any other value = Inside
+        l.overlaps_beside = (v == "beside");
+        return Got::Ok;
+    }
     return Got::Unknown;
 }
 

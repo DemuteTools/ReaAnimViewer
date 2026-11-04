@@ -1023,6 +1023,145 @@ static void TestTemplateStructure()
     CHECK(r2.size() == 4 && r2[1].name == "Footstep" && r2[1].folder && r2[1].holds);
 }
 
+// ---- Story 13-39d: Overlaps (Inside / Beside) -------------------------------------------------
+
+static void TestOverlapsBeside()
+{
+    // PickBesideK (O2): 0 = stays on the base while it fits; else the first spill track that fits; else a new one.
+    const LaneSpan a{0.0, 1.0, -1}, b{0.5, 1.5, -1}, c{0.7, 1.2, -1}, d{2.0, 3.0, -1}, touch{1.0, 2.0, -1};
+    bool           made = true;
+    // Beside, 2 overlap: Heel holds sound 1, sound 2 goes on a new Heel01.
+    CHECK(PickBesideK({}, {}, {}, a, &made) == 0 && !made);
+    CHECK(PickBesideK({a}, {}, {}, b, &made) == 1 && made);
+    // Beside, 3 overlap: a 3rd overlapping both makes Heel02.
+    CHECK(PickBesideK({a}, {1}, {{b}}, c, &made) == 2 && made);
+    // Fits again: a 4th overlapping nothing on Heel stays there (and touching items do not overlap).
+    CHECK(PickBesideK({a}, {1, 2}, {{b}, {c}}, d, &made) == 0 && !made);
+    CHECK(PickBesideK({a}, {1}, {{b}}, touch, &made) == 0 && !made);
+    // The base full there: the first existing spill track that fits, k ascending (a deleted k skipped).
+    CHECK(PickBesideK({a}, {1, 3}, {{b}, {}}, c, &made) == 3 && !made);
+    CHECK(PickBesideK({a}, {1, 3}, {{d}, {}}, c, &made) == 1 && !made);
+    CHECK(PickBesideK({a}, {1, 3}, {{b}, {c}}, c, &made) == 4 && made);
+    // Switched later: lanes made Inside, the base an empty folder: the base first, then the children.
+    CHECK(PickBesideK({}, {1, 2}, {{a}, {b}}, c, &made) == 0 && !made);
+
+    // OverlapsBesideFor: by the library of the mark's track family.
+    SoundStore   s;
+    SoundLibrary lib;
+    lib.uid = "L1";
+    lib.name = "Foot";
+    s.libraries.push_back(lib);
+    const std::vector<TrackStep> path =
+        TemplateTrackPath({"lib", "end"}, {}, BlendLayer{}, "RAV Library", "L1", "Foot");
+    CHECK(!path.empty() && !path.back().mark.empty());
+    const std::string heel = path.empty() ? std::string() : path.back().mark;
+    CHECK(!OverlapsBesideFor(s, heel));  // Inside, the default
+    s.libraries[0].overlaps_beside = true;
+    CHECK(OverlapsBesideFor(s, heel));
+    CHECK(OverlapsBesideFor(s, LaneMark(heel, 2)));                       // a spill lane of it
+    CHECK(OverlapsBesideFor(s, PileChildMark(heel, "{SRC}")));            // its NVK pile child
+    CHECK(OverlapsBesideFor(s, LaneMark(PileChildMark(heel, "{SRC}"), 1)));
+    // O6: a track no library template made ("layer N", by its GUID) keeps Inside; so does an unknown library.
+    CHECK(!OverlapsBesideFor(s, GuidTrackMark("{G}")));
+    CHECK(!OverlapsBesideFor(s, LaneMark(GuidTrackMark("{G}"), 1)));
+    CHECK(!OverlapsBesideFor(s, ""));
+    SoundStore other = s;
+    other.libraries[0].uid = "L2";
+    CHECK(!OverlapsBesideFor(other, heel));
+
+    // Round trip (O1): Beside travels in the .ravlib (RavlibOf copies the library); unknown value = Inside.
+    s.libraries[0].root = "R";
+    SoundNode root;
+    root.uid = "R";
+    root.type = SoundNodeType::Random;
+    s.libraries[0].nodes.push_back(root);
+    const std::string file = SerializeRavlib(RavlibOf(s, "L1", nullptr));
+    CHECK(file.find("ovl=beside") != std::string::npos);
+    SoundStore back;
+    CHECK(ParseRavlib(file, &back) && back.libraries.size() == 1 && back.libraries[0].overlaps_beside);
+    std::string odd = file;
+    if (odd.find("ovl=beside") != std::string::npos) odd.replace(odd.find("ovl=beside"), 10, "ovl=inside");
+    SoundStore back2;
+    CHECK(ParseRavlib(odd, &back2) && back2.libraries.size() == 1 && !back2.libraries[0].overlaps_beside);
+}
+
+// 13-39d: SiblingAfterDepths applied to `depths` (the depths after the insert).
+static std::vector<int> WithSibling(std::vector<int> depths, const SiblingInsert& s)
+{
+    if (s.at < 0) return depths;
+    if (s.changed >= 0) depths[static_cast<size_t>(s.changed)] = s.changed_depth;
+    depths.insert(depths.begin() + s.at, s.new_depth);
+    return depths;
+}
+
+static int DepthSum(const std::vector<int>& d)
+{
+    int n = 0;
+    for (int x : d) n += x;
+    return n;
+}
+
+static void TestSiblingDepths()
+{
+    // A plain anchor closing no folder: right after it, same parent, nothing else changes.
+    {
+        const std::vector<int> d = {1, 0, 0, -1};
+        const SiblingInsert    s = SiblingAfterDepths(d, 1);
+        CHECK(s.at == 2 && s.new_depth == 0 && s.changed == 1 && s.changed_depth == 0);
+        const std::vector<int> r = WithSibling(d, s);
+        CHECK((r == std::vector<int>{1, 0, 0, 0, -1}) && ParentOfDepth(r, 2) == ParentOfDepth(d, 1));
+    }
+    // A plain anchor closing 2 folders: the new one closes them, the anchor 0.
+    {
+        const std::vector<int> d = {1, 1, 0, -2, 0};
+        const SiblingInsert    s = SiblingAfterDepths(d, 3);
+        CHECK(s.at == 4 && s.new_depth == -2 && s.changed == 3 && s.changed_depth == 0);
+        const std::vector<int> r = WithSibling(d, s);
+        CHECK(ParentOfDepth(r, 4) == 1 && ParentOfDepth(r, 5) == -1 && DepthSum(r) == DepthSum(d));
+    }
+    // A folder anchor whose last descendant closes a nested folder, the anchor and one folder beyond: after it, the
+    // last descendant closes up to the anchor only (the nested folder kept), the new one closes the one beyond.
+    {
+        const std::vector<int> d = {1, 1, 1, 0, -3, 0};  // Lands > Heel > inner > (3, 4)
+        const SiblingInsert    s = SiblingAfterDepths(d, 1);
+        CHECK(s.at == 5 && s.new_depth == -1 && s.changed == 4 && s.changed_depth == -2);
+        const std::vector<int> r = WithSibling(d, s);
+        CHECK(ParentOfDepth(r, 5) == 0 && ParentOfDepth(r, 4) == 2 && ParentOfDepth(r, 3) == 2);
+        CHECK(ParentOfDepth(r, 6) == -1 && DepthSum(r) == DepthSum(d));
+    }
+    // A folder with nothing after it (the last track): it becomes a plain track, the new one its sibling.
+    {
+        const std::vector<int> d = {1, 1};
+        const SiblingInsert    s = SiblingAfterDepths(d, 1);
+        CHECK(s.at == 2 && s.changed == 1 && s.changed_depth == 0 && s.new_depth == 0);
+        const std::vector<int> r = WithSibling(d, s);
+        CHECK(ParentOfDepth(r, 2) == 0 && ParentOfDepth(r, 2) == ParentOfDepth(d, 1));
+    }
+    // The base is the last child of its parent: the new track closes the parent, the track after stays outside.
+    {
+        const std::vector<int> d = {1, 0, 0, -1, 0};
+        const SiblingInsert    s = SiblingAfterDepths(d, 3);
+        CHECK(s.at == 4 && s.new_depth == -1 && s.changed == 3 && s.changed_depth == 0);
+        const std::vector<int> r = WithSibling(d, s);
+        CHECK(ParentOfDepth(r, 4) == 0 && ParentOfDepth(r, 5) == -1);
+    }
+    // An Inside lane is the base's child (another parent); a Beside lane, after it, shares the base's parent.
+    {
+        const std::vector<int> d = {1, 1, -2};  // Lands > Heel > Heel01 (Inside)
+        CHECK(ParentOfDepth(d, 1) == 0 && ParentOfDepth(d, 2) == 1);
+        const SiblingInsert    s = SiblingAfterDepths(d, 1);
+        const std::vector<int> r = WithSibling(d, s);
+        CHECK(s.at == 3 && (r == std::vector<int>{1, 1, -1, -1}));
+        CHECK(ParentOfDepth(r, 3) == ParentOfDepth(r, 1) && ParentOfDepth(r, 2) == 1);
+    }
+    // Out of range: nothing.
+    CHECK(SiblingAfterDepths({0}, 3).at == -1 && SiblingAfterDepths({}, 0).at == -1);
+    CHECK(ParentOfDepth({}, 0) == -1 && ParentOfDepth({0, 0}, 1) == -1);
+    // The pile-child base (shared with NameForMark).
+    CHECK(PileChildBase("T|a|L|l>|K|{G}") == "T|a|L|l>" && PileChildBase("T|a|L|l>").empty());
+    CHECK(PileChildBase("T|a|L|l>|K|{G}|S|1").empty());
+}
+
 int main()
 {
     TestCrossfadeButted();
@@ -1046,6 +1185,8 @@ int main()
     TestTemplateStructure();
     TestTemplateChipsArePaths();
     TestTemplateShapes();
+    TestOverlapsBeside();
+    TestSiblingDepths();
     if (g_fail) {
         std::printf("%d failure(s)\n", g_fail);
         return 1;

@@ -509,6 +509,39 @@ static void TestUidTranslation()
     CHECK(d.changes.size() == 1 && d.changes[0].key == "VF|G7|V9|name");
 }
 
+// 13-39d (O1): the library's Overlaps (`ovl` on the library line) reads in Sync as "Overlaps: Inside the track ->
+// Beside it"; any value but "beside" reads as Inside.
+static void TestOverlapsSync()
+{
+    const std::string lib_line = "library uid=L1 name=Foot root=R";
+    const std::string file = Sub(Base(), lib_line, lib_line + " ovl=beside");
+    const SyncDiff    d = DiffLibrary(Base(), Base(), file);
+    const SyncChange* c = Has(d, "LF|ovl");
+    CHECK(d.changes.size() == 1 && c && c->side == SyncSide::File);
+    CHECK(c && c->label == "Overlaps");
+    CHECK(c && c->text == "Overlaps Inside the track \xE2\x86\x92 Beside it");
+    CHECK(c && c->file_text == "Beside it");
+    const SyncDiff    dh = DiffLibrary(file, file, Base(), file);
+    const SyncChange* ch = Has(dh, "LF|ovl");
+    CHECK(ch && ch->side == SyncSide::Here && ch->text == "Overlaps Beside it \xE2\x86\x92 Inside the track");
+    // both sides changed it (from an unknown value: one side Beside, the other Inside)
+    const std::string odd = Sub(Base(), lib_line, lib_line + " ovl=spiral");
+    const SyncDiff    db = DiffLibrary(odd, odd, file, Base());
+    const SyncChange* cb = Has(db, "LF|ovl");
+    CHECK(cb && cb->side == SyncSide::Both);
+    CHECK(cb && cb->text == "Overlaps here Beside it \xC2\xB7 global Inside the track");
+    const SyncDiff    du = DiffLibrary(Base(), Base(), odd);
+    const SyncChange* cu = Has(du, "LF|ovl");
+    // an unknown value: listed (the line differs), read as Inside on both sides
+    CHECK(cu && cu->side == SyncSide::File && cu->text == "Overlaps Inside the track \xE2\x86\x92 Inside the track");
+    // Get file's: the project's library takes Beside
+    const SyncDiff dp = DiffLibrary(Base(), Base(), file);
+    SyncResult     r;
+    CHECK(ApplySync(Base(), Base(), Base(), file, dp, All(dp, SyncDir::Down), &r));
+    SoundStore got;
+    CHECK(ParseRavlib(r.mine, &got) && got.libraries.size() == 1 && got.libraries.front().overlaps_beside);
+}
+
 // 13-39 loop 1 (review 16): the library's Track template (`tpl` on the library line) travels through Sync: its row
 // reads as chips (group names, "\xE2\x8A\xA3 name", the folder's text), its group uids are translated, and Get file's
 // pulls it into the project.
@@ -1531,6 +1564,7 @@ int main()
     TestAdaptationsAreNotFileChanges();
     TestUidTranslation();
     TestTrackTemplateSync();
+    TestOverlapsSync();
     TestNoCommonVersionApply();
     TestApplyGate();
     TestJournal();

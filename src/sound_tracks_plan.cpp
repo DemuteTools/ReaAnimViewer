@@ -846,10 +846,9 @@ std::string NameForMark(const SoundStore& store, const std::string& mark,
     }
     if (mark[0] == '#') return {};  // a GuidTrackMark: a track RAV does not name (13-11's "layer N")
     if (!StartsWith(mark, "T|")) return {};  // a 13-13 / 13-16 mark (before 13-39) or a foreign one
-    // An NVK pile child: its source child track's name (a template mark's keys hold no '|').
-    const size_t kpos = mark.rfind("|K|");
-    if (kpos != std::string::npos && mark.find('|', kpos + 3) == std::string::npos)
-        return track_name ? track_name(mark.substr(kpos + 3)) : std::string();
+    // An NVK pile child: its source child track's name.
+    const std::string pile_base = PileChildBase(mark);
+    if (!pile_base.empty()) return track_name ? track_name(mark.substr(pile_base.size() + 3)) : std::string();
     const SoundLibrary* lib = FindLibrary(store, LibUidOf(mark));
     std::string         keys;
     if (!lib || !FieldFromEnd(mark, 0, &keys)) return {};
@@ -918,6 +917,70 @@ TrackRename PlanTrackRename(const std::string& cur, const std::string& given, co
     r.rename = cur != want;
     r.record = given != want;
     return r;
+}
+
+// ---- Story 13-39d --------------------------------------------------------------------------------
+
+bool OverlapsBesideFor(const SoundStore& store, const std::string& base_mark)
+{
+    std::string mark;
+    LaneOfMark(base_mark, &mark);  // a spill lane: its base
+    if (!StartsWith(mark, "T|")) return false;
+    const std::string pile_base = PileChildBase(mark);  // an NVK pile child: its template track
+    if (!pile_base.empty()) mark = pile_base;
+    const SoundLibrary* lib = FindLibrary(store, LibUidOf(mark));
+    return lib && lib->overlaps_beside;
+}
+
+std::string PileChildBase(const std::string& mark)
+{
+    // A template mark's keys hold no '|': "|K|" with no '|' after it is a pile child's.
+    const size_t kpos = mark.rfind("|K|");
+    if (kpos == std::string::npos || mark.find('|', kpos + 3) != std::string::npos) return {};
+    return mark.substr(0, kpos);
+}
+
+int ParentOfDepth(const std::vector<int>& depths, int idx)
+{
+    std::vector<int> open;  // the folders open before `idx`
+    for (int j = 0; j < idx && j < static_cast<int>(depths.size()); ++j) {
+        const int d = depths[static_cast<size_t>(j)];
+        if (d > 0) open.push_back(j);
+        for (int c = d; c < 0 && !open.empty(); ++c) open.pop_back();
+    }
+    return open.empty() ? -1 : open.back();
+}
+
+SiblingInsert SiblingAfterDepths(const std::vector<int>& depths, int anchor)
+{
+    SiblingInsert s;
+    if (anchor < 0 || anchor >= static_cast<int>(depths.size())) return s;
+    const int d = depths[static_cast<size_t>(anchor)];
+    int       last = anchor;
+    const int beyond = d >= 1 ? FolderChildren(depths, anchor, nullptr, &last) : 0;
+    if (d < 1 || last == anchor) {
+        // A plain track (or a folder with nothing after it): the new one right after it closes what it closed.
+        s.at = anchor + 1;
+        s.changed = anchor;
+        s.changed_depth = 0;
+        s.new_depth = d < 1 ? d : d - 1;
+        return s;
+    }
+    // A folder: after its last descendant, which now closes only up to `anchor`; the new one closes the folders above
+    // `anchor` that the old last one closed.
+    s.at = last + 1;
+    s.changed = last;
+    s.changed_depth = depths[static_cast<size_t>(last)] + beyond;
+    s.new_depth = -beyond;
+    return s;
+}
+
+int PickBesideK(const std::vector<LaneSpan>& base, const std::vector<int>& ks,
+                const std::vector<std::vector<LaneSpan>>& lanes, const LaneSpan& item, bool* made)
+{
+    if (made) *made = false;
+    if (FitsLane(base, item)) return 0;
+    return PickLaneK(ks, lanes, item, made);
 }
 
 }  // namespace rav

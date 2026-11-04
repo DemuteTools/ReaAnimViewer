@@ -741,12 +741,16 @@ Shown ShowField(const Describe& ds, const std::string& sect, const std::string& 
     } else if (key == "tpl") {  // 13-39: the library's Track template
         s.label = "Track template";
         def = "the tree order";
+    } else if (key == "ovl") {  // 13-39d: the library's Overlaps
+        s.label = "Overlaps";
+        def = "Inside the track";
     } else {
         s.label = key + " changed";
     }
     auto render = [&](const Opt& o) {
         if (key == "default" || key == "preview") return o.has ? ds.ValueName(o.v) : def;
         if (key == "tpl") return o.has && !o.v.empty() ? ds.TemplateChips(o.v) : def;
+        if (key == "ovl") return o.has && o.v == "beside" ? std::string("Beside it") : def;  // any other value = Inside
         if (key == "fades") {
             if (!o.has) return std::string("default");
             const size_t sl = o.v.find('/');
@@ -1567,6 +1571,9 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& file_base_
             else if (p[1] == "tpl")  // 13-39: the template as its chips
                 c.text = cl == Cls::Both ? "Track template: here " + mh.to + " · global " + fh.to
                                          : "Track template " + (cl == Cls::Here ? mh.from : fh.from) + " → " + (cl == Cls::Here ? mh.to : fh.to);
+            else if (p[1] == "ovl")  // 13-39d: "Overlaps Inside the track → Beside it", as the template's row
+                c.text = cl == Cls::Both ? "Overlaps here " + mh.to + " · global " + fh.to
+                                         : "Overlaps " + (cl == Cls::Here ? mh.from : fh.from) + " → " + (cl == Cls::Here ? mh.to : fh.to);
             else c.text = "Library " + c.label + " changed";
         } else if (kind == "LK") {
             c.label = "Kit";

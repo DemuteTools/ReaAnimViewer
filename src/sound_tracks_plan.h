@@ -232,6 +232,34 @@ bool PlanSpill(const std::vector<LaneSpan>& items, const std::vector<std::string
 int PickLaneK(const std::vector<int>& ks, const std::vector<std::vector<LaneSpan>>& lanes, const LaneSpan& item,
               bool* made);
 
+// ---- Story 13-39d: Overlaps (Inside / Beside) ---------------------------------------------------
+
+// True when the track family of `base_mark` (a template track, its NVK pile child, or a spill lane of either)
+// belongs to a library set to Beside (SoundLibrary::overlaps_beside). False for any other mark (13-11's
+// "layer N", a GuidTrackMark: Inside, O6) or a library not found.
+bool OverlapsBesideFor(const SoundStore& store, const std::string& base_mark);
+// O2, Beside: where `item` goes: 0 = it stays on the base track (`base` = the spans there) when it fits;
+// else the k of the first existing spill track that fits (`ks` ascending, `lanes` their spans, same order);
+// else a new one, the highest k + 1 (`*made` true). Nothing already placed moves.
+int PickBesideK(const std::vector<LaneSpan>& base, const std::vector<int>& ks,
+                const std::vector<std::vector<LaneSpan>>& lanes, const LaneSpan& item, bool* made);
+// The template track of an NVK pile child mark ("<track mark>|K|<source guid>"), else "" (not a pile child).
+std::string PileChildBase(const std::string& mark);
+// Folder depth math over the project's tracks' I_FOLDERDEPTH (`depths`, track order), as FolderChildren (ravlib.h):
+// the index of the folder holding the track at `idx` (-1 = top level).
+int ParentOfDepth(const std::vector<int>& depths, int idx);
+// A new track as the next sibling of the track at `anchor` (same parent): inserted at `at` (after the anchor's last
+// descendant when it is a folder), with depth `new_depth`; the track at `changed` (an index before `at`, -1 = none)
+// takes `changed_depth`, so every folder still closes where it did. A folder with nothing in it (the last track)
+// becomes a plain track.
+struct SiblingInsert {
+    int at = -1;
+    int new_depth = 0;
+    int changed = -1;
+    int changed_depth = 0;
+};
+SiblingInsert SiblingAfterDepths(const std::vector<int>& depths, int anchor);
+
 // B7b: where a placed item sits, from its tag's tk and whether it is on the track RAV uses for that
 // mark (FindTrackByMark: a copy of a RAV track carrying the same mark is not it).
 enum class PlacedSpot {

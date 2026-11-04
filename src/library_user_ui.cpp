@@ -3262,6 +3262,27 @@ void DrawTemplateRow(const SoundStore& st, const SoundLibrary& lib)
     }
 }
 
+// 13-39d (O5): the Overlaps row, right under the Template row: Inside the track (default) / Beside it. One undo point
+// "RAV: Set overlaps" per change; no track moves (O4).
+void DrawOverlapsRow(const SoundLibrary& lib)
+{
+    static const char* const kLabels[] = {"Inside the track", "Beside it"};
+    ui::LabelRow("Overlaps", ui::Dp(120.0f));
+    int sel = lib.overlaps_beside ? 1 : 0;
+    if (ui::Segmented("##tplovl", kLabels, 2, &sel)) {
+        const std::string lib_uid = lib.uid;
+        const bool        beside = sel == 1;
+        g_tracks_picks.Pick([lib_uid, beside]() {
+            Gesture("Set overlaps", [&](SoundStore& s) {
+                SoundLibrary* l = FindLibrary(s, lib_uid);
+                if (!l || l->overlaps_beside == beside) return false;
+                l->overlaps_beside = beside;
+                return true;
+            });
+        });
+    }
+}
+
 // The project's RAV track marks and folder track names, read again when the project changes.
 struct ProjectTracksSeen {
     ReaProject*           proj = nullptr;
@@ -3483,7 +3504,10 @@ void DrawLibraryNodeTracksSection()
                 });
             }
         }
-        if (is_root) DrawTemplateRow(store, *lib);  // 13-39
+        if (is_root) {
+            DrawTemplateRow(store, *lib);  // 13-39
+            DrawOverlapsRow(*lib);         // 13-39d
+        }
         DrawFinalStructure(store, *lib, n->uid);
     }
     ui::EndSection(sec);

@@ -38,6 +38,9 @@ MediaTrack* AddTrackAt(ReaProject* proj, int idx, const std::string& name);
 // A new track named so, the parent's last child: after its last descendant, the folder depths
 // fixed so every folder still closes where it did (a parent that was no folder becomes one).
 MediaTrack* AddChildTrack(ReaProject* proj, MediaTrack* parent, const std::string& name);
+// 13-39d: a new track named so, the next sibling of `anchor` (same parent): after its last descendant when it is a
+// folder, the folder depths fixed so every folder still closes where it did.
+MediaTrack* AddSiblingTrackAfter(ReaProject* proj, MediaTrack* anchor, const std::string& name);
 
 // True when the track is a RAV Switch-tree folder: the library folder EnsureTrackPath found or made
 // in a Lands-in folder (its P_EXT mark), never one of that folder's layer tracks (PickLayerChild).
@@ -75,6 +78,8 @@ MediaTrack* EnsureMarkedChild(ReaProject* proj, MediaTrack* parent, const std::s
 // `item` move to spill children "<base name>01", "02"... (13-17 N1; each on the first that fits); once
 // spilled, on the first spill child that fits, else a new one. Returns the mark of the track it
 // ends on (its tag's tk); the other items moved are re-tagged here. "" when it could not move it.
+// 13-39d: a library set to Beside (OverlapsBesideFor) keeps `base`'s items; `item` stays there when it fits, else
+// goes on the first spill track that fits, else a new one made right after `base` (PickBesideK, O2).
 std::string SettleOnLanes(ReaProject* proj, MediaItem* item, MediaTrack* base, const std::string& base_mark);
 // B7c: a placed item still on the RAV track its tag records that now overlaps an item there (a
 // follow move) moves to a free spill child of the same track family, re-tagged. True when moved.

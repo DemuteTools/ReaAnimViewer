@@ -415,6 +415,9 @@ struct SoundLibrary {
     // 13-39 (appended): the Track template, the levels of the track path Populate makes for its sounds, in order:
     // "lib", "g:<group uid>", "blend", "layer", "c:<text>", "end" (sound_tracks_plan.h). Empty = the tree order.
     std::vector<std::string> track_levels;
+    // 13-39d (appended): Overlaps. false = Inside (the track becomes a folder of spill lanes, 13-16); true = Beside
+    // (the track keeps its sounds, each extra overlapping sound goes on a sibling lane right after it). `ovl=beside`.
+    bool                     overlaps_beside = false;
 };
 
 // A Switch Group's value at one level (item, rule, event, auto marker type).

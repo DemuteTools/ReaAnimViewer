@@ -138,7 +138,7 @@ bool SameStore(const SoundStore& a, const SoundStore& b)
         const SoundLibrary &l = a.libraries[i], &m = b.libraries[i];
         if (l.uid != m.uid || l.name != m.name || l.color != m.color || l.root != m.root || l.user != m.user ||
             l.ravlib_path != m.ravlib_path || l.kept != m.kept || l.kept_lines != m.kept_lines ||
-            l.nodes.size() != m.nodes.size())
+            l.overlaps_beside != m.overlaps_beside || l.nodes.size() != m.nodes.size())
             return false;
         for (size_t j = 0; j < l.nodes.size(); ++j)
             if (!SameNode(l.nodes[j], m.nodes[j])) return false;
@@ -1076,6 +1076,31 @@ int main()
         later.insert(at + 4, "spiral,g:,");
         SoundStore q;
         CHECK(ParseSoundStore(later, &q) && q.libraries.size() == 1 && q.libraries[0].track_levels == l.track_levels);
+    }
+
+    // ---- 13-39d (O1): Overlaps on the library line: `ovl=beside`, absent = Inside, any other value = Inside ----------
+    {
+        SoundStore   s;
+        SoundLibrary l;
+        l.uid = "lib1";
+        l.name = "Footstep";
+        l.track_levels = {"lib", "end"};
+        l.overlaps_beside = true;
+        s.libraries.push_back(l);
+        const std::string text = SerializeSoundStore(s);
+        CHECK(text.find(" ovl=beside") != std::string::npos);
+        SoundStore p;
+        CHECK(ParseSoundStore(text, &p) && p.libraries.size() == 1 && p.libraries[0].overlaps_beside);
+        CHECK(SerializeSoundStore(p) == text);
+        // Inside (the default): no field.
+        s.libraries[0].overlaps_beside = false;
+        CHECK(SerializeSoundStore(s).find("ovl=") == std::string::npos);
+        // An unknown value reads as Inside and is not kept.
+        std::string later = text;
+        later.replace(later.find("ovl=beside"), 10, "ovl=spiral");
+        SoundStore q;
+        CHECK(ParseSoundStore(later, &q) && q.libraries.size() == 1 && !q.libraries[0].overlaps_beside);
+        CHECK(SerializeSoundStore(q).find("ovl=") == std::string::npos);
     }
 
     if (g_fails) {

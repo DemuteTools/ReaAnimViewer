@@ -229,16 +229,48 @@ std::string NameOfMarkedTrack(ReaProject* proj, const std::string& mark)
     return hit != marks.end() ? TrackName(hit->second) : std::string();
 }
 
-// A new spill child k of `base`, named after the Library (13-17 N1: "Heel01"), else "<base name>01".
-MediaTrack* MakeLane(ReaProject* proj, MediaTrack* base, const std::string& base_mark, int k)
+void MarkSwitchTree(MediaTrack* tr);  // below
+
+// A new spill track k of `base`, named after the Library (13-17 N1: "Heel01"), else "<base name>01": its last
+// child (Inside), or, given `after` (13-39d Beside), a sibling right after that track (AddSiblingTrackAfter).
+MediaTrack* MakeLane(ReaProject* proj, MediaTrack* base, const std::string& base_mark, int k, MediaTrack* after = nullptr)
 {
     const std::string lane = LaneMark(base_mark, k);
     std::string       name = NameForMark(GetSoundStore(proj), lane,
                                          [proj](const std::string& m) { return NameOfMarkedTrack(proj, m); });
     if (name.empty()) name = NumberedName(TrackName(base), k);
-    MediaTrack* t = AddChildTrack(proj, base, name);
+    MediaTrack* t = after ? AddSiblingTrackAfter(proj, after, name) : AddChildTrack(proj, base, name);
     if (t) WriteMark(t, lane);
+    // 13-39d: a Beside lane of a Switch-tree track sits beside it in the Lands-in folder: never a "layer N" track.
+    if (t && after && IsSwitchTreeTrack(base)) MarkSwitchTree(t);
     return t;
+}
+
+// The I_FOLDERDEPTH of every track, in order.
+std::vector<int> TrackDepths(ReaProject* proj)
+{
+    std::vector<int> depths;
+    const int        n = CountTracks(proj);
+    for (int j = 0; j < n; ++j) {
+        MediaTrack* t = GetTrack(proj, j);
+        depths.push_back(t ? static_cast<int>(GetMediaTrackInfo_Value(t, "I_FOLDERDEPTH")) : 0);
+    }
+    return depths;
+}
+
+// 13-39d: the track a new Beside lane goes right after: the beside lane with the highest k (a lane under the same
+// parent as `base`), else `base`.
+MediaTrack* BesideAnchor(ReaProject* proj, MediaTrack* base, const std::vector<std::pair<int, MediaTrack*>>& lanes)
+{
+    const int bi = TrackIndex(proj, base);
+    if (bi < 0) return base;
+    const std::vector<int> depths = TrackDepths(proj);
+    const int              parent = ParentOfDepth(depths, bi);
+    for (auto it = lanes.rbegin(); it != lanes.rend(); ++it) {  // k ascending: the highest first
+        const int li = TrackIndex(proj, it->second);
+        if (li >= 0 && ParentOfDepth(depths, li) == parent) return it->second;
+    }
+    return base;
 }
 
 // The tag's tk of an item RAV moved to another lane.
@@ -343,6 +375,21 @@ MediaTrack* AddChildTrack(ReaProject* proj, MediaTrack* parent, const std::strin
     if (!t) return nullptr;
     if (last != fi) f_set_track(old_last, "I_FOLDERDEPTH", d_last + 1.0 + beyond);
     f_set_track(t, "I_FOLDERDEPTH", -1.0 - beyond);
+    return t;
+}
+
+MediaTrack* AddSiblingTrackAfter(ReaProject* proj, MediaTrack* anchor, const std::string& name)
+{
+    if (!CanMakeTracks()) return nullptr;
+    const int ai = TrackIndex(proj, anchor);
+    if (ai < 0) return nullptr;
+    const SiblingInsert s = SiblingAfterDepths(TrackDepths(proj), ai);  // the depth math (sound_tracks_plan.h)
+    if (s.at < 0) return nullptr;
+    MediaTrack* changed = s.changed >= 0 ? GetTrack(proj, s.changed) : nullptr;  // before the insert: index unmoved
+    MediaTrack* t = AddTrackAt(proj, s.at, name);
+    if (!t) return nullptr;
+    if (changed) f_set_track(changed, "I_FOLDERDEPTH", static_cast<double>(s.changed_depth));
+    f_set_track(t, "I_FOLDERDEPTH", static_cast<double>(s.new_depth));
     return t;
 }
 
@@ -481,6 +528,26 @@ std::string SettleOnLanes(ReaProject* proj, MediaItem* item, MediaTrack* base, c
         return base_mark;
     };
     std::vector<std::pair<int, MediaTrack*>> lanes = LanesOf(proj, base_mark);
+    if (OverlapsBesideFor(GetSoundStore(proj), base_mark)) {
+        // 13-39d Beside (O2): the track itself while it fits, else the first spill track that fits, else a new one
+        // right after the track (and its beside spill tracks). Nothing already placed moves.
+        std::vector<int>                   ks;
+        std::vector<std::vector<LaneSpan>> lane_spans;
+        for (const auto& l : lanes) {
+            ks.push_back(l.first);
+            lane_spans.push_back(SpansOn(l.second, item, &span));
+        }
+        bool      made = false;
+        const int k = PickBesideK(SpansOn(base, item, &span), ks, lane_spans, span, &made);
+        if (k == 0) return stay();
+        MediaTrack* to = nullptr;
+        if (made) to = MakeLane(proj, base, base_mark, k, BesideAnchor(proj, base, lanes));
+        else
+            for (const auto& l : lanes)
+                if (l.first == k) to = l.second;
+        if (!to || !MoveToTrack(item, to)) return stay();
+        return LaneMark(base_mark, k);
+    }
     if (lanes.empty()) {
         // A plain track: the items on it and their tags' tk (PlanSpill picks who moves).
         std::vector<MediaItem*>  on;

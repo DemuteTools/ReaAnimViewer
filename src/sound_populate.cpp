@@ -274,7 +274,7 @@ void AddLine(SoundReport& rep, ReportKind kind, const std::string& text, const s
     rep.lines.push_back(l);
 }
 
-// 13-13: the track at the end of a track path (SoundTrackPath; nullptr when empty), found or
+// 13-13: the track at the end of a track path (SoundTemplatePath; nullptr when empty), found or
 // made once per gesture (g_tracks). Call only once the sound's source resolved (no empty track for
 // a missing file or item). A track that cannot be made is reported once a gesture.
 MediaTrack* SwitchTrackFor(const std::vector<TrackStep>& path, SoundReport& rep, const std::string& node,
@@ -629,26 +629,25 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
     std::map<std::string, bool>            file_missing;  // File Sound uid -> its file is gone
     std::map<std::string, FileSoundTarget> file_targets;  // File Sound uid -> where it is placed from
     std::map<std::string, std::string>     file_why;      // File Sound uid -> why it cannot be placed
-    // 13-13 / 13-16: a Sound's track path: its Switch path (layout not Off), then its Blend layer
-    // track (every layout); empty = its usual track (outside any Blend, no Switch path). Its track is
-    // found or made once per gesture, once its source resolved (SwitchTrackFor).
-    const TrackLayout layout = TrackLayoutOf(store);
-    const std::string sep = TrackSeparatorOf(store);  // 13-17 N4
+    // 13-39: a Sound's track path: its library's Track template (the tree order when none is stored) under
+    // its Lands in; empty = its usual track (no level gives it a value). Its track is found or made once per
+    // gesture, once its source resolved (SwitchTrackFor).
     struct SoundTracks {
         std::vector<TrackStep> path;
         bool                   in_blend = false;
     };
-    std::map<std::string, SoundTracks> track_paths;  // library uid + Sound uid -> its path
+    std::map<std::string, SoundTracks>              track_paths;  // library uid + Sound uid -> its path
+    std::map<std::string, std::vector<std::string>> templates;    // library uid -> its Track template, read once
     auto switch_path_for = [&](const SoundLibrary& L, const SoundNode& n) -> const SoundTracks& {
         const std::string key = L.uid + "/" + n.uid;
         auto              hit = track_paths.find(key);
         if (hit == track_paths.end()) {
             SoundTracks st;
             if (L.attached) return track_paths.emplace(key, st).first->second;  // 13-68 v2: its sources' own tracks
-            const BlendLayer layer = LayerOf(L, n.uid);
-            st.in_blend = layer.in_blend;
-            st.path = SoundTrackPath(layout == TrackLayout::Off ? std::vector<SwitchStep>() : SwitchPathOf(store, L, n.uid),
-                                     layer, layout, EffectiveLandsIn(L, n.uid), L.uid, L.name, sep);
+            st.in_blend = LayerOf(L, n.uid).in_blend;
+            auto tpl = templates.find(L.uid);
+            if (tpl == templates.end()) tpl = templates.emplace(L.uid, TrackTemplateOf(store, L)).first;
+            st.path = SoundTemplatePath(store, L, n.uid, tpl->second);
             hit = track_paths.emplace(key, st).first;
         }
         return hit->second;

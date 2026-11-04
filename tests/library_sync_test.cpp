@@ -509,6 +509,53 @@ static void TestUidTranslation()
     CHECK(d.changes.size() == 1 && d.changes[0].key == "VF|G7|V9|name");
 }
 
+// 13-39 loop 1 (review 16): the library's Track template (`tpl` on the library line) travels through Sync: its row
+// reads as chips (group names, "\xE2\x8A\xA3 name", the folder's text), its group uids are translated, and Get file's
+// pulls it into the project.
+static void TestTrackTemplateSync()
+{
+    const std::string file = Sub(Base(), "library uid=L1 name=Foot root=R", "library uid=L1 name=Foot root=R tpl=c:FS%20Player,g:G1,end,lib,layer");
+    const SyncDiff    d = DiffLibrary(Base(), Base(), file);
+    const SyncChange* c = Has(d, "LF|tpl");
+    CHECK(d.changes.size() == 1 && c && c->side == SyncSide::File);
+    CHECK(c && c->label == "Track template");
+    CHECK(c && c->text.find("the tree order") != std::string::npos);
+    CHECK(c && c->text == "Track template the tree order \xE2\x86\x92 FS Player \xE2\x80\xBA Surface \xE2\x80\xBA \xE2\x8A\xA3 name Foot + Layer");
+    CHECK(c && c->text.find("g:") == std::string::npos && c->text.find("G1") == std::string::npos);
+    CHECK(c && c->file_text == "FS Player \xE2\x80\xBA Surface \xE2\x80\xBA \xE2\x8A\xA3 name Foot + Layer");
+    // a project-side change
+    const std::string lib_line = "library uid=L1 name=Foot root=R";
+    const std::string mine = Sub(Base(), lib_line, lib_line + " tpl=g:G1,end");
+    const SyncDiff    dh = DiffLibrary(Base(), Base(), mine, Base());
+    const SyncChange* ch = Has(dh, "LF|tpl");
+    CHECK(ch && ch->side == SyncSide::Here);
+    CHECK(ch && ch->text == "Track template the tree order \xE2\x86\x92 Surface \xE2\x80\xBA \xE2\x8A\xA3 name");
+    // both sides changed it
+    const SyncDiff    db = DiffLibrary(Base(), Base(), mine, Sub(Base(), lib_line, lib_line + " tpl=lib,end"));
+    const SyncChange* cb = Has(db, "LF|tpl");
+    CHECK(cb && cb->side == SyncSide::Both);
+    CHECK(cb && cb->text == "Track template: here Surface \xE2\x80\xBA \xE2\x8A\xA3 name \xC2\xB7 global Foot \xE2\x80\xBA \xE2\x8A\xA3 name");
+    // a RAV-owned group reads "RAV - <name>", as its chip
+    const std::string rav = Sub(Base(), "group uid=G1 name=Surface", "group uid=G1 name=Surface rav=1");
+    const SyncDiff    dr = DiffLibrary(rav, rav, Sub(rav, lib_line, lib_line + " tpl=g:G1,end"));
+    const SyncChange* cr = Has(dr, "LF|tpl");
+    CHECK(cr && cr->file_text == "RAV - Surface \xE2\x80\xBA \xE2\x8A\xA3 name");
+    // uids: the project's group is G7
+    const std::vector<std::pair<std::string, std::string>> map = {{"G1", "G7"}};
+    const std::string proj_file = TranslateUidsText(file, map, true);
+    CHECK(proj_file.find("tpl=c:FS%20Player,g:G7,end,lib,layer") != std::string::npos);
+    CHECK(TranslateUidsText(proj_file, map, false) == file);
+    // Get file's: the project's library takes the template
+    const std::string base = TranslateUidsText(Base(), map, true);
+    const SyncDiff    dp = DiffLibrary(base, base, proj_file);
+    SyncResult        r;
+    CHECK(ApplySync(base, base, base, proj_file, dp, All(dp, SyncDir::Down), &r));
+    SoundStore got;
+    CHECK(ParseRavlib(r.mine, &got) && got.libraries.size() == 1);
+    if (got.libraries.size() == 1)
+        CHECK((got.libraries.front().track_levels == std::vector<std::string>{"c:FS Player", "g:G7", "end", "lib", "layer"}));
+}
+
 static void TestNoCommonVersionApply()
 {
     std::string m = Sub(Base(), "vol=-4", "vol=-5");
@@ -1483,6 +1530,7 @@ int main()
     TestApplyOrdering();
     TestAdaptationsAreNotFileChanges();
     TestUidTranslation();
+    TestTrackTemplateSync();
     TestNoCommonVersionApply();
     TestApplyGate();
     TestJournal();

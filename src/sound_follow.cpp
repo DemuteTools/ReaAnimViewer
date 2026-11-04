@@ -464,48 +464,16 @@ const char* KindText(ReportKind k)
 }
 
 
-// 13-13: the Tracks menu only picks; the store gesture runs after the menu (picked_gestures.h).
+// 13-13: the Separator menu only picks; the store gesture runs after the menu (picked_gestures.h).
 PickedGestures g_track_picks;
 
 // The joined name a separator gives (the menus' hint).
 std::string JoinedExample(const std::string& sep)
 {
-    return "Run" + sep + "Shoes" + sep + "Concrete";
+    return "Walk" + sep + "Heel";
 }
 
-// The Tracks row: where placed sounds land (the project's TrackLayout), one undo point a change.
-void DrawTracksRow(ReaProject* proj)
-{
-    static const char* const kShort[3] = {"Off", "Per path", "Folders"};
-    static const char* const kRows[3] = {"Source or Lands-in track", "One track per Switch path", "Folders by Switch"};
-    static const TrackLayout kLayouts[3] = {TrackLayout::Off, TrackLayout::Flat, TrackLayout::Tree};
-    const SoundStore&        store = GetSoundStore(proj);
-    const TrackLayout        cur = TrackLayoutOf(store);
-    const int                sel = cur == TrackLayout::Flat ? 1 : cur == TrackLayout::Tree ? 2 : 0;
-    const std::string        flat_hint = JoinedExample(TrackSeparatorOf(store));
-    const char* const        hints[3] = {nullptr, flat_hint.c_str(), "Run / Shoes / Concrete"};
-    ui::LabelRow("Tracks", ui::Dp(90.0f));
-    const std::string label = std::string(kShort[sel]) + " \xE2\x96\xBE##sndtracks";
-    if (ui::SolidButton(label.c_str())) ImGui::OpenPopup("##sndtracks");
-    // 13-37: what the setting changes, then when it applies.
-    ui::ItemTipText("Which track each placed sound lands on: its source's (or its Lands-in) track,\n"
-                    "one track per Switch path, or folders by Switch.\n"
-                    "Applies to new placements. Repopulate (Tagging footer) moves the existing ones.");
-    if (ui::BeginMenuPopup("##sndtracks")) {
-        ui::MenuCaption("PLACED SOUNDS LAND ON");
-        for (int i = 0; i < 3; ++i)
-            if (ImGui::MenuItem(kRows[i], hints[i], i == sel) && i != sel) {
-                const TrackLayout to = kLayouts[i];
-                const std::string undo = std::string("RAV: Sound tracks: ") + kShort[i];
-                g_track_picks.Pick([proj, to, undo]() {
-                    ModifySoundStore(proj, undo.c_str(), [to](SoundStore& st) { return SetTrackLayout(st, to); });
-                });
-            }
-        ui::EndMenuPopup();
-    }
-}
-
-// 13-17 (N4): the separator row: joins the Switch values of One track per Switch path, one undo
+// 13-17 (N4): the separator row: joins the levels after a Track template's "folders end" (13-39), one undo
 // point a change; the RAV tracks the user did not rename take the new name in it (the store hook).
 void DrawSeparatorRow(ReaProject* proj)
 {
@@ -518,10 +486,10 @@ void DrawSeparatorRow(ReaProject* proj)
     ui::LabelRow("Separator", ui::Dp(90.0f));
     const std::string label = std::string(kWords[sel]) + " \xE2\x96\xBE##sndsep";
     if (ui::SolidButton(label.c_str())) ImGui::OpenPopup("##sndsep");
-    ui::ItemTipText("Joins the Switch values of \"One track per Switch path\".\n"
+    ui::ItemTipText("Joins the levels after \"folders end\" in a library's Track template.\n"
                     "RAV renames its tracks at once, except those you renamed.");
     if (ui::BeginMenuPopup("##sndsep")) {
-        ui::MenuCaption("JOIN SWITCH VALUES WITH");
+        ui::MenuCaption("JOIN TRACK NAME LEVELS WITH");
         for (int i = 0; i < 4 && i < static_cast<int>(seps.size()); ++i) {
             const std::string hint = JoinedExample(seps[static_cast<size_t>(i)]);
             if (ImGui::MenuItem(kWords[i], hint.c_str(), i == sel) && i != sel) {
@@ -1069,7 +1037,6 @@ void DrawLibraryTracksSection()
     static ui::Section sec;
     if (ui::BeginSection(sec, "Tracks")) {
         ReaProject* proj = CurrentProject();
-        DrawTracksRow(proj);      // 13-13 (moved from Tagging > Sounds, 13-17 N6)
         DrawSeparatorRow(proj);   // 13-17 N4
         g_track_picks.Run();      // after the menus: the gesture replaces the store
     }

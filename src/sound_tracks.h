@@ -43,7 +43,7 @@ MediaTrack* AddChildTrack(ReaProject* proj, MediaTrack* parent, const std::strin
 // in a Lands-in folder (its P_EXT mark), never one of that folder's layer tracks (PickLayerChild).
 bool IsSwitchTreeTrack(MediaTrack* tr);
 
-// The track at the end of a track path (SoundTrackPath), found or made level by level (T3): the top
+// The track at the end of a track path (SoundTemplatePath), found or made level by level (T3): the top
 // level is a folder track named exactly so anywhere in the project, else a new folder at the
 // bottom; each next level is the parent's direct child that MatchChildTrack finds (the second
 // level, the library folder, among the children that are folders or Switch-tree folders), else a

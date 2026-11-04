@@ -706,6 +706,16 @@ Every sound Attach or Add to pile places is an **instance**: the copies on the m
 
 RAV keeps this in the kind's one `FS` library, under Switches it manages: **RAV - FS animations** (one value per animation, shared by all its items, the default value for the others) and **RAV - Side** (L and R, once separated). It never makes a track or a folder, never moves an item other than the sounds concerned, and never touches another marker kind.
 
+### The tracks placed sounds land on (Track template)
+
+Each library has a **Track template**: the row of levels its tracks are built from, in the **Tracks** section of the library's root (Library view). A level is the library's name, a Switch group (one track per value), **Blend** (the Blend's name), **Layer** (the Blend layer) or a folder of your own (a fixed name, **+ Add level › Your own folder...**). Drag a level onto another to take its place, **×** (on hover) removes it, **+ Add level** adds one, **Reset to the tree order** goes back to the start.
+
+- The levels before **⊣ name** are folders, nested in that order: your library may be ordered Material › Walk/Run and the tracks Walk › Material. The levels after it join into the name of the track that holds the sounds, with the separator of ☰ **Library › Tracks** (`Walk_Heel`). Nothing after it: the last folder holds the sounds.
+- A level that has no value for a sound (a sound outside any Blend for **Layer**, a Switch on another branch) is skipped for it. Sounds that get the same values share one track. A template that gives a sound nothing leaves it on its usual track, as before (its source's track, or the Lands-in folder's "layer" track for a file).
+- With no template of its own, a library follows its tree, one row for the whole library, and the chips show exactly what Populate does: the library, its Switch groups in the order the tree first reaches them (a group nested twice on one path appears twice), then **Layer** when the library has a Blend. There is no **Blend** level by default (add it to get the Blend's own folder). A library with no Switch and no Blend puts its sounds on one track named after the library, inside its Lands-in folder.
+- The whole template sits under the sound's **Lands in** folder (each node keeps its own Lands in). **Final structure** shows the tracks Populate will make (● = already in the project, ♪ = holds sounds); select a node in the tree to light its tracks.
+- Each change is one undo point (**RAV: Set track template**) and moves nothing by itself: the next **Populate** or **Repopulate** places on the new tracks. RAV never deletes, moves or reorders a track; it renames the tracks it made while you have not renamed them. The template travels with the library's `.ravlib`.
+
 ### Syncing placed sounds with the Library
 
 Changing a setting in the Library (a node's volume, a Blend offset, a Sound's fades, sync point, zones or level, a variation switched off) never moves anything in the arrange: the sounds already placed keep what they had. The Library shows what is behind:

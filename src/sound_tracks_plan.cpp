@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 //
-// See sound_tracks_plan.h (story 13-13).
+// See sound_tracks_plan.h (stories 13-13, 13-16, 13-17, 13-39).
 
 #include "sound_tracks_plan.h"
 
 #include <algorithm>
 #include <cstdio>
+#include <map>
 #include <set>
 
 #include "ravlib.h"
@@ -15,18 +16,7 @@ namespace rav {
 
 namespace {
 
-constexpr const char* kTrackKey = "trk=";
 constexpr const char* kUnnamed = "(unnamed)";
-
-bool IsTrackToken(const std::string& tok)
-{
-    return tok.compare(0, 4, kTrackKey) == 0;
-}
-
-const char* LayoutWord(TrackLayout l)
-{
-    return l == TrackLayout::Flat ? "flat" : l == TrackLayout::Tree ? "tree" : "";
-}
 
 std::string Named(const std::string& s)
 {
@@ -48,40 +38,6 @@ std::string TrimmedLower(const std::string& s)
         if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + 32);
     return out;
 }
-
-}  // namespace
-
-TrackLayout TrackLayoutOf(const SoundStore& store)
-{
-    for (const std::string& tok : store.kept) {
-        if (!IsTrackToken(tok)) continue;
-        const std::string v = tok.substr(4);
-        if (v == "flat") return TrackLayout::Flat;
-        if (v == "tree") return TrackLayout::Tree;
-        return TrackLayout::Off;
-    }
-    return TrackLayout::Off;
-}
-
-bool SetTrackLayout(SoundStore& store, TrackLayout layout)
-{
-    if (TrackLayoutOf(store) == layout) return false;
-    std::vector<std::string> kept;
-    bool                     written = false;
-    for (const std::string& tok : store.kept) {
-        if (!IsTrackToken(tok)) {
-            kept.push_back(tok);
-            continue;
-        }
-        if (layout != TrackLayout::Off && !written) kept.push_back(std::string(kTrackKey) + LayoutWord(layout));
-        written = true;
-    }
-    if (layout != TrackLayout::Off && !written) kept.push_back(std::string(kTrackKey) + LayoutWord(layout));
-    store.kept = kept;
-    return true;
-}
-
-namespace {
 
 constexpr const char* kSepKey = "sep=";
 
@@ -224,17 +180,6 @@ void FlatLayers(const SoundLibrary& lib, const std::string& blend_uid, std::vect
     }
 }
 
-std::string PathMark(const char* kind, const std::string& lands_in, const std::string& lib_uid,
-                     const std::vector<SwitchStep>& path, size_t levels)
-{
-    std::string m = std::string(kind) + "|" + lands_in + "|" + lib_uid + "|";
-    for (size_t i = 0; i < levels && i < path.size(); ++i) {
-        if (i > 0) m += ',';
-        m += path[i].group_uid + ":" + path[i].value_uid;
-    }
-    return m;
-}
-
 constexpr const char* kLaneTag = "|S|";
 
 }  // namespace
@@ -274,21 +219,6 @@ BlendLayer LayerOf(const SoundLibrary& lib, const std::string& sound_uid)
     return out;
 }
 
-std::string LibraryMark(const std::string& lands_in, const std::string& lib_uid)
-{
-    return "L|" + lands_in + "|" + lib_uid;
-}
-
-std::string BlendMark(const std::string& lands_in, const std::string& lib_uid, const std::string& blend_uid)
-{
-    return "B|" + lands_in + "|" + lib_uid + "|" + blend_uid;
-}
-
-std::string LayerMark(const std::string& parent, const std::string& layer_uid)
-{
-    return parent + "|Y|" + layer_uid;
-}
-
 std::string PileChildMark(const std::string& layer_mark, const std::string& source_track_guid)
 {
     return layer_mark + "|K|" + source_track_guid;
@@ -319,37 +249,397 @@ int LaneOfMark(const std::string& mark, std::string* base)
     return k;
 }
 
-std::vector<TrackStep> SoundTrackPath(const std::vector<SwitchStep>& path, const BlendLayer& layer, TrackLayout layout,
-                                      const std::string& lands_in, const std::string& lib_uid,
-                                      const std::string& library_name, const std::string& sep)
+// ---- Story 13-39: the Track template -------------------------------------------------------------
+
+bool ParseTemplateLevel(const std::string& word, TemplateLevel* out)
 {
-    const bool has_path = layout != TrackLayout::Off && !path.empty();
-    if (!has_path && !layer.in_blend) return {};
-    std::vector<TrackStep> out;
-    out.push_back({Named(lands_in), true, ""});
-    out.push_back({Named(library_name), true, LibraryMark(lands_in, lib_uid)});
-    if (has_path) {
-        if (layout == TrackLayout::Flat) {
-            std::string joined;
-            for (size_t i = 0; i < path.size(); ++i) {
-                if (i > 0) joined += sep;
-                joined += Named(path[i].value_name);
-            }
-            out.push_back({joined, false, PathMark("PF", lands_in, lib_uid, path, path.size())});
-        } else {
-            for (size_t i = 0; i < path.size(); ++i)
-                out.push_back({Named(path[i].value_name), i + 1 < path.size(), PathMark("PT", lands_in, lib_uid, path, i + 1)});
-        }
-        if (layer.in_blend) {
-            out.back().folder = true;
-            const std::string parent = out.back().mark;
-            out.push_back({layer.layer_name, false, LayerMark(parent, layer.layer_uid)});
-        }
-        return out;
+    TemplateLevel l;
+    if (word == "lib") l.kind = LevelKind::Library;
+    else if (word == "blend") l.kind = LevelKind::Blend;
+    else if (word == "layer") l.kind = LevelKind::Layer;
+    else if (word == "end") l.kind = LevelKind::End;
+    else if (word.size() > 2 && word.compare(0, 2, "g:") == 0) {
+        l.kind = LevelKind::Group;
+        l.arg = word.substr(2);
+    } else if (word.size() > 2 && word.compare(0, 2, "c:") == 0) {
+        l.kind = LevelKind::Custom;
+        l.arg = word.substr(2);
+    } else {
+        return false;
     }
-    const std::string blend = BlendMark(lands_in, lib_uid, layer.blend_uid);
-    out.push_back({layer.blend_name, true, blend});
-    out.push_back({layer.layer_name, false, LayerMark(blend, layer.layer_uid)});
+    if (out) *out = l;
+    return true;
+}
+
+std::string TemplateLevelWord(const TemplateLevel& level)
+{
+    switch (level.kind) {
+    case LevelKind::Library: return "lib";
+    case LevelKind::Group: return "g:" + level.arg;
+    case LevelKind::Blend: return "blend";
+    case LevelKind::Layer: return "layer";
+    case LevelKind::Custom: return "c:" + level.arg;
+    case LevelKind::End: break;
+    }
+    return "end";
+}
+
+std::vector<std::string> CleanTemplate(const std::vector<std::string>& words)
+{
+    std::vector<std::string> out;
+    bool                     end = false;
+    for (const std::string& w : words) {
+        TemplateLevel l;
+        if (!ParseTemplateLevel(w, &l)) continue;
+        if (l.kind == LevelKind::End) {
+            if (end) continue;
+            end = true;
+        }
+        out.push_back(w);
+    }
+    if (!end) out.push_back("end");
+    return out;
+}
+
+namespace {
+
+// The library's nodes from the root down, depth-first in child order (each once).
+void TreeOrder(const SoundLibrary& lib, const std::string& uid, std::vector<const SoundNode*>* out,
+               std::set<std::string>* seen)
+{
+    if (!seen->insert(uid).second) return;
+    const SoundNode* n = FindNode(lib, uid);
+    if (!n) return;
+    out->push_back(n);
+    for (const SoundNode* c : ChildrenOf(lib, uid)) TreeOrder(lib, c->uid, out, seen);
+}
+
+std::vector<const SoundNode*> NodesInTreeOrder(const SoundLibrary& lib)
+{
+    std::vector<const SoundNode*> out;
+    std::set<std::string>         seen;
+    if (!lib.root.empty()) TreeOrder(lib, lib.root, &out, &seen);
+    for (const SoundNode& n : lib.nodes)  // a root left unset, or nodes cut off it: still in line order
+        if (n.parent.empty() && !seen.count(n.uid)) TreeOrder(lib, n.uid, &out, &seen);
+    return out;
+}
+
+// A key's text: '%', '|', ',', '>', ':' and control characters percent-encoded (a mark field never splits).
+std::string KeyText(const std::string& s)
+{
+    static const char kHex[] = "0123456789ABCDEF";
+    std::string       out;
+    for (char ch : s) {
+        const unsigned char c = static_cast<unsigned char>(ch);
+        if (c < 0x20 || c == 0x7F || c == '%' || c == '|' || c == ',' || c == '>' || c == ':') {
+            out += '%';
+            out += kHex[c >> 4];
+            out += kHex[c & 15];
+        } else {
+            out += ch;
+        }
+    }
+    return out;
+}
+
+int HexDigit(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+std::string UnKeyText(const std::string& s)
+{
+    std::string out;
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '%' && i + 2 < s.size()) {
+            const int a = HexDigit(s[i + 1]), b = HexDigit(s[i + 2]);
+            if (a >= 0 && b >= 0) {
+                out += static_cast<char>(a * 16 + b);
+                i += 2;
+                continue;
+            }
+        }
+        out += s[i];
+    }
+    return out;
+}
+
+// One level's value for a Sound: its name and key; false when it has none (skipped for it).
+// `group_seen` counts the group levels met so far per group (the n-th takes the n-th step).
+bool LevelValue(const TemplateLevel& l, const std::vector<SwitchStep>& path, const BlendLayer& layer,
+                const std::string& library_name, std::map<std::string, int>* group_seen, std::string* name,
+                std::string* key)
+{
+    switch (l.kind) {
+    case LevelKind::Library:
+        *name = Named(library_name);
+        *key = "l";
+        return true;
+    case LevelKind::Group: {
+        const int want = (*group_seen)[l.arg]++;
+        int       n = 0;
+        for (const SwitchStep& s : path) {
+            if (s.group_uid != l.arg) continue;
+            if (n++ < want) continue;
+            *name = Named(s.value_name);
+            *key = "g" + s.group_uid + ":" + s.value_uid;
+            return true;
+        }
+        return false;
+    }
+    case LevelKind::Blend:
+        if (!layer.in_blend) return false;
+        *name = layer.blend_name;
+        *key = "b" + layer.blend_uid;
+        return true;
+    case LevelKind::Layer:
+        if (!layer.in_blend) return false;
+        *name = layer.layer_name;
+        *key = "y" + layer.layer_uid;
+        return true;
+    case LevelKind::Custom: {
+        const std::string t = Trimmed(l.arg);
+        if (t.empty()) return false;
+        *name = t;
+        *key = "c" + KeyText(t);
+        return true;
+    }
+    case LevelKind::End: break;
+    }
+    return false;
+}
+
+}  // namespace
+
+std::map<std::string, int> TemplateGroupRepeats(const SoundLibrary& lib)
+{
+    std::map<std::string, int> out;
+    for (const SoundNode& n : lib.nodes) {
+        if (n.type != SoundNodeType::Switch || n.group_uid.empty()) continue;
+        int              k = 0;  // the Switches of this group from it up to the root
+        const SoundNode* p = &n;
+        for (size_t guard = 0; p && guard <= lib.nodes.size(); ++guard) {
+            if (p->type == SoundNodeType::Switch && p->group_uid == n.group_uid) ++k;
+            p = p->parent.empty() ? nullptr : FindNode(lib, p->parent);
+        }
+        int& m = out[n.group_uid];
+        m = std::max(m, k);
+    }
+    return out;
+}
+
+std::vector<std::string> DefaultTrackTemplate(const SoundStore& store, const SoundLibrary& lib)
+{
+    (void)store;
+    std::vector<std::string>         out = {"lib"};
+    std::map<std::string, int>       have;
+    bool                             layer = false;
+    for (const SoundNode* n : NodesInTreeOrder(lib)) {
+        if (n->type == SoundNodeType::Switch && !n->group_uid.empty()) {
+            // Its group's k-th Switch from the root (a group nested k times on one path appears k times),
+            // in the order the tree first reaches each.
+            int              k = 0;
+            const SoundNode* p = n;
+            for (size_t guard = 0; p && guard <= lib.nodes.size(); ++guard) {
+                if (p->type == SoundNodeType::Switch && p->group_uid == n->group_uid) ++k;
+                p = p->parent.empty() ? nullptr : FindNode(lib, p->parent);
+            }
+            for (int& h = have[n->group_uid]; h < k; ++h) out.push_back("g:" + n->group_uid);
+        }
+        if (n->type == SoundNodeType::Sound && LayerOf(lib, n->uid).in_blend) layer = true;
+    }
+    if (layer) out.push_back("layer");  // T1: no Blend level by default (the user may add it)
+    out.push_back("end");
+    return out;
+}
+
+std::vector<std::string> TrackTemplateOf(const SoundStore& store, const SoundLibrary& lib)
+{
+    return lib.track_levels.empty() ? DefaultTrackTemplate(store, lib) : CleanTemplate(lib.track_levels);
+}
+
+bool CanAddTemplateLevel(const SoundLibrary& lib, const std::vector<std::string>& words, const std::string& word)
+{
+    TemplateLevel l;
+    if (!ParseTemplateLevel(word, &l) || l.kind == LevelKind::End) return false;
+    if (l.kind == LevelKind::Custom) return !Trimmed(l.arg).empty();
+    const int have = static_cast<int>(std::count(words.begin(), words.end(), word));
+    if (l.kind != LevelKind::Group) return have == 0;
+    const std::map<std::string, int> repeats = TemplateGroupRepeats(lib);
+    auto                             r = repeats.find(l.arg);
+    return have < std::max(1, r == repeats.end() ? 0 : r->second);
+}
+
+std::vector<TrackStep> TemplateTrackPath(const std::vector<std::string>& words, const std::vector<SwitchStep>& path,
+                                         const BlendLayer& layer, const std::string& lands_in, const std::string& lib_uid,
+                                         const std::string& library_name, const std::string& sep)
+{
+    const std::vector<std::string> tpl = CleanTemplate(words);
+    const std::string              prefix = "T|" + lands_in + "|" + lib_uid + "|";
+    std::vector<TrackStep>         out;
+    out.push_back({Named(lands_in), true, ""});
+    std::map<std::string, int> group_seen;
+    std::string                folder_keys, joined_name, joined_keys;
+    bool                       after_end = false, joined = false;
+    for (const std::string& w : tpl) {
+        TemplateLevel l;
+        if (!ParseTemplateLevel(w, &l)) continue;
+        if (l.kind == LevelKind::End) {
+            after_end = true;
+            continue;
+        }
+        std::string name, key;
+        if (!LevelValue(l, path, layer, library_name, &group_seen, &name, &key)) continue;
+        if (!after_end) {
+            folder_keys += (folder_keys.empty() ? "" : ",") + key;
+            out.push_back({name, true, prefix + folder_keys});
+        } else {
+            joined_name += (joined ? sep : std::string()) + name;
+            joined_keys += (joined ? "," : "") + key;
+            joined = true;
+        }
+    }
+    if (joined) out.push_back({joined_name, false, prefix + folder_keys + ">" + joined_keys});
+    if (out.size() == 1) return {};  // no level gives a value: 13-11's "layer N" track
+    out.back().folder = false;
+    return out;
+}
+
+std::vector<TrackStep> SoundTemplatePath(const SoundStore& store, const SoundLibrary& lib, const std::string& sound_uid,
+                                         const std::vector<std::string>& words)
+{
+    const std::vector<SwitchStep> path = SwitchPathOf(store, lib, sound_uid);
+    const BlendLayer              layer = LayerOf(lib, sound_uid);
+    return TemplateTrackPath(words, path, layer, EffectiveLandsIn(lib, sound_uid), lib.uid, lib.name,
+                             TrackSeparatorOf(store));
+}
+
+std::vector<TrackStep> SoundTemplatePath(const SoundStore& store, const SoundLibrary& lib, const std::string& sound_uid)
+{
+    return SoundTemplatePath(store, lib, sound_uid, TrackTemplateOf(store, lib));
+}
+
+namespace {
+
+// Applies `edit` to the library's template (its tree order when none is stored); stores none when the
+// result is the tree order. True when the stored template changed.
+bool EditTemplate(SoundStore& store, const std::string& lib_uid, const std::function<bool(std::vector<std::string>&)>& edit)
+{
+    SoundLibrary* lib = FindLibrary(store, lib_uid);
+    if (!lib) return false;
+    std::vector<std::string> words = TrackTemplateOf(store, *lib);
+    if (!edit(words)) return false;
+    words = CleanTemplate(words);
+    if (words == DefaultTrackTemplate(store, *lib)) words.clear();
+    if (words == lib->track_levels) return false;
+    lib->track_levels = words;
+    return true;
+}
+
+}  // namespace
+
+bool MoveTemplateLevel(SoundStore& store, const std::string& lib_uid, int from, int to)
+{
+    return EditTemplate(store, lib_uid, [from, to](std::vector<std::string>& w) {
+        const int n = static_cast<int>(w.size());
+        if (from < 0 || to < 0 || from >= n || to >= n || from == to) return false;
+        const std::string moved = w[static_cast<size_t>(from)];
+        w.erase(w.begin() + from);
+        w.insert(w.begin() + to, moved);
+        return true;
+    });
+}
+
+bool AddTemplateLevel(SoundStore& store, const std::string& lib_uid, const std::string& word)
+{
+    TemplateLevel l;
+    if (!ParseTemplateLevel(word, &l) || l.kind == LevelKind::End) return false;
+    std::string add = word;
+    if (l.kind == LevelKind::Custom) {
+        l.arg = Trimmed(l.arg);
+        if (l.arg.empty()) return false;
+        add = TemplateLevelWord(l);
+    }
+    const SoundLibrary* lib = FindLibrary(store, lib_uid);
+    if (!lib) return false;
+    const SoundLibrary& L = *lib;
+    return EditTemplate(store, lib_uid, [&](std::vector<std::string>& w) {
+        if (l.kind == LevelKind::Custom) {
+            w.insert(w.begin(), add);  // the user's folders usually sit on top; dragged elsewhere
+            return true;
+        }
+        if (!CanAddTemplateLevel(L, w, add)) return false;
+        auto end = std::find(w.begin(), w.end(), std::string("end"));
+        w.insert(end, add);
+        return true;
+    });
+}
+
+bool RemoveTemplateLevel(SoundStore& store, const std::string& lib_uid, int index)
+{
+    return EditTemplate(store, lib_uid, [index](std::vector<std::string>& w) {
+        if (index < 0 || index >= static_cast<int>(w.size()) || w[static_cast<size_t>(index)] == "end") return false;
+        w.erase(w.begin() + index);
+        return true;
+    });
+}
+
+bool ResetTrackTemplate(SoundStore& store, const std::string& lib_uid)
+{
+    SoundLibrary* lib = FindLibrary(store, lib_uid);
+    if (!lib || lib->track_levels.empty()) return false;
+    lib->track_levels.clear();
+    return true;
+}
+
+std::vector<StructureRow> TemplateStructure(const SoundStore& store, const SoundLibrary& lib)
+{
+    struct TrieNode {
+        StructureRow     row;
+        std::vector<int> kids;
+    };
+    std::vector<TrieNode>      nodes(1);  // [0] = the top
+    std::map<std::string, int> by_key;    // parent index + key -> node
+    const std::vector<std::string> words = TrackTemplateOf(store, lib);
+    for (const SoundNode* n : NodesInTreeOrder(lib)) {
+        if (n->type != SoundNodeType::Sound) continue;
+        const std::vector<TrackStep> path = SoundTemplatePath(store, lib, n->uid, words);
+        int                          cur = 0;
+        for (size_t i = 0; i < path.size(); ++i) {
+            const std::string key = std::to_string(cur) + "\x1f" + (path[i].mark.empty() ? "\x1e" + path[i].name : path[i].mark);
+            auto              hit = by_key.find(key);
+            int               at = 0;
+            if (hit == by_key.end()) {
+                at = static_cast<int>(nodes.size());
+                TrieNode t;
+                t.row.depth = static_cast<int>(i);
+                t.row.name = path[i].name;
+                t.row.mark = path[i].mark;
+                t.row.why = path[i].mark.empty() ? std::string("Lands in") : MarkLevelLabel(store, path[i].mark);
+                nodes.push_back(t);
+                nodes[static_cast<size_t>(cur)].kids.push_back(at);
+                by_key.emplace(key, at);
+            } else {
+                at = hit->second;
+            }
+            nodes[static_cast<size_t>(at)].row.sounds.push_back(n->uid);
+            if (i + 1 == path.size()) nodes[static_cast<size_t>(at)].row.holds = true;
+            cur = at;
+        }
+    }
+    std::vector<StructureRow> out;
+    std::function<void(int)>  walk = [&](int i) {
+        for (int k : nodes[static_cast<size_t>(i)].kids) {
+            StructureRow r = nodes[static_cast<size_t>(k)].row;
+            r.folder = !nodes[static_cast<size_t>(k)].kids.empty();
+            out.push_back(r);
+            walk(k);
+        }
+    };
+    walk(0);
     return out;
 }
 
@@ -486,13 +776,11 @@ bool StartsWith(const std::string& s, const char* p)
     return s.compare(0, std::char_traits<char>::length(p), p) == 0;
 }
 
-// The library uid of a library, Switch path or Blend mark ("" when none of those).
+// The library uid of a template mark ("" when it is none).
 std::string LibUidOf(const std::string& mark)
 {
     std::string uid;
-    if (StartsWith(mark, "L|")) return FieldFromEnd(mark, 0, &uid) ? uid : std::string();
-    if (StartsWith(mark, "PF|") || StartsWith(mark, "PT|") || StartsWith(mark, "B|"))
-        return FieldFromEnd(mark, 1, &uid) ? uid : std::string();
+    if (StartsWith(mark, "T|")) return FieldFromEnd(mark, 1, &uid) ? uid : std::string();
     return {};
 }
 
@@ -502,6 +790,46 @@ std::string ValueName(const SoundStore& store, const std::string& group_uid, con
         for (const SwitchValue& v : g->values)
             if (v.uid == value_uid) return Named(v.name);
     return {};  // a deleted group or value: no Library name
+}
+
+// The name of one template key (TemplateTrackPath), "" when it names nothing any more.
+std::string KeyName(const SoundStore& store, const SoundLibrary& lib, const std::string& key)
+{
+    if (key.empty()) return {};
+    const std::string rest = key.substr(1);
+    switch (key[0]) {
+    case 'l': return rest.empty() ? Named(lib.name) : std::string();
+    case 'g': {
+        const size_t colon = rest.find(':');
+        return colon == std::string::npos ? std::string() : ValueName(store, rest.substr(0, colon), rest.substr(colon + 1));
+    }
+    case 'b': {
+        const SoundNode* b = FindNode(lib, rest);
+        return b ? Named(b->name) : std::string();
+    }
+    case 'y': {
+        const SoundNode* n = FindNode(lib, rest);
+        if (!n) return {};
+        const BlendLayer l = LayerOf(lib, rest);
+        return l.in_blend && l.layer_uid == rest ? l.layer_name : Named(Trimmed(n->name));
+    }
+    case 'c': return UnKeyText(rest);
+    default: break;
+    }
+    return {};
+}
+
+std::vector<std::string> SplitKeys(const std::string& s)
+{
+    std::vector<std::string> out;
+    size_t                   at = 0;
+    while (at < s.size()) {
+        size_t comma = s.find(',', at);
+        if (comma == std::string::npos) comma = s.size();
+        out.push_back(s.substr(at, comma - at));
+        at = comma + 1;
+    }
+    return out;
 }
 
 }  // namespace
@@ -517,52 +845,69 @@ std::string NameForMark(const SoundStore& store, const std::string& mark,
         return b.empty() ? std::string() : NumberedName(b, k);
     }
     if (mark[0] == '#') return {};  // a GuidTrackMark: a track RAV does not name (13-11's "layer N")
-    // An NVK pile child: its source child track's name.
-    const size_t kpos = mark.find("|K|");
-    if (kpos != std::string::npos && mark.rfind("|Y|", kpos) != std::string::npos)
+    if (!StartsWith(mark, "T|")) return {};  // a 13-13 / 13-16 mark (before 13-39) or a foreign one
+    // An NVK pile child: its source child track's name (a template mark's keys hold no '|').
+    const size_t kpos = mark.rfind("|K|");
+    if (kpos != std::string::npos && mark.find('|', kpos + 3) == std::string::npos)
         return track_name ? track_name(mark.substr(kpos + 3)) : std::string();
-    // A layer track: <parent>|Y|<layer uid>.
-    const size_t ypos = mark.rfind("|Y|");
-    if (ypos != std::string::npos && mark.find('|', ypos + 3) == std::string::npos) {
-        const SoundLibrary* lib = FindLibrary(store, LibUidOf(mark.substr(0, ypos)));
-        const std::string   layer_uid = mark.substr(ypos + 3);
-        const SoundNode*    n = lib ? FindNode(*lib, layer_uid) : nullptr;
-        if (!n) return {};
-        const BlendLayer l = LayerOf(*lib, layer_uid);
-        return l.in_blend && l.layer_uid == layer_uid ? l.layer_name : Named(Trimmed(n->name));
-    }
     const SoundLibrary* lib = FindLibrary(store, LibUidOf(mark));
-    if (!lib) return {};
-    if (StartsWith(mark, "L|")) return Named(lib->name);
-    std::string last;
-    if (!FieldFromEnd(mark, 0, &last)) return {};
-    if (StartsWith(mark, "B|")) {
-        const SoundNode* b = FindNode(*lib, last);
-        return b ? Named(b->name) : std::string();
+    std::string         keys;
+    if (!lib || !FieldFromEnd(mark, 0, &keys)) return {};
+    const size_t gt = keys.find('>');
+    if (gt == std::string::npos) {  // a folder: its last level's value
+        const std::vector<std::string> k = SplitKeys(keys);
+        return k.empty() ? std::string() : KeyName(store, *lib, k.back());
     }
-    // A Switch path: "g:v,g:v".
-    std::vector<std::string> values;
-    size_t                   at = 0;
-    while (at <= last.size() && !last.empty()) {
-        size_t comma = last.find(',', at);
-        if (comma == std::string::npos) comma = last.size();
-        const std::string gv = last.substr(at, comma - at);
-        const size_t      colon = gv.find(':');
-        if (colon == std::string::npos) return {};
-        const std::string v = ValueName(store, gv.substr(0, colon), gv.substr(colon + 1));
-        if (v.empty()) return {};  // the track keeps its name
-        values.push_back(v);
-        at = comma + 1;
-    }
-    if (values.empty()) return {};
-    if (StartsWith(mark, "PT|")) return values.back();
     const std::string sep = TrackSeparatorOf(store);
     std::string       joined;
-    for (size_t i = 0; i < values.size(); ++i) {
-        if (i > 0) joined += sep;
-        joined += values[i];
+    bool              any = false;
+    for (const std::string& k : SplitKeys(keys.substr(gt + 1))) {
+        const std::string v = KeyName(store, *lib, k);
+        if (v.empty()) return {};  // the track keeps its name
+        joined += (any ? sep : std::string()) + v;
+        any = true;
     }
     return joined;
+}
+
+namespace {
+
+std::string KeyLabel(const SoundStore& store, const std::string& key)
+{
+    if (key.empty()) return {};
+    switch (key[0]) {
+    case 'l': return "library";
+    case 'g': {
+        const size_t       colon = key.find(':');
+        const SwitchGroup* g = FindGroup(store, key.substr(1, colon == std::string::npos ? std::string::npos : colon - 1));
+        return g ? (g->rav_owned ? "RAV - " : "") + Named(g->name) : std::string("?");  // as its chip
+    }
+    case 'b': return "Blend";
+    case 'y': return "Layer";
+    case 'c': return "your folder";
+    default: break;
+    }
+    return {};
+}
+
+}  // namespace
+
+std::string MarkLevelLabel(const SoundStore& store, const std::string& mark)
+{
+    std::string keys;
+    if (!StartsWith(mark, "T|") || !FieldFromEnd(mark, 0, &keys)) return {};
+    const size_t gt = keys.find('>');
+    if (gt == std::string::npos) {
+        const std::vector<std::string> k = SplitKeys(keys);
+        return k.empty() ? std::string() : KeyLabel(store, k.back());
+    }
+    std::string out = "name: ";
+    bool        any = false;
+    for (const std::string& k : SplitKeys(keys.substr(gt + 1))) {
+        out += (any ? " + " : "") + KeyLabel(store, k);
+        any = true;
+    }
+    return out;
 }
 
 TrackRename PlanTrackRename(const std::string& cur, const std::string& given, const std::string& want)

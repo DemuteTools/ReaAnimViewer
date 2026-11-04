@@ -31,8 +31,8 @@ std::vector<MediaItem*> RepopulateItems(ReaProject* proj, int* placed_out);
 // Repopulate: removes those items' populated sounds (even moved ones), forgets the ones deleted by hand, then
 // places and draws again; attached and spread sounds stay. One undo point. Nothing without such an item.
 void Repopulate(ReaProject* proj);
-// Story 13-17 (N6): the menu's Library tab, its Tracks section: where placed sounds land (the
-// Tracks option, moved from Tagging > Sounds) and the separator of joined track names.
+// Story 13-17 (N6): the menu's Library tab, its Tracks section: the separator of joined track names
+// (13-39: where placed sounds land is each library's Track template, its root's Tracks section).
 void DrawLibraryTracksSection();
 
 // 13-68e v5 (the Attach manager's watcher): REAPER's localized forms of these undo names (those that differ from the

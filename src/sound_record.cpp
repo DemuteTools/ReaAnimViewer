@@ -404,7 +404,25 @@ Fields LibraryFields(const SoundLibrary& l)
     if (l.attached) f.push_back({"attached", "1"});  // 13-68 v2
     if (!l.attached_type.empty()) f.push_back({"atype", Enc(l.attached_type)});
     if (!l.ravlib_path.empty()) f.push_back({"ravlib", Enc(l.ravlib_path)});
+    if (!l.track_levels.empty()) f.push_back({"tpl", JoinEncoded(l.track_levels)});  // 13-39
     return f;
+}
+
+// 13-39 (T3): a Track template level word RAV knows (sound_tracks_plan.h); an unknown one is dropped when read.
+bool IsTemplateWord(const std::string& w)
+{
+    if (w == "lib" || w == "blend" || w == "layer" || w == "end") return true;
+    return w.size() > 2 && (w.compare(0, 2, "g:") == 0 || w.compare(0, 2, "c:") == 0);
+}
+
+bool ReadTemplate(const std::string& v, std::vector<std::string>* out)
+{
+    std::vector<std::string> words;
+    if (!SplitDecoded(v, &words)) return false;
+    out->clear();
+    for (const std::string& w : words)
+        if (IsTemplateWord(w)) out->push_back(w);
+    return true;
 }
 
 Got SetLibrary(SoundLibrary& l, const std::string& k, const std::string& v)
@@ -417,6 +435,7 @@ Got SetLibrary(SoundLibrary& l, const std::string& k, const std::string& v)
     if (k == "attached") return G(ReadFlag(v, &l.attached));
     if (k == "atype") return G(ReadStr(v, &l.attached_type));
     if (k == "ravlib") return G(ReadStr(v, &l.ravlib_path));
+    if (k == "tpl") return G(ReadTemplate(v, &l.track_levels));
     return Got::Unknown;
 }
 

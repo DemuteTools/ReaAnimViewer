@@ -293,6 +293,35 @@ static void TestKitTravels()
     CHECK(SerializeRavlib(plain).find("kit ") == std::string::npos);
 }
 
+// 13-39 (T3): the Track template travels in the file; its group levels follow the merged groups on import.
+static void TestTemplateTravels()
+{
+    SoundStore rich = Laid(RichStore());
+    rich.libraries[0].track_levels = {"c:FS Player", "g:g000000000000001", "end", "layer", "g:g000000000000099"};
+    const SoundStore  one = RavlibOf(rich, "l000000000000001", nullptr);
+    const std::string text = SerializeRavlib(one);
+    CHECK(text.find("tpl=c:FS%20Player,g:g000000000000001,end,layer,g:g000000000000099") != std::string::npos);
+    SoundStore back;
+    CHECK(ParseRavlib(text, &back) && back.libraries[0].track_levels == rich.libraries[0].track_levels);
+    // Added to another project whose "Foot Material" is merged: the level takes that group's uid; a group the file
+    // does not hold is dropped.
+    SoundStore  proj;
+    SwitchGroup pg;
+    pg.uid = "p000000000000001";
+    pg.name = "Foot Material";
+    pg.values = {{"p000000000000002", "wood", {}}};
+    proj.groups.push_back(pg);
+    std::string uid, why;
+    CHECK(AddRavlibLibrary(proj, back, "Steps.ravlib", &uid, &why));
+    const SoundLibrary* lib = FindLibrary(proj, uid);
+    CHECK(lib && (lib->track_levels == std::vector<std::string>{"c:FS Player", "g:p000000000000001", "end", "layer"}));
+    // A level word this version does not know: dropped.
+    std::string later = text;
+    later.insert(later.find("tpl=") + 4, "spiral,");
+    SoundStore l2;
+    CHECK(ParseRavlib(later, &l2) && l2.libraries[0].track_levels == rich.libraries[0].track_levels);
+}
+
 static void TestUidClash()
 {
     SoundStore file = RavlibOf(RichStore(), "l000000000000001", nullptr);
@@ -1338,6 +1367,7 @@ int main()
     TestExportForm();
     TestImportMerge();
     TestKitTravels();
+    TestTemplateTravels();  // 13-39
     TestUidClash();
     TestAlreadyThere();
     TestLandsInAndLayer();

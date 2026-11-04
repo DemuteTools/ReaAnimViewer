@@ -626,6 +626,60 @@ struct Describe {
         }
         return guid;
     }
+    // 13-39: a group as its Track template chip shows it ("RAV - " for a RAV-owned group).
+    std::string GroupChip(const std::string& guid) const
+    {
+        for (int i : kNameOrder) {
+            const Doc* d = ds.at(i);
+            if (d && d->G(guid)) {
+                const Line& g = d->G(guid)->group;
+                return (TokOr(g, "rav") == "1" ? "RAV - " : "") + PctDecode(TokOr(g, "name", guid));
+            }
+        }
+        return "(deleted group)";
+    }
+    std::string LibName() const
+    {
+        for (int i : kNameOrder) {
+            const Doc* d = ds.at(i);
+            if (d && d->has_lib) {
+                const std::string n = PctDecode(TokOr(d->lib, "name"));
+                if (!n.empty()) return n;
+            }
+        }
+        return "(unnamed)";  // as its chip and track
+    }
+    // A Track template value (`tpl`, the words joined by ','), joined as its chip row: "›" between folder levels,
+    // nothing right after "⊣ name", "+" between the levels after it ("Foot › Surface › ⊣ name Loco + Layer").
+    std::string TemplateChips(const std::string& v) const
+    {
+        std::vector<std::string> chips;
+        int                      end = -1;
+        size_t                   i = 0;
+        while (i <= v.size()) {
+            size_t j = v.find(',', i);
+            if (j == std::string::npos) j = v.size();
+            const std::string w = PctDecode(v.substr(i, j - i));
+            std::string       chip;
+            if (w == "lib") chip = LibName();
+            else if (w == "blend") chip = "Blend";
+            else if (w == "layer") chip = "Layer";
+            else if (w == "end") {
+                if (end < 0) end = static_cast<int>(chips.size());
+                chip = "\xE2\x8A\xA3 name";  // ⊣
+            } else if (w.compare(0, 2, "g:") == 0) chip = GroupChip(w.substr(2));
+            else if (w.compare(0, 2, "c:") == 0) chip = w.substr(2);
+            if (!chip.empty()) chips.push_back(chip);
+            i = j + 1;
+        }
+        if (end < 0) end = static_cast<int>(chips.size());
+        std::string out;
+        for (int k = 0; k < static_cast<int>(chips.size()); ++k) {
+            if (k > 0) out += k <= end ? " \xE2\x80\xBA " : k == end + 1 ? " " : " + ";  // ›
+            out += chips[static_cast<size_t>(k)];
+        }
+        return out;
+    }
     std::string Type(const std::string& uid) const
     {
         const NodeDoc* n = AnyNode(uid);
@@ -684,11 +738,15 @@ Shown ShowField(const Describe& ds, const std::string& sect, const std::string& 
     } else if (key == "fades") {
         s.label = "Fades";
         s.unit = " ms";
+    } else if (key == "tpl") {  // 13-39: the library's Track template
+        s.label = "Track template";
+        def = "the tree order";
     } else {
         s.label = key + " changed";
     }
     auto render = [&](const Opt& o) {
         if (key == "default" || key == "preview") return o.has ? ds.ValueName(o.v) : def;
+        if (key == "tpl") return o.has && !o.v.empty() ? ds.TemplateChips(o.v) : def;
         if (key == "fades") {
             if (!o.has) return std::string("default");
             const size_t sl = o.v.find('/');
@@ -1506,6 +1564,9 @@ SyncDiff DiffLibrary(const std::string& base_text, const std::string& file_base_
             c.file_text = fh.to;
             if (p[1] == "name")
                 c.text = cl == Cls::Both ? "Renamed library: here " + mh.to + " · global " + fh.to : "Renamed library " + (cl == Cls::Here ? mh.from : fh.from) + " → " + (cl == Cls::Here ? mh.to : fh.to);
+            else if (p[1] == "tpl")  // 13-39: the template as its chips
+                c.text = cl == Cls::Both ? "Track template: here " + mh.to + " · global " + fh.to
+                                         : "Track template " + (cl == Cls::Here ? mh.from : fh.from) + " → " + (cl == Cls::Here ? mh.to : fh.to);
             else c.text = "Library " + c.label + " changed";
         } else if (kind == "LK") {
             c.label = "Kit";

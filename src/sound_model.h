@@ -19,6 +19,7 @@
 // 13-68 v2 (spec 13-68): SoundLibrary::attached / attached_type. v3: SoundData::keep_rate, SwitchGroup::rav_owned.
 // 13-73 (spec 13-73): SidePattern, NewSoundSides, SoundFrame::side / side_hand, SoundData::sides / side_pattern.
 // 13-35 (spec 13-35): PlacedTag::NodePrint / Written, PlacedTag::lib / va / has_wr / wr.
+// 13-39 (spec 13-39 T3): SoundLibrary::track_levels.
 //
 // Every `kept` member holds text this version did not understand, written back as read:
 // unknown fields ("key=value" tokens) of the object's own line, and `kept_lines` the unknown
@@ -411,6 +412,9 @@ struct SoundLibrary {
     // 13-68 v2 (appended): the marker type an Attached library serves (found by it, so a rename keeps it; ""
     // = an older one, found by its name).
     std::string              attached_type;
+    // 13-39 (appended): the Track template, the levels of the track path Populate makes for its sounds, in order:
+    // "lib", "g:<group uid>", "blend", "layer", "c:<text>", "end" (sound_tracks_plan.h). Empty = the tree order.
+    std::vector<std::string> track_levels;
 };
 
 // A Switch Group's value at one level (item, rule, event, auto marker type).

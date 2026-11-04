@@ -1053,6 +1053,31 @@ int main()
         CHECK(ParseSoundStore(SerializeSoundStore(p), &p2) && SerializeSoundStore(p2) == SerializeSoundStore(p));
     }
 
+    // ---- 13-39 (T3): the Track template on the library line ---------------------------------------
+    {
+        SoundStore   s;
+        SoundLibrary l;
+        l.uid = "lib1";
+        l.name = "Footstep";
+        l.track_levels = {"c:FS Player, 1", "g:grp1", "end", "layer", "lib", "blend"};
+        s.libraries.push_back(l);
+        const std::string text = SerializeSoundStore(s);
+        CHECK(text.find(" tpl=c:FS%20Player%2C%201,g:grp1,end,layer,lib,blend") != std::string::npos);
+        SoundStore p;
+        CHECK(ParseSoundStore(text, &p) && p.libraries.size() == 1 && p.libraries[0].track_levels == l.track_levels);
+        // No template: no field.
+        SoundStore none;
+        none.libraries.push_back(SoundLibrary{});
+        none.libraries[0].uid = "x";
+        CHECK(SerializeSoundStore(none).find("tpl=") == std::string::npos);
+        // An unknown level word is dropped when read (a later version's level).
+        std::string later = text;
+        const size_t at = later.find("tpl=");
+        later.insert(at + 4, "spiral,g:,");
+        SoundStore q;
+        CHECK(ParseSoundStore(later, &q) && q.libraries.size() == 1 && q.libraries[0].track_levels == l.track_levels);
+    }
+
     if (g_fails) {
         std::printf("sound_record_test: %d failure(s)\n", g_fails);
         return 1;

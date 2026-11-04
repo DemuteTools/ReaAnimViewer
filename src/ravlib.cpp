@@ -300,6 +300,21 @@ bool AddRavlibLibrary(SoundStore& store, const SoundStore& file, const std::stri
         }
         for (PartSettings& ps : d.parts) ps.value = Mapped(vmap, ps.value);  // 13-62: the parts' own settings
     }
+    // 13-39 (T3): the Track template's Switch group levels follow the merged groups; a group the file does not
+    // hold is dropped (it would be skipped for every sound anyway).
+    {
+        std::vector<std::string> levels;
+        for (const std::string& w : lib.track_levels) {
+            if (w.compare(0, 2, "g:") != 0) {
+                levels.push_back(w);
+                continue;
+            }
+            const auto m = gmap.find(w.substr(2));
+            if (m != gmap.end()) levels.push_back("g:" + m->second);
+        }
+        lib.track_levels = levels;
+    }
+
     std::vector<std::string> names;
     for (const SoundLibrary& l : s.libraries) names.push_back(l.name);
     lib.name = UniqueName(lib.name.empty() ? std::string("User Library") : lib.name, names);

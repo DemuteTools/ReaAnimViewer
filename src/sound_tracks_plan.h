@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: MIT
 //
-// Switch-named tracks (story 13-13, Antho 2026-10-12, pure, no REAPER): with nested Switches
-// (LocomotionType > FeetType > Material) a placed sound lands on a track named after the Switch
-// path that chose it, so the arrange says why it is there. A per-project option (the sound store
-// header's `trk=` token): Off (the source track, or the Lands-in folder's layer track, as before),
-// one track per path ("Run-Shoes-Concrete"), or folders by Switch (Run > Shoes > Concrete).
+// The tracks Populate places sounds on (pure, no REAPER). Story 13-13 named them after the Switch
+// path; story 13-39 replaced its per-project option (`trk=`: Off / One per path / Folders) with a
+// per-library Track template: an ordered row of levels (the library name, a Switch group, the
+// Blend name, the Blend layer, the user's own fixed-text folder) and a "folders end" marker; the
+// levels before it are folders, those after it join into the track name.
 //
-// The track path sits inside the Lands-in folder ("RAV Library" for a project library), under a
-// folder named after the library. The REAPER side finds or makes it (sound_tracks.h).
+// The track path sits inside the Lands-in folder of the sound's node ("RAV Library" by default).
+// The REAPER side finds or makes it (sound_tracks.h).
 
 #pragma once
 
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -19,14 +20,7 @@
 
 namespace rav {
 
-enum class TrackLayout { Off, Flat, Tree };
-
-// The project's layout: the store header's `trk=flat|tree` token (none or another value = Off).
-TrackLayout TrackLayoutOf(const SoundStore& store);
-// Writes the token (Off removes it), the header's other tokens untouched. False when unchanged.
-bool SetTrackLayout(SoundStore& store, TrackLayout layout);
-
-// Story 13-17 (N4): the separator One per path joins Switch values with ("Run_Shoes_Concrete"): the
+// Story 13-17 (N4): the separator a template joins the levels after "folders end" with ("Walk_Heel"): the
 // store header's `sep=dash|dot|space` token; none (or another value) = "_", the default.
 std::string TrackSeparatorOf(const SoundStore& store);
 // The separators offered, in menu order: "_", "-", ".", " ".
@@ -87,37 +81,96 @@ struct BlendLayer {
 BlendLayer LayerOf(const SoundLibrary& lib, const std::string& sound_uid);
 
 // The hidden marks (B7), from uids only (the Lands-in value is the node's setting, not a track
-// name). A library folder; a Switch path track; a Blend folder (no Switch path); a layer track
-// under the track marked `parent`; an NVK pile child (B5) under a layer track, per source child
-// track (its GUID); a spill child (B6, k >= 1) of the track marked `base`; a RAV track that has
-// no mark (13-11's "layer N"), by its GUID.
-std::string LibraryMark(const std::string& lands_in, const std::string& lib_uid);
-std::string BlendMark(const std::string& lands_in, const std::string& lib_uid, const std::string& blend_uid);
-std::string LayerMark(const std::string& parent, const std::string& layer_uid);
+// name): a template track (TemplateTrackPath); an NVK pile child (B5) under a template track, per
+// source child track (its GUID); a spill child (B6, k >= 1) of the track marked `base`; a RAV
+// track that has no mark (13-11's "layer N"), by its GUID.
 std::string PileChildMark(const std::string& layer_mark, const std::string& source_track_guid);
 std::string LaneMark(const std::string& base, int k);
 std::string GuidTrackMark(const std::string& track_guid);
 // The k of a spill child's mark (and its base's mark in `base`); 0 (base = the mark) otherwise.
 int LaneOfMark(const std::string& mark, std::string* base);
 
-// The track path of a Sound (B3, B4, 13-13 T2): with a Switch path (layout not Off), the Lands-in
-// folder, the library folder and the Switch path tracks, then, inside a Blend, the last one as a
-// folder and the layer track. Without a Switch path (or Off), inside a Blend: the Lands-in
-// folder, the library folder, a folder named after the Blend, the layer track. Empty (today's
-// track) outside any Blend with no Switch path. Every level but the Lands-in folder is marked.
-// One per path joins the value names with `sep` (TrackSeparatorOf, 13-17).
-std::vector<TrackStep> SoundTrackPath(const std::vector<SwitchStep>& path, const BlendLayer& layer, TrackLayout layout,
-                                      const std::string& lands_in, const std::string& lib_uid,
-                                      const std::string& library_name, const std::string& sep = "_");
+// ---- Story 13-39: the Track template -----------------------------------------------------------
 
-// Story 13-17 (N1): the name the Library gives the RAV track marked `mark`, from the store: library
-// folder = the library's name; Switch path track = its values joined by the store's separator (One
-// per path) or its last value (Folders); Blend folder = the Blend's name; layer track = the layer's
-// name (LayerOf, "Thud02" for a repeat); NVK pile child = the current name of its source child
+// A template level. Stored on the library (SoundLibrary::track_levels) as words: "lib", "g:<group uid>",
+// "blend", "layer", "c:<text>", "end" (End = "folders end": the levels after it join into the track name).
+enum class LevelKind { Library, Group, Blend, Layer, Custom, End };
+struct TemplateLevel {
+    LevelKind   kind = LevelKind::End;
+    std::string arg;  // the group uid (Group), the folder's text (Custom)
+};
+// False for a word RAV does not know (or a "g:" / "c:" with nothing after it).
+bool        ParseTemplateLevel(const std::string& word, TemplateLevel* out);
+std::string TemplateLevelWord(const TemplateLevel& level);
+// The known words in order, exactly one "end" (the first; appended last when none).
+std::vector<std::string> CleanTemplate(const std::vector<std::string>& words);
+
+// T1: the tree order of a library, used while no template is stored (by Populate and the chips alike):
+// the library, the Switch groups in the order the tree first reaches them (a group nested k times on one
+// path appears k times), "layer" when a Sound is in a Blend, "end". Never "blend" (the user may add it).
+std::vector<std::string> DefaultTrackTemplate(const SoundStore& store, const SoundLibrary& lib);
+// Per Switch group of `lib`: the most times it is nested on one path (its Switches from one up to the root).
+std::map<std::string, int> TemplateGroupRepeats(const SoundLibrary& lib);
+// The library's template: its stored one (CleanTemplate), else DefaultTrackTemplate.
+std::vector<std::string> TrackTemplateOf(const SoundStore& store, const SoundLibrary& lib);
+// True when `word` may be added to template `words` (the Add menu, AddTemplateLevel): a custom folder with
+// text; a group while `words` holds it fewer times than the tree nests it (TemplateGroupRepeats, at least
+// once); "lib", "blend", "layer" once. Never "end".
+bool CanAddTemplateLevel(const SoundLibrary& lib, const std::vector<std::string>& words, const std::string& word);
+
+// T2 / T4: a Sound's track path from template `words`: the Lands-in folder (no mark), then each level
+// before "end" that has a value for the Sound as a folder, then the values the levels after "end"
+// have, joined with `sep`, as the track that holds the sounds; nothing after "end": the last folder
+// holds them. A level with no value is skipped (a Group: the n-th level of a group takes the n-th
+// step of that group on the Switch path; Blend / Layer: outside any Blend). Empty (13-11's
+// "layer N" track) when no level gives a value. Marks: folder i = "T|<lands>|<lib>|k0,..,ki", the
+// joined track = "T|<lands>|<lib>|<folder keys>><keys after end>" (keys: "l", "g<group>:<value>",
+// "b<blend uid>", "y<layer uid>", "c<encoded text>"): the same values give the same mark (a shared track).
+std::vector<TrackStep> TemplateTrackPath(const std::vector<std::string>& words, const std::vector<SwitchStep>& path,
+                                         const BlendLayer& layer, const std::string& lands_in, const std::string& lib_uid,
+                                         const std::string& library_name, const std::string& sep = "_");
+// The path Populate makes for a Sound of `lib` (T5): its template (TrackTemplateOf) under EffectiveLandsIn
+// of the Sound, the store's separator. The second form takes the template already read (one per library).
+std::vector<TrackStep> SoundTemplatePath(const SoundStore& store, const SoundLibrary& lib, const std::string& sound_uid);
+std::vector<TrackStep> SoundTemplatePath(const SoundStore& store, const SoundLibrary& lib, const std::string& sound_uid,
+                                         const std::vector<std::string>& words);
+
+// T6: the template edits, on the library `lib_uid` of `store` (its tree order first when none is
+// stored). The result equal to the tree order is stored as none. False when nothing changed.
+// Move: the level at `from` takes the place of the one at `to`. Add: "c:<text>" (trimmed, refused
+// empty) goes first, another word before "end" (refused when CanAddTemplateLevel says no). Remove: any
+// level but "end". Reset: back to the tree order.
+bool MoveTemplateLevel(SoundStore& store, const std::string& lib_uid, int from, int to);
+bool AddTemplateLevel(SoundStore& store, const std::string& lib_uid, const std::string& word);
+bool RemoveTemplateLevel(SoundStore& store, const std::string& lib_uid, int index);
+bool ResetTrackTemplate(SoundStore& store, const std::string& lib_uid);
+
+// The Final structure preview: the tracks the library's Sounds land on, in tree order, depth-first.
+// Depth 0 = a Lands-in folder (no mark). `holds`: Sounds land on it (♪); `folder`: rows below it;
+// `sounds`: the Sound uids whose track is it or below it. Sounds whose path is empty are left out.
+// `why`: the level it comes from (MarkLevelLabel; "Lands in" for a Lands-in folder).
+struct StructureRow {
+    int                      depth = 0;
+    std::string              name;
+    std::string              mark;
+    std::string              why;
+    bool                     folder = false;
+    bool                     holds = false;
+    std::vector<std::string> sounds;
+};
+std::vector<StructureRow> TemplateStructure(const SoundStore& store, const SoundLibrary& lib);
+// The level a template mark's track comes from, as the preview says it: "library", the Switch group's
+// name, "Blend", "Layer", "your folder"; the joined track "name: <level> + <level>". "" for another mark.
+std::string MarkLevelLabel(const SoundStore& store, const std::string& mark);
+
+// Story 13-17 (N1): the name the Library gives the RAV track marked `mark`, from the store: a template
+// track = its level's value (the library's name, a Switch value, the Blend's name, the layer's name
+// -- LayerOf, "Thud02" for a repeat --, the folder's text), the joined track = its values joined by the
+// store's separator; NVK pile child = the current name of its source child
 // track (`track_name(mark)`: the name of the track carrying that mark, a GuidTrackMark here); spill
 // child k = its base's name numbered ("Heel01"; a base RAV gives no name to, 13-11's "layer N",
-// by its current name). "" = no Library name (a GuidTrackMark, an unknown mark, library or node):
-// the track keeps its name.
+// by its current name). "" = no Library name (a GuidTrackMark, an unknown mark, library, node,
+// group or value): the track keeps its name.
 std::string NameForMark(const SoundStore& store, const std::string& mark,
                         const std::function<std::string(const std::string& mark)>& track_name);
 

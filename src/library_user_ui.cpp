@@ -65,6 +65,8 @@
 #include "sound_project.h"
 #include "sound_record.h"
 #include "sound_tracks.h"
+#include "sound_tracks_plan.h"  // 13-39: the Track template
+#include "picked_gestures.h"
 #include "texture_locate.h"
 #include "timed_join.h"  // freeze audit #8
 #include "ui_flow.h"
@@ -184,6 +186,10 @@ struct State {
     bool        new_folder = false;
     std::string new_folder_node;
     char        buf[256] = {};
+    // 13-39: the Track template's Add menu, its "Your own folder..." field.
+    bool tpl_custom = false;
+    bool tpl_focus = false;
+    char tpl_buf[128] = {};
 };
 
 State     g;
@@ -2377,7 +2383,7 @@ bool PrepareFileSound(ReaProject* proj, const std::string& lib_uid, const std::s
         return false;
     }
     const std::string dest = EffectiveLandsIn(*lib, node_uid);
-    // 13-16 (B4): a Blend's layers land on their own layer tracks (SoundTrackPath); "layer N" is
+    // 13-16 (B4): a Blend's layers land on their own layer tracks (SoundTemplatePath); "layer N" is
     // left for the sounds outside any Blend, so always the first one.
     const int         layer = 1;
     MediaTrack*       folder = FolderFor(proj, store, dest);
@@ -3033,7 +3039,362 @@ void DrawLibraryFileSection()
     ui::EndSection(sec);
 }
 
+namespace {
+
+// ---- 13-39: the Track template (mockup maquette-structure-pistes-populate-v3) -------------------------------------
+
+constexpr const char kTplPayload[] = "RAV_TPL_LEVEL";
+
+// The Tracks section's gestures run once it is drawn (picked_gestures.h): they replace the store it reads.
+PickedGestures g_tracks_picks;
+
+// One template edit: one undo point "RAV: Set track template" and its toast (T6).
+void PickTemplateEdit(std::function<bool(SoundStore&)> edit)
+{
+    g_tracks_picks.Pick([edit]() { Gesture("Set track template", edit); });
+}
+
+// A chip's name (T7: names only).
+std::string LevelChipName(const SoundStore& st, const SoundLibrary& lib, const TemplateLevel& l)
+{
+    switch (l.kind) {
+    case LevelKind::Library: return lib.name.empty() ? std::string("(unnamed)") : lib.name;  // as its track (LevelValue)
+    case LevelKind::Group: {
+        const SwitchGroup* grp = FindGroup(st, l.arg);
+        return grp ? (grp->rav_owned ? "RAV - " + grp->name : grp->name) : std::string("(deleted group)");
+    }
+    case LevelKind::Blend: return "Blend";
+    case LevelKind::Layer: return "Layer";
+    case LevelKind::Custom: return l.arg;
+    case LevelKind::End: break;
+    }
+    return "\xE2\x8A\xA3 name";  // ⊣
+}
+
+const char* LevelChipTip(LevelKind k)
+{
+    switch (k) {
+    case LevelKind::Library: return "Library name";
+    case LevelKind::Group: return "Switch values";
+    case LevelKind::Blend: return "Blend name";
+    case LevelKind::Layer: return "Blend layer name";
+    case LevelKind::Custom: return "Your folder";
+    case LevelKind::End: break;
+    }
+    return "Folders end here: the levels after it join in the track name";
+}
+
+// The width a chip takes (its name ellipsized past `max_w`).
+float TemplateChipWidth(const std::string& name, bool has_x, float max_w)
+{
+    const float w = ui::Dp(6.0f) + ImGui::CalcTextSize(name.c_str()).x + (has_x ? ui::Dp(4.0f + 18.0f) : ui::Dp(2.0f)) +
+                    ui::Dp(4.0f);
+    return std::max(ui::Dp(24.0f), std::min(w, max_w));
+}
+
+// One level chip: dragged onto another it takes that place (an accent line shows where), × (on hover, its room
+// always kept) removes it. `remove` / `move_from` + `move_to` say what the mouse did.
+void DrawTemplateChip(int i, const std::string& name, LevelKind kind, bool in_name, float w, int* remove,
+                      int* move_from, int* move_to)
+{
+    const bool  has_x = kind != LevelKind::End;
+    const float h = ui::Dp(26.0f);
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    char        id[32];
+    std::snprintf(id, sizeof id, "##tplchip%d", i);
+    const bool   pressed = ImGui::InvisibleButton(id, ImVec2(w, h));
+    const bool   hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+    ImDrawList*  dl = ImGui::GetWindowDrawList();
+    const ImVec2 q(p.x + w, p.y + h);
+    const ImGuiPayload* drag = ImGui::GetDragDropPayload();
+    const bool          dragged = drag && drag->IsDataType(kTplPayload) && drag->DataSize == sizeof(int) &&
+                         *static_cast<const int*>(drag->Data) == i;
+    const ImU32 fill = kind == LevelKind::End || in_name ? 0 : ui::kRaised;
+    if (fill) dl->AddRectFilled(p, q, fill, ui::kRadiusSm);
+    if (kind == LevelKind::End) ui::DashedRect(dl, p, q, ui::kWarn, ui::kRadiusSm);
+    else if (kind == LevelKind::Custom) ui::DashedRect(dl, p, q, ui::kAccentLine, ui::kRadiusSm);
+    else if (in_name) ui::DashedRect(dl, p, q, ui::kStrokeStrong, ui::kRadiusSm, 2.0f, 2.0f);
+    else dl->AddRect(p, q, ui::kStrokeStrong, ui::kRadiusSm);
+    ImU32 ink = kind == LevelKind::End ? ui::kWarn : ui::kText;
+    if (dragged) ink = (ink & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 0x66);
+    const float  xs = ui::Dp(18.0f);
+    const ImVec2 x0(q.x - ui::Dp(4.0f) - xs, p.y + (h - xs) * 0.5f), x1(x0.x + xs, x0.y + xs);
+    const float  text_end = has_x ? x0.x - ui::Dp(4.0f) : q.x - ui::Dp(4.0f);
+    ui::EllipsisText(dl, ImVec2(p.x + ui::Dp(6.0f), p.y + (h - ImGui::GetFontSize()) * 0.5f), text_end, ink, name);
+    const ImVec2 m = ImGui::GetIO().MousePos;
+    const bool   in_x = has_x && hovered && m.x >= x0.x && m.x < x1.x && m.y >= x0.y && m.y < x1.y;
+    if (has_x && hovered && !drag) {  // × only on hover; its room is always there (nothing moves)
+        if (in_x) dl->AddRectFilled(x0, x1, ui::kHover, ui::Dp(4.0f));
+        const char*  glyph = "\xC3\x97";  // ×
+        const ImVec2 gs = ImGui::CalcTextSize(glyph);
+        dl->AddText(ImVec2(x0.x + (xs - gs.x) * 0.5f, x0.y + (xs - gs.y) * 0.5f), in_x ? ui::kText : ui::kMuted, glyph);
+    }
+    if (hovered && !drag) ui::ItemTipText(in_x ? "Remove this level" : LevelChipTip(kind));
+    const float moved2 = ImGui::GetIO().MouseDragMaxDistanceSqr[0];
+    if (pressed && in_x && moved2 < ui::Dp(4.0f) * ui::Dp(4.0f)) *remove = i;
+    if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
+        ImGui::SetDragDropPayload(kTplPayload, &i, sizeof(i));
+        ImGui::TextUnformatted(name.c_str());
+        ImGui::EndDragDropSource();
+    }
+    if (ImGui::BeginDragDropTarget()) {
+        const ImGuiPayload* pl = ImGui::AcceptDragDropPayload(
+            kTplPayload, ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect);
+        if (pl && pl->DataSize == sizeof(int)) {
+            const int from = *static_cast<const int*>(pl->Data);
+            if (from != i) {
+                // It takes this chip's place: before it from the right, after it from the left.
+                const float lx = from > i ? p.x - ui::Dp(3.0f) : q.x + ui::Dp(2.0f);
+                dl->AddLine(ImVec2(lx, p.y), ImVec2(lx, q.y), ui::kAccent, ui::Dp(2.0f));
+                if (pl->IsDelivery()) {
+                    *move_from = from;
+                    *move_to = i;
+                }
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
+}
+
+// A separator glyph between chips (› between folders, + between the name's levels), on the chip's line.
+void DrawChipSep(const char* glyph)
+{
+    const float h = ui::Dp(26.0f);
+    const ImVec2 s = ImGui::CalcTextSize(glyph);
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::Dummy(ImVec2(s.x, h));
+    ImGui::GetWindowDrawList()->AddText(ImVec2(p.x, p.y + (h - s.y) * 0.5f), ui::kFaint, glyph);
+}
+
+// The Template row: the chips in a wrapping box, then "+ Add level ▾".
+void DrawTemplateRow(const SoundStore& st, const SoundLibrary& lib)
+{
+    const std::vector<std::string> words = TrackTemplateOf(st, lib);
+    int                            end = static_cast<int>(words.size());
+    for (size_t i = 0; i < words.size(); ++i)
+        if (words[i] == "end") end = static_cast<int>(i);
+    ui::LabelRow("Template", ui::Dp(120.0f));
+    ui::Card box;
+    ui::BeginCard(box, ui::Dp(4.0f));
+    int         remove = -1, from = -1, to = -1;
+    const float spacing = ImGui::GetStyle().ItemSpacing.x;
+    const float full_w = std::max(ui::Dp(40.0f), ImGui::GetContentRegionAvail().x);  // a chip wider is ellipsized
+    for (int i = 0; i < static_cast<int>(words.size()); ++i) {
+        TemplateLevel l;
+        if (!ParseTemplateLevel(words[static_cast<size_t>(i)], &l)) continue;
+        const std::string name = LevelChipName(st, lib, l);
+        const char*       sep = i == 0 ? nullptr : i <= end ? "\xE2\x80\xBA" : i > end + 1 ? "+" : nullptr;  // › / +
+        const float       cw = TemplateChipWidth(name, l.kind != LevelKind::End, full_w);
+        const float       need = (sep ? ImGui::CalcTextSize(sep).x + spacing : 0.0f) + cw;
+        if (i > 0) ui::SameLineIfFits(need);
+        if (sep) {
+            DrawChipSep(sep);
+            ImGui::SameLine();
+        }
+        DrawTemplateChip(i, name, l.kind, i > end, cw, &remove, &from, &to);
+    }
+    const char* add_label = "+ Add level \xE2\x96\xBE##tpladd";  // ▾
+    ui::SameLineIfFits(ui::ButtonWidth(add_label));
+    const ImVec2 add_at = ImGui::GetCursorScreenPos();
+    ImGui::SetCursorScreenPos(ImVec2(add_at.x, add_at.y + (ui::Dp(26.0f) - ui::ControlH()) * 0.5f));
+    if (ui::SolidButton(add_label)) {
+        g.tpl_custom = false;
+        ImGui::OpenPopup("##tpladdpop");
+    }
+    ui::EndCard(box, ui::kBg, ui::kStroke);
+    const std::string lib_uid = lib.uid;
+    if (remove >= 0) PickTemplateEdit([lib_uid, remove](SoundStore& s) { return RemoveTemplateLevel(s, lib_uid, remove); });
+    if (from >= 0 && to >= 0)
+        PickTemplateEdit([lib_uid, from, to](SoundStore& s) { return MoveTemplateLevel(s, lib_uid, from, to); });
+
+    if (ui::BeginMenuPopup("##tpladdpop")) {
+        auto item = [&](const std::string& label, const char* hint, const std::string& word) {
+            const bool in_use = !CanAddTemplateLevel(lib, words, word);  // a group: again while the tree nests it more
+            if (ImGui::MenuItem(label.c_str(), in_use ? "in use" : hint, false, !in_use))
+                PickTemplateEdit([lib_uid, word](SoundStore& s) { return AddTemplateLevel(s, lib_uid, word); });
+        };
+        ui::MenuCaption("FROM THIS LIBRARY");
+        item(lib.name.empty() ? std::string("(unnamed)") : lib.name, "library name", "lib");
+        std::set<std::string> listed;
+        for (const std::string& w : DefaultTrackTemplate(st, lib)) {
+            TemplateLevel l;
+            if (ParseTemplateLevel(w, &l) && l.kind == LevelKind::Group && listed.insert(w).second)
+                item(LevelChipName(st, lib, l), "Switch values", w);
+        }
+        item("Blend", "Blend name", "blend");
+        item("Layer", "Blend layer name", "layer");
+        ui::MenuSeparator();
+        if (g.tpl_custom) {
+            const float okw = ui::ButtonWidth("Add##tplcok");
+            const float fw = std::max(ui::Dp(120.0f), ImGui::GetContentRegionAvail().x - okw - ImGui::GetStyle().ItemSpacing.x);
+            if (g.tpl_focus) {
+                ImGui::SetKeyboardFocusHere();
+                g.tpl_focus = false;
+            }
+            const bool enter =
+                ui::TextField("##tplcustom", "Folder name", g.tpl_buf, sizeof g.tpl_buf, fw, ImGuiInputTextFlags_EnterReturnsTrue);
+            ImGui::SameLine();
+            std::string text = g.tpl_buf;
+            const size_t a = text.find_first_not_of(" \t"), b = text.find_last_not_of(" \t");
+            text = a == std::string::npos ? std::string() : text.substr(a, b - a + 1);
+            ImGui::BeginDisabled(text.empty());  // an empty folder name is refused
+            const bool ok = ui::SolidButton("Add##tplcok");
+            ImGui::EndDisabled();
+            if ((enter || ok) && !text.empty()) {
+                const std::string word = "c:" + text;
+                PickTemplateEdit([lib_uid, word](SoundStore& s) { return AddTemplateLevel(s, lib_uid, word); });
+                g.tpl_custom = false;
+                ImGui::CloseCurrentPopup();
+            }
+        } else {
+            ImGui::PushItemFlag(ImGuiItemFlags_AutoClosePopups, false);
+            if (ImGui::MenuItem("+ Your own folder...", "fixed name")) {
+                g.tpl_custom = true;
+                g.tpl_focus = true;
+                g.tpl_buf[0] = '\0';
+            }
+            ImGui::PopItemFlag();
+        }
+        ui::MenuSeparator();
+        if (ImGui::MenuItem("Reset to the tree order", nullptr, false, !lib.track_levels.empty()))
+            PickTemplateEdit([lib_uid](SoundStore& s) { return ResetTrackTemplate(s, lib_uid); });
+        ui::EndMenuPopup();
+    }
+}
+
+// The project's RAV track marks and folder track names, read again when the project changes.
+struct ProjectTracksSeen {
+    ReaProject*           proj = nullptr;
+    int                   state = -1;
+    int                   count = -1;
+    std::set<std::string> marks;
+    std::set<std::string> folders;
+};
+
+const ProjectTracksSeen& SeenProjectTracks()
+{
+    static ProjectTracksSeen seen;
+    ReaProject*              proj = EnumProjects(-1, nullptr, 0);
+    const int                st = GetProjectStateChangeCount(nullptr), count = CountTracks(nullptr);
+    if (seen.proj == proj && seen.state == st && seen.count == count) return seen;
+    seen.proj = proj;
+    seen.state = st;
+    seen.count = count;
+    seen.marks.clear();
+    seen.folders.clear();
+    for (int i = 0, c = CountTracks(nullptr); i < c; ++i) {
+        MediaTrack* t = GetTrack(nullptr, i);
+        if (!t) continue;
+        seen.marks.insert(TrackMarkOf(t));
+        if (GetMediaTrackInfo_Value(t, "I_FOLDERDEPTH") >= 1.0) seen.folders.insert(TrackName(t));
+    }
+    return seen;
+}
+
+// The Final structure: the tracks the library's sounds land on (existing ones marked ●, those that hold sounds
+// ♪), the rows of the node selected in the tree lit (`node` "" or the root: none).
+// The preview's rows and which are lit, computed again only when the store, the library or the node changes.
+struct StructureSeen {
+    ReaProject*               proj = nullptr;
+    uint64_t                  gen = 0;
+    bool                      valid = false;
+    std::string               lib, node;
+    std::vector<StructureRow> rows;
+    std::vector<bool>         lit;
+};
+
+const StructureSeen& SeenStructure(const SoundStore& st, const SoundLibrary& lib, const std::string& node)
+{
+    static StructureSeen seen;
+    ReaProject*          proj = EnumProjects(-1, nullptr, 0);
+    const uint64_t       gen = SoundStoreGeneration();
+    if (seen.valid && seen.proj == proj && seen.gen == gen && seen.lib == lib.uid && seen.node == node) return seen;
+    seen.valid = true;
+    seen.proj = proj;
+    seen.gen = gen;
+    seen.lib = lib.uid;
+    seen.node = node;
+    seen.rows = TemplateStructure(st, lib);
+    seen.lit.assign(seen.rows.size(), false);
+    if (!node.empty() && node != lib.root)
+        for (size_t i = 0; i < seen.rows.size(); ++i)
+            for (const std::string& s : seen.rows[i].sounds)
+                if (IsInSubtree(lib, s, node)) {
+                    seen.lit[i] = true;
+                    break;
+                }
+    return seen;
+}
+
+void DrawFinalStructure(const SoundStore& st, const SoundLibrary& lib, const std::string& node)
+{
+    const StructureSeen&             cached = SeenStructure(st, lib, node);
+    const std::vector<StructureRow>& rows = cached.rows;
+    ImGui::Dummy(ImVec2(0.0f, ui::Dp(2.0f)));
+    ImGui::PushFont(ui::FontSmall());
+    ui::ToneText("FINAL STRUCTURE", ui::kMuted);
+    ImGui::PopFont();
+    const ProjectTracksSeen& seen = SeenProjectTracks();
+    ui::Card                 box;
+    ui::BeginCard(box, ui::Dp(4.0f));
+    int         total = 0, folders = 0, holders = 0;
+    const float rh = ui::Dp(22.0f);
+    for (size_t i = 0; i < rows.size(); ++i) {
+        const StructureRow& r = rows[i];
+        ++total;
+        if (r.folder) ++folders;
+        if (r.holds) ++holders;
+        const bool lit = cached.lit[i];
+        const bool   exists = r.mark.empty() ? seen.folders.count(r.name) > 0 : seen.marks.count(r.mark) > 0;
+        const float  w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+        const ImVec2 a = ImGui::GetCursorScreenPos(), b(a.x + w, a.y + rh);
+        ImGui::PushID(static_cast<int>(i));
+        ImGui::Dummy(ImVec2(w, rh));
+        ImGui::PopID();
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        if (lit) ui::RowBackground(dl, a, b, ui::kRowLit);
+        float       x = a.x + ui::Dp(6.0f) + static_cast<float>(r.depth) * ui::Dp(14.0f);
+        const float ty = a.y + (rh - ImGui::GetFontSize()) * 0.5f;
+        if (r.folder) {
+            ImGui::PushFont(ui::FontSmall());
+            dl->AddText(ImVec2(x, a.y + (rh - ImGui::GetFontSize()) * 0.5f), ui::kFaint, "\xE2\x96\xBE");  // ▾
+            ImGui::PopFont();
+        }
+        x += ui::Dp(16.0f);
+        dl->AddRectFilled(ImVec2(x, a.y + (rh - ui::Dp(14.0f)) * 0.5f), ImVec2(x + ui::Dp(4.0f), a.y + (rh + ui::Dp(14.0f)) * 0.5f),
+                          ui::kStrokeStrong, ui::Dp(2.0f));
+        x += ui::Dp(10.0f);
+        const std::string name = r.name + (r.holds ? " \xE2\x99\xAA" : "");  // ♪
+        const float       name_max = std::min(b.x - ui::Dp(6.0f), x + (b.x - x) * 0.62f);
+        if (r.folder) ImGui::PushFont(ui::FontSemibold());
+        const float name_w = std::min(ImGui::CalcTextSize(name.c_str()).x, name_max - x);
+        ui::EllipsisTextTip(dl, ImVec2(x, ty), name_max, r.depth == 0 ? ui::kMuted : ui::kText, name);
+        if (r.folder) ImGui::PopFont();
+        x += name_w + ui::Dp(6.0f);
+        ImGui::PushFont(ui::FontSmall());
+        const float sy = a.y + (rh - ImGui::GetFontSize()) * 0.5f;
+        if (exists) {
+            dl->AddText(ImVec2(x, sy), ui::kOk, "\xE2\x97\x8F");  // ●
+            x += ImGui::CalcTextSize("\xE2\x97\x8F").x + ui::Dp(6.0f);
+        }
+        const float why_w = ImGui::CalcTextSize(r.why.c_str()).x;
+        const float wx = std::max(x, b.x - ui::Dp(6.0f) - why_w);
+        if (!r.why.empty() && wx < b.x - ui::Dp(12.0f)) ui::EllipsisText(dl, ImVec2(wx, sy), b.x - ui::Dp(6.0f), ui::kFaint, r.why);
+        ImGui::PopFont();
+    }
+    if (rows.empty()) ui::ToneText("No track: the sounds keep their own tracks", ui::kFaint);
+    ui::EndCard(box, ui::kBg, ui::kStroke);
+    char sum[128];
+    std::snprintf(sum, sizeof sum, "%d track%s \xC2\xB7 %d folder%s \xC2\xB7 sounds land on %d", total, total == 1 ? "" : "s",
+                  folders, folders == 1 ? "" : "s", holders);
+    ui::ToneText(sum, ui::kMuted, true);
+}
+
+}  // namespace
+
 // 13-77a: the Tracks section: Lands in, now on every library (the Attached ones keep their sources' tracks).
+// 13-39: on the root, the library's Track template and the Final structure; on another node, its Lands in and
+// the Final structure with its tracks lit.
 void DrawLibraryNodeTracksSection()
 {
     const SoundStore&   store = GetSoundStore(nullptr);
@@ -3045,8 +3406,8 @@ void DrawLibraryNodeTracksSection()
     if (!lib || !n || lib->attached) return;
     ui::Section sec;
     if (ui::BeginSection(sec, "Tracks", ImTextureID(), false)) {
+        const bool is_root = n->uid == lib->root || n->parent.empty();
         {
-            const bool        is_root = n->uid == lib->root || n->parent.empty();
             const std::string inherit =
                 is_root ? std::string() : "Inherit (" + EffectiveLandsIn(*lib, n->parent) + ")";
             std::string shown = n->lands_in.empty() ? (is_root ? std::string(kDefaultLandsIn) : inherit) : n->lands_in;
@@ -3090,7 +3451,7 @@ void DrawLibraryNodeTracksSection()
                 }
                 ui::EndComboStyled();
             }
-            ui::ItemTipText("The folder track its files are placed under (one layer track per Blend layer)");
+            ui::ItemTipText("The folder track its sounds' tracks are made under (the Track template starts there)");
             if (g.new_folder && g.new_folder_node == n->uid) {
                 const float okw = ui::ButtonWidth("OK");
                 bool        beside = true;
@@ -3111,17 +3472,22 @@ void DrawLibraryNodeTracksSection()
                 const std::string lib_uid = lib->uid, nu = n->uid;
                 std::string       value = pick;
                 if (is_root && value == kDefaultLandsIn) value.clear();
-                Gesture("Set Lands in", [&](SoundStore& s) {
-                    SoundLibrary* l = FindLibrary(s, lib_uid);
-                    SoundNode*    x = l ? FindNode(*l, nu) : nullptr;
-                    if (!x || x->lands_in == value) return false;
-                    x->lands_in = value;
-                    return true;
+                g_tracks_picks.Pick([lib_uid, nu, value]() {
+                    Gesture("Set Lands in", [&](SoundStore& s) {
+                        SoundLibrary* l = FindLibrary(s, lib_uid);
+                        SoundNode*    x = l ? FindNode(*l, nu) : nullptr;
+                        if (!x || x->lands_in == value) return false;
+                        x->lands_in = value;
+                        return true;
+                    });
                 });
             }
         }
+        if (is_root) DrawTemplateRow(store, *lib);  // 13-39
+        DrawFinalStructure(store, *lib, n->uid);
     }
     ui::EndSection(sec);
+    g_tracks_picks.Run();  // after the widgets: the gesture replaces the store they read
 }
 
 void InitLibraryUser(reaper_plugin_info_t* rec)

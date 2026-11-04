@@ -3446,14 +3446,15 @@ void DrawLibraryNodeTracksSection()
             const std::string inherit =
                 is_root ? std::string() : "Inherit (" + EffectiveLandsIn(*lib, n->parent) + ")";
             std::string shown = n->lands_in.empty() ? (is_root ? std::string(kDefaultLandsIn) : inherit) : n->lands_in;
-            // The choices: RAV Library, the project's folder tracks, the destinations used in the store.
+            // The choices: RAV Library, every project track (Antho 2026-11-04: a track picked becomes a folder at
+            // Populate), the destinations used in the store.
             std::vector<std::string> names = {kDefaultLandsIn};
             auto add = [&](const std::string& s) {
                 if (!s.empty() && std::find(names.begin(), names.end(), s) == names.end()) names.push_back(s);
             };
             for (int i = 0, c = CountTracks(nullptr); i < c; ++i) {
                 MediaTrack* t = GetTrack(nullptr, i);
-                if (t && GetMediaTrackInfo_Value(t, "I_FOLDERDEPTH") >= 1.0) add(TrackName(t));
+                if (t) add(TrackName(t));
             }
             for (const SoundLibrary& l : store.libraries)
                 for (const SoundNode& x : l.nodes) add(x.lands_in);

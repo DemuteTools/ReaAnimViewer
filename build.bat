@@ -85,6 +85,12 @@ if "%CLEAN%"=="1" if exist "%BUILD_DIR%\" (
     rmdir /S /Q "%BUILD_DIR%"
 )
 
+rem The project folder may have been moved or renamed since the last build:
+rem CMake records absolute paths in its cache and then refuses to configure.
+rem Such a build folder is deleted and rebuilt from scratch.
+call :reset_if_moved "%BUILD_DIR%" "%CD%"
+call :reset_if_moved "build\host-tests" "%CD%\tests"
+
 echo [1/3] Configuring...
 if "%DEFINE%"=="" (
     cmake -B "%BUILD_DIR%" -G "Visual Studio 17 2022" -A x64 "-DRAV_VERSION=%VERSION_ARG%"
@@ -183,3 +189,24 @@ set "RESULT=0"
 echo.
 if "%PAUSE_AT_END%"=="1" pause
 exit /b %RESULT%
+
+rem ----------------------------------------------------------------------------
+rem  :reset_if_moved <build folder> <source folder>
+rem  Deletes the build folder when its CMakeCache.txt was made from another
+rem  source folder (the project was moved). CMake writes paths with "/".
+rem ----------------------------------------------------------------------------
+:reset_if_moved
+set "RIM_DIR=%~1"
+set "RIM_SRC=%~2"
+set "RIM_OLD="
+if "%RIM_DIR%"=="" goto :eof
+if not exist "%RIM_DIR%\CMakeCache.txt" goto :eof
+for /f "usebackq tokens=1,* delims==" %%A in (`findstr /B /C:"CMAKE_HOME_DIRECTORY:INTERNAL=" "%RIM_DIR%\CMakeCache.txt"`) do set "RIM_OLD=%%B"
+set "RIM_SRC=%RIM_SRC:\=/%"
+if /I "%RIM_OLD%"=="%RIM_SRC%" goto :eof
+echo [moved] %RIM_DIR%\ was built from another folder:
+echo         "%RIM_OLD%"
+echo         Deleting it for a full rebuild (a few minutes)...
+rmdir /S /Q "%RIM_DIR%"
+echo.
+goto :eof

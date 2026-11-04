@@ -423,12 +423,18 @@ MediaTrack* EnsureTrackPath(ReaProject* proj, const std::vector<TrackStep>& path
         }
     }
     if (!cur) {
-        // The top level: a folder track named so (FolderFor's step 2), else a new folder at the bottom.
-        const int n = CountTracks(proj);
+        // The top level: a folder track named so (FolderFor's step 2), else any track named so (13-39 mockup v1
+        // answer 6: a plain track picked as Lands in becomes a folder at its first child, AddChildTrack), else a
+        // new folder at the bottom.
+        const int   n = CountTracks(proj);
+        MediaTrack* plain = nullptr;
         for (int i = 0; i < n && !cur; ++i) {
             MediaTrack* t = GetTrack(proj, i);
-            if (t && DepthOf(t) >= 1.0 && TrackName(t) == path.front().name) cur = t;
+            if (!t || TrackName(t) != path.front().name) continue;
+            if (DepthOf(t) >= 1.0) cur = t;
+            else if (!plain) plain = t;
         }
+        if (!cur) cur = plain;
         if (!cur) {
             cur = AddTrackAt(proj, n, path.front().name);
             if (!cur) return fail(path.front().name);

@@ -2138,12 +2138,17 @@ MediaTrack* FolderFor(ReaProject* proj, const SoundStore& store, const std::stri
                 MediaTrack* par = tr ? f_parent(tr) : nullptr;
                 if (par && GetMediaTrackInfo_Value(par, "I_FOLDERDEPTH") >= 1.0) return par;
             }
-    // 2. A folder track named exactly so.
-    const int n = CountTracks(proj);
+    // 2. A folder track named exactly so, else any track named so: it becomes a folder at its first child
+    // (AddChildTrack), as EnsureTrackPath does.
+    const int   n = CountTracks(proj);
+    MediaTrack* plain = nullptr;
     for (int i = 0; i < n; ++i) {
         MediaTrack* t = GetTrack(proj, i);
-        if (t && GetMediaTrackInfo_Value(t, "I_FOLDERDEPTH") >= 1.0 && TrackName(t) == dest) return t;
+        if (!t || TrackName(t) != dest) continue;
+        if (GetMediaTrackInfo_Value(t, "I_FOLDERDEPTH") >= 1.0) return t;
+        if (!plain) plain = t;
     }
+    if (plain) return plain;
     // 3. A new folder at the bottom.
     MediaTrack* f = AddTrackAt(proj, n, dest);
     if (f) f_set_track(f, "I_FOLDERDEPTH", 1.0);
@@ -3281,6 +3286,15 @@ void DrawOverlapsRow(const SoundLibrary& lib)
             });
         });
     }
+    // Antho 2026-11-04: a "?" explains the two choices.
+    ui::SameLineIfFits(ui::Dp(18.0f));
+    ui::HelpMark("##tplovlhelp",
+                 "When two sounds of one track overlap in time:\n\n"
+                 "Inside the track: the track becomes a folder; its sounds go on tracks inside it "
+                 "(Heel > Heel01, Heel02).\n\n"
+                 "Beside it: the track keeps its sounds; each extra overlapping sound goes on a track "
+                 "right after it (Heel, Heel01, Heel02).\n\n"
+                 "Changing it moves nothing already placed: the next overlaps follow it.");
 }
 
 // The project's RAV track marks and folder track names, read again when the project changes.
@@ -3307,7 +3321,7 @@ const ProjectTracksSeen& SeenProjectTracks()
         MediaTrack* t = GetTrack(nullptr, i);
         if (!t) continue;
         seen.marks.insert(TrackMarkOf(t));
-        if (GetMediaTrackInfo_Value(t, "I_FOLDERDEPTH") >= 1.0) seen.folders.insert(TrackName(t));
+        seen.folders.insert(TrackName(t));  // any track named so is taken as the Lands-in folder (EnsureTrackPath)
     }
     return seen;
 }

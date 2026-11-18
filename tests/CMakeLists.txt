@@ -171,6 +171,14 @@ add_executable(body_move_test body_move_test.cpp ${RAV_AUTO_SRCS} ../src/motion_
                ../src/sound_place_plan.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/sound_zones.cpp)
 target_include_directories(body_move_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME body_move COMMAND body_move_test)
+# Story 10-12e-3 -- Start & Stop on every motion type, Drag / Spin Peak, the Marker at helper.
+add_executable(start_stop_test start_stop_test.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/motion_whoosh.cpp
+               ../src/bone_events.cpp ../src/rule_record.cpp ../src/event_list.cpp ../src/tagging_signal.cpp
+               ../src/sound_assign.cpp ../src/sound_auto_assign.cpp ../src/sound_populate_plan.cpp ../src/sound_switch.cpp
+               ../src/sound_draw.cpp ../src/sound_place_plan.cpp ../src/sound_entries.cpp ../src/sound_record.cpp
+               ../src/sound_zones.cpp)
+target_include_directories(start_stop_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME start_stop COMMAND start_stop_test)
 # Story 10-9e -- foot taps and drags (src/foot_taps.h), and their Tap / Drag rows through Detect.
 add_executable(foot_taps_test foot_taps_test.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/motion_whoosh.cpp ../src/bone_events.cpp
                ../src/rule_record.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)

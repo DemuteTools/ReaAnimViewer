@@ -116,18 +116,19 @@ Found Run(const std::vector<BoneTrack>& tracks, bool looping = false, double sen
 
 void TestWords()
 {
-    // Body's sideless type: two blocks, side B, "Spin" and "Spin End".
+    // Body's sideless type: two blocks, side B, "Spin" and "Spin Stop" (story 10-12e-3: Start & Stop, its default;
+    // "Spin End" before).
     CHECK(AutoCategoryOf(AutoType::Spin) == AutoCategory::Body);
     CHECK(std::string(AutoTypeLabel(AutoType::Spin)) == "Spin" && std::string(AutoTypeRow(AutoType::Spin).sound_word) == "spin");
     CHECK(AutoKindSideless(AutoKind::Spin) && AutoKindSideless(AutoKind::SpinEnd));
     CHECK(std::string(AutoKindSides(AutoKind::Spin)) == "B");
     CHECK(std::string(AutoKindWord(AutoKind::Spin)) == "spin" && std::string(AutoKindWord(AutoKind::SpinEnd)) == "spin_end");
-    CHECK(AutoMarkerName(AutoKind::Spin, 'L') == "Spin" && AutoMarkerName(AutoKind::SpinEnd, 'R') == "Spin End");
+    CHECK(AutoMarkerName(AutoKind::Spin, 'L') == "Spin" && AutoMarkerName(AutoKind::SpinEnd, 'R') == "Spin Stop");
     const std::vector<Block> b = SpinBlocks();
     CHECK(b.size() == 2);
     if (b.size() == 2) {
         CHECK(b[0].auto_type == "spin" && b[0].auto_side == 'B' && b[0].marker == "Spin");
-        CHECK(b[1].auto_type == "spin_end" && b[1].auto_side == 'B' && b[1].marker == "Spin End");
+        CHECK(b[1].auto_type == "spin_end" && b[1].auto_side == 'B' && b[1].marker == "Spin Stop");
     }
     CHECK(AutoKindRow(AutoKind::Spin).degrees && AutoKindRow(AutoKind::SpinEnd).degrees);
     // The sensitivity divides the sweep only.
@@ -212,6 +213,31 @@ void TestTurns()
     }
 }
 
+// Story 10-12e-3: Marker at Peak / Start / Start & Stop (the default: Spin and Spin Stop, as
+// before). Peak: one Spin where the hips turn fastest (an eased turn: its middle); Start: Spin only.
+void TestModes()
+{
+    const std::vector<BoneTrack> rt = TurningRig(Turn(0.5, 1.0, 180.0), 2.5);
+    auto run = [&](AutoMarkAt m) {
+        AutoSettings s;
+        s.type[static_cast<int>(AutoType::Spin)].on = true;
+        SetAutoMarkAt(AutoType::Spin, m, s);
+        std::vector<std::pair<std::string, double>> out;
+        for (const Event& e : DetectAutoEvents(AutoBlocks(s), rt, nullptr, false)) out.push_back({e.marker, e.time_s});
+        return out;
+    };
+    const auto both = run(AutoMarkAt::StartStop), start = run(AutoMarkAt::Start), peak = run(AutoMarkAt::Peak);
+    const Found f = Run(rt);
+    CHECK(both.size() == 2 && start.size() == 1 && peak.size() == 1 && f.start.size() == 1 && f.end.size() == 1);
+    if (both.size() == 2 && start.size() == 1 && peak.size() == 1 && f.start.size() == 1 && f.end.size() == 1) {
+        CHECK(both[0].first == "Spin" && both[0].second == f.start[0] && both[1].first == "Spin Stop" &&
+              both[1].second == f.end[0]);
+        CHECK(start[0].first == "Spin" && start[0].second == f.start[0]);
+        CHECK(peak[0].first == "Spin" && peak[0].second > f.start[0] && peak[0].second < f.end[0]);
+        CHECK(std::fabs(peak[0].second - 1.0) < 0.05);  // the eased turn's fastest point
+    }
+}
+
 void TestLoop()
 {
     // A loop turning 90 deg per cycle (one turn over [1, 2] of 3 s): its heading jumps back at
@@ -280,6 +306,7 @@ int main()
 {
     TestWords();
     TestTurns();
+    TestModes();
     TestLoop();
     TestMissing();
     TestLanes();

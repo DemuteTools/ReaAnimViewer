@@ -4115,7 +4115,7 @@ int CompactRowCount(AutoType t, bool split, size_t n_rows)
     if (t == AutoType::Step) ++n;
     if (row.part_split) ++n;
     if (t == AutoType::Slide || t == AutoType::Pivot) ++n;
-    if (row.start_option) ++n;
+    if (!AutoMarkAtOptions(t).empty()) ++n;  // story 10-12e-3: the Marker at row
     if (t == AutoType::HandPivot) ++n;
     return n;
 }
@@ -4327,41 +4327,50 @@ void DrawStripTypeBody(const TaggingModel& m, const ItemRules& rules, AutoType t
                         "holds longest.");
         }
     }
-    if (row.start_option && t == AutoType::Punch) {
-        // Story 10-9o: a punch's marker where the arm stops (the default), at its fastest, or
-        // where it starts.
-        static const char* const kPunchModes[] = {"Stop", "Peak", "Start"};
-        ui::LabelRow("Marker at", ui::Dp(90.0f), lcol);
-        int               sel = g_auto_ui.at_start[ti] ? 2 : g_auto_ui.punch_peak ? 1 : 0;
-        const std::string id = std::string("##startmode") + std::to_string(ti);
-        if (ui::Segmented(id.c_str(), kPunchModes, 3, &sel)) {
-            g_auto_ui.at_start[ti] = sel == 2;
-            g_auto_ui.punch_peak = sel == 1;
+    // Story 10-12e-3: one "Marker at" component for every card: the options its type row offers
+    // (AutoMarkAtOptions: Stop for Punch, Peak / Start, Start & Stop), in a fixed order.
+    if (const std::vector<AutoMarkAt> opts = AutoMarkAtOptions(t); !opts.empty()) {
+        const char* labels[kAutoMarkAtCount] = {};
+        std::string tip;
+        int         sel = 0;
+        const AutoMarkAt cur = AutoMarkAtOf(t, g_auto_ui);
+        const bool       blow = AutoTypeRow(t).stop_mark;  // Punch: a blow's words
+        // The marker the Stop names: the first Start kind the current settings make (Slide Heel in
+        // Each part).
+        std::string word = AutoKindRow(AutoKindsOf(t).front()).marker;
+        {
+            AutoSettings only = g_auto_ui;
+            for (int i = 0; i < kAutoTypeCount; ++i) only.type[i].on = i == ti;
+            SetAutoMarkAt(t, AutoMarkAt::StartStop, only);
+            AutoKind k;
+            const std::vector<Block> made = AutoBlocks(only);
+            if (!made.empty() && AutoBlockKind(made.front(), &k, nullptr)) word = AutoKindRow(k).marker;
         }
-        ui::ItemTip("Stop: the marker where the arm stops (full extension, or the contact).\n"
-                    "Peak: where the hand is fastest (a whoosh).\nStart: where the motion starts.");
-    } else if (row.start_option && row.stop_option) {
-        // Story 10-12e: Peak / Start / Start & Stop (a type row's `stop_option`, any category):
-        // Start & Stop adds "<Type> Stop" where the motion ends, a sound of its own.
-        static const char* const kStopModes[] = {"Peak", "Start", "Start & Stop"};
-        ui::LabelRow("Marker at", ui::Dp(90.0f), lcol);
-        int               sel = !g_auto_ui.at_start[ti] ? 0 : g_auto_ui.with_stop[ti] ? 2 : 1;
-        const std::string id = std::string("##startmode") + std::to_string(ti);
-        if (ui::Segmented(id.c_str(), kStopModes, 3, &sel)) {
-            g_auto_ui.at_start[ti] = sel >= 1;
-            g_auto_ui.with_stop[ti] = sel == 2;
+        for (size_t i = 0; i < opts.size(); ++i) {
+            labels[i] = AutoMarkAtLabel(opts[i]);
+            if (opts[i] == cur) sel = static_cast<int>(i);
+            if (!tip.empty()) tip += "\n";
+            switch (opts[i]) {
+            case AutoMarkAt::Stop:
+                tip += "Stop: the marker where the arm stops (full extension, or the contact).";
+                break;
+            case AutoMarkAt::Peak:
+                tip += blow ? "Peak: where the hand is fastest (a whoosh)."
+                            : "Peak: the marker where the motion is fastest.";
+                break;
+            case AutoMarkAt::Start: tip += blow ? "Start: where the motion starts." : "Start: where it starts."; break;
+            case AutoMarkAt::StartStop:
+                tip += std::string("Start & Stop: where it starts, and \"") + word +
+                       " Stop\" where it ends (a sound of its own).";
+                break;
+            }
         }
-        ui::ItemTip("Peak: the marker where the motion is fastest.\nStart: where it starts.\n"
-                    "Start & Stop: where it starts, and \"%s Stop\" where it ends (a sound of its own).",
-                    row.label);
-    } else if (row.start_option) {
-        // Story 10-9c (10-9j: the scuffs too): the marker at the motion's fastest point, or where it starts.
-        static const char* const kStartModes[] = {"Peak", "Start"};
         ui::LabelRow("Marker at", ui::Dp(90.0f), lcol);
-        int               sel = g_auto_ui.at_start[ti] ? 1 : 0;
         const std::string id = std::string("##startmode") + std::to_string(ti);
-        if (ui::Segmented(id.c_str(), kStartModes, 2, &sel)) g_auto_ui.at_start[ti] = sel == 1;
-        ui::ItemTip("Peak: the marker where the motion is fastest.\nStart: where it starts.");
+        if (ui::Segmented(id.c_str(), labels, static_cast<int>(opts.size()), &sel) && sel >= 0 &&
+            sel < static_cast<int>(opts.size()))
+            SetAutoMarkAt(t, opts[static_cast<size_t>(sel)], g_auto_ui);
+        ui::ItemTip("%s", tip.c_str());
     }
     if (t == AutoType::HandPivot) {
         // Story 10-8e: on, only a hand that came to rest with a grab pivots.

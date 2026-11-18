@@ -286,6 +286,24 @@ Block HeelRule(const std::string& marker)
     return b;
 }
 
+// Story 10-12e-3: every `stop` event of a Detect run sits at the end of a physics event of kind k
+// on that side (its scuff's end_s), one per `start` event.
+void CheckStops(const std::vector<Event>& ev, const std::string& start, const std::string& stop,
+                const std::vector<PhysicsEvent>& phys, PhysicsKind k, char side)
+{
+    int ns = 0, np = 0;
+    for (const Event& e : ev) {
+        ns += e.marker == start;
+        if (e.marker != stop) continue;
+        ++np;
+        bool at_end = false;
+        for (const PhysicsEvent& q : phys)
+            at_end = at_end || (q.kind == k && q.side == side && std::fabs(q.end_s - e.time_s) < 1e-9);
+        CHECK(at_end);
+    }
+    CHECK(ns >= 1 && np == ns);
+}
+
 }  // namespace
 
 int main()
@@ -563,6 +581,19 @@ int main()
             CHECK(ev[0].strength > 80.0 && ev[0].strength < 95.0);
             CHECK(ev[0].time_s > 0.95 && ev[0].time_s < 1.05);
         }
+        // Story 10-12e-3: Start & Stop, combined and Each part: each Pivot ... Stop at its scuff's end.
+        const PhysicsParams             pp = AutoPhysicsParams(AutoType::Pivot, 50.0, false);
+        const std::vector<PhysicsEvent> phys = FootEvents(AnalyseMotion(rig, pp), pp);
+        AutoSettings                    ss;
+        ss.type[static_cast<int>(AutoType::Pivot)].on = true;
+        SetAutoMarkAt(AutoType::Pivot, AutoMarkAt::StartStop, ss);
+        const std::vector<Event> sev = DetectAutoEvents(AutoBlocks(ss), rig, nullptr, false);
+        CheckStops(sev, "Pivot L", "Pivot Stop L", phys, PhysicsKind::Pivot, 'L');
+        CHECK(sev.size() == 2);
+        ss.pivot_parts = ScuffParts::EachPart;
+        const std::vector<Event> pev = DetectAutoEvents(AutoBlocks(ss), rig, nullptr, false);
+        CheckStops(pev, "Pivot Toe L", "Pivot Toe Stop L", phys, PhysicsKind::Pivot, 'L');
+        CHECK(pev.size() == 2);
     }
 
     // Sensitivity on a slow slide: the planted left foot slides 0.18 m/s for 400 ms (0.21 leg/s,
@@ -584,6 +615,16 @@ int main()
         if (sl80.size() == 1) {
             CHECK(std::fabs(sl80[0].time_s - 1.0) < 0.05 && sl80[0].marker == "Slide L");
             CHECK(sl80[0].speed > 0.0);
+        }
+        // Story 10-12e-3: Start & Stop at 80 %: Slide L at the start, Slide Stop L at its end.
+        {
+            const PhysicsParams sp = AutoPhysicsParams(AutoType::Slide, 80.0, false);
+            AutoSettings        ss;
+            ss.type[static_cast<int>(AutoType::Slide)].on = true;
+            ss.type[static_cast<int>(AutoType::Slide)].sens = 80.0;
+            SetAutoMarkAt(AutoType::Slide, AutoMarkAt::StartStop, ss);
+            const std::vector<Event> sev = DetectAutoEvents(AutoBlocks(ss), rig, nullptr, false);
+            CheckStops(sev, "Slide L", "Slide Stop L", FootEvents(AnalyseMotion(rig, sp), sp), PhysicsKind::Slide, 'L');
         }
         for (int s = 0; s <= 100; s += 10) {
             for (Block& b : blocks) b.sens = s;
@@ -914,24 +955,33 @@ int main()
                     continue;  // one marker name, one colour
                 // Story 10-8m: a heel scuff block takes its type's colour; a Longest part block its
                 // Each part counterpart's.
-                // Story 10-9j: a scuff's Peak twin as its Start kind (the same colour).
-                AutoKind kk = StartKindOfWord(static_cast<AutoKind>(k)), jk = StartKindOfWord(static_cast<AutoKind>(j));
+                // Story 10-9j: a scuff's Peak twin as its Start kind (the same colour). Story
+                // 10-12e-3: two stop kinds as their Start kinds; a stop kind and a start / peak kind
+                // always differ.
+                const bool ks = AutoKindRow(static_cast<AutoKind>(k)).at_stop, js = AutoKindRow(static_cast<AutoKind>(j)).at_stop;
+                AutoKind   kk = StartKindOfWord(AutoStartKindOfStop(static_cast<AutoKind>(k)));
+                AutoKind   jk = StartKindOfWord(AutoStartKindOfStop(static_cast<AutoKind>(j)));
                 if (kk > jk) std::swap(kk, jk);
-                if (kk == jk || (kk == AutoKind::HandPivot && jk == AutoKind::HandPivotAny) ||
-                    (kk == AutoKind::HandPivotAny && jk == AutoKind::HandPivot))
-                    continue;
-                if ((kk == AutoKind::Slide && (jk == AutoKind::SlideHeel || jk == AutoKind::SlideHeelLongest)) ||
-                    (kk == AutoKind::Pivot && (jk == AutoKind::PivotHeel || jk == AutoKind::PivotHeelLongest)) ||
-                    (kk >= AutoKind::SlideHeel && kk <= AutoKind::PivotToe && jk == static_cast<AutoKind>(static_cast<int>(kk) + 4)))
-                    continue;
-                // Story 10-9a-3: a lift-off / jump / land heel block takes its type's colour.
-                if ((kk == AutoKind::Lift && jk == AutoKind::LiftHeel) || (kk == AutoKind::Jump && jk == AutoKind::JumpHeel) ||
-                    (kk == AutoKind::Land && jk == AutoKind::LandHeel))
-                    continue;
-                // Story 10-9c: a Start kind shares its Peak twin's colour; a kick heel block the kick's.
-                const AutoKind pk = AutoKindRow(kk).sound_key, pj = AutoKindRow(jk).sound_key;
-                if (pk == pj || (pk == AutoKind::Kick && pj == AutoKind::KickHeel) || (pk == AutoKind::KickHeel && pj == AutoKind::Kick))
-                    continue;
+                auto exempt = [&]() {
+                    if (ks != js) return false;
+                    if (kk == jk || (kk == AutoKind::HandPivot && jk == AutoKind::HandPivotAny) ||
+                        (kk == AutoKind::HandPivotAny && jk == AutoKind::HandPivot))
+                        return true;
+                    if ((kk == AutoKind::Slide && (jk == AutoKind::SlideHeel || jk == AutoKind::SlideHeelLongest)) ||
+                        (kk == AutoKind::Pivot && (jk == AutoKind::PivotHeel || jk == AutoKind::PivotHeelLongest)) ||
+                        (kk >= AutoKind::SlideHeel && kk <= AutoKind::PivotToe &&
+                         jk == static_cast<AutoKind>(static_cast<int>(kk) + 4)))
+                        return true;
+                    // Story 10-9a-3: a lift-off / jump / land heel block takes its type's colour.
+                    if ((kk == AutoKind::Lift && jk == AutoKind::LiftHeel) || (kk == AutoKind::Jump && jk == AutoKind::JumpHeel) ||
+                        (kk == AutoKind::Land && jk == AutoKind::LandHeel))
+                        return true;
+                    // Story 10-9c: a Start kind shares its Peak twin's colour; a kick heel block the kick's.
+                    const AutoKind pk = AutoKindRow(kk).sound_key, pj = AutoKindRow(jk).sound_key;
+                    return pk == pj || (pk == AutoKind::Kick && pj == AutoKind::KickHeel) ||
+                           (pk == AutoKind::KickHeel && pj == AutoKind::Kick);
+                };
+                if (exempt()) continue;
                 for (char side : {'L', 'R'})
                     CHECK(AutoDefaultColor(static_cast<AutoKind>(k), side) != AutoDefaultColor(static_cast<AutoKind>(j), side));
             }
@@ -1120,8 +1170,9 @@ int main()
             hands[static_cast<size_t>(Role::RightHand)] = static_cast<int>(Role::RightHand);
             const bool no_scale = !AutoMissingParts(AutoType::Grab, false, hands).empty();
             for (int ki = 0; ki < kAutoKindCount; ++ki) {
-                // Story 10-9j: a scuff's Peak twin needs what its Start kind needs.
-                const AutoKind k = StartKindOfWord(static_cast<AutoKind>(ki));
+                // Story 10-9j: a scuff's Peak twin needs what its Start kind needs; story 10-12e-3:
+                // a stop kind too.
+                const AutoKind k = StartKindOfWord(AutoStartKindOfStop(static_cast<AutoKind>(ki)));
                 const bool     sep = k == AutoKind::Heel || k == AutoKind::Toe || k == AutoKind::SlideHeel ||
                                k == AutoKind::SlideToe || k == AutoKind::SlideHeelLongest || k == AutoKind::SlideToeLongest ||
                                (k >= AutoKind::LiftHeel && k <= AutoKind::LandToe) ||  // story 10-9a-3: the lift-off / jump / land parts
@@ -1420,6 +1471,15 @@ int main()
             for (const Event& e : lax) {
                 CHECK(e.block == 1 && e.marker == "Hand Pivot R" && e.speed == 0.0);
                 CHECK(e.strength > 80.0 && e.strength < 95.0 && e.time_s > 1.1 && e.time_s < 1.2);
+            }
+            // Story 10-12e-3: Start & Stop: Hand Pivot Stop R at the turn's end.
+            {
+                AutoSettings ss = any;
+                SetAutoMarkAt(AutoType::HandPivot, AutoMarkAt::StartStop, ss);
+                PhysicsParams hp = AutoPhysicsParams(AutoType::HandPivot, 50.0, false);
+                hp.hand_pivot_after_grab = false;
+                CheckStops(DetectAutoEvents(AutoBlocks(ss), rig, nullptr, false), "Hand Pivot R", "Hand Pivot Stop R",
+                           HandEvents(AnalyseMotion(rig, hp), hp), PhysicsKind::HandPivot, 'R');
             }
             any.type[static_cast<int>(AutoType::HandPivot)].offset_ms = 30.0;
             const std::vector<Event> later = DetectAutoEvents(AutoBlocks(any), rig, nullptr, false);

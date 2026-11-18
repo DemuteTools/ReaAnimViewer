@@ -82,7 +82,8 @@
 //   spin       (story 10-9f) the body turns about the vertical: the hip line's yaw rate above
 //              15 deg/s starts it, below 5 deg/s (or turning back) ends it, kept when it sweeps
 //              45 deg at least. Sideless: two blocks, "Spin" at its start (kind spin) and
-//              "Spin End" at its end (kind spin_end). Strength = the sweep (degrees).
+//              "Spin Stop" at its end (kind spin_end, the word kept; story 10-12e-3: Start & Stop,
+//              the default; a block saved as "Spin End" keeps its name). Strength = the sweep (degrees).
 //   Story 10-9c: kick (Legs) is a foot's speed peak relative to the torso, raised off the ground
 //   (Kick L / R; Separate: on the part fastest at the peak, Kick Heel L / Kick Toe L). Kick, swing
 //   and punch put their marker at the peak, or at the motion's start (AutoSettings::at_start, the
@@ -171,7 +172,7 @@ enum class AutoKind : int {
     Step = 0, Heel, Toe, Lift, Slide, Pivot, Grab, Release, HandPivot, HandPivotAny,
     SlideHeel, SlideToe, PivotHeel, PivotToe, SlideHeelLongest, SlideToeLongest, PivotHeelLongest, PivotToeLongest,
     Jump, Land, LiftHeel, LiftToe, JumpHeel, JumpToe, LandHeel, LandToe, Jolt,
-    Spin, SpinEnd,  // story 10-9f: a spin's start ("Spin") and end ("Spin End")
+    Spin, SpinEnd,  // story 10-9f: a spin's start ("Spin") and end ("Spin Stop" since 10-12e-3; word spin_end)
     Tap, Drag,      // story 10-9e
     Knee, Elbow, Sit, Fall,  // story 10-9b
     Clap, HandOnBody,        // story 10-9d
@@ -189,9 +190,18 @@ enum class AutoKind : int {
     // Story 10-12e: the body moves, each at its start (the default), its peak and its stop.
     Crouch, CrouchPeak, CrouchStop, StandUp, StandUpPeak, StandUpStop, Bend, BendPeak, BendStop, Rise, RisePeak, RiseStop,
     // Story 10-12e-2: the dash (a burst of travel speed), at its start (the default), its peak and its stop.
-    Dash, DashPeak, DashStop
+    Dash, DashPeak, DashStop,
+    // Story 10-12e-3: Start & Stop on the other motions: per Start kind a stop kind (in the order of
+    // the Start kinds within each type: Spin's is spin_end), and the Peak twins Drag and Spin lacked.
+    SlideStop, SlideHeelStop, SlideToeStop, SlideHeelLongestStop, SlideToeLongestStop,
+    PivotStop, PivotHeelStop, PivotToeStop, PivotHeelLongestStop, PivotToeLongestStop,
+    HandPivotStop, HandPivotAnyStop,
+    KickStop, KickHeelStop, KickToeStop,
+    SwingStop,
+    DragPeak, DragStop,
+    SpinPeak
 };
-constexpr int kAutoKindCount = 79;
+constexpr int kAutoKindCount = 98;
 // "step", "heel", "toe", "lift", "slide", "pivot", "grab", "release", "hand_pivot", "hand_pivot_any",
 // "slide_heel", "slide_toe", "pivot_heel", "pivot_toe", "slide_heel_longest", "slide_toe_longest",
 // "pivot_heel_longest", "pivot_toe_longest", "jump", "land", "lift_heel", "lift_toe", "jump_heel",
@@ -203,7 +213,10 @@ constexpr int kAutoKindCount = 79;
 // "hand_pivot_peak", "hand_pivot_any_peak" (10-9j), "arm_jump", "arm_land" (10-9k), "slap" (10-9l), "punch_peak" (10-9o; a saved "strike" block of
 // 10-9n is an unknown word: it stays inert), "crouch", "crouch_peak", "crouch_stop", "stand_up", "stand_up_peak",
 // "stand_up_stop", "bend", "bend_peak", "bend_stop", "rise", "rise_peak", "rise_stop" (10-12e), "dash",
-// "dash_peak", "dash_stop" (10-12e-2)
+// "dash_peak", "dash_stop" (10-12e-2), "slide_stop", "slide_heel_stop", "slide_toe_stop",
+// "slide_heel_longest_stop", "slide_toe_longest_stop", "pivot_stop", "pivot_heel_stop", "pivot_toe_stop",
+// "pivot_heel_longest_stop", "pivot_toe_longest_stop", "hand_pivot_stop", "hand_pivot_any_stop", "kick_stop",
+// "kick_heel_stop", "kick_toe_stop", "swing_stop", "drag_peak", "drag_stop", "spin_peak" (10-12e-3)
 const char* AutoKindWord(AutoKind k);
 bool AutoKindFromWord(const std::string& w, AutoKind* out);
 AutoType AutoTypeOfKind(AutoKind k);
@@ -269,23 +282,44 @@ struct AutoSettings {
     // (lift-off, jump, land), by AutoType; ignored for the others.
     bool             separate_parts[kAutoTypeCount] = {};
     // Story 10-9c: the marker at the motion's start, not its peak, for the types whose row says
-    // `start_option` (kick, swing, punch; story 10-9j: slide, pivot, hand pivot), by AutoType;
+    // `start_option` (kick, swing, punch; story 10-9j: slide, pivot, hand pivot; story 10-12e-3:
+    // drag, spin), by AutoType;
     // ignored for the others. Default: the type's own (AutoStartDefault: Peak for kick, swing and
     // punch, Start for the scuffs).
     bool             at_start[kAutoTypeCount] = {};
     // Story 10-9o: a punch not at the start sits at the arm's stop (kind punch, the default) or,
     // with punch_peak, at the hand's fastest (kind punch_peak). Ignored when at_start.
     bool             punch_peak = false;
-    // Story 10-12e: Start & Stop for the types whose row says `stop_option` (the body moves), by
-    // AutoType: the Start marker plus "<Type> Stop" where the move ends (its stop kinds, a sound
-    // of their own). Read only with at_start (Peak / Start / Start & Stop); ignored for the others.
+    // Story 10-12e: Start & Stop for the types whose row says `stop_option` (the body moves; story
+    // 10-12e-3: every motion that is no impact: the scuffs, kick, swing, drag, spin), by AutoType:
+    // the Start marker plus "<its marker> Stop" where the motion ends (its stop kinds, a sound of
+    // their own). Read only with at_start (Peak / Start / Start & Stop); ignored for the others.
+    // Default: the type's own (AutoStopDefault: Spin's two markers, else off).
     bool             with_stop[kAutoTypeCount] = {};
-    AutoSettings();  // every type off, its modes the defaults (at_start: AutoStartDefault)
+    AutoSettings();  // every type off, its modes the defaults (at_start: AutoStartDefault, with_stop: AutoStopDefault)
 };
 // Story 10-9j: whether a `start_option` type's markers sit at the start by default: the flavour of
 // its first kind (the kinds it had before the option: kick's mark the peak, the scuffs' the start).
 // False for the others.
 bool AutoStartDefault(AutoType t);
+// Story 10-12e-3: whether a `stop_option` type is at Start & Stop by default (its row's
+// `stop_default`: Spin, its Spin and Spin Stop markers). False for the others.
+bool AutoStopDefault(AutoType t);
+
+// Story 10-12e-3: the "Marker at" choices of a type's card, one component for every card. A type
+// row offers some of them (Stop: `stop_mark`, Punch; Peak and Start: `start_option`; Start & Stop:
+// `stop_option`), always shown in this order.
+enum class AutoMarkAt : int { Stop = 0, Peak, Start, StartStop };
+constexpr int kAutoMarkAtCount = 4;
+// The choices a type offers, in the fixed order (empty: the card shows no Marker at).
+std::vector<AutoMarkAt> AutoMarkAtOptions(AutoType t);
+// "Stop", "Peak", "Start", "Start & Stop".
+const char* AutoMarkAtLabel(AutoMarkAt m);
+// The choice the settings make for a type (one of its options; Peak for a type with none).
+AutoMarkAt AutoMarkAtOf(AutoType t, const AutoSettings& s);
+// Sets a type's choice: at_start, with_stop (off unless Start & Stop) and, for a `stop_mark` type,
+// punch_peak. A choice the type does not offer changes nothing.
+void SetAutoMarkAt(AutoType t, AutoMarkAt m, AutoSettings& s);
 bool operator==(const AutoTypeSettings& a, const AutoTypeSettings& b);
 bool operator==(const AutoSettings& a, const AutoSettings& b);
 inline bool operator!=(const AutoSettings& a, const AutoSettings& b)

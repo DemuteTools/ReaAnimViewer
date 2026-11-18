@@ -182,7 +182,11 @@ std::vector<char> FootDragMask(const PhysicsAnalysis& a, const PhysicsParams& p,
     return m;
 }
 
-std::vector<PhysicsEvent> FootDragEvents(const PhysicsAnalysis& a, const PhysicsParams& p)
+namespace {
+
+// FootDragEvents; story 10-12e-3: `at_peak`, each drag timed where the toe slides fastest in its run
+// (the first of equals; Drag's Peak twin), its span unchanged.
+std::vector<PhysicsEvent> DragEvents(const PhysicsAnalysis& a, const PhysicsParams& p, bool at_peak)
 {
     std::vector<PhysicsEvent> ev;
     if (!a.ok) return ev;
@@ -224,11 +228,13 @@ std::vector<PhysicsEvent> FootDragEvents(const PhysicsAnalysis& a, const Physics
             if (static_cast<double>(re - rs) / rate < p.drag_min_s - 1e-9) continue;
             double dist = 0.0, peak = 0.0;
             int    nb = 0, nt = 0;
+            size_t jp = rs;  // story 10-12e-3: the fastest sample
             for (size_t j = rs; j < re; ++j) {
                 if (!m[j]) continue;
                 const bool   b = mb[j] != 0, t = mt[j] != 0;
                 const double v = std::max(b ? ball.hspeed[j] : 0.0, t ? tip.hspeed[j] : 0.0);
                 dist += v / rate;
+                if (v > peak) jp = j;
                 peak = std::max(peak, v);
                 nb += b;
                 nt += t;
@@ -240,12 +246,20 @@ std::vector<PhysicsEvent> FootDragEvents(const PhysicsAnalysis& a, const Physics
             e.part = nb >= nt ? static_cast<int>(FootPart::Ball) : static_cast<int>(FootPart::Tip);
             e.time_s = e.start_s = static_cast<double>(rs) / rate;
             e.end_s = static_cast<double>(re) / rate;
+            if (at_peak) e.time_s = static_cast<double>(jp) / rate;
             e.strength = peak;
             PushClip(a, e, ev);
         }
     }
     SortEvents(ev);
     return ev;
+}
+
+}  // namespace
+
+std::vector<PhysicsEvent> FootDragEvents(const PhysicsAnalysis& a, const PhysicsParams& p)
+{
+    return DragEvents(a, p, false);
 }
 
 // ---- The rows' functions (auto_types.cpp) ------------------------------------------------------
@@ -258,6 +272,12 @@ std::vector<PhysicsEvent> AutoSourceTap(const PhysicsAnalysis& a, const PhysicsP
 std::vector<PhysicsEvent> AutoSourceDrag(const PhysicsAnalysis& a, const PhysicsParams& p)
 {
     return FootDragEvents(a, p);
+}
+
+// Story 10-12e-3: Drag's Peak twin.
+std::vector<PhysicsEvent> AutoSourceDragPeak(const PhysicsAnalysis& a, const PhysicsParams& p)
+{
+    return DragEvents(a, p, true);
 }
 
 bool AutoMatchTap(const PhysicsEvent& e, const PhysicsAnalysis&, char)

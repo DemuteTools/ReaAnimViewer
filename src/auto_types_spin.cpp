@@ -18,8 +18,10 @@
 // A spin cut by the clip's start or end is still kept: its start is the clip's first sample, its
 // end the last.
 //
-// Sideless (one block per kind, side B): two kinds, "Spin" at the start and "Spin End" at the
-// end. Strength = the sweep (degrees, whatever the direction).
+// Sideless (one block per kind, side B): two kinds, "Spin" at the start and "Spin Stop" at the end
+// (word spin_end; a block saved as "Spin End" keeps its own name). Strength = the sweep (degrees, whatever the direction). Story 10-12e-3: Marker at Peak /
+// Start / Start & Stop: the end kind is Start & Stop's stop ("Spin Stop", the default mode), and a
+// Peak twin marks where the hips turn fastest (the smoothed yaw rate's peak over the span).
 
 #include <algorithm>
 #include <cmath>
@@ -180,13 +182,35 @@ bool SpinClipTime(const PhysicsAnalysis& a, double t, double* out)
 // The spins in clip time, by time: each a Spin event at its start and a SpinEnd event at its end
 // (side B, start_s / end_s the span in clip time, shifted with time_s, strength |sweep|). On a
 // loop, an event is the clip's when its own time falls in the middle cycle.
-std::vector<PhysicsEvent> SpinEvents(const PhysicsAnalysis& a, const PhysicsParams& p)
+// Story 10-12e-3: `peak`, only a Spin event per spin, at the sample of [mark_start, mark_end] where
+// the smoothed yaw rate is fastest (the first of equals; an event of the clip when that time falls
+// in the middle cycle).
+std::vector<PhysicsEvent> SpinEvents(const PhysicsAnalysis& a, const PhysicsParams& p, bool peak = false)
 {
     std::vector<PhysicsEvent> ev;
     const SpinYaw             y = SpinYawOf(a, p);
     if (y.rate.empty()) return ev;
     for (const SpinSpan& sp : SpinSpans(y, p)) {
         const double s = static_cast<double>(sp.mark_start) / a.rate_hz, e = static_cast<double>(sp.mark_end) / a.rate_hz;
+        if (peak) {
+            size_t top = sp.mark_start;
+            for (size_t j = sp.mark_start; j <= sp.mark_end && j < y.rate.size(); ++j)
+                if (std::fabs(y.rate[j]) > std::fabs(y.rate[top])) top = j;
+            const double tp = static_cast<double>(top) / a.rate_hz;
+            double       t;
+            if (!SpinClipTime(a, tp, &t)) continue;
+            const double shift = tp - t;
+            PhysicsEvent pe;
+            pe.kind = PhysicsKind::Spin;
+            pe.side = 'B';
+            pe.part = -1;
+            pe.time_s = t;
+            pe.start_s = s - shift;
+            pe.end_s = e - shift;
+            pe.strength = std::fabs(sp.sweep);
+            ev.push_back(pe);
+            continue;
+        }
         for (const bool at_end : {false, true}) {
             double t;
             if (!SpinClipTime(a, at_end ? e : s, &t)) continue;
@@ -214,6 +238,12 @@ std::vector<PhysicsEvent> SpinEvents(const PhysicsAnalysis& a, const PhysicsPara
 std::vector<PhysicsEvent> AutoSourceSpin(const PhysicsAnalysis& a, const PhysicsParams& p)
 {
     return SpinEvents(a, p);
+}
+
+// Story 10-12e-3: every spin at the hips' fastest turn (Spin, the Peak twin).
+std::vector<PhysicsEvent> AutoSourceSpinPeak(const PhysicsAnalysis& a, const PhysicsParams& p)
+{
+    return SpinEvents(a, p, true);
 }
 
 // ---- Type parts (AutoMissingParts) -------------------------------------------------------------

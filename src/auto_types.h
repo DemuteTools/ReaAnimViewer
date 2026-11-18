@@ -102,8 +102,15 @@ struct AutoTypeInfo {
     // AutoSettings::with_stop): its kinds that say `at_stop` (one per Peak / Start pair, its own
     // marker "<Type> Stop", colour and sound key) mark where the motion ends, made with the Start
     // kinds when with_stop. The widget shows Peak / Start / Start & Stop for such a type (any
-    // category); its Start stays the type's first kind's flavour.
+    // category); its Start stays the type's first kind's flavour. Story 10-12e-3: on every motion
+    // that is no impact (scuffs, kick, swing, drag, spin, the body moves), Peak-default types too.
     bool            stop_option = false;
+    // Story 10-12e-3: a `stop_option` type at Start & Stop by default (Spin: its Spin and Spin Stop
+    // markers, as before the option); AutoStopDefault.
+    bool            stop_default = false;
+    // Story 10-12e-3: "Marker at" offers Stop (Punch: the blow's stop, its first kind; Peak its
+    // punch_peak kind), before Peak / Start (AutoMarkAtOptions).
+    bool            stop_mark = false;
 };
 
 // An event source: the physics events of one analysis a kind reads (FootEvents, HandEvents...).
@@ -166,7 +173,9 @@ struct AutoKindInfo {
     // flavour (enum order).
     bool              at_start = false;
     // Story 10-12e: a `stop_option` type's kind that marks the motion's end (Start & Stop): its own
-    // sound key, outside the Peak / Start pairs (never `at_start`).
+    // sound key, outside the Peak / Start pairs (never `at_start`). Story 10-12e-3: one per Start
+    // kind, paired by position (the n-th stop kind with the n-th Start kind); two stop kinds of one
+    // marker share a sound key as their Start kinds do (Hand Pivot Stop, Slide Heel Stop).
     bool              at_stop = false;
 };
 
@@ -194,6 +203,10 @@ const AutoTypeInfo&     AutoTypeRow(AutoType t);
 const AutoKindInfo&     AutoKindRow(AutoKind k);
 // Story 10-9a-2: how many signatures a kind holds (its leading non-null slots).
 int AutoSignatureCount(const AutoKindInfo& row);
+// Story 10-12e-3: a `stop_option` type's stop kind of a Start kind (the n-th stop kind of the n-th
+// Start kind), and back; the kind itself when it has none (not a Start / stop kind).
+AutoKind AutoStopKindOf(AutoKind start);
+AutoKind AutoStartKindOfStop(AutoKind stop);
 
 // The types of a category, in enum order (the section's rows and the sound parts' types).
 std::vector<AutoType> AutoTypesOf(AutoCategory c);
@@ -209,5 +222,9 @@ void AutoPartLane(const AutoLaneArgs& args, std::vector<AutoLane>& out, const Pa
                   bool horizontal, double thr);
 // The window of a per-sample curve (absolute values when `absval`).
 std::vector<double> AutoLaneWindow(const std::vector<double>& v, size_t first, size_t n, bool absval);
+// Story 10-12e-3: a source's events re-timed at their end (Start & Stop's stop kinds): time_s =
+// end_s, at most the clip's last sample; on a loop, an end past the seam wraps the whole event one
+// cycle back (start <= time <= end on one cycle), as the start events are kept in the clip. By time.
+std::vector<PhysicsEvent> AutoEventsAtEnd(std::vector<PhysicsEvent> ev, const PhysicsAnalysis& a);
 
 }  // namespace rav

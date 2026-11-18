@@ -287,6 +287,28 @@ void TestDrag()
     PhysicsParams p;
     p.drag_min_s = 1.0;
     CHECK(FootDragEvents(a, p).empty());
+    // Story 10-12e-3: Drag's Peak twin where the toe slides fastest, inside the span; through
+    // Detect, Start & Stop gives Drag R at the start and Drag Stop R at the end.
+    {
+        const std::vector<BoneTrack>    rt = Rig(Planted(-0.2), Dragging(0.0), 3.0);
+        const PhysicsAnalysis           pa = AnalyseMotion(rt, AutoPhysicsParams(AutoType::Drag, 50.0, false));
+        const std::vector<PhysicsEvent> st = FootDragEvents(pa, AutoPhysicsParams(AutoType::Drag, 50.0, false));
+        CHECK(st.size() == 1);
+        AutoSettings s;
+        const int    di = static_cast<int>(AutoType::Drag);
+        s.type[di].on = true;
+        SetAutoMarkAt(AutoType::Drag, AutoMarkAt::Peak, s);
+        const std::vector<Event> pk = DetectAutoEvents(AutoBlocks(s), rt, nullptr, false);
+        SetAutoMarkAt(AutoType::Drag, AutoMarkAt::StartStop, s);
+        const std::vector<Event> ss = DetectAutoEvents(AutoBlocks(s), rt, nullptr, false);
+        CHECK(pk.size() == 1 && ss.size() == 2);
+        if (st.size() == 1 && pk.size() == 1 && ss.size() == 2) {
+            CHECK(pk[0].marker == "Drag R" && pk[0].time_s > st[0].start_s && pk[0].time_s < st[0].end_s);
+            CHECK(pk[0].strength == st[0].strength);
+            CHECK(ss[0].marker == "Drag R" && std::fabs(ss[0].time_s - st[0].start_s) < 1e-9);
+            CHECK(ss[1].marker == "Drag Stop R" && std::fabs(ss[1].time_s - st[0].end_s) < 1e-9);
+        }
+    }
     // The mask: the right foot drags somewhere, the left never.
     const std::vector<char> mr = FootDragMask(a, PhysicsParams{}, 'R');
     const std::vector<char> ml = FootDragMask(a, PhysicsParams{}, 'L');

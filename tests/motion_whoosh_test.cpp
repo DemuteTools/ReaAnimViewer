@@ -429,6 +429,86 @@ void TestDetect()
     for (const Event& e : DetectAutoEvents(sb, rt, &c2, false))
         if (e.marker == "Swing L") CHECK(e.time_s >= 0.5 && e.time_s < 0.6);
 
+    // Story 10-12e-3: Start & Stop: each swing and kick also where its motion ends (its run's end,
+    // the physics event's end_s), "Swing Stop L" / "Kick Stop L", one per Start marker.
+    {
+        AutoSettings ss = WhooshOn(true, false);
+        for (AutoType t : {AutoType::Kick, AutoType::Swing}) ss.with_stop[static_cast<int>(t)] = true;
+        const std::vector<Block> stb = AutoBlocks(ss);
+        const std::vector<Event> sev = DetectAutoEvents(stb, rt, nullptr, false);
+        const PhysicsParams      pp = AutoPhysicsParams(AutoType::Swing, 50.0, false);
+        const PhysicsAnalysis    pa = AnalyseMotion(rt, pp);
+        const std::vector<PhysicsEvent> phys = WhooshEvents(pa, pp, WhooshMark::Start);
+        int starts = 0, stops = 0, kicks = 0, kick_stops = 0;
+        for (const Event& e : sev) {
+            starts += e.marker == "Swing L";
+            kicks += e.marker == "Kick L";
+            if (e.marker == "Swing Stop L" || e.marker == "Kick Stop L") {
+                const bool kick = e.marker == "Kick Stop L";
+                (kick ? kick_stops : stops) += 1;
+                bool at_end = false;
+                for (const PhysicsEvent& q : phys)
+                    if (q.side == 'L' && q.kind == (kick ? PhysicsKind::Kick : PhysicsKind::Swing))
+                        at_end = at_end || std::fabs(q.end_s - e.time_s) < 1e-6;
+                CHECK(at_end);
+            }
+        }
+        CHECK(starts >= 1 && stops == starts && kicks >= 1 && kick_stops == kicks);
+        // The Start markers are the Start mode's (Start & Stop adds, never moves).
+        std::vector<double> a, b;
+        for (const Event& e : sev)
+            if (e.marker == "Swing L") a.push_back(e.time_s);
+        for (const Event& e : DetectAutoEvents(AutoBlocks(WhooshOn(true, false)), rt, nullptr, false))
+            if (e.marker == "Swing L") b.push_back(e.time_s);
+        CHECK(a == b);
+    }
+
+    // Story 10-12e-3, a loop: the left arm swings up and back down, the clip turned so the up
+    // swing starts just before the seam and peaks after it. Each Swing Stop sits at its run's end
+    // (the Peak event's end_s, wrapped into the clip), never on its Start marker.
+    {
+        Body lb;
+        lb.swing = true;
+        const std::vector<BoneTrack> base = MakeBody(lb);
+        const size_t                 i0 = static_cast<size_t>(0.3 * kRate), i1 = static_cast<size_t>(1.0 * kRate);
+        std::vector<size_t>          seq;
+        for (size_t i = i0; i <= i1; ++i) seq.push_back(i);
+        for (size_t i = i1; i-- > i0;) seq.push_back(i);  // back down; the last sample = the first
+        const size_t period = seq.size() - 1, rot = static_cast<size_t>(0.25 * kRate);  // up swing at 0.2 s
+        std::vector<BoneTrack> lt = base;
+        for (size_t r = 0; r < base.size(); ++r) {
+            if (base[r].pos.empty()) continue;
+            lt[r].pos.clear();
+            for (size_t k = 0; k <= period; ++k) lt[r].pos.push_back(base[r].pos[seq[(k + rot) % period]]);
+        }
+        const double T = static_cast<double>(period) / kRate;
+        AutoSettings ls;
+        ls.type[static_cast<int>(AutoType::Swing)].on = true;
+        SetAutoMarkAt(AutoType::Swing, AutoMarkAt::StartStop, ls);
+        const std::vector<Event> lev = DetectAutoEvents(AutoBlocks(ls), lt, nullptr, true);
+        const PhysicsParams      lp = AutoPhysicsParams(AutoType::Swing, 50.0, true);
+        const std::vector<PhysicsEvent> peaks = WhooshEvents(AnalyseMotion(lt, lp), lp, WhooshMark::Peak);
+        std::vector<double> starts, stops;
+        for (const Event& e : lev) {
+            if (e.marker == "Swing L") starts.push_back(e.time_s);
+            if (e.marker == "Swing Stop L") stops.push_back(e.time_s);
+        }
+        CHECK(!starts.empty() && stops.size() == starts.size());
+        bool straddles = false;  // a start wrapped near the clip's end (the run crossing the seam)
+        for (double t : starts) straddles = straddles || t > T - 0.15;
+        CHECK(straddles);
+        for (double t : stops) {
+            for (double u : starts) CHECK(std::fabs(t - u) > 0.05);
+            bool at_end = false;
+            for (const PhysicsEvent& q : peaks)
+                if (q.side == 'L' && q.kind == PhysicsKind::Swing) {
+                    const double e = std::fmod(q.end_s + T, T);
+                    at_end = at_end || std::fabs(e - t) < 1e-6;
+                }
+            CHECK(at_end);
+        }
+    }
+
     // Story 10-9q: Detect searches a silent whoosh block as any type's (the right kick, the left
     // punch: none up to 100 %).
     std::vector<int> counts(blocks.size(), 0);

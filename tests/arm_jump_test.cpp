@@ -223,6 +223,15 @@ void TestArms()
     const std::vector<Found> start =
         Detect(Body{}, On({AutoType::Swing, AutoType::ArmJump, AutoType::ArmLand}, true));
     CHECK((Markers(start) == std::vector<std::string>{"Arms Jump L", "Arms Land L", "Swing R", "Swing R"}));
+    // Story 10-12e-3: Swing at Start & Stop: a Swing Stop goes with its Swing (judged at its
+    // motion's start), no orphan stop on the left arm; the right arm keeps both.
+    {
+        AutoSettings ss = On({AutoType::Swing, AutoType::ArmJump, AutoType::ArmLand});
+        SetAutoMarkAt(AutoType::Swing, AutoMarkAt::StartStop, ss);
+        const std::vector<Found> stop = Detect(Body{}, ss);
+        CHECK((Markers(stop) == std::vector<std::string>{"Arms Jump L", "Arms Land L", "Swing R", "Swing Stop R", "Swing R",
+                                                         "Swing Stop R"}));
+    }
     // Only one of them ticked: only its swing goes.
     const std::vector<Found> jonly = Detect(Body{}, On({AutoType::Swing, AutoType::ArmJump}));
     CHECK((Markers(jonly) == std::vector<std::string>{"Arms Jump L", "Swing L", "Swing R", "Swing R"}));

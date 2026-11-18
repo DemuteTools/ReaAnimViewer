@@ -786,8 +786,13 @@ int main(int argc, char** argv)
             for (int cfg = 0; cfg < 2; ++cfg) {
                 std::map<RowKey, std::vector<double>>                    st, pk;
                 std::map<RowKey, std::vector<std::pair<double, double>>> stc, pkc;  // (time, confidence)
+                // Story 10-12e-3: a stop kind (Spin's, at its default Start & Stop) has no Peak twin.
+                auto stop_kind = [](const std::string& w) {
+                    AutoKind k;
+                    return AutoKindFromWord(w, &k) && AutoKindRow(k).at_stop;
+                };
                 for (const Found& f : c.run[cfg].found)
-                    if (AutoStartDefault(f.type)) {
+                    if (AutoStartDefault(f.type) && !stop_kind(f.target)) {
                         st[{f.target, f.side}].push_back(f.t);
                         stc[{f.target, f.side}].push_back({f.t, f.conf});
                     }

@@ -45,6 +45,7 @@ AutoKind PartSplitKindOf(AutoType t, bool heel_part, bool at_start = false)
 {
     for (AutoKind k : AutoKindsOf(t)) {
         const std::string key = AutoKindRow(k).role_key;
+        if (AutoKindRow(k).at_stop) continue;  // story 10-12e-3: Kick's stop kinds
         if (AutoTypeRow(t).start_option && AutoKindRow(k).at_start != at_start) continue;
         if (heel_part ? key == "heel" : key.empty()) return k;
     }
@@ -101,7 +102,7 @@ std::vector<AutoKind> ModeKindsOf(AutoType t, const AutoSettings& s)
     if (InRangeType(t) && AutoTypeRow(t).part_split) {
         std::vector<AutoKind> out;
         for (AutoKind k : AutoKindsOf(t))
-            if (PartSplitKind(k) == s.separate_parts[static_cast<int>(t)]) out.push_back(k);
+            if (!AutoKindRow(k).at_stop && PartSplitKind(k) == s.separate_parts[static_cast<int>(t)]) out.push_back(k);
         return out;
     }
     switch (t) {
@@ -144,10 +145,15 @@ std::vector<AutoKind> KindsOf(AutoType t, const AutoSettings& s)
         const AutoKind w = StartTwin(k, s.at_start[static_cast<int>(t)]);
         if (std::find(out.begin(), out.end(), w) == out.end()) out.push_back(w);
     }
-    // Story 10-12e: Start & Stop adds the stop kinds, after the start ones.
-    if (StopOn(t, s))
-        for (AutoKind k : AutoKindsOf(t))
-            if (AutoKindRow(k).at_stop) out.push_back(k);
+    // Story 10-12e: Start & Stop adds the stop kinds, after the start ones. Story 10-12e-3: the stop
+    // kind of each Start kind made (a mode's: Slide Heel Stop with Slide Heel).
+    if (StopOn(t, s)) {
+        const size_t n = out.size();
+        for (size_t i = 0; i < n; ++i) {
+            const AutoKind w = AutoStopKindOf(out[i]);
+            if (w != out[i] && std::find(out.begin(), out.end(), w) == out.end()) out.push_back(w);
+        }
+    }
     return out;
 }
 
@@ -187,9 +193,63 @@ bool AutoStartDefault(AutoType t)
     return InRangeType(t) && AutoTypeRow(t).start_option && AutoKindRow(AutoKindsOf(t).front()).at_start;
 }
 
+bool AutoStopDefault(AutoType t)
+{
+    return InRangeType(t) && AutoTypeRow(t).stop_option && AutoTypeRow(t).stop_default;
+}
+
 AutoSettings::AutoSettings()
 {
-    for (int t = 0; t < kAutoTypeCount; ++t) at_start[t] = AutoStartDefault(static_cast<AutoType>(t));
+    for (int t = 0; t < kAutoTypeCount; ++t) {
+        at_start[t] = AutoStartDefault(static_cast<AutoType>(t));
+        with_stop[t] = AutoStopDefault(static_cast<AutoType>(t));
+    }
+}
+
+std::vector<AutoMarkAt> AutoMarkAtOptions(AutoType t)
+{
+    std::vector<AutoMarkAt> out;
+    if (!InRangeType(t)) return out;
+    const AutoTypeInfo& r = AutoTypeRow(t);
+    if (r.stop_mark) out.push_back(AutoMarkAt::Stop);
+    if (r.start_option) {
+        out.push_back(AutoMarkAt::Peak);
+        out.push_back(AutoMarkAt::Start);
+    }
+    if (r.start_option && r.stop_option) out.push_back(AutoMarkAt::StartStop);
+    return out;
+}
+
+const char* AutoMarkAtLabel(AutoMarkAt m)
+{
+    switch (m) {
+    case AutoMarkAt::Stop: return "Stop";
+    case AutoMarkAt::Peak: return "Peak";
+    case AutoMarkAt::Start: return "Start";
+    case AutoMarkAt::StartStop: return "Start & Stop";
+    }
+    return "?";
+}
+
+AutoMarkAt AutoMarkAtOf(AutoType t, const AutoSettings& s)
+{
+    if (!InRangeType(t)) return AutoMarkAt::Peak;
+    const int           ti = static_cast<int>(t);
+    const AutoTypeInfo& r = AutoTypeRow(t);
+    if (r.start_option && s.at_start[ti]) return StopOn(t, s) ? AutoMarkAt::StartStop : AutoMarkAt::Start;
+    if (r.stop_mark && !s.punch_peak) return AutoMarkAt::Stop;
+    return AutoMarkAt::Peak;
+}
+
+void SetAutoMarkAt(AutoType t, AutoMarkAt m, AutoSettings& s)
+{
+    const std::vector<AutoMarkAt> opts = AutoMarkAtOptions(t);
+    if (std::find(opts.begin(), opts.end(), m) == opts.end()) return;
+    const int           ti = static_cast<int>(t);
+    const AutoTypeInfo& r = AutoTypeRow(t);
+    s.at_start[ti] = m == AutoMarkAt::Start || m == AutoMarkAt::StartStop;
+    s.with_stop[ti] = r.stop_option && m == AutoMarkAt::StartStop;
+    if (r.stop_mark && !s.at_start[ti]) s.punch_peak = m == AutoMarkAt::Peak;  // Punch's own mode
 }
 
 const char* AutoTypeLabel(AutoType t)
@@ -411,8 +471,9 @@ AutoSettings ReadAutoSettings(const std::vector<Block>& blocks)
         }
         if (k == AutoKind::Step) combined = true;
         if (k == AutoKind::Heel || k == AutoKind::Toe) separate = true;
-        if (DefaultTwin(k) == AutoKind::HandPivot) strict = true;  // story 10-9j: either flavour
-        if (DefaultTwin(k) == AutoKind::HandPivotAny) any = true;
+        // Story 10-9j: either flavour; story 10-12e-3: or its stop kind.
+        if (DefaultTwin(AutoStartKindOfStop(k)) == AutoKind::HandPivot) strict = true;
+        if (DefaultTwin(AutoStartKindOfStop(k)) == AutoKind::HandPivotAny) any = true;
         if (k == AutoKind::Punch) punch_stop = true;  // story 10-9o
         if (k == AutoKind::PunchPeak) punch_peak = true;
         if (AutoTypeRow(AutoTypeOfKind(k)).part_split) split[t][PartSplitKind(k) ? 1 : 0] = true;
@@ -437,10 +498,13 @@ AutoSettings ReadAutoSettings(const std::vector<Block>& blocks)
         // Story 10-9j: the flavour its blocks say; none or both, the type's default.
         if (start[t][0] != start[t][1]) s.at_start[t] = start[t][1];
         // Story 10-12e: Start & Stop when its stop blocks are there (with the Start ones, or alone:
-        // the type's Start).
-        if (stop[t] && AutoTypeRow(static_cast<AutoType>(t)).stop_option) {
+        // the type's Start). Story 10-12e-3: a ticked type with none is not (its default may be:
+        // Spin), and never at the Peak.
+        if (stop[t] && AutoTypeRow(static_cast<AutoType>(t)).stop_option && !(start[t][0] && !start[t][1])) {
             s.with_stop[t] = true;
-            if (!start[t][0] && !start[t][1]) s.at_start[t] = true;
+            s.at_start[t] = true;
+        } else if (s.type[t].on) {
+            s.with_stop[t] = false;
         }
     }
     return s;
@@ -527,7 +591,9 @@ std::vector<int> ApplyAutoSettings(std::vector<Block>& blocks, const AutoSetting
         for (size_t i = 0; i < old.size(); ++i) {
             AutoKind k;
             char     side;
-            if (keep[i] || !AutoBlockKind(old[i], &k, &side) || side != ws || AutoTypeOfKind(k) != AutoTypeOfKind(wk))
+            // Story 10-12e-3: a stop block from a stop block, a start block from a start one.
+            if (keep[i] || !AutoBlockKind(old[i], &k, &side) || side != ws || AutoTypeOfKind(k) != AutoTypeOfKind(wk) ||
+                AutoKindRow(k).at_stop != AutoKindRow(wk).at_stop)
                 continue;
             nb.sens = old[i].sens_from >= 0.0 ? old[i].sens_from : old[i].sens;
             nb.offset_ms = old[i].offset_ms;
@@ -541,7 +607,7 @@ std::vector<int> ApplyAutoSettings(std::vector<Block>& blocks, const AutoSetting
             AutoKind k;
             char     side;
             if (keep[i] || rid_used[i] || old[i].rid.empty() || !AutoBlockKind(old[i], &k, &side) || side != ws ||
-                AutoTypeOfKind(k) != AutoTypeOfKind(wk))
+                AutoTypeOfKind(k) != AutoTypeOfKind(wk) || AutoKindRow(k).at_stop != AutoKindRow(wk).at_stop)
                 continue;
             rid_used[i] = true;
             nb.rid = old[i].rid;
@@ -567,6 +633,21 @@ std::vector<int> ApplyAutoSettings(std::vector<Block>& blocks, const AutoSetting
         AutoKind k;
         char     side;
         if (keep[i] || !AutoBlockKind(old[i], &k, &side)) continue;
+        // Story 10-12e-3: a stop block dropped by a part mode switch: its edits go to the stop block
+        // of the start kind its own start kind's edits go to (none when Start & Stop is left).
+        if (AutoKindRow(k).at_stop) {
+            const AutoKind        sk = AutoStartKindOfStop(k);
+            const AutoType        st = AutoTypeOfKind(k);
+            std::vector<AutoKind> to;
+            if (sk == AutoKind::Slide) to = {AutoKind::SlideHeel, AutoKind::SlideHeelLongest};
+            else if (sk == AutoKind::Pivot) to = {AutoKind::PivotHeel, AutoKind::PivotHeelLongest};
+            else if (ScuffMode(sk) != ScuffParts::Combined)
+                to = {st == AutoType::Slide ? AutoKind::Slide : AutoKind::Pivot};
+            else if (AutoTypeRow(st).part_split) to = {PartSplitKindOf(st, !PartSplitKind(sk), true)};
+            for (AutoKind w : to)
+                if (map[i] < 0 && AutoStopKindOf(w) != w) map[i] = find_new(AutoStopKindOf(w), side);
+            continue;
+        }
         const AutoKind dk = DefaultTwin(k);
         if (k == AutoKind::Step) map[i] = find_new(AutoKind::Heel, side);
         else if (k == AutoKind::Heel || k == AutoKind::Toe) map[i] = find_new(AutoKind::Step, side);
@@ -725,6 +806,7 @@ std::vector<Event> AutoEventsImpl(const std::vector<AutoAnalysis>& analyses, con
     std::vector<double>   period;  // per event in `out`: its analysis' loop period (0: not looping)
     std::vector<const char*> part;  // per event in `out`: its kind's role key ("heel", "toe"; "" = the foot)
     std::vector<char>        sides; // per event in `out`: its block's side (story 10-9e)
+    std::vector<char>        stops; // per event in `out`: of a stop kind (story 10-12e-3)
     // Each analysis' event sources (the kinds' rows: foot events, hand events...), each computed
     // once, when a block first reads it.
     struct Source {
@@ -795,6 +877,7 @@ std::vector<Event> AutoEventsImpl(const std::vector<AutoAnalysis>& analyses, con
             period.push_back(loop_period);
             part.push_back(row.role_key ? row.role_key : "");
             sides.push_back(side);
+            stops.push_back(row.at_stop ? 1 : 0);
         }
     }
     // Story 10-9a: a Land replaces the steps within kAutoReplaceS of it, a Jump the lift-offs, on
@@ -821,17 +904,20 @@ std::vector<Event> AutoEventsImpl(const std::vector<AutoAnalysis>& analyses, con
                 // story 10-9o: at_time too with the row's replaces_span).
                 const bool   span = in_span || (at_time && tr.replaces_span);  // story 10-9o
                 const double lo = span ? raw_start[i] : raw[i], hi = span ? raw_end[i] : raw[i];
-                double d = std::fabs(raw[j] - raw[i]);
-                if (raw[j] >= lo && raw[j] <= hi) d = 0.0;
-                else d = std::min(std::fabs(raw[j] - lo), std::fabs(raw[j] - hi));
+                // Story 10-12e-3: a stop event is judged at its motion's start, so it goes exactly
+                // when its Start marker would (a Swing Stop with its Swing).
+                const double rj = stops[j] ? raw_start[j] : raw[j];
+                double d = std::fabs(rj - raw[i]);
+                if (rj >= lo && rj <= hi) d = 0.0;
+                else d = std::min(std::fabs(rj - lo), std::fabs(rj - hi));
                 // A loop: the distance through the seam too.
                 if (period[i] > 0.0) {
-                    double dl = std::fmod(std::fabs(raw[j] - lo), period[i]);
+                    double dl = std::fmod(std::fabs(rj - lo), period[i]);
                     dl = std::min(dl, period[i] - dl);
-                    double dh = std::fmod(std::fabs(raw[j] - hi), period[i]);
+                    double dh = std::fmod(std::fabs(rj - hi), period[i]);
                     dh = std::min(dh, period[i] - dh);
                     d = std::min(d, std::min(dl, dh));
-                    for (double w : {raw[j] - period[i], raw[j] + period[i]})
+                    for (double w : {rj - period[i], rj + period[i]})
                         if (w >= lo && w <= hi) d = 0.0;
                 }
                 if (d <= kAutoReplaceS + 1e-9) {

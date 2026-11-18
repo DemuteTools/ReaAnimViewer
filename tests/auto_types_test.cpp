@@ -253,11 +253,15 @@ void TestKnownValues()
         const bool whoosh = tt == AutoType::Kick || tt == AutoType::Swing || tt == AutoType::Punch;
         const bool scuff = tt == AutoType::Slide || tt == AutoType::Pivot || tt == AutoType::HandPivot;
         // Story 10-12e: the body moves too, Start by default, with Start & Stop (stop_option).
-        CHECK(AutoTypeRow(tt).start_option == (whoosh || scuff || move));
-        CHECK(AutoTypeRow(tt).stop_option == move);
-        CHECK(AutoStartDefault(tt) == (scuff || move));
-        CHECK(AutoSettings().at_start[t] == (scuff || move));
-        CHECK(!AutoSettings().with_stop[t]);
+        // Story 10-12e-3: Start & Stop on every motion but Punch; Drag and Spin get Peak / Start
+        // (Start by default), Spin Start & Stop by default.
+        const bool spin_drag = tt == AutoType::Spin || tt == AutoType::Drag;
+        CHECK(AutoTypeRow(tt).start_option == (whoosh || scuff || move || spin_drag));
+        CHECK(AutoTypeRow(tt).stop_option == (AutoTypeRow(tt).start_option && tt != AutoType::Punch));
+        CHECK(AutoTypeRow(tt).stop_mark == (tt == AutoType::Punch));
+        CHECK(AutoStartDefault(tt) == (scuff || move || spin_drag));
+        CHECK(AutoSettings().at_start[t] == (scuff || move || spin_drag));
+        CHECK(AutoSettings().with_stop[t] == (tt == AutoType::Spin) && AutoStopDefault(tt) == (tt == AutoType::Spin));
     }
     CHECK(AutoCategoryOf(AutoType::Jump) == AutoCategory::Legs && AutoCategoryOf(AutoType::Land) == AutoCategory::Legs);
     CHECK(std::string(AutoKindWord(AutoKind::Jump)) == "jump" && std::string(AutoKindWord(AutoKind::Land)) == "land");
@@ -405,10 +409,11 @@ void TestRoles()
     }
 }
 
-// Story 10-9j: a scuff's Peak twin's Start kind ("pivot_heel_peak" -> pivot_heel); any other kind
-// itself.
+// Story 10-9j: a scuff's Peak twin's Start kind ("pivot_heel_peak" -> pivot_heel); story 10-12e-3:
+// a stop kind's Start kind ("pivot_heel_longest_stop" -> pivot_heel_longest); any other kind itself.
 AutoKind StartKindOf(AutoKind k)
 {
+    if (AutoKindRow(k).at_stop) return AutoStartKindOfStop(k);
     const std::string w = AutoKindWord(k), tail = "_peak";
     AutoKind          out = k;
     if (w.size() > tail.size() && w.compare(w.size() - tail.size(), tail.size(), tail) == 0)
@@ -437,19 +442,25 @@ void TestRowInvariants()
             const bool punch_pair = (r.kind == AutoKind::Punch && o.kind == AutoKind::PunchPeak) ||
                                     (r.kind == AutoKind::PunchPeak && o.kind == AutoKind::Punch);
             // Story 10-9c: a Peak kind and its Start twin read their own source.
-            // Story 10-12e: a stop kind reads its own source too.
-            if (hand_pivot_pair || punch_pair || r.at_start != o.at_start || r.at_stop != o.at_stop)
+            // Story 10-12e: a stop kind reads its own source too (story 10-12e-3: but Spin's, whose
+            // start and end come from one source, told apart by their match).
+            const bool spin_pair = r.type == AutoType::Spin && (r.kind == AutoKind::SpinEnd || o.kind == AutoKind::SpinEnd) &&
+                                   (r.kind == AutoKind::Spin || o.kind == AutoKind::Spin);
+            if (spin_pair) CHECK(r.sigs[0].source == o.sigs[0].source && r.sigs[0].match != o.sigs[0].match);
+            else if (hand_pivot_pair || punch_pair || r.at_start != o.at_start || r.at_stop != o.at_stop)
                 CHECK(r.sigs[0].source != o.sigs[0].source);
             else CHECK(r.sigs[0].source == o.sigs[0].source);
         }
         if (r.scuff != ScuffParts::Combined) {
-            AutoKind ck = r.type == AutoType::Slide ? AutoKind::Slide : AutoKind::Pivot;
-            if (StartKindOf(r.kind) != r.kind) ck = r.type == AutoType::Slide ? AutoKind::SlidePeak : AutoKind::PivotPeak;
+            const bool peak = StartKindOf(r.kind) != r.kind && !r.at_stop;
+            AutoKind   ck = r.type == AutoType::Slide ? AutoKind::Slide : AutoKind::Pivot;
+            if (peak) ck = r.type == AutoType::Slide ? AutoKind::SlidePeak : AutoKind::PivotPeak;
+            if (r.at_stop) ck = r.type == AutoType::Slide ? AutoKind::SlideStop : AutoKind::PivotStop;  // story 10-12e-3
             const AutoKindInfo& combined = AutoKindRow(ck);
             CHECK(combined.scuff == ScuffParts::Combined && combined.type == r.type);
             if (r.scuff == ScuffParts::EachPart) CHECK(r.sigs[0].source != combined.sigs[0].source);
             // Story 10-9j: a Longest part Peak twin times the part that holds longest (its own source).
-            else CHECK((r.sigs[0].source == combined.sigs[0].source) == (StartKindOf(r.kind) == r.kind));
+            else CHECK((r.sigs[0].source == combined.sigs[0].source) == !peak);
         }
     }
     // Story 10-10a: every type's confidence probes at least one of its sensitivity fields (its

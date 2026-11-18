@@ -37,10 +37,14 @@
 //     kept across a switch follow the row. Story 10-9q: Detect's search raises every ticked type
 //     (a ticked type is one the user sees; a find after a raise reads doubtful).
 //   - a Start & Stop beside Peak / Start (story 10-12e): `stop_option` on a `start_option` type's
-//     row whose first kind marks the start, and per Start kind a stop kind appended with `at_stop`
-//     (its own marker "<the start kind's marker> Stop", colour and sound key; static_assert
-//     below). The Peak / Start / Start & Stop widget (tagging_view_ui.cpp, any category), the
-//     stop kinds' blocks (KindsOf, AutoSettings::with_stop) and the settings follow the row.
+//     row, and per Start kind a stop kind appended with `at_stop`, in the order of the Start kinds
+//     (its own marker "<the start kind's marker> Stop", colour and sound key, shared by two stop
+//     kinds of one marker as their Start kinds share theirs; static_assert below). Story
+//     10-12e-3: any such type, Peak-default ones too (kick, swing); its stop kinds' source is
+//     usually its Start kind's events re-timed at their end (AutoEventsAtEnd, no new detection);
+//     `stop_default` makes Start & Stop its default (Spin). The "Marker at" component
+//     (tagging_view_ui.cpp, any category, its options from the row: AutoMarkAtOptions), the stop
+//     kinds' blocks (KindsOf, AutoSettings::with_stop) and the settings follow the row.
 // Adding a signature to a kind (story 10-9a-2): a new way to recognise the same event, for an
 // edge case the kind's other signatures miss. Append {name, event source, match} to the kind's
 // `sigs` (at most kAutoMaxSignatures, contiguous); its source and match live in the category's
@@ -282,6 +286,46 @@ std::vector<PhysicsEvent> AutoSourceDashPeak(const PhysicsAnalysis& a, const Phy
 std::vector<PhysicsEvent> AutoSourceDashStop(const PhysicsAnalysis& a, const PhysicsParams& p);
 bool AutoMatchDash(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
 void AutoLanesDash(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+// foot_taps.cpp, auto_types_spin.cpp (story 10-12e-3: the Peak twins of Drag and Spin)
+std::vector<PhysicsEvent> AutoSourceDragPeak(const PhysicsAnalysis& a, const PhysicsParams& p);
+std::vector<PhysicsEvent> AutoSourceSpinPeak(const PhysicsAnalysis& a, const PhysicsParams& p);
+
+namespace {
+
+// Story 10-12e-3: the stop kinds' sources: their Start kinds' events, re-timed at their end
+// (AutoEventsAtEnd). Each a function of its own (AutoEvents computes a source once per analysis).
+// The whooshes read their Peak events (the same runs): on a loop a run starting before the seam
+// has its Start event's time wrapped past its end, its Peak event's time never.
+std::vector<PhysicsEvent> AutoSourceFootStop(const PhysicsAnalysis& a, const PhysicsParams& p)
+{
+    return AutoEventsAtEnd(AutoSourceFoot(a, p), a);
+}
+std::vector<PhysicsEvent> AutoSourceFootPartsStop(const PhysicsAnalysis& a, const PhysicsParams& p)
+{
+    return AutoEventsAtEnd(AutoSourceFootParts(a, p), a);
+}
+std::vector<PhysicsEvent> AutoSourceHandStop(const PhysicsAnalysis& a, const PhysicsParams& p)
+{
+    return AutoEventsAtEnd(AutoSourceHand(a, p), a);
+}
+std::vector<PhysicsEvent> AutoSourceHandAnyStop(const PhysicsAnalysis& a, const PhysicsParams& p)
+{
+    return AutoEventsAtEnd(AutoSourceHandAny(a, p), a);
+}
+std::vector<PhysicsEvent> AutoSourceWhooshStop(const PhysicsAnalysis& a, const PhysicsParams& p)
+{
+    return AutoEventsAtEnd(AutoSourceWhoosh(a, p), a);
+}
+std::vector<PhysicsEvent> AutoSourceSwingStop(const PhysicsAnalysis& a, const PhysicsParams& p)
+{
+    return AutoEventsAtEnd(AutoSourceSwing(a, p), a);
+}
+std::vector<PhysicsEvent> AutoSourceDragStop(const PhysicsAnalysis& a, const PhysicsParams& p)
+{
+    return AutoEventsAtEnd(AutoSourceDrag(a, p), a);
+}
+
+}  // namespace
 
 namespace {
 
@@ -313,14 +357,15 @@ constexpr AutoTypeInfo kTypeRows[] = {
     {T::Slide, "Slide scuff", "Slide scuff", C::Legs,
      "A marker where a planted foot slides: Slide L / Slide R (combined),\n"
      "or Slide Heel L / Slide Toe L... (separate). At the slide's start, or where it rubs\n"
-     "fastest (Peak).",
-     "slide", {{&P::slide_speed, S::Divide}, {}}, &AutoPartsFootSplit, false, false, false, true},
+     "fastest (Peak). Start & Stop: also Slide Stop L... where it ends (a sound of its own).",
+     "slide", {{&P::slide_speed, S::Divide}, {}}, &AutoPartsFootSplit, false, false, false, true, -1, -1, false, 0u,
+     1.0, false, true},
     {T::Pivot, "Pivot scuff", "Pivot scuff", C::Legs,
      "A marker where a planted foot turns on its ball or heel: Pivot L / Pivot R (combined),\n"
      "or Pivot Heel L / Pivot Toe L... (separate). At the turn's start, or where the planted\n"
-     "part rubs fastest (Peak).",
+     "part rubs fastest (Peak). Start & Stop: also Pivot Stop L... where it ends (a sound of its own).",
      "pivot", {{&P::pivot_min_deg, S::Divide}, {&P::pivot_rate_dps, S::Divide}}, &AutoPartsFootBoth, false, false, false,
-     true},
+     true, -1, -1, false, 0u, 1.0, false, true},
     {T::Grab, "Grab", "Grab", C::Arms, "A marker where the hand lands on something: Grab L / Grab R.", "grab",
      {{&P::hand_contact_speed, S::Times}, {}}, &AutoPartsHands},
     {T::Release, "Release", "Release", C::Arms, "A marker where the hand leaves its support: Release L / Release R.",
@@ -328,9 +373,10 @@ constexpr AutoTypeInfo kTypeRows[] = {
     // Story 10-8e: the hand's Pivot scuff is named with its category in undo names.
     {T::HandPivot, "Pivot scuff", "Arms Pivot scuff", C::Arms,
      "A marker where a planted hand turns: Hand Pivot L / Hand Pivot R. At the turn's start,\n"
-     "or where the hand rubs fastest (Peak).", "hand_pivot",
+     "or where the hand rubs fastest (Peak). Start & Stop: also Hand Pivot Stop L / R where it\n"
+     "ends (a sound of its own).", "hand_pivot",
      {{&P::hand_pivot_min_deg, S::Divide}, {&P::hand_pivot_rate_dps, S::Divide}}, &AutoPartsHands, false, false, false,
-     true},
+     true, -1, -1, false, 0u, 1.0, false, true},
     // Story 10-9a: higher sensitivity = shorter flights count; story 10-9a-2: and a softer
     // push-off (jump_impulse_g) counts. Story 10-9a-3: on the foot that leaves last / touches
     // first (L / R), Combined / Separate.
@@ -355,11 +401,14 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "Raise the sensitivity for softer steps, lower it for only the hard impacts.",
      "jolt", {{&P::jolt_min_g, S::Divide}, {}}, &AutoPartsJolt, true, false, false},
     // Story 10-9f: the Body's first type, sideless (a turn of the whole body has no foot).
-    // Higher sensitivity = a smaller turn counts (the sweep / f).
+    // Higher sensitivity = a smaller turn counts (the sweep / f). Story 10-12e-3: Marker at Peak /
+    // Start / Start & Stop, Start & Stop by default (its Spin and Spin End markers before).
     {T::Spin, "Spin", "Spin", C::Body,
-     "A spin of the whole body (the hips turning about the vertical):\n"
-     "Spin where it starts turning, Spin End where it stops (45 deg or more).",
-     "spin", {{&P::spin_min_deg, S::Divide}, {}}, &AutoPartsSpin, true, false, false},
+     "A spin of the whole body (the hips turning about the vertical, 45 deg or more).\n"
+     "Start & Stop: Spin where it starts turning, Spin Stop where it stops (a sound of its own).\n"
+     "Start: Spin only; Peak: Spin where it turns fastest.",
+     "spin", {{&P::spin_min_deg, S::Divide}, {}}, &AutoPartsSpin, true, false, false, true, -1, -1, false, 0u, 1.0,
+     false, true, true},
     // Story 10-9e: higher sensitivity = longer toe contacts count as taps, and shorter toe
     // slides (a lower minimum length) as drags.
     {T::Tap, "Tap", "Tap", C::Legs,
@@ -370,8 +419,11 @@ constexpr AutoTypeInfo kTypeRows[] = {
      static_cast<int>(T::LiftOff), true},
     {T::Drag, "Drag", "Drag", C::Legs,
      "A marker where the toes slide on the ground during a swing, the heel up\n"
-     "(a foot dragged behind, a crawl, a kneel): Drag L / Drag R.",
-     "drag", {{&P::drag_min_s, S::Divide}, {}}, &AutoPartsFootBoth, false, false, false},
+     "(a foot dragged behind, a crawl, a kneel): Drag L / Drag R. At the drag's start, or where\n"
+     "the toe slides fastest (Peak). Start & Stop: also Drag Stop L / R where it ends (a sound\n"
+     "of its own).",
+     "drag", {{&P::drag_min_s, S::Divide}, {}}, &AutoPartsFootBoth, false, false, false, true, -1, -1, false, 0u, 1.0,
+     false, true},
     // Story 10-9b: body contacts, segmented as the hands (higher sensitivity = a faster part
     // still counts as at rest); a fall: a slower descent counts. Sit and Fall are the body's
     // (sideless).
@@ -404,14 +456,18 @@ constexpr AutoTypeInfo kTypeRows[] = {
     {T::Kick, "Kick", "Kick", C::Legs,
      "A marker where a foot whips through the air, raised off the ground (Kick L / Kick R),\n"
      "at its fastest, or where the motion starts (Start). Separate: on the part fastest\n"
-     "at the peak (Kick Heel L / Kick Toe L...).",
-     "kick", {{&P::kick_speed, S::Divide}, {}}, &AutoPartsKick, false, true, false, true},
+     "at the peak (Kick Heel L / Kick Toe L...). Start & Stop: also Kick Stop L... where the\n"
+     "motion ends (a sound of its own).",
+     "kick", {{&P::kick_speed, S::Divide}, {}}, &AutoPartsKick, false, true, false, true, -1, -1, false, 0u, 1.0, false,
+     true},
     {T::Swing, "Swing", "Swing", C::Arms,
      "A marker where a hand whips through the air (Swing L / Swing R): the arm's whoosh, with or\n"
      "without a blow, at its fastest, or where the motion starts (Start). A blow's stop is a\n"
      "Punch: tick both for the whoosh and the hit. The arm pulled back while the other hand\n"
-     "punches is no Swing.",
-     "swing", {{&P::swing_speed, S::Divide}, {}}, &AutoPartsWhooshHand, false, false, false, true},
+     "punches is no Swing. Start & Stop: also Swing Stop L / R where the motion ends (a sound\n"
+     "of its own).",
+     "swing", {{&P::swing_speed, S::Divide}, {}}, &AutoPartsWhooshHand, false, false, false, true, -1, -1, false, 0u,
+     1.0, false, true},
     // Story 10-9o: any fist blow, straight (punch_speed) or arc (punch_arc_speed: 10-9n's
     // Strike); higher sensitivity = slower blows count. With Arms Land ticked it replaces that
     // hand's Arms Land at the same time (`replaces`: a blow landing with a jump hits, Jump
@@ -426,7 +482,8 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "(e.g. its outfit or weapon). With Swing ticked too, the blow's whoosh is a Swing.",
      "punch", {{&P::punch_speed, S::Divide}, {&P::punch_arc_speed, S::Divide}}, &AutoPartsWhooshHand, false, false,
      false, true, static_cast<int>(T::ArmLand), -1, true, 0u,
-     0.5, true},  // conf_scale: half steps (a jab's 2.34 leg/s over punch_speed 2.0, the elbow blow's 5.1 over punch_arc_speed 5.0)
+     0.5, true, false, false, true},  // stop_mark (10-12e-3: Marker at Stop / Peak / Start)
+     // conf_scale: half steps (a jab's 2.34 leg/s over punch_speed 2.0, the elbow blow's 5.1 over punch_arc_speed 5.0)
     // Story 10-9i: higher sensitivity = a smaller heel rise counts (heel_tap_min_rise / f).
     {T::HeelTap, "Heel Tap", "Heel Tap", C::Legs,
      "A marker where the heel drops back onto the floor while the ball of the foot stays down\n"
@@ -584,6 +641,27 @@ constexpr AutoStrengthCuts kStrengthRows[] = {
 
 constexpr ScuffParts kNo = ScuffParts::Combined, kEach = ScuffParts::EachPart, kLong = ScuffParts::Longest;
 
+// Story 10-12e-3: a stop kind's colour, a shade lighter than its Start kind's: each channel 1/5 of
+// the way to white (Lighter), a toe part's stop 1/2 (Lightest), so a heel stop stays apart from
+// the toe start and the toe stop from both (tests/start_stop_test.cpp: their distance).
+constexpr uint32_t Toward(uint32_t rgb, uint32_t num, uint32_t den)
+{
+    uint32_t out = 0;
+    for (int sh = 0; sh <= 16; sh += 8) {
+        const uint32_t c = (rgb >> sh) & 0xFFu;
+        out |= (c + (255u - c) * num / den) << sh;
+    }
+    return out;
+}
+constexpr uint32_t Lighter(uint32_t rgb)
+{
+    return Toward(rgb, 1u, 5u);
+}
+constexpr uint32_t Lightest(uint32_t rgb)
+{
+    return Toward(rgb, 1u, 2u);
+}
+
 constexpr AutoKindInfo kKindRows[] = {
     // kind, word, type, marker, colours L/R, scuff mode, scuff heel, degrees, role key, sound key,
     // signatures ({name, event source, match}...), part missing, lanes, roles
@@ -670,16 +748,20 @@ constexpr AutoKindInfo kKindRows[] = {
     // Story 10-9g: the gear jolt (one colour, no role key), strength in g.
     {K::Jolt, "jolt", T::Jolt, "Jolt", {0xC88C3C, 0xC88C3C}, kNo, false, false, "", K::Jolt,
      {{"impact", &AutoSourceJolt, &AutoMatchJolt}}, &AutoMissingJolt, &AutoLanesJolt, &AutoRolesJolt, "g"},
-    // Story 10-9f: a spin's start and its end (sideless: color[0]; the end a shade lighter).
+    // Story 10-9f: a spin's start and its end (sideless: color[0]; the end a shade lighter). Story
+    // 10-12e-3: the start kind marks the start (`at_start`), the end is its stop kind (`at_stop`,
+    // its word kept, its marker "Spin Stop": a block saved as "Spin End" keeps its own name).
     {K::Spin, "spin", T::Spin, "Spin", {0xB45FDD, 0xB45FDD}, kNo, false, true, "", K::Spin,
-     {{"hip turn", &AutoSourceSpin, &AutoMatchSpin}}, &AutoMissingSpin, &AutoLanesSpin, &AutoRolesSpin},
-    {K::SpinEnd, "spin_end", T::Spin, "Spin End", {0xD29FEE, 0xD29FEE}, kNo, false, true, "", K::SpinEnd,
-     {{"hip turn", &AutoSourceSpin, &AutoMatchSpinEnd}}, &AutoMissingSpin, &AutoLanesSpin, &AutoRolesSpin},
+     {{"hip turn", &AutoSourceSpin, &AutoMatchSpin}}, &AutoMissingSpin, &AutoLanesSpin, &AutoRolesSpin, nullptr, true},
+    {K::SpinEnd, "spin_end", T::Spin, "Spin Stop", {0xD29FEE, 0xD29FEE}, kNo, false, true, "", K::SpinEnd,
+     {{"hip turn", &AutoSourceSpin, &AutoMatchSpinEnd}}, &AutoMissingSpin, &AutoLanesSpin, &AutoRolesSpin, nullptr,
+     false, true},
     // Story 10-9e: tap and drag, on the toe (the ball or the tip).
     {K::Tap, "tap", T::Tap, "Tap", {0x78B4F0, 0xF0B478}, kNo, false, false, "toe", K::Tap,
      {{"contact", &AutoSourceTap, &AutoMatchTap}}, &AutoMissingHeelOrToe, &AutoLanesToe, &AutoRolesFoot},
     {K::Drag, "drag", T::Drag, "Drag", {0x8C96B4, 0xB4968C}, kNo, false, false, "toe", K::Drag,
-     {{"drag", &AutoSourceDrag, &AutoMatchDrag}}, &AutoMissingHeelOrToe, &AutoLanesDrag, &AutoRolesFoot},
+     {{"drag", &AutoSourceDrag, &AutoMatchDrag}}, &AutoMissingHeelOrToe, &AutoLanesDrag, &AutoRolesFoot, nullptr,
+     true},  // story 10-12e-3: marks the drag's start (Start, its default)
     // Story 10-9b: body contacts.
     {K::Knee, "knee", T::Knee, "Knee", {0x7F7FB4, 0xB47F7F}, kNo, false, false, "knee", K::Knee,
      {{"contact", &AutoSourceBody, &AutoMatchKnee}}, &AutoMissingKnee, &AutoLanesKnee, &AutoRolesKnee},
@@ -837,6 +919,81 @@ constexpr AutoKindInfo kKindRows[] = {
     {K::DashStop, "dash_stop", T::Dash, "Dash Stop", {0xE0A77A, 0xE0A77A}, kNo, false, false, "", K::DashStop,
      {{"travel burst", &AutoSourceDashStop, &AutoMatchDash}}, &AutoMissingBodyMoveHips, &AutoLanesDash,
      &AutoRolesBodyMoveHips, nullptr, false, true},
+    // Story 10-12e-3: Start & Stop on the motions that are no impact: per Start kind a stop kind
+    // (`at_stop`), in the order of the type's Start kinds: "<its marker> Stop", a shade lighter, a
+    // sound key of its own (two stop kinds of one marker share it, as their Start kinds do), its
+    // events the Start kind's re-timed at their end (AutoEventsAtEnd).
+    {K::SlideStop, "slide_stop", T::Slide, "Slide Stop", {Lighter(0x5FDD5F), Lighter(0xDD5FDD)}, kNo, false, false, "",
+     K::SlideStop, {{"slide", &AutoSourceFootStop, &AutoMatchSlide}},
+     &AutoMissingFootAny, &AutoLanesFootSlide, &AutoRolesFoot, nullptr, false, true},
+    {K::SlideHeelStop, "slide_heel_stop", T::Slide, "Slide Heel Stop", {Lighter(0x5FDD5F), Lighter(0xDD5FDD)},
+     kEach, true, false, "heel",
+     K::SlideHeelStop, {{"slide", &AutoSourceFootPartsStop, &AutoMatchSlideHeel}},
+     &AutoMissingHeel, &AutoLanesSlideHeel, &AutoRolesFoot, nullptr, false, true},
+    {K::SlideToeStop, "slide_toe_stop", T::Slide, "Slide Toe Stop", {Lightest(0x9FEE9F), Lightest(0xEE9FEE)},
+     kEach, false, false, "toe",
+     K::SlideToeStop, {{"slide", &AutoSourceFootPartsStop, &AutoMatchSlideToe}},
+     &AutoMissingToe, &AutoLanesSlideToe, &AutoRolesFoot, nullptr, false, true},
+    {K::SlideHeelLongestStop, "slide_heel_longest_stop", T::Slide, "Slide Heel Stop", {Lighter(0x5FDD5F), Lighter(0xDD5FDD)},
+     kLong, true, false, "heel",
+     K::SlideHeelStop, {{"slide", &AutoSourceFootStop, &AutoMatchSlideHeelLongest}},
+     &AutoMissingHeel, &AutoLanesSlideHeel, &AutoRolesFoot, nullptr, false, true},
+    {K::SlideToeLongestStop, "slide_toe_longest_stop", T::Slide, "Slide Toe Stop", {Lightest(0x9FEE9F), Lightest(0xEE9FEE)},
+     kLong, false, false, "toe",
+     K::SlideToeStop, {{"slide", &AutoSourceFootStop, &AutoMatchSlideToeLongest}},
+     &AutoMissingToe, &AutoLanesSlideToe, &AutoRolesFoot, nullptr, false, true},
+    {K::PivotStop, "pivot_stop", T::Pivot, "Pivot Stop", {Lighter(0x9E5FDD), Lighter(0xDD5F9E)}, kNo, false, true, "",
+     K::PivotStop, {{"pivot", &AutoSourceFootStop, &AutoMatchPivot}},
+     &AutoMissingHeelOrToe, &AutoLanesPivot, &AutoRolesFoot, nullptr, false, true},
+    {K::PivotHeelStop, "pivot_heel_stop", T::Pivot, "Pivot Heel Stop", {Lighter(0x9E5FDD), Lighter(0xDD5F9E)},
+     kEach, true, true, "heel",
+     K::PivotHeelStop, {{"pivot", &AutoSourceFootPartsStop, &AutoMatchPivotHeel}},
+     &AutoMissingHeelOrToe, &AutoLanesPivot, &AutoRolesFoot, nullptr, false, true},
+    {K::PivotToeStop, "pivot_toe_stop", T::Pivot, "Pivot Toe Stop", {Lightest(0xC49FEE), Lightest(0xEE9FC4)},
+     kEach, false, true, "toe",
+     K::PivotToeStop, {{"pivot", &AutoSourceFootPartsStop, &AutoMatchPivotToe}},
+     &AutoMissingHeelOrToe, &AutoLanesPivot, &AutoRolesFoot, nullptr, false, true},
+    {K::PivotHeelLongestStop, "pivot_heel_longest_stop", T::Pivot, "Pivot Heel Stop", {Lighter(0x9E5FDD), Lighter(0xDD5F9E)},
+     kLong, true, true, "heel",
+     K::PivotHeelStop, {{"pivot", &AutoSourceFootStop, &AutoMatchPivotHeelLongest}},
+     &AutoMissingHeelOrToe, &AutoLanesPivot, &AutoRolesFoot, nullptr, false, true},
+    {K::PivotToeLongestStop, "pivot_toe_longest_stop", T::Pivot, "Pivot Toe Stop", {Lightest(0xC49FEE), Lightest(0xEE9FC4)},
+     kLong, false, true, "toe",
+     K::PivotToeStop, {{"pivot", &AutoSourceFootStop, &AutoMatchPivotToeLongest}},
+     &AutoMissingHeelOrToe, &AutoLanesPivot, &AutoRolesFoot, nullptr, false, true},
+    {K::HandPivotStop, "hand_pivot_stop", T::HandPivot, "Hand Pivot Stop", {Lighter(0xA8DD3C), Lighter(0xB4643C)},
+     kNo, false, true, "hand",
+     K::HandPivotStop, {{"pivot", &AutoSourceHandStop, &AutoMatchHandPivot}},
+     &AutoMissingHand, &AutoLanesHandPivot, &AutoRolesHand, nullptr, false, true},
+    {K::HandPivotAnyStop, "hand_pivot_any_stop", T::HandPivot, "Hand Pivot Stop", {Lighter(0xA8DD3C), Lighter(0xB4643C)},
+     kNo, false, true, "hand",
+     K::HandPivotStop, {{"pivot", &AutoSourceHandAnyStop, &AutoMatchHandPivot}},
+     &AutoMissingHand, &AutoLanesHandPivot, &AutoRolesHand, nullptr, false, true},
+    {K::KickStop, "kick_stop", T::Kick, "Kick Stop", {Lighter(0x7850DD), Lighter(0xDD7850)}, kNo, false, false, "",
+     K::KickStop, {{"end", &AutoSourceWhooshStop, &AutoMatchKick}},
+     &AutoMissingKick, &AutoLanesKick, &AutoRolesKick, nullptr, false, true},
+    {K::KickHeelStop, "kick_heel_stop", T::Kick, "Kick Heel Stop", {Lighter(0x7850DD), Lighter(0xDD7850)},
+     kNo, false, false, "heel",
+     K::KickHeelStop, {{"end", &AutoSourceWhooshStop, &AutoMatchKickHeel}},
+     &AutoMissingKickHeel, &AutoLanesKick, &AutoRolesKick, nullptr, false, true},
+    {K::KickToeStop, "kick_toe_stop", T::Kick, "Kick Toe Stop", {Lightest(0xA896EE), Lightest(0xEEA896)},
+     kNo, false, false, "toe",
+     K::KickToeStop, {{"end", &AutoSourceWhooshStop, &AutoMatchKickToe}},
+     &AutoMissingKickToe, &AutoLanesKick, &AutoRolesKick, nullptr, false, true},
+    {K::SwingStop, "swing_stop", T::Swing, "Swing Stop", {Lighter(0x3CA0DD), Lighter(0xDD3CA0)},
+     kNo, false, false, "hand",
+     K::SwingStop, {{"end", &AutoSourceSwingStop, &AutoMatchSwing}},
+     &AutoMissingWhooshHand, &AutoLanesSwing, &AutoRolesWhooshHand, nullptr, false, true},
+    // Story 10-12e-3: Drag's Peak twin (the toe's fastest slide in the run; Drag marks the start)
+    // and its stop kind.
+    {K::DragPeak, "drag_peak", T::Drag, "Drag", {0x8C96B4, 0xB4968C}, kNo, false, false, "toe", K::Drag,
+     {{"drag", &AutoSourceDragPeak, &AutoMatchDrag}}, &AutoMissingHeelOrToe, &AutoLanesDrag, &AutoRolesFoot},
+    {K::DragStop, "drag_stop", T::Drag, "Drag Stop", {Lighter(0x8C96B4), Lighter(0xB4968C)}, kNo, false, false, "toe",
+     K::DragStop, {{"drag", &AutoSourceDragStop, &AutoMatchDrag}},
+     &AutoMissingHeelOrToe, &AutoLanesDrag, &AutoRolesFoot, nullptr, false, true},
+    // Story 10-12e-3: Spin's Peak twin, where the hips turn fastest (Spin marks the start).
+    {K::SpinPeak, "spin_peak", T::Spin, "Spin", {0xB45FDD, 0xB45FDD}, kNo, false, true, "", K::Spin,
+     {{"hip turn", &AutoSourceSpinPeak, &AutoMatchSpin}}, &AutoMissingSpin, &AutoLanesSpin, &AutoRolesSpin},
 };
 
 // One row per enum value, in enum order.
@@ -935,7 +1092,11 @@ constexpr bool StartTwinsPaired()
 static_assert(StartTwinsPaired(), "a start_option type's Peak and Start kinds pair in the same order");
 // Story 10-12e: a stop kind (`at_stop`) belongs to a `start_option` and `stop_option` type, is never
 // `at_start`, names its own sound key and its marker "<the type's start marker> Stop"; a
-// `stop_option` type has one stop kind per Start kind, in their order, and Start as its default.
+// `stop_option` type has one stop kind per Start kind, in their order. Story 10-12e-3: Start is no
+// longer its default (kick, swing: Peak); two stop kinds of one marker may share a sound key (a
+// stop kind of the same type and marker that names itself), as their Start kinds do; only a
+// `stop_option` type has `stop_default`; only a `start_option` type without stops has `stop_mark`
+// (Punch).
 constexpr bool StopMarker(const char* start, const char* stop)
 {
     for (; *start && *start == *stop; ++start, ++stop) {}
@@ -952,17 +1113,14 @@ constexpr bool StopKindsValid()
     for (const AutoKindInfo& r : kKindRows) {
         if (!r.at_stop) continue;
         const AutoTypeInfo& t = kTypeRows[static_cast<int>(r.type)];
-        if (!t.start_option || !t.stop_option || r.at_start || r.sound_key != r.kind) return false;
+        if (!t.start_option || !t.stop_option || r.at_start) return false;
+        const AutoKindInfo& k = kKindRows[static_cast<int>(r.sound_key)];
+        if (!k.at_stop || k.type != r.type || k.sound_key != k.kind || !SameText(k.marker, r.marker)) return false;
     }
     for (const AutoTypeInfo& t : kTypeRows) {
+        if ((t.stop_default && !t.stop_option) || (t.stop_mark && (!t.start_option || t.stop_option))) return false;
         if (!t.stop_option) continue;
         if (!t.start_option || !NthOfFlavour(t.type, true, 0)) return false;
-        // Start is the default: the type's first kind marks the start.
-        for (const AutoKindInfo& r : kKindRows)
-            if (r.type == t.type) {
-                if (!r.at_start) return false;
-                break;
-            }
         for (int n = 0;; ++n) {
             const AutoKindInfo* a = NthOfFlavour(t.type, true, n);
             const AutoKindInfo* b = NthStop(t.type, n);
@@ -979,7 +1137,37 @@ int RowIndex(int i, int count)
     return (i >= 0 && i < count) ? i : 0;
 }
 
+// Story 10-12e-3: the n-th Start kind of a type (non-stop, `at_start`), or null.
+const AutoKindInfo* NthStart(AutoType t, int n)
+{
+    return NthOfFlavour(t, true, n);
+}
+
 }  // namespace
+
+AutoKind AutoStopKindOf(AutoKind start)
+{
+    const AutoKindInfo& r = AutoKindRow(start);
+    if (r.kind != start || r.at_stop || !r.at_start || !AutoTypeRow(r.type).stop_option) return start;
+    for (int n = 0; const AutoKindInfo* k = NthStart(r.type, n); ++n)
+        if (k->kind == start) {
+            const AutoKindInfo* stop = NthStop(r.type, n);
+            return stop ? stop->kind : start;
+        }
+    return start;
+}
+
+AutoKind AutoStartKindOfStop(AutoKind stop)
+{
+    const AutoKindInfo& r = AutoKindRow(stop);
+    if (r.kind != stop || !r.at_stop) return stop;
+    for (int n = 0; const AutoKindInfo* k = NthStop(r.type, n); ++n)
+        if (k->kind == stop) {
+            const AutoKindInfo* start = NthStart(r.type, n);
+            return start ? start->kind : stop;
+        }
+    return stop;
+}
 
 const AutoCategoryInfo& AutoCategoryRow(AutoCategory c)
 {
@@ -1059,6 +1247,30 @@ std::vector<double> AutoLaneWindow(const std::vector<double>& v, size_t first, s
     std::vector<double> out(n, 0.0);
     for (size_t i = 0; i < n && first + i < v.size(); ++i) out[i] = absval ? std::fabs(v[first + i]) : v[first + i];
     return out;
+}
+
+std::vector<PhysicsEvent> AutoEventsAtEnd(std::vector<PhysicsEvent> ev, const PhysicsAnalysis& a)
+{
+    if (!(a.rate_hz > 0.0)) return ev;
+    const bool   loop = a.looping && a.window_samples > 1;
+    const double T = loop ? static_cast<double>(a.window_samples - 1) / a.rate_hz : 0.0;
+    const double last = a.samples > 0 ? static_cast<double>(a.samples - 1) / a.rate_hz : 0.0;
+    for (PhysicsEvent& e : ev) {
+        double t = std::max(e.end_s, e.time_s);
+        if (!loop) t = std::min(t, std::max(last, e.time_s));  // a motion the clip's end cuts: its last sample
+        e.time_s = t;
+        e.end_s = std::max(e.end_s, t);
+        // Past the seam: the whole event one cycle back (start <= time <= end on one cycle).
+        while (loop && e.time_s >= T - 1e-9) {
+            e.time_s -= T;
+            e.start_s -= T;
+            e.end_s -= T;
+        }
+        if (loop && e.time_s < 0.0) e.time_s = 0.0;
+    }
+    std::stable_sort(ev.begin(), ev.end(),
+                     [](const PhysicsEvent& x, const PhysicsEvent& y) { return x.time_s < y.time_s; });
+    return ev;
 }
 
 void AutoPartLane(const AutoLaneArgs& args, std::vector<AutoLane>& out, const PartTrack& pt, const char* name,

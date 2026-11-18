@@ -102,6 +102,21 @@ int main()
         CHECK(FoundTarget("heel_tap") == "heel_tap");
         CHECK(!ParseRefLine("heel_tap\tB\theel\t1\tdraft\tmotion", nullptr, &e));
     }
+    // ---- Story 10-12e: the body moves, side B, scored in both configurations; a detection at the
+    // peak on the start's row, a stop on a row of its own.
+    {
+        RefLine     r;
+        std::string e;
+        for (const char* k : {"crouch", "stand_up", "bend", "rise", "crouch_stop", "stand_up_stop", "bend_stop", "rise_stop"}) {
+            CHECK(ParseRefLine(std::string(k) + "\tB\tany\t1.9\tdraft\tmotion", &r, &e) && r.side == 'B');
+            CHECK(RefTarget(r, BenchConfig::Default) == k && RefTarget(r, BenchConfig::Parts) == k);
+            CHECK(FoundTarget(k) == k);
+        }
+        CHECK(FoundTarget("crouch_peak") == "crouch" && FoundTarget("stand_up_peak") == "stand_up" &&
+              FoundTarget("bend_peak") == "bend" && FoundTarget("rise_peak") == "rise");
+        CHECK(!ParseRefLine("crouch_peak\tB\tany\t1\tdraft\tmotion", nullptr, &e));  // references mark the start
+        CHECK(!ParseRefLine("crouch_start\tB\tany\t1\tdraft\tmotion", nullptr, &e));
+    }
 
     // ---- Configuration targets.
     {

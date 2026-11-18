@@ -61,9 +61,30 @@
 #   hand hold        the hand still (|velocity - world| < 0.3 L/s) for 150 ms or more while the
 #                    hips move 0.12 L or more relative to it: grab <side> hand at its start,
 #                    release <side> hand at its end (none at the clip's edges).
+#   body moves       story 10-12e, side B, part any, each at the move's start: the hips' height
+#                    above the lowest foot part at that sample (never one floor: a climb's feet
+#                    climb too), smoothed over 100 ms, swinging 0.2 L or more between two turning
+#                    points (a zigzag with 0.2 L of hysteresis) within 1.5 s (its start: the last
+#                    sample within 5 % of the swing of the first turning point), inside one foot
+#                    contact stretch (a flight between breaks it), each foot's lowest part ending
+#                    within 0.1 L of its height at the swing's start (a climb puts one foot on the
+#                    next hold): crouch down, stand_up up. The trunk's forward lean (hips to
+#                    neck, along the facing perpendicular to the up legs' line, 0 when upright or
+#                    behind) swinging 20 deg or more the same way at 40 deg/s or more on average
+#                    (walking's lean drifts 20-24 deg at about 30): bend forward, rise back, unless
+#                    it overlaps a drafted crouch / stand_up by half the shorter of the two spans
+#                    (one motion, one marker).
 # No arrival (step, land, grab, pivot) within 30 ms of the clip's start, no departure (lift,
 # jump, release) within 30 ms of its end. No slide and no hand pivot draft: Antho adds them on
 # the page.
+#
+#   --kinds=<k1,k2...>  drafts only those kinds (story 10-12e: --kinds=crouch,stand_up,bend,rise)
+#                       into the clips that have a reference file already (none is created: a new
+#                       file would change which clips the bench sums). The file's other lines and
+#                       its comments stay as they are; the old draft lines (source motion) of those
+#                       kinds are dropped and the new drafts appended after a comment line (an
+#                       earlier such line of those kinds dropped: a rerun changes nothing). An
+#                       empty list is an error.
 
 import math
 import os
@@ -121,6 +142,8 @@ BONES = {
     "hand_L": ["lefthand", "hand_l"], "hand_R": ["righthand", "hand_r"],
     "upleg_L": ["leftupleg", "thigh_l"], "upleg_R": ["rightupleg", "thigh_r"],
     "knee_L": ["leftleg", "calf_l"], "knee_R": ["rightleg", "calf_r"],
+    # Story 10-12e: the top of the trunk (the neck, else the highest spine bone).
+    "neck": ["neck", "neck_01", "spine2", "spine_03", "spine1", "spine"],
 }
 
 
@@ -351,6 +374,8 @@ def draft(clip):
             if b < n:
                 add("release", s, "hand", b - 1)
 
+    lines += body_moves(P, B, contact, L, rate, n)
+
     lines.sort(key=lambda l: (l["t"], l["kind"], l["side"], l["part"]))
     if DEBUG:
         step = max(1, int(round(rate / 30)))
@@ -368,6 +393,102 @@ def draft(clip):
     return lines, info
 
 
+def zigzag(x, h):
+    """The turning points of `x` with `h` of hysteresis, alternating highs and lows, the first
+    sample and the last one included as ends: [(arrive, leave, value)], `arrive` the first sample
+    within 5 % of h of the extreme (where a move ends), `leave` the last one (where the next move
+    starts: a plateau is no move)."""
+    n = len(x)
+    if n == 0:
+        return []
+    tol = 0.05 * h
+    pts = []
+    ext_v, d = x[0], 0
+    arrive = leave = 0
+    for i in range(1, n):
+        v = x[i]
+        if d == 0:
+            if abs(v - x[0]) <= tol:
+                leave = i
+                continue
+            if abs(v - x[0]) >= h:
+                pts.append((0, leave, x[0]))
+                d = 1 if v > x[0] else -1
+                ext_v, arrive, leave = v, i, i
+            continue
+        if (d > 0 and v > ext_v) or (d < 0 and v < ext_v):
+            if abs(v - ext_v) > tol:
+                arrive = i
+            ext_v, leave = v, i
+        elif abs(v - ext_v) <= tol:
+            leave = i
+        elif (d > 0 and ext_v - v >= h) or (d < 0 and v - ext_v >= h):
+            pts.append((arrive, leave, ext_v))
+            d = -d
+            ext_v, arrive, leave = v, i, i
+    if d == 0:
+        return [(0, n - 1, x[0])]
+    pts.append((arrive, leave, ext_v))
+    return pts
+
+
+def move_start(seg, i0, i1):
+    """A swing's start: the last sample from i0 still within 5 % of the swing's amount of where it
+    starts (a slow drift before a big move is no part of it)."""
+    v0, amount = seg[i0], abs(seg[i1] - seg[i0])
+    i = i0
+    while i + 1 < i1 and abs(seg[i + 1] - v0) <= 0.05 * amount:
+        i += 1
+    return i
+
+
+def body_moves(P, B, contact, L, rate, n):
+    """Story 10-12e: crouch / stand_up / bend / rise lines (see the rules at the top)."""
+    out = []
+    feet = {s: [k for k in ("heel_" + s, "ball_" + s, "tip_" + s) if k in P] for s in "LR"}
+    if "hips" not in P or not (feet["L"] or feet["R"]):
+        return out
+    low_s = {s: np.min(np.stack([P[k][:, 1] for k in feet[s]], axis=1), axis=1) for s in "LR" if feet[s]}
+    low = np.min(np.stack(list(low_s.values()), axis=1), axis=1)
+    above = (P["hips"][:, 1] - low) / L
+    w = max(1, int(round(0.1 * rate)))
+    hips_moves = []
+    for a, b in intervals(contact):
+        seg = smooth(above[a:b], w)
+        pts = zigzag(seg, 0.2)
+        for (_, i0, v0), (i1, _, v1) in zip(pts, pts[1:]):
+            if abs(v1 - v0) < 0.2:
+                continue
+            i0 = move_start(seg, i0, i1)
+            if (i1 - i0) / rate > 1.5:
+                continue
+            if any(abs(low_s[s][a + i1] - low_s[s][a + i0]) > 0.1 * L for s in low_s):
+                continue
+            hips_moves.append((a + i0, a + i1))
+            out.append({"kind": "crouch" if v1 < v0 else "stand_up", "side": "B", "part": "any", "t": round((a + i0) / rate, 4)})
+    if "neck" in P and "upleg_L" in P and "upleg_R" in P:
+        d = P["neck"] - P["hips"]
+        line = P["upleg_R"] - P["upleg_L"]
+        fx, fz = line[:, 2], -line[:, 0]
+        fl = np.hypot(fx, fz)
+        fl[fl < 1e-9] = 1e-9
+        lean = np.degrees(np.arctan2((d[:, 0] * fx + d[:, 2] * fz) / fl, d[:, 1]))
+        lean = np.maximum(lean, 0.0)
+        for a, b in intervals(contact):
+            seg = smooth(lean[a:b], w)
+            pts = zigzag(seg, 20.0)
+            for (_, i0, v0), (i1, _, v1) in zip(pts, pts[1:]):
+                i0 = move_start(seg, i0, i1)
+                dur = (i1 - i0) / rate
+                if abs(v1 - v0) < 20.0 or dur > 1.5 or dur <= 0 or abs(v1 - v0) / dur < 40.0:
+                    continue
+                s0, s1 = a + i0, a + i1
+                if any(min(s1, h1) - max(s0, h0) >= 0.5 * min(s1 - s0, h1 - h0) for h0, h1 in hips_moves):
+                    continue
+                out.append({"kind": "bend" if v1 > v0 else "rise", "side": "B", "part": "any", "t": round(s0 / rate, 4)})
+    return out
+
+
 # ---- Reference files ----------------------------------------------------------------------------
 
 def read_ref(path):
@@ -381,6 +502,43 @@ def read_ref(path):
                 continue
             out.append({"kind": p[0], "side": p[1], "part": p[2], "t": float(p[3]), "status": p[4], "source": p[5]})
     return out
+
+
+KINDS_NOTE_HEAD, KINDS_NOTE_TAIL = "# 10-12e: ", " drafted from the motion (ref_draft.py --kinds)"
+
+
+def kinds_note(kinds):
+    return KINDS_NOTE_HEAD + ", ".join(sorted(kinds)) + KINDS_NOTE_TAIL
+
+
+def write_ref_kinds(path, merged, kinds, note=None):
+    """Story 10-12e: --kinds' writer: the file's text kept line for line, except the draft lines
+    (source motion) of `kinds` and the earlier notes of a --kinds draft of those kinds only, then
+    `note` (kinds_note by default) and the merged lines of `kinds` not kept from it. Running it
+    again on its own result changes nothing."""
+    note = note or kinds_note(kinds)
+    with open(path, encoding="utf-8") as f:
+        raw = f.read().splitlines()
+    out, kept_lines = [], []
+    for line in raw:
+        if line.startswith(KINDS_NOTE_HEAD) and line.endswith(KINDS_NOTE_TAIL):
+            noted = line[len(KINDS_NOTE_HEAD):-len(KINDS_NOTE_TAIL)].split(", ")
+            if set(noted) <= set(kinds):
+                continue
+        p = line.split()
+        if len(p) == 6 and not p[0].startswith("#") and p[0] in kinds and p[4] == "draft" and p[5] == "motion":
+            continue
+        if len(p) == 6 and not p[0].startswith("#") and p[0] in kinds:
+            kept_lines.append((p[0], p[1], float(p[3])))
+        out.append(line)
+    new = [l for l in sorted(merged, key=lambda l: (l["t"], l["kind"]))
+           if l["kind"] in kinds and (l["kind"], l["side"], l["t"]) not in kept_lines]
+    if new:
+        out.append(note)
+        for l in new:
+            out.append("%s\t%s\t%s\t%.4f\t%s\t%s" % (l["kind"], l["side"], l["part"], l["t"], l["status"], l["source"]))
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write("\n".join(out) + "\n")
 
 
 def write_ref(path, lines):
@@ -427,11 +585,15 @@ def near(a, lines, window=0.150):
     return any(same_id(identity(k), ia) and abs(k["t"] - a["t"]) <= window for k in lines)
 
 
-def merge(old, drafts, old_refs):
+def merge(old, drafts, old_refs, kinds=None):
     """The kept lines of `old`, then each old REF line unless a kept line of its identity lies
     within 150 ms (already there, or moved by Antho), then each draft unless one of those lies
-    within 150 ms of it. Running it again on its own result gives the same lines."""
-    keep = [l for l in old if kept(l)]
+    within 150 ms of it. Running it again on its own result gives the same lines. `kinds`
+    (story 10-12e): only those kinds are drafted; every line of another kind is kept as it is."""
+    if kinds:
+        drafts = [d for d in drafts if d["kind"] in kinds]
+        old_refs = [r for r in old_refs if r["kind"] in kinds]
+    keep = [l for l in old if kept(l) or (kinds and l["kind"] not in kinds)]
     out = list(keep)
     for r in old_refs:
         if not near(r, keep):
@@ -472,7 +634,7 @@ def list_clips(fixtures):
 
 
 def main(argv):
-    fixtures, bench, only, dry = "fixtures", "", [], False
+    fixtures, bench, only, dry, kinds = "fixtures", "", [], False, None
     for a in argv:
         if a.startswith("--fixtures="):
             fixtures = a[11:]
@@ -482,6 +644,10 @@ def main(argv):
             only.append(a[7:])
         elif a == "--dry":
             dry = True
+        elif a.startswith("--kinds="):
+            kinds = set(k for k in a[8:].split(",") if k)
+            if not kinds:
+                sys.exit("ref_draft.py: --kinds= needs at least one kind (e.g. --kinds=crouch,stand_up,bend,rise)")
         elif a == "--debug":
             global DEBUG
             DEBUG = dry = True
@@ -504,14 +670,19 @@ def main(argv):
             continue
         refs, skipped = old_refs_of(bench, csv) if is_reaper else ([], [])
         path = os.path.join(fixtures, cid + ".ref.tsv")
-        merged = merge(read_ref(path), drafts, refs)
+        if kinds and not os.path.exists(path):
+            print("%s: no reference file (--kinds creates none)" % cid)
+            continue
+        merged = merge(read_ref(path), drafts, refs, kinds)
         counts = {}
         for l in merged:
             if l["status"] != "deleted":
                 counts[l["kind"]] = counts.get(l["kind"], 0) + 1
         print("%s: %d lines (%s)  [%s]%s" % (cid, len(merged), ", ".join("%s %d" % kv for kv in sorted(counts.items())), info,
                                              ("  skipped REF: " + "; ".join(skipped)) if skipped else ""))
-        if not dry:
+        if not dry and kinds:
+            write_ref_kinds(path, merged, kinds)
+        elif not dry:
             write_ref(path, merged)
 
 

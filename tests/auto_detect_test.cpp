@@ -897,7 +897,9 @@ int main()
             // Story 10-9b: Elbow in Arms, Sit and Fall in Body.
             const bool arms = hand || t == static_cast<int>(AutoType::Elbow);
             const bool body = t == static_cast<int>(AutoType::Jolt) || t == static_cast<int>(AutoType::Spin) ||  // 10-9g, 10-9f
-                              t == static_cast<int>(AutoType::Sit) || t == static_cast<int>(AutoType::Fall);
+                              t == static_cast<int>(AutoType::Sit) || t == static_cast<int>(AutoType::Fall) ||
+                              t == static_cast<int>(AutoType::Crouch) || t == static_cast<int>(AutoType::StandUp) ||  // 10-12e
+                              t == static_cast<int>(AutoType::Bend) || t == static_cast<int>(AutoType::Rise);
             CHECK(AutoCategoryOf(static_cast<AutoType>(t)) ==
                   (arms ? AutoCategory::Arms : body ? AutoCategory::Body : AutoCategory::Legs));
         }
@@ -1190,6 +1192,19 @@ int main()
                     case AutoKind::ArmLand:
                         parts = {Role::Hips, Role::LeftHeel, Role::RightHeel, Role::Chest,
                                  side == 'R' ? Role::RightHand : Role::LeftHand};
+                        break;
+                    // Story 10-12e: Crouch / Stand Up as a jump; Bend / Rise as a jump plus the
+                    // neck (listed without a neck, chest nor spine) and the hip line (without the
+                    // shoulders either).
+                    case AutoKind::Crouch:
+                    case AutoKind::CrouchStop:
+                    case AutoKind::StandUp:
+                    case AutoKind::StandUpStop: parts = {Role::Hips, Role::LeftHeel, Role::RightHeel}; break;
+                    case AutoKind::Bend:
+                    case AutoKind::BendStop:
+                    case AutoKind::Rise:
+                    case AutoKind::RiseStop:
+                        parts = {Role::Hips, Role::Neck, Role::LeftUpLeg, Role::RightUpLeg, Role::LeftHeel, Role::RightHeel};
                         break;
                     default: parts = {side == 'R' ? Role::RightHand : Role::LeftHand}; break;
                     }

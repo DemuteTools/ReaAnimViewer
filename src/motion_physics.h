@@ -782,6 +782,35 @@ struct PhysicsParams {
     double     punch_contact_frac = 0.9;
     double     punch_hold_s = 0.25;
     double     punch_hold_gap = 0.05;
+    // Story 10-12e: the body moves (auto_types_body_move.cpp), on the hips' height above the
+    // lowest foot (PhysicsAnalysis::hips_feet) and the trunk's forward fold (trunk_fold_deg), both
+    // read while a foot is down (a flight is skipped) and smoothed over body_move_smooth_s (sigma).
+    // A move starts where the curve's rate passes its start speed and runs back and forward while
+    // the rate stays at its end speed or more the same way; moves the same way with a pause of
+    // body_move_merge_s at most between them are one; a move counts when the curve changes by its
+    // minimum (the type's sensitivity divides it). Crouch / Stand Up: the hips down / up by
+    // crouch_min_drop / stand_min_rise (leg), with both feet down over body_move_min_support of
+    // the move at least (a climb pushes on one foot while the other steps up: Climbing Up Wall
+    // 0.00, the real moves 0.30-1.00). Bend / Rise: the trunk folds forward / straightens by
+    // bend_min_deg / rise_min_deg, unless it overlaps a Crouch or a Stand Up by half the shorter of
+    // the two spans at least (one motion, one marker: a crouch keeps the back fairly straight even
+    // when it bends a little).
+    // Measured 2026-11-18 on the 64 bench clips: the moves' peak hips speed 0.6-3.7 leg/s, their
+    // drop or rise 0.21-0.74 leg; the trunk's fold 20-116 deg at 70-230 deg/s; idles, walks, runs
+    // and strafes give none (walking's forward lean drifts 20-24 deg at 36-48 deg/s: the trunk's
+    // start rate sits above).
+    double     body_move_smooth_s = 0.040;
+    double     body_move_merge_s = 0.150;
+    double     body_move_start_speed = 0.30;   // leg/s
+    double     body_move_end_speed = 0.06;     // leg/s
+    double     body_move_min_support = 0.25;   // share of the move with both feet down
+    double     crouch_min_drop = 0.20;         // leg
+    double     stand_min_rise = 0.20;          // leg
+    double     trunk_start_dps = 60.0;
+    double     trunk_end_dps = 10.0;
+    double     bend_min_deg = 20.0;
+    double     rise_min_deg = 20.0;
+    double     trunk_overlap = 0.5;            // the overlap, in shares of the shorter span, that makes a fold and a hips move one
 };
 
 // One contact of a part, in samples [start, end).
@@ -917,6 +946,18 @@ struct PhysicsAnalysis {
     std::vector<double>      hips_yaw_deg;
     std::vector<char>        hips_yaw_valid;
     std::string              spin_missing;
+    // Story 10-12e: the body moves' signals, per analysed sample. hips_feet: the hips' height above
+    // the lowest present foot part at that sample (leg; never one floor for the clip: a climb's
+    // feet climb too), empty without the hips or a foot part (hips_feet_missing says why).
+    // feet_down: how many feet have a part in contact (0 = a flight). trunk_fold_deg: the trunk
+    // (the hips -> the neck, else the chest, else the spine) leaning forward of the vertical along
+    // the body's facing (up x the hip line, else the shoulder line), degrees, 0 when upright or
+    // leaning back (a lean to the side counts nothing); empty without them (trunk_missing).
+    std::vector<double>      hips_feet;
+    std::vector<char>        feet_down;
+    std::string              hips_feet_missing;
+    std::vector<double>      trunk_fold_deg;
+    std::string              trunk_missing;
     BodyTrack                body;           // story 10-9b
     // Story 10-9d: every physics role's position (m, smoothed as the parts; indexed by Role, empty =
     // no bone), for the touches (hand_touch.h). Analysed track samples.
@@ -953,10 +994,13 @@ PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& role_tracks, const P
 // (side 'B': the body); story 10-9d Clap, HandOnBody (hand_touch.h); story 10-9c Kick, Swing, Punch
 // (motion_whoosh.cpp).
 enum class PhysicsKind { Step, FootStep, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land, Jolt, Spin, SpinEnd, Tap, Drag,
-                         Knee, Elbow, Sit, Fall, Clap, HandOnBody, Kick, Swing, Punch };
+                         Knee, Elbow, Sit, Fall, Clap, HandOnBody, Kick, Swing, Punch,
+                         Crouch, StandUp, Bend, Rise };
 // Story 10-9f: Spin / SpinEnd, a spin's start / end (side B, start_s / end_s its span, strength =
-// its sweep in degrees; auto_types_spin.cpp).
-constexpr int kPhysicsKindCount = 24;  // story 10-9-0: PhysicsMarkerName's rows follow the enum
+// its sweep in degrees; auto_types_spin.cpp). Story 10-12e: Crouch, StandUp, Bend, Rise, the body
+// moves (side B, start_s / end_s the move's span, time_s its start, its fastest sample or its end
+// after the marker the kind asks for; strength its peak speed; auto_types_body_move.cpp).
+constexpr int kPhysicsKindCount = 28;  // story 10-9-0: PhysicsMarkerName's rows follow the enum
 
 struct PhysicsEvent {
     PhysicsKind kind = PhysicsKind::Step;

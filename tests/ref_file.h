@@ -64,6 +64,16 @@ inline bool RefKnownPart(const std::string& p)
     return p == "heel" || p == "toe" || p == "tip" || p == "hand" || p == "any";
 }
 
+// Story 10-12e: a body move's reference kind: crouch, stand_up, bend, rise (the move's start, the
+// types' default marker; a detection at the peak, "crouch_peak", scores on that row: FoundTarget)
+// and their stops, crouch_stop... (Start & Stop's second marker, a row of its own).
+inline bool IsBodyMoveRef(const std::string& kind)
+{
+    for (const char* m : {"crouch", "stand_up", "bend", "rise"})
+        if (kind == m || kind == std::string(m) + "_stop") return true;
+    return false;
+}
+
 // A kind word as its base kind and part ("slide_heel" -> slide + heel, "heel" -> step + heel,
 // "hand_pivot_any" -> hand_pivot); `part` is the line's own part (kept unless the kind names
 // one). False for a word that is no auto kind.
@@ -109,7 +119,10 @@ inline bool NormaliseRefKind(const std::string& kind, const std::string& part, s
                  // story 10-9i: a heel tap (side L / R, part heel), one row in both configurations
                  kind == "heel_tap" ||
                  // story 10-9k: the arms of a jump (side L / R)
-                 kind == "arm_jump" || kind == "arm_land")) {
+                 kind == "arm_jump" || kind == "arm_land" ||
+                 // story 10-12e: the body moves (side B) at their start, and their stops (a row
+                 // of their own: the Start & Stop mode's second marker)
+                 IsBodyMoveRef(kind))) {
         return false;
     }
     if (base) *base = b;
@@ -118,11 +131,12 @@ inline bool NormaliseRefKind(const std::string& kind, const std::string& part, s
 }
 
 // Jump and land: the kinds whose reference may say side B (no particular foot, story 10-9a).
-// Story 10-9b: sit and fall are always side B (the body); 10-9h: jolt, spin and spin_end too.
+// Story 10-9b: sit and fall are always side B (the body); 10-9h: jolt, spin and spin_end too;
+// story 10-12e: the body moves and their stops.
 inline bool SidelessTarget(const std::string& word)
 {
     return word == "jump" || word == "land" || word == "sit" || word == "fall" || word == "jolt" || word == "spin" ||
-           word == "spin_end";
+           word == "spin_end" || IsBodyMoveRef(word);
 }
 
 // One line of a reference file. False (and `err`) for a malformed line; a '#' or blank line is

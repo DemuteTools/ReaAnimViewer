@@ -19,7 +19,8 @@ set(RAV_AUTO_SRCS ../src/auto_detect.cpp ../src/auto_types.cpp ../src/auto_types
                   ../src/auto_types_arm_jump.cpp  # 10-9k
                   ../src/scuff_peak.cpp  # 10-9j
                   ../src/auto_types_slap.cpp  # 10-9l
-                  ../src/auto_types_punch.cpp)  # 10-9o
+                  ../src/auto_types_punch.cpp  # 10-9o
+                  ../src/auto_types_body_move.cpp)  # 10-12e
 
 enable_testing()
 
@@ -163,6 +164,13 @@ add_executable(auto_spin_test auto_spin_test.cpp ${RAV_AUTO_SRCS} ../src/motion_
                ../src/rule_record.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
 target_include_directories(auto_spin_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME auto_spin COMMAND auto_spin_test)
+# Story 10-12e -- the body moves, Crouch, Stand Up, Bend, Rise (src/auto_types_body_move.cpp).
+add_executable(body_move_test body_move_test.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/motion_whoosh.cpp ../src/bone_events.cpp
+               ../src/rule_record.cpp ../src/event_list.cpp ../src/tagging_signal.cpp ../src/sound_assign.cpp
+               ../src/sound_auto_assign.cpp ../src/sound_populate_plan.cpp ../src/sound_switch.cpp ../src/sound_draw.cpp
+               ../src/sound_place_plan.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/sound_zones.cpp)
+target_include_directories(body_move_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME body_move COMMAND body_move_test)
 # Story 10-9e -- foot taps and drags (src/foot_taps.h), and their Tap / Drag rows through Detect.
 add_executable(foot_taps_test foot_taps_test.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/motion_whoosh.cpp ../src/bone_events.cpp
                ../src/rule_record.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)

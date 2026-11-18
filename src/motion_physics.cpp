@@ -819,6 +819,89 @@ std::vector<BoneTrack> PhysicsRoleTracks(const std::vector<int>& bone_of_role,
 
 namespace {
 
+// Story 10-12e: the body moves' signals (PhysicsAnalysis::hips_feet, feet_down, trunk_fold_deg),
+// after the feet's contacts. `sm` the feet parts' smoothed positions (as role_pos: both smoothed
+// over smooth_ms, so a height difference at one sample needs no ground frame).
+void AnalyseBodyMoveSignals(PhysicsAnalysis& a, const std::vector<Vec3d> (&sm)[2][kFootPartCount])
+{
+    const size_t n = a.samples;
+    auto         pos = [&](Role r) -> const std::vector<Vec3d>* {
+        const size_t i = static_cast<size_t>(r);
+        return i < a.role_pos.size() && a.role_pos[i].size() == n ? &a.role_pos[i] : nullptr;
+    };
+    a.feet_down.assign(n, 0);
+    bool any_part = false;
+    for (int s = 0; s < 2; ++s)
+        for (int q = 0; q < kFootPartCount; ++q) {
+            const PartTrack& pt = a.foot[s].part[q];
+            if (!pt.present || sm[s][q].size() != n) continue;
+            any_part = true;
+        }
+    for (size_t i = 0; i < n; ++i) {
+        int down = 0;
+        for (int s = 0; s < 2; ++s) {
+            bool d = false;
+            for (int q = 0; q < kFootPartCount; ++q) {
+                const PartTrack& pt = a.foot[s].part[q];
+                if (pt.present && i < pt.contact.size() && pt.contact[i]) d = true;
+            }
+            down += d ? 1 : 0;
+        }
+        a.feet_down[i] = static_cast<char>(down);
+    }
+    const std::vector<Vec3d>* hips = pos(Role::Hips);
+    if (!hips) a.hips_feet_missing = std::string("no bone for ") + RoleName(Role::Hips);
+    else if (!any_part) a.hips_feet_missing = "no foot part";
+    else {
+        a.hips_feet.assign(n, 0.0);
+        for (size_t i = 0; i < n; ++i) {
+            double low = 1e300;
+            for (int s = 0; s < 2; ++s)
+                for (int q = 0; q < kFootPartCount; ++q)
+                    if (a.foot[s].part[q].present && sm[s][q].size() == n) low = std::min(low, sm[s][q][i].y);
+            a.hips_feet[i] = ((*hips)[i].y - low) / a.leg_length;
+        }
+    }
+    const std::vector<Vec3d>* top = pos(Role::Neck);
+    if (!top) top = pos(Role::Chest);
+    if (!top) top = pos(Role::Spine);
+    const std::vector<Vec3d>* left = pos(Role::LeftUpLeg);
+    const std::vector<Vec3d>* right = pos(Role::RightUpLeg);
+    if (!left || !right) {
+        left = pos(Role::LeftShoulder);
+        right = pos(Role::RightShoulder);
+    }
+    if (!hips) a.trunk_missing = std::string("no bone for ") + RoleName(Role::Hips);
+    else if (!top)
+        a.trunk_missing = std::string("no bone for ") + RoleName(Role::Neck) + " (or " + RoleName(Role::Chest) + " / " +
+                          RoleName(Role::Spine) + ")";
+    else if (!left || !right) {
+        // The up leg missing (the shoulders, the fallback, missing too).
+        const Role leg = pos(Role::LeftUpLeg) ? Role::RightUpLeg : Role::LeftUpLeg;
+        a.trunk_missing = std::string("no bone for ") + RoleName(leg);
+    }
+    else {
+        a.trunk_fold_deg.assign(n, 0.0);
+        double prev = 0.0;
+        for (size_t i = 0; i < n; ++i) {
+            const Vec3d& h = (*hips)[i];
+            const Vec3d& t = (*top)[i];
+            const double dx = t.x - h.x, dy = t.y - h.y, dz = t.z - h.z;
+            // The facing: up x (left -> right), horizontal (body_facing.h's).
+            double       fx = (*right)[i].z - (*left)[i].z, fz = -((*right)[i].x - (*left)[i].x);
+            const double fl = std::hypot(fx, fz);
+            if (!(fl > 1e-9)) {
+                a.trunk_fold_deg[i] = prev;  // a hip line seen end-on: the last fold
+                continue;
+            }
+            fx /= fl;
+            fz /= fl;
+            const double fold = std::atan2(dx * fx + dz * fz, dy) * 180.0 / kPi;
+            prev = a.trunk_fold_deg[i] = std::max(0.0, fold);
+        }
+    }
+}
+
 // Story 10-9b: the body parts that touch the ground (BodyTrack), after the feet (the floor is
 // read from their heights) and the ground frame. `track` gives a role's track (null: no bone),
 // `ground_y` a height in the ground frame, `sm` the feet parts' smoothed positions.
@@ -1475,6 +1558,7 @@ PhysicsAnalysis AnalyseTrack(const std::vector<BoneTrack>& rt, const PhysicsPara
             for (PartTrack& pt : f.part) AddArrival(pt, rate, p, p.arrival_min_approach);
         for (HandTrack& h : a.hand) AddArrival(h.part, rate, hp, p.hand_min_approach);
     }
+    AnalyseBodyMoveSignals(a, sm);  // story 10-12e
     AnalyseWhooshTracks(rt, p, a);  // story 10-9c
     a.ok = true;
     a.window_samples = a.samples;
@@ -2233,6 +2317,11 @@ constexpr PhysicsKindRow kPhysicsKindRows[] = {
     {PhysicsKind::Kick, "kick", PhyPart::Foot, false, true},
     {PhysicsKind::Swing, "swing", PhyPart::None, false, true},
     {PhysicsKind::Punch, "punch", PhyPart::None, false, true},
+    // Story 10-12e: the body moves (their span: start to end; Bend / Rise in deg/s, printed bare).
+    {PhysicsKind::Crouch, "crouch", PhyPart::None, false, true},
+    {PhysicsKind::StandUp, "stand up", PhyPart::None, false, true},
+    {PhysicsKind::Bend, "bend", PhyPart::None, false, true},
+    {PhysicsKind::Rise, "rise", PhyPart::None, false, true},
 };
 constexpr bool PhysicsKindRowsInOrder()
 {
@@ -2304,6 +2393,10 @@ std::string PhysicsSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEv
         case PhysicsKind::Kick:
         case PhysicsKind::Swing:
         case PhysicsKind::Punch: break;  // WhooshSummary's (story 10-9c)
+        case PhysicsKind::Crouch:
+        case PhysicsKind::StandUp:
+        case PhysicsKind::Bend:
+        case PhysicsKind::Rise: break;  // story 10-12e: the body moves' (auto_types_body_move.cpp)
         }
     }
     const std::string vertical = a.ground_velocity.y != 0.0 ? Format(", vertical %+.2f m/s", a.ground_velocity.y) : "";

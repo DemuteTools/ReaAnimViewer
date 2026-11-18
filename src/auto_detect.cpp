@@ -55,12 +55,16 @@ AutoKind PartSplitKindOf(AutoType t, bool heel_part, bool at_start = false)
 // Peak kind); the kind itself when it is of that flavour, or of a type with no Peak / Start. Story
 // 10-9j: the twins pair by position: the n-th kind of the type with `at_start` and the n-th without
 // (enum order; auto_types.cpp appends a type's twins in the order of the kinds they pair with).
+// Story 10-12e: a `stop_option` type's stop kinds (`at_stop`) are no flavour: their own twin.
 AutoKind StartTwin(AutoKind k, bool at_start)
 {
     const AutoType t = AutoTypeOfKind(k);
-    if (!InRangeType(t) || !AutoTypeRow(t).start_option || AutoKindRow(k).at_start == at_start) return k;
-    const std::vector<AutoKind> kinds = AutoKindsOf(t);
-    int                         pos = 0;
+    if (!InRangeType(t) || !AutoTypeRow(t).start_option || AutoKindRow(k).at_stop || AutoKindRow(k).at_start == at_start)
+        return k;
+    std::vector<AutoKind> kinds;
+    for (AutoKind o : AutoKindsOf(t))
+        if (!AutoKindRow(o).at_stop) kinds.push_back(o);
+    int pos = 0;
     for (AutoKind o : kinds) {
         if (o == k) break;
         if (AutoKindRow(o).at_start == AutoKindRow(k).at_start) ++pos;
@@ -72,6 +76,14 @@ AutoKind StartTwin(AutoKind k, bool at_start)
     for (AutoKind o : kinds)
         if (AutoKindRow(o).at_start == at_start) return o;
     return k;
+}
+
+// Story 10-12e: whether a ticked type makes its stop kinds (Start & Stop: a `stop_option` type at
+// its Start with with_stop).
+bool StopOn(AutoType t, const AutoSettings& s)
+{
+    const int ti = static_cast<int>(t);
+    return InRangeType(t) && AutoTypeRow(t).stop_option && s.at_start[ti] && s.with_stop[ti];
 }
 
 // Story 10-9j: the kind as the type's default flavour (its kinds before Peak / Start: kick's
@@ -114,7 +126,11 @@ std::vector<AutoKind> ModeKindsOf(AutoType t, const AutoSettings& s)
     case AutoType::Punch: return {s.punch_peak ? AutoKind::PunchPeak : AutoKind::Punch};
     default: break;
     }
-    return AutoKindsOf(t);
+    // Story 10-12e: the stop kinds come with Start & Stop only (KindsOf).
+    std::vector<AutoKind> out;
+    for (AutoKind k : AutoKindsOf(t))
+        if (!AutoKindRow(k).at_stop) out.push_back(k);
+    return out;
 }
 
 // The kinds a ticked type makes, in block order: its mode's (ModeKindsOf), each as its twin of the
@@ -128,6 +144,10 @@ std::vector<AutoKind> KindsOf(AutoType t, const AutoSettings& s)
         const AutoKind w = StartTwin(k, s.at_start[static_cast<int>(t)]);
         if (std::find(out.begin(), out.end(), w) == out.end()) out.push_back(w);
     }
+    // Story 10-12e: Start & Stop adds the stop kinds, after the start ones.
+    if (StopOn(t, s))
+        for (AutoKind k : AutoKindsOf(t))
+            if (AutoKindRow(k).at_stop) out.push_back(k);
     return out;
 }
 
@@ -287,7 +307,8 @@ bool operator==(const AutoTypeSettings& a, const AutoTypeSettings& b)
 bool operator==(const AutoSettings& a, const AutoSettings& b)
 {
     for (int t = 0; t < kAutoTypeCount; ++t)
-        if (!(a.type[t] == b.type[t]) || a.separate_parts[t] != b.separate_parts[t] || a.at_start[t] != b.at_start[t])
+        if (!(a.type[t] == b.type[t]) || a.separate_parts[t] != b.separate_parts[t] || a.at_start[t] != b.at_start[t] ||
+            a.with_stop[t] != b.with_stop[t])
             return false;
     return a.separate_steps == b.separate_steps && a.hand_pivot_any == b.hand_pivot_any &&
            a.slide_parts == b.slide_parts && a.pivot_parts == b.pivot_parts && a.punch_peak == b.punch_peak;
@@ -327,6 +348,9 @@ bool AutoPending(const AutoSettings& ui, const AutoSettings& item)
         // Story 10-9c: a `start_option` type switched between Peak and Start.
         if (AutoTypeRow(static_cast<AutoType>(t)).start_option && ui.type[t].on && item.type[t].on &&
             ui.at_start[t] != item.at_start[t])
+            return true;
+        // Story 10-12e: a `stop_option` type switched between Start and Start & Stop.
+        if (ui.type[t].on && item.type[t].on && StopOn(static_cast<AutoType>(t), ui) != StopOn(static_cast<AutoType>(t), item))
             return true;
     }
     const int step = static_cast<int>(AutoType::Step), hp = static_cast<int>(AutoType::HandPivot);
@@ -375,6 +399,7 @@ AutoSettings ReadAutoSettings(const std::vector<Block>& blocks)
     bool scuff_mode[2][3] = {};  // story 10-8m: per scuff type (slide, pivot), the modes its blocks say
     bool split[kAutoTypeCount][2] = {};  // story 10-9a-3: per part_split type, combined / part blocks seen
     bool start[kAutoTypeCount][2] = {};  // story 10-9c: per start_option type, peak / start blocks seen
+    bool stop[kAutoTypeCount] = {};      // story 10-12e: per stop_option type, a stop block seen
     for (const Block& b : blocks) {
         AutoKind k;
         if (!AutoBlockKind(b, &k, nullptr)) continue;
@@ -391,7 +416,8 @@ AutoSettings ReadAutoSettings(const std::vector<Block>& blocks)
         if (k == AutoKind::Punch) punch_stop = true;  // story 10-9o
         if (k == AutoKind::PunchPeak) punch_peak = true;
         if (AutoTypeRow(AutoTypeOfKind(k)).part_split) split[t][PartSplitKind(k) ? 1 : 0] = true;
-        if (AutoTypeRow(AutoTypeOfKind(k)).start_option) start[t][AutoKindRow(k).at_start ? 1 : 0] = true;
+        if (AutoKindRow(k).at_stop) stop[t] = true;  // story 10-12e: no flavour
+        else if (AutoTypeRow(AutoTypeOfKind(k)).start_option) start[t][AutoKindRow(k).at_start ? 1 : 0] = true;
         if (t == static_cast<int>(AutoType::Slide) || t == static_cast<int>(AutoType::Pivot))
             scuff_mode[t == static_cast<int>(AutoType::Pivot) ? 1 : 0][static_cast<int>(ScuffMode(k))] = true;
     }
@@ -410,6 +436,12 @@ AutoSettings ReadAutoSettings(const std::vector<Block>& blocks)
         s.separate_parts[t] = split[t][1] && !split[t][0];
         // Story 10-9j: the flavour its blocks say; none or both, the type's default.
         if (start[t][0] != start[t][1]) s.at_start[t] = start[t][1];
+        // Story 10-12e: Start & Stop when its stop blocks are there (with the Start ones, or alone:
+        // the type's Start).
+        if (stop[t] && AutoTypeRow(static_cast<AutoType>(t)).stop_option) {
+            s.with_stop[t] = true;
+            if (!start[t][0] && !start[t][1]) s.at_start[t] = true;
+        }
     }
     return s;
 }

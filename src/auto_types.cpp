@@ -36,6 +36,11 @@
 //     Peak twins do not, so Start stays their default); the widget, the settings and the block
 //     kept across a switch follow the row. Story 10-9q: Detect's search raises every ticked type
 //     (a ticked type is one the user sees; a find after a raise reads doubtful).
+//   - a Start & Stop beside Peak / Start (story 10-12e): `stop_option` on a `start_option` type's
+//     row whose first kind marks the start, and per Start kind a stop kind appended with `at_stop`
+//     (its own marker "<the start kind's marker> Stop", colour and sound key; static_assert
+//     below). The Peak / Start / Start & Stop widget (tagging_view_ui.cpp, any category), the
+//     stop kinds' blocks (KindsOf, AutoSettings::with_stop) and the settings follow the row.
 // Adding a signature to a kind (story 10-9a-2): a new way to recognise the same event, for an
 // edge case the kind's other signatures miss. Append {name, event source, match} to the kind's
 // `sigs` (at most kAutoMaxSignatures, contiguous); its source and match live in the category's
@@ -253,6 +258,25 @@ std::vector<PhysicsEvent> AutoSourceSwing(const PhysicsAnalysis& a, const Physic
 std::vector<PhysicsEvent> AutoSourceSwingStart(const PhysicsAnalysis& a, const PhysicsParams& p);
 void AutoLanesPunchBlow(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
 
+// auto_types_body_move.cpp (story 10-12e: crouch, stand up, bend, rise)
+std::vector<PhysicsEvent> AutoSourceBodyMoveStart(const PhysicsAnalysis& a, const PhysicsParams& p);
+std::vector<PhysicsEvent> AutoSourceBodyMovePeak(const PhysicsAnalysis& a, const PhysicsParams& p);
+std::vector<PhysicsEvent> AutoSourceBodyMoveStop(const PhysicsAnalysis& a, const PhysicsParams& p);
+void AutoPartsBodyMoveHips(bool separate, const std::vector<int>& role_to_bone, std::vector<std::string>& out);
+void AutoPartsBodyMoveTrunk(bool separate, const std::vector<int>& role_to_bone, std::vector<std::string>& out);
+bool AutoMatchCrouch(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchStandUp(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchBend(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchRise(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMissingBodyMoveHips(char side, const std::vector<int>& role_to_bone);
+bool AutoMissingBodyMoveTrunk(char side, const std::vector<int>& role_to_bone);
+void AutoLanesCrouch(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+void AutoLanesStandUp(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+void AutoLanesBend(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+void AutoLanesRise(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+std::vector<Role> AutoRolesBodyMoveHips(char side);
+std::vector<Role> AutoRolesBodyMoveTrunk(char side);
+
 namespace {
 
 using C = AutoCategory;
@@ -432,6 +456,33 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "without them, a slap cannot be told apart and the contacts stay Grabs.",
      "slap", {{&P::hand_contact_speed, S::Times}, {&P::body_min_speed, S::Divide}}, &AutoPartsSlap, false, false, false,
      false, static_cast<int>(T::Grab), static_cast<int>(T::HandOnBody), true},
+    // Story 10-12e: the body moves (auto_types_body_move.cpp), sideless; higher sensitivity = a
+    // smaller move counts (its minimum / f). Marker at Peak / Start / Start & Stop (`start_option`,
+    // `stop_option`), Start by default (their first kinds mark the start).
+    {T::Crouch, "Crouch", "Crouch", C::Body,
+     "A marker where the body crouches: the hips go down over the feet (a squat, a kneel, the\n"
+     "crouch before a jump, the absorbing on landing). Peak: at the fastest; Start: where it\n"
+     "starts; Start & Stop: also Crouch Stop where it ends (a sound of its own).",
+     "crouch", {{&P::crouch_min_drop, S::Divide}, {}}, &AutoPartsBodyMoveHips, true, false, false, true, -1, -1, false,
+     0u, 1.0, false, true},
+    {T::StandUp, "Stand Up", "Stand Up", C::Body,
+     "A marker where the body stands back up: the hips come up over the feet (out of a squat or a\n"
+     "kneel, the push of a jump, after a landing). Peak: at the fastest; Start: where it starts;\n"
+     "Start & Stop: also Stand Up Stop where it ends (a sound of its own).",
+     "stand_up", {{&P::stand_min_rise, S::Divide}, {}}, &AutoPartsBodyMoveHips, true, false, false, true, -1, -1,
+     false, 0u, 1.0, false, true},
+    {T::Bend, "Bend", "Bend", C::Body,
+     "A marker where the trunk folds forward, the hips staying up (a bow, reaching down).\n"
+     "A fold during a Crouch is the Crouch. Peak: at the fastest; Start: where it starts;\n"
+     "Start & Stop: also Bend Stop where it ends (a sound of its own).",
+     "bend", {{&P::bend_min_deg, S::Divide}, {}}, &AutoPartsBodyMoveTrunk, true, false, false, true, -1, -1, false, 0u,
+     1.0, false, true},
+    {T::Rise, "Rise", "Rise", C::Body,
+     "A marker where the trunk straightens back up after a fold, the hips staying up.\n"
+     "Straightening during a Stand Up is the Stand Up. Peak: at the fastest; Start: where it\n"
+     "starts; Start & Stop: also Rise Stop where it ends (a sound of its own).",
+     "rise", {{&P::rise_min_deg, S::Divide}, {}}, &AutoPartsBodyMoveTrunk, true, false, false, true, -1, -1, false, 0u,
+     1.0, false, true},
 };
 
 // ---- Strength levels (story 10-10b) ------------------------------------------------------------
@@ -496,6 +547,15 @@ constexpr AutoStrengthCuts kStrengthRows[] = {
     // AirPunch's landing on the hands 2.97 and 8.21 leg/s; the hand's approach, as Grab): wp33 1.42,
     // wp67 2.61.
     {T::Slap, 1.4, 2.6},
+    // Story 10-12e: the moves' peak rate, measured 2026-11-18 on the bench clips (default matrix,
+    // the clip-weighted 33rd and 67th percentiles, rounded). Crouch: 17 on 13 clips, 0.60
+    // (Kneel_1knee's slow kneel) to 3.7 leg/s (a landing), wp33 1.01, wp67 1.95; Stand Up: 16 on 12
+    // clips, 0.65 to 3.3 (a jump's push), wp33 1.25, wp67 1.78. Bend: 8 on 6 clips, 70-218 deg/s,
+    // wp33 105, wp67 190; Rise: 9 on 7 clips, 99-170 deg/s, wp33 106, wp67 131.
+    {T::Crouch, 1.0, 2.0},
+    {T::StandUp, 1.25, 1.8},
+    {T::Bend, 105.0, 190.0},
+    {T::Rise, 105.0, 130.0},
 };
 
 // ---- Kinds -------------------------------------------------------------------------------------
@@ -707,6 +767,46 @@ constexpr AutoKindInfo kKindRows[] = {
     {K::PunchPeak, "punch_peak", T::Punch, "Punch", {0xDD503C, 0x3CDD8C}, kNo, false, false, "hand", K::Punch,
      {{"blow", &AutoSourcePunchPeak, &AutoMatchPunch}}, &AutoMissingWhooshHand, &AutoLanesPunchBlow,
      &AutoRolesWhooshHand},
+    // Story 10-12e: the body moves (sideless: color[0]): each type's start kind (its default,
+    // `at_start`), its Peak twin (the start kind's sound key) and its stop kind (`at_stop`, a
+    // shade lighter, its own sound key). Strength: leg/s (Crouch / Stand Up), deg/s (Bend / Rise).
+    {K::Crouch, "crouch", T::Crouch, "Crouch", {0x8C6E3C, 0x8C6E3C}, kNo, false, false, "", K::Crouch,
+     {{"hips move", &AutoSourceBodyMoveStart, &AutoMatchCrouch}}, &AutoMissingBodyMoveHips, &AutoLanesCrouch,
+     &AutoRolesBodyMoveHips, nullptr, true},
+    {K::CrouchPeak, "crouch_peak", T::Crouch, "Crouch", {0x8C6E3C, 0x8C6E3C}, kNo, false, false, "", K::Crouch,
+     {{"hips move", &AutoSourceBodyMovePeak, &AutoMatchCrouch}}, &AutoMissingBodyMoveHips, &AutoLanesCrouch,
+     &AutoRolesBodyMoveHips},
+    {K::CrouchStop, "crouch_stop", T::Crouch, "Crouch Stop", {0xB49B6E, 0xB49B6E}, kNo, false, false, "", K::CrouchStop,
+     {{"hips move", &AutoSourceBodyMoveStop, &AutoMatchCrouch}}, &AutoMissingBodyMoveHips, &AutoLanesCrouch,
+     &AutoRolesBodyMoveHips, nullptr, false, true},
+    {K::StandUp, "stand_up", T::StandUp, "Stand Up", {0x3C8C6E, 0x3C8C6E}, kNo, false, false, "", K::StandUp,
+     {{"hips move", &AutoSourceBodyMoveStart, &AutoMatchStandUp}}, &AutoMissingBodyMoveHips, &AutoLanesStandUp,
+     &AutoRolesBodyMoveHips, nullptr, true},
+    {K::StandUpPeak, "stand_up_peak", T::StandUp, "Stand Up", {0x3C8C6E, 0x3C8C6E}, kNo, false, false, "", K::StandUp,
+     {{"hips move", &AutoSourceBodyMovePeak, &AutoMatchStandUp}}, &AutoMissingBodyMoveHips, &AutoLanesStandUp,
+     &AutoRolesBodyMoveHips},
+    {K::StandUpStop, "stand_up_stop", T::StandUp, "Stand Up Stop", {0x6EB49B, 0x6EB49B}, kNo, false, false, "",
+     K::StandUpStop,
+     {{"hips move", &AutoSourceBodyMoveStop, &AutoMatchStandUp}}, &AutoMissingBodyMoveHips, &AutoLanesStandUp,
+     &AutoRolesBodyMoveHips, nullptr, false, true},
+    {K::Bend, "bend", T::Bend, "Bend", {0x6E3C8C, 0x6E3C8C}, kNo, false, false, "", K::Bend,
+     {{"trunk fold", &AutoSourceBodyMoveStart, &AutoMatchBend}}, &AutoMissingBodyMoveTrunk, &AutoLanesBend,
+     &AutoRolesBodyMoveTrunk, "deg/s", true},
+    {K::BendPeak, "bend_peak", T::Bend, "Bend", {0x6E3C8C, 0x6E3C8C}, kNo, false, false, "", K::Bend,
+     {{"trunk fold", &AutoSourceBodyMovePeak, &AutoMatchBend}}, &AutoMissingBodyMoveTrunk, &AutoLanesBend,
+     &AutoRolesBodyMoveTrunk, "deg/s"},
+    {K::BendStop, "bend_stop", T::Bend, "Bend Stop", {0x9B6EB4, 0x9B6EB4}, kNo, false, false, "", K::BendStop,
+     {{"trunk fold", &AutoSourceBodyMoveStop, &AutoMatchBend}}, &AutoMissingBodyMoveTrunk, &AutoLanesBend,
+     &AutoRolesBodyMoveTrunk, "deg/s", false, true},
+    {K::Rise, "rise", T::Rise, "Rise", {0x3C6E8C, 0x3C6E8C}, kNo, false, false, "", K::Rise,
+     {{"trunk fold", &AutoSourceBodyMoveStart, &AutoMatchRise}}, &AutoMissingBodyMoveTrunk, &AutoLanesRise,
+     &AutoRolesBodyMoveTrunk, "deg/s", true},
+    {K::RisePeak, "rise_peak", T::Rise, "Rise", {0x3C6E8C, 0x3C6E8C}, kNo, false, false, "", K::Rise,
+     {{"trunk fold", &AutoSourceBodyMovePeak, &AutoMatchRise}}, &AutoMissingBodyMoveTrunk, &AutoLanesRise,
+     &AutoRolesBodyMoveTrunk, "deg/s"},
+    {K::RiseStop, "rise_stop", T::Rise, "Rise Stop", {0x6E9BB4, 0x6E9BB4}, kNo, false, false, "", K::RiseStop,
+     {{"trunk fold", &AutoSourceBodyMoveStop, &AutoMatchRise}}, &AutoMissingBodyMoveTrunk, &AutoLanesRise,
+     &AutoRolesBodyMoveTrunk, "deg/s", false, true},
 };
 
 // One row per enum value, in enum order.
@@ -777,7 +877,7 @@ constexpr bool TwinWords(const char* a, const char* b)
 constexpr const AutoKindInfo* NthOfFlavour(AutoType t, bool at_start, int n)
 {
     for (const AutoKindInfo& r : kKindRows)
-        if (r.type == t && r.at_start == at_start && n-- == 0) return &r;
+        if (r.type == t && !r.at_stop && r.at_start == at_start && n-- == 0) return &r;  // 10-12e: no stop kind
     return nullptr;
 }
 constexpr bool StartTwinsPaired()
@@ -803,6 +903,46 @@ constexpr bool StartTwinsPaired()
     return true;
 }
 static_assert(StartTwinsPaired(), "a start_option type's Peak and Start kinds pair in the same order");
+// Story 10-12e: a stop kind (`at_stop`) belongs to a `start_option` and `stop_option` type, is never
+// `at_start`, names its own sound key and its marker "<the type's start marker> Stop"; a
+// `stop_option` type has one stop kind per Start kind, in their order, and Start as its default.
+constexpr bool StopMarker(const char* start, const char* stop)
+{
+    for (; *start && *start == *stop; ++start, ++stop) {}
+    return *start == '\0' && SameText(stop, " Stop");
+}
+constexpr const AutoKindInfo* NthStop(AutoType t, int n)
+{
+    for (const AutoKindInfo& r : kKindRows)
+        if (r.type == t && r.at_stop && n-- == 0) return &r;
+    return nullptr;
+}
+constexpr bool StopKindsValid()
+{
+    for (const AutoKindInfo& r : kKindRows) {
+        if (!r.at_stop) continue;
+        const AutoTypeInfo& t = kTypeRows[static_cast<int>(r.type)];
+        if (!t.start_option || !t.stop_option || r.at_start || r.sound_key != r.kind) return false;
+    }
+    for (const AutoTypeInfo& t : kTypeRows) {
+        if (!t.stop_option) continue;
+        if (!t.start_option || !NthOfFlavour(t.type, true, 0)) return false;
+        // Start is the default: the type's first kind marks the start.
+        for (const AutoKindInfo& r : kKindRows)
+            if (r.type == t.type) {
+                if (!r.at_start) return false;
+                break;
+            }
+        for (int n = 0;; ++n) {
+            const AutoKindInfo* a = NthOfFlavour(t.type, true, n);
+            const AutoKindInfo* b = NthStop(t.type, n);
+            if (!a && !b) break;
+            if (!a || !b || !StopMarker(a->marker, b->marker)) return false;
+        }
+    }
+    return true;
+}
+static_assert(StopKindsValid(), "stop kinds: of a stop_option type, one per Start kind, own sound key, marker + \" Stop\"");
 
 int RowIndex(int i, int count)
 {

@@ -3873,6 +3873,11 @@ void SyncAutoSettings(const TaggingModel& m)
         if (AutoTypeRow(static_cast<AutoType>(t)).start_option && cur.type[t].on &&
             (!g_auto_seen.type[t].on || cur.at_start[t] != g_auto_seen.at_start[t]))
             g_auto_ui.at_start[t] = cur.at_start[t];
+    // Story 10-12e: Start & Stop, as Peak / Start.
+    for (int t = 0; t < kAutoTypeCount; ++t)
+        if (AutoTypeRow(static_cast<AutoType>(t)).stop_option && cur.type[t].on &&
+            (!g_auto_seen.type[t].on || cur.with_stop[t] != g_auto_seen.with_stop[t]))
+            g_auto_ui.with_stop[t] = cur.with_stop[t];
     // Story 10-9o: Punch at its Stop or its Peak, as the steps' mode.
     const int pu = static_cast<int>(AutoType::Punch);
     if (cur.type[pu].on && (!g_auto_seen.type[pu].on || cur.punch_peak != g_auto_seen.punch_peak))
@@ -4335,6 +4340,20 @@ void DrawStripTypeBody(const TaggingModel& m, const ItemRules& rules, AutoType t
         }
         ui::ItemTip("Stop: the marker where the arm stops (full extension, or the contact).\n"
                     "Peak: where the hand is fastest (a whoosh).\nStart: where the motion starts.");
+    } else if (row.start_option && row.stop_option) {
+        // Story 10-12e: Peak / Start / Start & Stop (a type row's `stop_option`, any category):
+        // Start & Stop adds "<Type> Stop" where the motion ends, a sound of its own.
+        static const char* const kStopModes[] = {"Peak", "Start", "Start & Stop"};
+        ui::LabelRow("Marker at", ui::Dp(90.0f), lcol);
+        int               sel = !g_auto_ui.at_start[ti] ? 0 : g_auto_ui.with_stop[ti] ? 2 : 1;
+        const std::string id = std::string("##startmode") + std::to_string(ti);
+        if (ui::Segmented(id.c_str(), kStopModes, 3, &sel)) {
+            g_auto_ui.at_start[ti] = sel >= 1;
+            g_auto_ui.with_stop[ti] = sel == 2;
+        }
+        ui::ItemTip("Peak: the marker where the motion is fastest.\nStart: where it starts.\n"
+                    "Start & Stop: where it starts, and \"%s Stop\" where it ends (a sound of its own).",
+                    row.label);
     } else if (row.start_option) {
         // Story 10-9c (10-9j: the scuffs too): the marker at the motion's fastest point, or where it starts.
         static const char* const kStartModes[] = {"Peak", "Start"};

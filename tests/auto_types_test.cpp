@@ -163,13 +163,17 @@ void TestKnownValues()
     CHECK(std::string(AutoCategoryLabel(AutoCategory::Body)) == "Body");
     CHECK(std::string(AutoCategoryRow(AutoCategory::Body).sound_part) == "body");
     // Stories 10-9g, 10-9f, 10-9b: Body holds Jolt, Spin, Sit and Fall (sideless), Legs Knee, Arms Elbow.
+    // Story 10-12e: and the body moves, Crouch, Stand Up, Bend, Rise.
     CHECK(AutoTypesOf(AutoCategory::Body) ==
-          std::vector<AutoType>({AutoType::Jolt, AutoType::Spin, AutoType::Sit, AutoType::Fall}));
+          std::vector<AutoType>({AutoType::Jolt, AutoType::Spin, AutoType::Sit, AutoType::Fall, AutoType::Crouch,
+                                 AutoType::StandUp, AutoType::Bend, AutoType::Rise}));
     {
         const BodyPart* body = FindBodyPart("body");
         CHECK(body && body->has_category && body->category == AutoCategory::Body && body->label == "Body" &&
-              body->types.size() == 5 && body->types[0].word == "jolt" && body->types[1].word == "spin" &&
-              body->types[2].word == "sit" && body->types[3].word == "fall" && body->types[4].word == "rules");
+              body->types.size() == 9 && body->types[0].word == "jolt" && body->types[1].word == "spin" &&
+              body->types[2].word == "sit" && body->types[3].word == "fall" && body->types[4].word == "crouch" &&
+              body->types[5].word == "stand_up" && body->types[6].word == "bend" && body->types[7].word == "rise" &&
+              body->types[8].word == "rules");
     }
     CHECK(AutoCategoryOf(AutoType::Knee) == AutoCategory::Legs && AutoCategoryOf(AutoType::Elbow) == AutoCategory::Arms);
     CHECK(AutoMarkerName(AutoKind::Knee, 'L') == "Knee L" && AutoMarkerName(AutoKind::Elbow, 'R') == "Elbow R" &&
@@ -213,7 +217,7 @@ void TestKnownValues()
     // over its run and its Arms Land over its span, the sensitivity
     // dividing both its speeds (straight and arc); Stop (punch), Peak (punch_peak), Start.
     {
-        CHECK(std::string(AutoTypeLabel(AutoType::Punch)) == "Punch" && kAutoTypeCount == 26);
+        CHECK(std::string(AutoTypeLabel(AutoType::Punch)) == "Punch" && kAutoTypeCount == 30);
         CHECK(AutoMarkerName(AutoKind::Punch, 'L') == "Punch L" && AutoMarkerName(AutoKind::PunchPeak, 'R') == "Punch R");
         CHECK(std::string(AutoKindWord(AutoKind::PunchPeak)) == "punch_peak" && AutoTypeOfKind(AutoKind::PunchPeak) == AutoType::Punch);
         CHECK(!AutoKindFromWord("strike", nullptr));
@@ -238,17 +242,21 @@ void TestKnownValues()
     // 10-9a-3: on the foot (no type is sideless), Combined / Separate on lift-off, jump and land.
     for (int t = 0; t < kAutoTypeCount; ++t) {
         const AutoType tt = static_cast<AutoType>(t);
+        const bool move = tt == AutoType::Crouch || tt == AutoType::StandUp || tt == AutoType::Bend || tt == AutoType::Rise;
         CHECK(AutoTypeRow(tt).sideless == (tt == AutoType::Jolt || tt == AutoType::Spin || tt == AutoType::Sit ||
-                                           tt == AutoType::Fall));  // stories 10-9g, 10-9f, 10-9b
+                                           tt == AutoType::Fall || move));  // stories 10-9g, 10-9f, 10-9b, 10-12e
         CHECK(AutoTypeRow(tt).part_split ==
               (tt == AutoType::LiftOff || tt == AutoType::Jump || tt == AutoType::Land || tt == AutoType::Kick));
         // Story 10-9c: Peak / Start on the whooshes. Story 10-9j:
         // and on the scuffs, Start by default.
         const bool whoosh = tt == AutoType::Kick || tt == AutoType::Swing || tt == AutoType::Punch;
         const bool scuff = tt == AutoType::Slide || tt == AutoType::Pivot || tt == AutoType::HandPivot;
-        CHECK(AutoTypeRow(tt).start_option == (whoosh || scuff));
-        CHECK(AutoStartDefault(tt) == scuff);
-        CHECK(AutoSettings().at_start[t] == scuff);
+        // Story 10-12e: the body moves too, Start by default, with Start & Stop (stop_option).
+        CHECK(AutoTypeRow(tt).start_option == (whoosh || scuff || move));
+        CHECK(AutoTypeRow(tt).stop_option == move);
+        CHECK(AutoStartDefault(tt) == (scuff || move));
+        CHECK(AutoSettings().at_start[t] == (scuff || move));
+        CHECK(!AutoSettings().with_stop[t]);
     }
     CHECK(AutoCategoryOf(AutoType::Jump) == AutoCategory::Legs && AutoCategoryOf(AutoType::Land) == AutoCategory::Legs);
     CHECK(std::string(AutoKindWord(AutoKind::Jump)) == "jump" && std::string(AutoKindWord(AutoKind::Land)) == "land");
@@ -301,8 +309,12 @@ void TestKnownValues()
     CHECK(std::string(AutoKindRow(AutoKind::Jolt).strength_unit) == "g" && !AutoKindRow(AutoKind::Jolt).degrees);
     CHECK(AutoMarkerName(AutoKind::Jolt, 'L') == "Jolt" && AutoMarkerName(AutoKind::Jolt, 'B') == "Jolt");
     CHECK(AutoSoundKey(AutoKind::Jolt, 'L') == "jolt:B" && AutoSoundKey(AutoKind::Jolt, 'B') == "jolt:B");
-    for (int k = 0; k < kAutoKindCount; ++k)
-        if (static_cast<AutoKind>(k) != AutoKind::Jolt) CHECK(AutoKindRow(static_cast<AutoKind>(k)).strength_unit == nullptr);
+    for (int k = 0; k < kAutoKindCount; ++k) {
+        const AutoKindInfo& r = AutoKindRow(static_cast<AutoKind>(k));
+        if (r.type == AutoType::Bend || r.type == AutoType::Rise)  // story 10-12e: the trunk's fold rate
+            CHECK(r.strength_unit && std::string(r.strength_unit) == "deg/s");
+        else if (static_cast<AutoKind>(k) != AutoKind::Jolt) CHECK(r.strength_unit == nullptr);
+    }
     const PhysicsParams jo = AutoPhysicsParams(AutoType::Jolt, 100.0, false);
     CHECK(jo.jolt_min_g == d.jolt_min_g / 2.0 && jo.contact_speed == d.contact_speed && !SameAutoAnalysis(jo, d));
 }
@@ -367,6 +379,12 @@ void TestRoles()
                     for (int q = 0; q < kFootPartCount; ++q) want.push_back(FootPartRole(fs, q));
             } else if (r.type == AutoType::Spin) {  // story 10-9f: the hips and the hip line
                 want = {Role::Hips, Role::LeftUpLeg, Role::RightUpLeg};
+            } else if (r.type == AutoType::Crouch || r.type == AutoType::StandUp) {  // story 10-12e: as a jump
+                want.push_back(Role::Hips);
+                for (char fs : {'L', 'R'})
+                    for (int q = 0; q < kFootPartCount; ++q) want.push_back(FootPartRole(fs, q));
+            } else if (r.type == AutoType::Bend || r.type == AutoType::Rise) {  // the trunk and the facing
+                want = {Role::Hips, Role::Spine, Role::Chest, Role::Neck, Role::LeftUpLeg, Role::RightUpLeg};
             } else if (side == 'B') {
                 continue;  // a sided kind has no B block
             } else if (r.type == AutoType::Slap) {  // story 10-9l: its hand, then its finger
@@ -417,7 +435,9 @@ void TestRowInvariants()
             const bool punch_pair = (r.kind == AutoKind::Punch && o.kind == AutoKind::PunchPeak) ||
                                     (r.kind == AutoKind::PunchPeak && o.kind == AutoKind::Punch);
             // Story 10-9c: a Peak kind and its Start twin read their own source.
-            if (hand_pivot_pair || punch_pair || r.at_start != o.at_start) CHECK(r.sigs[0].source != o.sigs[0].source);
+            // Story 10-12e: a stop kind reads its own source too.
+            if (hand_pivot_pair || punch_pair || r.at_start != o.at_start || r.at_stop != o.at_stop)
+                CHECK(r.sigs[0].source != o.sigs[0].source);
             else CHECK(r.sigs[0].source == o.sigs[0].source);
         }
         if (r.scuff != ScuffParts::Combined) {

@@ -98,6 +98,12 @@ struct AutoTypeInfo {
     // Story 10-9o: `replaces` read over the event's span [start, end] too, not only at its time
     // (Punch: its marker at the arm's stop, the landing arm it replaces at the blow's peak).
     bool            replaces_span = false;
+    // Story 10-12e: Start & Stop beside Peak / Start (a `start_option` type only;
+    // AutoSettings::with_stop): its kinds that say `at_stop` (one per Peak / Start pair, its own
+    // marker "<Type> Stop", colour and sound key) mark where the motion ends, made with the Start
+    // kinds when with_stop. The widget shows Peak / Start / Start & Stop for such a type (any
+    // category); its Start stays the type's first kind's flavour.
+    bool            stop_option = false;
 };
 
 // An event source: the physics events of one analysis a kind reads (FootEvents, HandEvents...).
@@ -159,6 +165,9 @@ struct AutoKindInfo {
     // their own, their peak twins share it). Twins pair by position among the type's kinds of each
     // flavour (enum order).
     bool              at_start = false;
+    // Story 10-12e: a `stop_option` type's kind that marks the motion's end (Start & Stop): its own
+    // sound key, outside the Peak / Start pairs (never `at_start`).
+    bool              at_stop = false;
 };
 
 // Story 10-10b: a type's strength levels for layering (Soft / Medium / Hard), in the strength unit

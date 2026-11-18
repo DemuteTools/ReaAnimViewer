@@ -95,6 +95,47 @@ re = rd.merge(copy.deepcopy(lines), copy.deepcopy(drafts), copy.deepcopy(old_ref
 check(("step", "R", "any", 4.25, "confirmed", "antho") in norm(re) and
       ("step", "R", "any", 4.2, "draft", "motion") not in norm(re), "redraft keeps a moved line, no draft back")
 
+# Story 10-12e: --kinds: only those kinds drafted, every other line (drafts included) kept.
+import tempfile  # noqa: E402
+
+kold = [
+    L("step", "L", "any", 1.0),                              # another kind's draft: kept as is
+    L("pivot", "R", "any", 2.0, "confirmed", "antho"),
+    L("crouch", "B", "any", 3.0),                            # an old draft of the kind: replaced
+    L("crouch", "B", "any", 5.0, "deleted", "claude"),       # kept, and no draft back near it
+]
+kdrafts = [L("step", "L", "any", 1.2), L("crouch", "B", "any", 3.3), L("crouch", "B", "any", 5.05), L("bend", "B", "any", 6.0)]
+kout = norm(rd.merge(copy.deepcopy(kold), copy.deepcopy(kdrafts), [], {"crouch"}))
+check(("step", "L", "any", 1.0, "draft", "motion") in kout and not any(x[0] == "step" and x[3] == 1.2 for x in kout),
+      "kinds: another kind's draft kept unchanged, none added")
+check(("pivot", "R", "any", 2.0, "confirmed", "antho") in kout, "kinds: another kind's confirmed line kept")
+check(("crouch", "B", "any", 3.3, "draft", "motion") in kout and ("crouch", "B", "any", 3.0, "draft", "motion") not in kout,
+      "kinds: the kind's old draft replaced")
+check(("crouch", "B", "any", 5.0, "deleted", "claude") in kout and not any(x[0] == "crouch" and x[3] == 5.05 for x in kout),
+      "kinds: a deleted line kept, no draft back")
+check(not any(x[0] == "bend" for x in kout), "kinds: another kind not drafted")
+
+# write_ref_kinds on a temp file: comments and other lines kept, idempotent on a second run.
+with tempfile.TemporaryDirectory() as td:
+    path = os.path.join(td, "clip.ref.tsv")
+    text = (rd.HEADER + "\n# Antho's note\nstep\tL\tany\t1.0000\tdraft\tmotion\n"
+            "crouch\tB\tany\t3.0000\tdraft\tmotion\ncrouch\tB\tany\t5.0000\tdeleted\tclaude\n")
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+    for run in range(2):
+        merged = rd.merge(rd.read_ref(path), copy.deepcopy(kdrafts), [], {"crouch"})
+        rd.write_ref_kinds(path, merged, {"crouch"})
+        with open(path, encoding="utf-8") as f:
+            now = f.read()
+        if run == 0:
+            first = now
+    check(first == now, "write_ref_kinds: a second run changes nothing")
+    rows = now.splitlines()
+    check("# Antho's note" in rows and "step\tL\tany\t1.0000\tdraft\tmotion" in rows, "write_ref_kinds: other lines kept")
+    check("crouch\tB\tany\t3.0000\tdraft\tmotion" not in rows and "crouch\tB\tany\t3.3000\tdraft\tmotion" in rows,
+          "write_ref_kinds: the kind's draft replaced")
+    check(sum(1 for r in rows if r.startswith(rd.KINDS_NOTE_HEAD)) == 1, "write_ref_kinds: one note")
+
 if fails:
     print("merge_check: %d FAILED" % fails)
     sys.exit(1)

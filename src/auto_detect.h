@@ -141,12 +141,14 @@ namespace rav {
 // story 10-9d Clap and Hand on body, story 10-9c Kick, Swing and Punch, story 10-9l Slap; story 10-9o
 // removed 10-9n's Strike, folded into Punch).
 enum class AutoType : int { Step = 0, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land, Jolt, Spin, Tap, Drag,
-                            Knee, Elbow, Sit, Fall, Clap, HandOnBody, Kick, Swing, Punch, HeelTap, ArmJump, ArmLand, Slap };
-constexpr int kAutoTypeCount = 26;  // story 10-9g: Jolt; 10-9f: Spin (Body, sideless); 10-9e: Tap, Drag; 10-9b; 10-9d; 10-9c; 10-9i: Heel Tap; 10-9k: Arms Jump, Land; 10-9l: Slap
+                            Knee, Elbow, Sit, Fall, Clap, HandOnBody, Kick, Swing, Punch, HeelTap, ArmJump, ArmLand, Slap,
+                            Crouch, StandUp, Bend, Rise };
+constexpr int kAutoTypeCount = 30;  // story 10-9g: Jolt; 10-9f: Spin (Body, sideless); 10-9e: Tap, Drag; 10-9b; 10-9d; 10-9c; 10-9i: Heel Tap; 10-9k: Arms Jump, Land; 10-9l: Slap; 10-12e: Crouch, Stand Up, Bend, Rise (Body, sideless)
 // "Step", "Lift-off", "Slide scuff", "Pivot scuff", "Grab", "Release", "Pivot scuff" (the hand's),
 // "Jump", "Land", "Jolt" (story 10-9g, Body), "Spin" (story 10-9f, Body), "Tap", "Drag";
 // story 10-9b: "Knee", "Elbow", "Sit", "Fall"; story 10-9d: "Clap", "Hand on body"; story 10-9c:
-// "Kick", "Swing", "Punch"; story 10-9i: "Heel Tap"; story 10-9k: "Jump", "Land" (Arms); story 10-9l: "Slap"
+// "Kick", "Swing", "Punch"; story 10-9i: "Heel Tap"; story 10-9k: "Jump", "Land" (Arms); story 10-9l: "Slap";
+// story 10-12e: "Crouch", "Stand Up", "Bend", "Rise"
 const char* AutoTypeLabel(AutoType t);
 
 // Story 10-9-0: every type, category and kind has one descriptor row in auto_types.cpp (labels,
@@ -183,9 +185,11 @@ enum class AutoKind : int {
     HandPivotPeak, HandPivotAnyPeak,
     ArmJump, ArmLand,  // story 10-9k
     Slap,  // story 10-9l
-    PunchPeak  // story 10-9o: the punch at the hand's fastest (Punch marks the stop)
+    PunchPeak,  // story 10-9o: the punch at the hand's fastest (Punch marks the stop)
+    // Story 10-12e: the body moves, each at its start (the default), its peak and its stop.
+    Crouch, CrouchPeak, CrouchStop, StandUp, StandUpPeak, StandUpStop, Bend, BendPeak, BendStop, Rise, RisePeak, RiseStop
 };
-constexpr int kAutoKindCount = 64;
+constexpr int kAutoKindCount = 76;
 // "step", "heel", "toe", "lift", "slide", "pivot", "grab", "release", "hand_pivot", "hand_pivot_any",
 // "slide_heel", "slide_toe", "pivot_heel", "pivot_toe", "slide_heel_longest", "slide_toe_longest",
 // "pivot_heel_longest", "pivot_toe_longest", "jump", "land", "lift_heel", "lift_toe", "jump_heel",
@@ -195,7 +199,8 @@ constexpr int kAutoKindCount = 64;
 // "slide_peak", "slide_heel_peak", "slide_toe_peak", "slide_heel_longest_peak", "slide_toe_longest_peak",
 // "pivot_peak", "pivot_heel_peak", "pivot_toe_peak", "pivot_heel_longest_peak", "pivot_toe_longest_peak",
 // "hand_pivot_peak", "hand_pivot_any_peak" (10-9j), "arm_jump", "arm_land" (10-9k), "slap" (10-9l), "punch_peak" (10-9o; a saved "strike" block of
-// 10-9n is an unknown word: it stays inert)
+// 10-9n is an unknown word: it stays inert), "crouch", "crouch_peak", "crouch_stop", "stand_up", "stand_up_peak",
+// "stand_up_stop", "bend", "bend_peak", "bend_stop", "rise", "rise_peak", "rise_stop" (10-12e)
 const char* AutoKindWord(AutoKind k);
 bool AutoKindFromWord(const std::string& w, AutoKind* out);
 AutoType AutoTypeOfKind(AutoKind k);
@@ -268,6 +273,10 @@ struct AutoSettings {
     // Story 10-9o: a punch not at the start sits at the arm's stop (kind punch, the default) or,
     // with punch_peak, at the hand's fastest (kind punch_peak). Ignored when at_start.
     bool             punch_peak = false;
+    // Story 10-12e: Start & Stop for the types whose row says `stop_option` (the body moves), by
+    // AutoType: the Start marker plus "<Type> Stop" where the move ends (its stop kinds, a sound
+    // of their own). Read only with at_start (Peak / Start / Start & Stop); ignored for the others.
+    bool             with_stop[kAutoTypeCount] = {};
     AutoSettings();  // every type off, its modes the defaults (at_start: AutoStartDefault)
 };
 // Story 10-9j: whether a `start_option` type's markers sit at the start by default: the flavour of

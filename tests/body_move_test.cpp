@@ -314,7 +314,8 @@ void TestOldItem()
 // ---- Detection ---------------------------------------------------------------------------------
 
 // A squat: the hips down 0.4 leg (0.36 m) over 0.6 s from 1.0 s, the back bending 15 deg with it,
-// held, then up at 2.5 s. Crouch at its start, Stand Up at its; no Bend / Rise (one motion).
+// held, then up at 2.5 s. Crouch at its start, Stand Up at its; no Bend / Rise (15 deg is under
+// their minimum).
 void TestSquat()
 {
     const std::vector<BoneTrack> rig = Rig(Hill(1.0, 2.5, 0.6, 0.36), Hill(1.0, 2.5, 0.6, 15.0), 4.0);
@@ -336,9 +337,19 @@ void TestSquat()
     const std::vector<Hit> p = Run(rig, MoveSettings(0));
     const Hit*             cp = First(p, AutoKind::CrouchPeak);
     CHECK(cp && cp->t >= 1.25 && cp->t <= 1.35);
-    // A deeper fold during the squat (35 deg) is still the crouch: one motion, one marker.
+    // A deeper fold during the squat (35 deg): each type on its own signal (Antho 2026-11-18), the
+    // crouch gives Crouch and Bend, the stand-up Stand Up and Rise, at the same starts.
     const std::vector<Hit> f = Run(Rig(Hill(1.0, 2.5, 0.6, 0.36), Hill(1.0, 2.5, 0.6, 35.0), 4.0), MoveSettings(1));
-    CHECK(Count(f, AutoKind::Crouch) == 1 && Count(f, AutoKind::Bend) == 0 && Count(f, AutoKind::Rise) == 0);
+    CHECK(Count(f, AutoKind::Crouch) == 1 && Count(f, AutoKind::StandUp) == 1);
+    CHECK(Count(f, AutoKind::Bend) == 1 && Count(f, AutoKind::Rise) == 1);
+    const Hit* fb = First(f, AutoKind::Bend);
+    const Hit* fr = First(f, AutoKind::Rise);
+    if (fb) CHECK(fb->t >= 0.95 && fb->t <= 1.2);
+    if (fr) CHECK(fr->t >= 2.45 && fr->t <= 2.7);
+    // Rise alone ticked (Stand Up off) still gives the Rise.
+    AutoSettings only = MoveSettings(1);
+    for (AutoType t : {AutoType::Crouch, AutoType::StandUp, AutoType::Bend}) only.type[static_cast<int>(t)].on = false;
+    CHECK(Count(Run(Rig(Hill(1.0, 2.5, 0.6, 0.36), Hill(1.0, 2.5, 0.6, 35.0), 4.0), only), AutoKind::Rise) == 1);
 }
 
 // A fold: the trunk forward 45 deg over 0.5 s from 1.0 s, the hips down 0.1 leg, held, back up at

@@ -535,14 +535,14 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "stand_up", {{&P::stand_min_rise, S::Divide}, {}}, &AutoPartsBodyMoveHips, true, false, false, true, -1, -1,
      false, 0u, 1.0, false, true},
     {T::Bend, "Bend", "Bend", C::Body,
-     "A marker where the trunk folds forward, the hips staying up (a bow, reaching down).\n"
-     "A fold during a Crouch is the Crouch. Peak: at the fastest; Start: where it starts;\n"
+     "A marker where the trunk folds forward (a bow, reaching down, a crouch that leans).\n"
+     "Peak: at the fastest; Start: where it starts;\n"
      "Start & Stop: also Bend Stop where it ends (a sound of its own).",
      "bend", {{&P::bend_min_deg, S::Divide}, {}}, &AutoPartsBodyMoveTrunk, true, false, false, true, -1, -1, false, 0u,
      1.0, false, true},
     {T::Rise, "Rise", "Rise", C::Body,
-     "A marker where the trunk straightens back up after a fold, the hips staying up.\n"
-     "Straightening during a Stand Up is the Stand Up. Peak: at the fastest; Start: where it\n"
+     "A marker where the trunk straightens back up after a fold (standing up from a lean too).\n"
+     "Peak: at the fastest; Start: where it\n"
      "starts; Start & Stop: also Rise Stop where it ends (a sound of its own).",
      "rise", {{&P::rise_min_deg, S::Divide}, {}}, &AutoPartsBodyMoveTrunk, true, false, false, true, -1, -1, false, 0u,
      1.0, false, true},

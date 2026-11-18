@@ -19,11 +19,10 @@
 //                      over body_move_min_support of the move at least (a climb's push is on one
 //                      foot while the other steps up). The crouch before a jump and the absorbing
 //                      on landing count (the flight between is skipped).
-//   Bend / Rise        the trunk folds / straightens by bend_min_deg / rise_min_deg, unless it
-//                      overlaps a Crouch or a Stand Up by trunk_overlap of the shorter of the two
-//                      spans at least (at the default
-//                      constants of those, whatever their own sensitivity): a crouch keeps the back
-//                      fairly straight even when it bends a little, one motion, one marker.
+//   Bend / Rise        the trunk folds / straightens by bend_min_deg / rise_min_deg, whatever the
+//                      hips do: a crouch that folds the trunk gives Crouch and Bend, a stand-up
+//                      that straightens it Stand Up and Rise (Antho 2026-11-18: each type fires on
+//                      its own signal, the user unticks the one he does not want).
 // Constants in body units (PhysicsParams), never per-clip statistics.
 //
 // Sideless (one block per kind, side B). Each type has three kinds: its start (the default, "Crouch"),
@@ -205,29 +204,19 @@ std::vector<BodyMove> HipsMoves(const PhysicsAnalysis& a, const PhysicsParams& p
     return out;
 }
 
-// Every move, by start: the hips moves, then the trunk's folds that are not one of them.
+// Every move, by start: the hips moves and the trunk's folds, each on its own signal (a stand-up
+// that straightens the trunk is a Stand Up and a Rise).
 std::vector<BodyMove> BodyMoves(const PhysicsAnalysis& a, const PhysicsParams& p)
 {
     std::vector<BodyMove> out = HipsMoves(a, p, CurveOf(a, p, a.hips_feet));
     const MoveCurve       t = CurveOf(a, p, a.trunk_fold_deg);
     if (!t.curve.empty()) {
-        // The hips moves of this analysis: a Bend / Rise block's, whose sensitivity moves only the
-        // trunk's minimum, so at the Crouch / Stand Up defaults.
         const size_t merge = static_cast<size_t>(std::lround(p.body_move_merge_s * a.rate_hz));
-        const std::vector<BodyMove> hips = out;
         for (const int sign : {1, -1})
             for (const BodyMove& m : CurveMoves(t, sign, p.trunk_start_dps, p.trunk_end_dps, merge,
                                                 sign > 0 ? p.bend_min_deg : p.rise_min_deg,
-                                                sign > 0 ? PhysicsKind::Bend : PhysicsKind::Rise, !a.looping)) {
-                bool one = false;
-                for (const BodyMove& h : hips) {
-                    const double lo = static_cast<double>(std::max(m.start, h.start));
-                    const double hi = static_cast<double>(std::min(m.end, h.end));
-                    const double shorter = static_cast<double>(std::min(m.end - m.start, h.end - h.start));
-                    if (hi - lo >= p.trunk_overlap * shorter - 1e-9 && hi >= lo) one = true;
-                }
-                if (!one) out.push_back(m);
-            }
+                                                sign > 0 ? PhysicsKind::Bend : PhysicsKind::Rise, !a.looping))
+                out.push_back(m);
     }
     std::stable_sort(out.begin(), out.end(), [](const BodyMove& x, const BodyMove& y) { return x.start < y.start; });
     return out;
@@ -521,7 +510,7 @@ void MoveLane(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string&
         std::snprintf(buf, sizeof(buf),
                       "Shaded: a move. It starts where the rate passes the line, runs while it stays\n"
                       "above %.0f deg/s, and counts when the trunk turns %.0f deg or more\n"
-                      "(not during a Crouch / Stand Up: one motion, one marker).",
+                      "(with or without a Crouch / Stand Up at the same time).",
                       p.trunk_end_dps, sign > 0 ? p.bend_min_deg : p.rise_min_deg);
     else
         std::snprintf(buf, sizeof(buf),

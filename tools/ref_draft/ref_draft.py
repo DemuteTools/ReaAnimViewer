@@ -71,9 +71,9 @@
 #                    next hold): crouch down, stand_up up. The trunk's forward lean (hips to
 #                    neck, along the facing perpendicular to the up legs' line, 0 when upright or
 #                    behind) swinging 20 deg or more the same way at 40 deg/s or more on average
-#                    (walking's lean drifts 20-24 deg at about 30): bend forward, rise back, unless
-#                    it overlaps a drafted crouch / stand_up by half the shorter of the two spans
-#                    (one motion, one marker).
+#                    (walking's lean drifts 20-24 deg at about 30): bend forward, rise back,
+#                    whatever the hips do (a stand-up that straightens the trunk drafts stand_up
+#                    and rise: Antho 2026-11-18).
 #   dash             story 10-12e-2, side B, part any, at the burst's start: the hips' horizontal
 #                    speed against the ground (the world for a root-motion clip, else the feet's
 #                    velocity mode), smoothed over 250 ms (a box), 50 ms at each end not read; a
@@ -466,7 +466,6 @@ def body_moves(P, B, contact, L, rate, n):
     low = np.min(np.stack(list(low_s.values()), axis=1), axis=1)
     above = (P["hips"][:, 1] - low) / L
     w = max(1, int(round(0.1 * rate)))
-    hips_moves = []
     for a, b in intervals(contact):
         seg = smooth(above[a:b], w)
         pts = zigzag(seg, 0.2)
@@ -478,7 +477,6 @@ def body_moves(P, B, contact, L, rate, n):
                 continue
             if any(abs(low_s[s][a + i1] - low_s[s][a + i0]) > 0.1 * L for s in low_s):
                 continue
-            hips_moves.append((a + i0, a + i1))
             out.append({"kind": "crouch" if v1 < v0 else "stand_up", "side": "B", "part": "any", "t": round((a + i0) / rate, 4)})
     if "neck" in P and "upleg_L" in P and "upleg_R" in P:
         d = P["neck"] - P["hips"]
@@ -496,9 +494,7 @@ def body_moves(P, B, contact, L, rate, n):
                 dur = (i1 - i0) / rate
                 if abs(v1 - v0) < 20.0 or dur > 1.5 or dur <= 0 or abs(v1 - v0) / dur < 40.0:
                     continue
-                s0, s1 = a + i0, a + i1
-                if any(min(s1, h1) - max(s0, h0) >= 0.5 * min(s1 - s0, h1 - h0) for h0, h1 in hips_moves):
-                    continue
+                s0 = a + i0
                 out.append({"kind": "bend" if v1 > v0 else "rise", "side": "B", "part": "any", "t": round(s0 / rate, 4)})
     return out
 

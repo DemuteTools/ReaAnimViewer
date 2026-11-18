@@ -792,9 +792,8 @@ struct PhysicsParams {
     // crouch_min_drop / stand_min_rise (leg), with both feet down over body_move_min_support of
     // the move at least (a climb pushes on one foot while the other steps up: Climbing Up Wall
     // 0.00, the real moves 0.30-1.00). Bend / Rise: the trunk folds forward / straightens by
-    // bend_min_deg / rise_min_deg, unless it overlaps a Crouch or a Stand Up by half the shorter of
-    // the two spans at least (one motion, one marker: a crouch keeps the back fairly straight even
-    // when it bends a little).
+    // bend_min_deg / rise_min_deg, whatever the hips do (Antho 2026-11-18: a stand-up that
+    // straightens the trunk gives Stand Up and Rise, each type on its own signal).
     // Measured 2026-11-18 on the 64 bench clips: the moves' peak hips speed 0.6-3.7 leg/s, their
     // drop or rise 0.21-0.74 leg; the trunk's fold 20-116 deg at 70-230 deg/s; idles, walks, runs
     // and strafes give none (walking's forward lean drifts 20-24 deg at 36-48 deg/s: the trunk's
@@ -810,7 +809,6 @@ struct PhysicsParams {
     double     trunk_end_dps = 10.0;
     double     bend_min_deg = 20.0;
     double     rise_min_deg = 20.0;
-    double     trunk_overlap = 0.5;            // the overlap, in shares of the shorter span, that makes a fold and a hips move one
     // Story 10-12e-2: the dash (auto_types_body_move.cpp), a burst of travel speed, on the hips'
     // horizontal speed in the ground frame (hips_vh, so an in-place and a root-motion clip read
     // alike) smoothed over dash_smooth_s (sigma, every sample, flights included) and its rate (the

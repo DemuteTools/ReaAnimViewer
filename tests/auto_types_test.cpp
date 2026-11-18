@@ -163,17 +163,17 @@ void TestKnownValues()
     CHECK(std::string(AutoCategoryLabel(AutoCategory::Body)) == "Body");
     CHECK(std::string(AutoCategoryRow(AutoCategory::Body).sound_part) == "body");
     // Stories 10-9g, 10-9f, 10-9b: Body holds Jolt, Spin, Sit and Fall (sideless), Legs Knee, Arms Elbow.
-    // Story 10-12e: and the body moves, Crouch, Stand Up, Bend, Rise.
+    // Story 10-12e: and the body moves, Crouch, Stand Up, Bend, Rise; 10-12e-2: Dash.
     CHECK(AutoTypesOf(AutoCategory::Body) ==
           std::vector<AutoType>({AutoType::Jolt, AutoType::Spin, AutoType::Sit, AutoType::Fall, AutoType::Crouch,
-                                 AutoType::StandUp, AutoType::Bend, AutoType::Rise}));
+                                 AutoType::StandUp, AutoType::Bend, AutoType::Rise, AutoType::Dash}));
     {
         const BodyPart* body = FindBodyPart("body");
         CHECK(body && body->has_category && body->category == AutoCategory::Body && body->label == "Body" &&
-              body->types.size() == 9 && body->types[0].word == "jolt" && body->types[1].word == "spin" &&
+              body->types.size() == 10 && body->types[0].word == "jolt" && body->types[1].word == "spin" &&
               body->types[2].word == "sit" && body->types[3].word == "fall" && body->types[4].word == "crouch" &&
               body->types[5].word == "stand_up" && body->types[6].word == "bend" && body->types[7].word == "rise" &&
-              body->types[8].word == "rules");
+              body->types[8].word == "dash" && body->types[9].word == "rules");
     }
     CHECK(AutoCategoryOf(AutoType::Knee) == AutoCategory::Legs && AutoCategoryOf(AutoType::Elbow) == AutoCategory::Arms);
     CHECK(AutoMarkerName(AutoKind::Knee, 'L') == "Knee L" && AutoMarkerName(AutoKind::Elbow, 'R') == "Elbow R" &&
@@ -217,7 +217,7 @@ void TestKnownValues()
     // over its run and its Arms Land over its span, the sensitivity
     // dividing both its speeds (straight and arc); Stop (punch), Peak (punch_peak), Start.
     {
-        CHECK(std::string(AutoTypeLabel(AutoType::Punch)) == "Punch" && kAutoTypeCount == 30);
+        CHECK(std::string(AutoTypeLabel(AutoType::Punch)) == "Punch" && kAutoTypeCount == 31);
         CHECK(AutoMarkerName(AutoKind::Punch, 'L') == "Punch L" && AutoMarkerName(AutoKind::PunchPeak, 'R') == "Punch R");
         CHECK(std::string(AutoKindWord(AutoKind::PunchPeak)) == "punch_peak" && AutoTypeOfKind(AutoKind::PunchPeak) == AutoType::Punch);
         CHECK(!AutoKindFromWord("strike", nullptr));
@@ -242,7 +242,8 @@ void TestKnownValues()
     // 10-9a-3: on the foot (no type is sideless), Combined / Separate on lift-off, jump and land.
     for (int t = 0; t < kAutoTypeCount; ++t) {
         const AutoType tt = static_cast<AutoType>(t);
-        const bool move = tt == AutoType::Crouch || tt == AutoType::StandUp || tt == AutoType::Bend || tt == AutoType::Rise;
+        const bool move = tt == AutoType::Crouch || tt == AutoType::StandUp || tt == AutoType::Bend || tt == AutoType::Rise ||
+                          tt == AutoType::Dash;  // story 10-12e-2
         CHECK(AutoTypeRow(tt).sideless == (tt == AutoType::Jolt || tt == AutoType::Spin || tt == AutoType::Sit ||
                                            tt == AutoType::Fall || move));  // stories 10-9g, 10-9f, 10-9b, 10-12e
         CHECK(AutoTypeRow(tt).part_split ==
@@ -379,7 +380,8 @@ void TestRoles()
                     for (int q = 0; q < kFootPartCount; ++q) want.push_back(FootPartRole(fs, q));
             } else if (r.type == AutoType::Spin) {  // story 10-9f: the hips and the hip line
                 want = {Role::Hips, Role::LeftUpLeg, Role::RightUpLeg};
-            } else if (r.type == AutoType::Crouch || r.type == AutoType::StandUp) {  // story 10-12e: as a jump
+            } else if (r.type == AutoType::Crouch || r.type == AutoType::StandUp ||
+                       r.type == AutoType::Dash) {  // story 10-12e: as a jump (10-12e-2: Dash too)
                 want.push_back(Role::Hips);
                 for (char fs : {'L', 'R'})
                     for (int q = 0; q < kFootPartCount; ++q) want.push_back(FootPartRole(fs, q));

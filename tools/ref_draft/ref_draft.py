@@ -74,11 +74,24 @@
 #                    (walking's lean drifts 20-24 deg at about 30): bend forward, rise back, unless
 #                    it overlaps a drafted crouch / stand_up by half the shorter of the two spans
 #                    (one motion, one marker).
+#   dash             story 10-12e-2, side B, part any, at the burst's start: the hips' horizontal
+#                    speed against the ground (the world for a root-motion clip, else the feet's
+#                    velocity mode), smoothed over 250 ms (a box), 50 ms at each end not read; a
+#                    burst where the speed gains 1.0 L/s or more within the next 0.6 s: from the
+#                    lowest such sample to the highest speed within 0.6 s after them, its start
+#                    the last sample within 5 % of the gain of that low, a foot in contact within
+#                    50 ms of its steepest sample (a flight's swing is no dash). dash_stop (only
+#                    when --kinds asks for it: the bench scores the default Start marker): when
+#                    the speed starts falling (5 % of the gain under the high) within 1 s of the
+#                    high and falls 1.0 L/s or more within 2 s, the first sample within 5 % of the
+#                    drop of that low (the halt), else the first within 5 % of the high (the
+#                    plateau).
 # No arrival (step, land, grab, pivot) within 30 ms of the clip's start, no departure (lift,
 # jump, release) within 30 ms of its end. No slide and no hand pivot draft: Antho adds them on
 # the page.
 #
-#   --kinds=<k1,k2...>  drafts only those kinds (story 10-12e: --kinds=crouch,stand_up,bend,rise)
+#   --kinds=<k1,k2...>  drafts only those kinds (story 10-12e: --kinds=crouch,stand_up,bend,rise;
+#                       10-12e-2: --kinds=dash, or dash,dash_stop to see the stops)
 #                       into the clips that have a reference file already (none is created: a new
 #                       file would change which clips the bench sums). The file's other lines and
 #                       its comments stay as they are; the old draft lines (source motion) of those
@@ -375,6 +388,7 @@ def draft(clip):
                 add("release", s, "hand", b - 1)
 
     lines += body_moves(P, B, contact, L, rate, n)
+    lines += dash_moves(P, V, w, contact, L, rate, n)
 
     lines.sort(key=lambda l: (l["t"], l["kind"], l["side"], l["part"]))
     if DEBUG:
@@ -486,6 +500,55 @@ def body_moves(P, B, contact, L, rate, n):
                 if any(min(s1, h1) - max(s0, h0) >= 0.5 * min(s1 - s0, h1 - h0) for h0, h1 in hips_moves):
                     continue
                 out.append({"kind": "bend" if v1 > v0 else "rise", "side": "B", "part": "any", "t": round(s0 / rate, 4)})
+    return out
+
+
+def dash_moves(P, V, w, contact, L, rate, n):
+    """Story 10-12e-2: dash lines (and dash_stop ones, which main keeps only when --kinds asks for
+    them; see the rules at the top)."""
+    out = []
+    if "hips" not in V:
+        return out
+    hv = V["hips"][:, [0, 2]] - w[[0, 2]]
+    spd = smooth(np.hypot(hv[:, 0], hv[:, 1]) / L, max(1, int(round(0.25 * rate))))
+    lo, hi = int(round(0.05 * rate)), n - int(round(0.05 * rate))
+    if hi - lo < 3:
+        return out
+    seg = spd[lo:hi]
+    m = len(seg)
+    win, sec, near_s = int(round(0.6 * rate)), int(round(rate)), int(round(0.05 * rate))
+    gain = np.array([float(np.max(seg[i + 1:i + win + 1])) - seg[i] if i + 1 < m else 0.0 for i in range(m)])
+    last = -1
+    for a, b in intervals(gain >= 1.0):
+        if a <= last:
+            continue
+        low = a + int(np.argmin(seg[a:b]))
+        top_end = min(m, b + win + 1)
+        high = low + int(np.argmax(seg[low:top_end]))
+        amount = seg[high] - seg[low]
+        start = low
+        while start + 1 < high and seg[start + 1] - seg[low] <= 0.05 * amount:
+            start += 1
+        arrive = low
+        while arrive < high and seg[high] - seg[arrive] > 0.05 * amount:
+            arrive += 1
+        steep = lo + start + int(np.argmax(np.diff(seg[start:high + 1])))
+        last = high
+        if not contact[max(0, steep - near_s):steep + near_s + 1].any():
+            continue
+        out.append({"kind": "dash", "side": "B", "part": "any", "t": round((lo + start) / rate, 4)})
+        stop = arrive
+        fall = high
+        while fall + 1 < m and fall - high <= sec and seg[high] - seg[fall + 1] <= 0.05 * amount:
+            fall += 1
+        if fall - high <= sec and fall + 1 < m:
+            bottom = fall + int(np.argmin(seg[fall:min(m, fall + 2 * sec)]))
+            if seg[high] - seg[bottom] >= 1.0:
+                drop = seg[high] - seg[bottom]
+                stop = fall
+                while stop < bottom and seg[stop] - seg[bottom] > 0.05 * drop:
+                    stop += 1
+        out.append({"kind": "dash_stop", "side": "B", "part": "any", "t": round((lo + stop) / rate, 4)})
     return out
 
 
@@ -665,6 +728,8 @@ def main(argv):
             print("%s: read failed: %s" % (cid, e))
             continue
         drafts, info = draft(clip)
+        if drafts is not None and not (kinds and "dash_stop" in kinds):
+            drafts = [d for d in drafts if d["kind"] != "dash_stop"]  # story 10-12e-2: asked only
         if drafts is None:
             print("%s: no draft (%s)" % (cid, info))
             continue

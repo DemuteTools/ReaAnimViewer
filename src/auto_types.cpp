@@ -276,6 +276,12 @@ void AutoLanesBend(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::st
 void AutoLanesRise(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
 std::vector<Role> AutoRolesBodyMoveHips(char side);
 std::vector<Role> AutoRolesBodyMoveTrunk(char side);
+// auto_types_body_move.cpp (story 10-12e-2: dash)
+std::vector<PhysicsEvent> AutoSourceDashStart(const PhysicsAnalysis& a, const PhysicsParams& p);
+std::vector<PhysicsEvent> AutoSourceDashPeak(const PhysicsAnalysis& a, const PhysicsParams& p);
+std::vector<PhysicsEvent> AutoSourceDashStop(const PhysicsAnalysis& a, const PhysicsParams& p);
+bool AutoMatchDash(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+void AutoLanesDash(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
 
 namespace {
 
@@ -483,6 +489,16 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "starts; Start & Stop: also Rise Stop where it ends (a sound of its own).",
      "rise", {{&P::rise_min_deg, S::Divide}, {}}, &AutoPartsBodyMoveTrunk, true, false, false, true, -1, -1, false, 0u,
      1.0, false, true},
+    // Story 10-12e-2: the dash (auto_types_body_move.cpp), as the body moves: sideless, higher
+    // sensitivity = a smaller speed gain counts, Marker at Peak / Start / Start & Stop, Start by
+    // default; the hips and a foot part per side (the flights are read from the feet).
+    {T::Dash, "Dash", "Dash", C::Body,
+     "A marker where the body bursts into travel speed (a dash from standstill, a walk or\n"
+     "mid-run; not a jump's flight). Peak: at the fastest gain; Start: where it starts;\n"
+     "Start & Stop: also Dash Stop where it ends (the halt after a hard stop, else where its speed\n"
+     "levels off; a sound of its own).",
+     "dash", {{&P::dash_min_gain, S::Divide}, {}}, &AutoPartsBodyMoveHips, true, false, false, true, -1, -1, false, 0u,
+     1.0, false, true},
 };
 
 // ---- Strength levels (story 10-10b) ------------------------------------------------------------
@@ -556,6 +572,10 @@ constexpr AutoStrengthCuts kStrengthRows[] = {
     {T::StandUp, 1.25, 1.8},
     {T::Bend, 105.0, 190.0},
     {T::Rise, 105.0, 130.0},
+    // Story 10-12e-2: the dash's speed gain within 0.6 s (leg/s, the gain that made it a dash),
+    // measured 2026-11-18 on the bench clips (default matrix): 10 on 8 clips, 1.02 (Dance_Armada)
+    // to 3.14 (Jump Away), wp33 1.20, wp67 1.98.
+    {T::Dash, 1.2, 2.0},
 };
 
 // ---- Kinds -------------------------------------------------------------------------------------
@@ -807,6 +827,16 @@ constexpr AutoKindInfo kKindRows[] = {
     {K::RiseStop, "rise_stop", T::Rise, "Rise Stop", {0x6E9BB4, 0x6E9BB4}, kNo, false, false, "", K::RiseStop,
      {{"trunk fold", &AutoSourceBodyMoveStop, &AutoMatchRise}}, &AutoMissingBodyMoveTrunk, &AutoLanesRise,
      &AutoRolesBodyMoveTrunk, "deg/s", false, true},
+    // Story 10-12e-2: the dash, as the body moves (start, Peak twin, stop; strength leg/s).
+    {K::Dash, "dash", T::Dash, "Dash", {0xC8783C, 0xC8783C}, kNo, false, false, "", K::Dash,
+     {{"travel burst", &AutoSourceDashStart, &AutoMatchDash}}, &AutoMissingBodyMoveHips, &AutoLanesDash,
+     &AutoRolesBodyMoveHips, nullptr, true},
+    {K::DashPeak, "dash_peak", T::Dash, "Dash", {0xC8783C, 0xC8783C}, kNo, false, false, "", K::Dash,
+     {{"travel burst", &AutoSourceDashPeak, &AutoMatchDash}}, &AutoMissingBodyMoveHips, &AutoLanesDash,
+     &AutoRolesBodyMoveHips},
+    {K::DashStop, "dash_stop", T::Dash, "Dash Stop", {0xE0A77A, 0xE0A77A}, kNo, false, false, "", K::DashStop,
+     {{"travel burst", &AutoSourceDashStop, &AutoMatchDash}}, &AutoMissingBodyMoveHips, &AutoLanesDash,
+     &AutoRolesBodyMoveHips, nullptr, false, true},
 };
 
 // One row per enum value, in enum order.

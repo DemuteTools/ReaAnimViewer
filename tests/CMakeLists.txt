@@ -164,7 +164,7 @@ add_executable(auto_spin_test auto_spin_test.cpp ${RAV_AUTO_SRCS} ../src/motion_
                ../src/rule_record.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
 target_include_directories(auto_spin_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME auto_spin COMMAND auto_spin_test)
-# Story 10-12e -- the body moves, Crouch, Stand Up, Bend, Rise (src/auto_types_body_move.cpp).
+# Story 10-12e -- the body moves, Crouch, Stand Up, Bend, Rise (src/auto_types_body_move.cpp); 10-12e-2: Dash.
 add_executable(body_move_test body_move_test.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/motion_whoosh.cpp ../src/bone_events.cpp
                ../src/rule_record.cpp ../src/event_list.cpp ../src/tagging_signal.cpp ../src/sound_assign.cpp
                ../src/sound_auto_assign.cpp ../src/sound_populate_plan.cpp ../src/sound_switch.cpp ../src/sound_draw.cpp

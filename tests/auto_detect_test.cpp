@@ -899,7 +899,8 @@ int main()
             const bool body = t == static_cast<int>(AutoType::Jolt) || t == static_cast<int>(AutoType::Spin) ||  // 10-9g, 10-9f
                               t == static_cast<int>(AutoType::Sit) || t == static_cast<int>(AutoType::Fall) ||
                               t == static_cast<int>(AutoType::Crouch) || t == static_cast<int>(AutoType::StandUp) ||  // 10-12e
-                              t == static_cast<int>(AutoType::Bend) || t == static_cast<int>(AutoType::Rise);
+                              t == static_cast<int>(AutoType::Bend) || t == static_cast<int>(AutoType::Rise) ||
+                              t == static_cast<int>(AutoType::Dash);  // 10-12e-2
             CHECK(AutoCategoryOf(static_cast<AutoType>(t)) ==
                   (arms ? AutoCategory::Arms : body ? AutoCategory::Body : AutoCategory::Legs));
         }
@@ -1199,7 +1200,10 @@ int main()
                     case AutoKind::Crouch:
                     case AutoKind::CrouchStop:
                     case AutoKind::StandUp:
-                    case AutoKind::StandUpStop: parts = {Role::Hips, Role::LeftHeel, Role::RightHeel}; break;
+                    case AutoKind::StandUpStop:
+                    case AutoKind::Dash:  // story 10-12e-2: Dash as Crouch
+                    case AutoKind::DashPeak:
+                    case AutoKind::DashStop: parts = {Role::Hips, Role::LeftHeel, Role::RightHeel}; break;
                     case AutoKind::Bend:
                     case AutoKind::BendStop:
                     case AutoKind::Rise:

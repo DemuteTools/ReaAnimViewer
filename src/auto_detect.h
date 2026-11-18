@@ -142,13 +142,13 @@ namespace rav {
 // removed 10-9n's Strike, folded into Punch).
 enum class AutoType : int { Step = 0, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land, Jolt, Spin, Tap, Drag,
                             Knee, Elbow, Sit, Fall, Clap, HandOnBody, Kick, Swing, Punch, HeelTap, ArmJump, ArmLand, Slap,
-                            Crouch, StandUp, Bend, Rise };
-constexpr int kAutoTypeCount = 30;  // story 10-9g: Jolt; 10-9f: Spin (Body, sideless); 10-9e: Tap, Drag; 10-9b; 10-9d; 10-9c; 10-9i: Heel Tap; 10-9k: Arms Jump, Land; 10-9l: Slap; 10-12e: Crouch, Stand Up, Bend, Rise (Body, sideless)
+                            Crouch, StandUp, Bend, Rise, Dash };
+constexpr int kAutoTypeCount = 31;  // story 10-9g: Jolt; 10-9f: Spin (Body, sideless); 10-9e: Tap, Drag; 10-9b; 10-9d; 10-9c; 10-9i: Heel Tap; 10-9k: Arms Jump, Land; 10-9l: Slap; 10-12e: Crouch, Stand Up, Bend, Rise (Body, sideless); 10-12e-2: Dash (Body, sideless)
 // "Step", "Lift-off", "Slide scuff", "Pivot scuff", "Grab", "Release", "Pivot scuff" (the hand's),
 // "Jump", "Land", "Jolt" (story 10-9g, Body), "Spin" (story 10-9f, Body), "Tap", "Drag";
 // story 10-9b: "Knee", "Elbow", "Sit", "Fall"; story 10-9d: "Clap", "Hand on body"; story 10-9c:
 // "Kick", "Swing", "Punch"; story 10-9i: "Heel Tap"; story 10-9k: "Jump", "Land" (Arms); story 10-9l: "Slap";
-// story 10-12e: "Crouch", "Stand Up", "Bend", "Rise"
+// story 10-12e: "Crouch", "Stand Up", "Bend", "Rise"; story 10-12e-2: "Dash"
 const char* AutoTypeLabel(AutoType t);
 
 // Story 10-9-0: every type, category and kind has one descriptor row in auto_types.cpp (labels,
@@ -187,9 +187,11 @@ enum class AutoKind : int {
     Slap,  // story 10-9l
     PunchPeak,  // story 10-9o: the punch at the hand's fastest (Punch marks the stop)
     // Story 10-12e: the body moves, each at its start (the default), its peak and its stop.
-    Crouch, CrouchPeak, CrouchStop, StandUp, StandUpPeak, StandUpStop, Bend, BendPeak, BendStop, Rise, RisePeak, RiseStop
+    Crouch, CrouchPeak, CrouchStop, StandUp, StandUpPeak, StandUpStop, Bend, BendPeak, BendStop, Rise, RisePeak, RiseStop,
+    // Story 10-12e-2: the dash (a burst of travel speed), at its start (the default), its peak and its stop.
+    Dash, DashPeak, DashStop
 };
-constexpr int kAutoKindCount = 76;
+constexpr int kAutoKindCount = 79;
 // "step", "heel", "toe", "lift", "slide", "pivot", "grab", "release", "hand_pivot", "hand_pivot_any",
 // "slide_heel", "slide_toe", "pivot_heel", "pivot_toe", "slide_heel_longest", "slide_toe_longest",
 // "pivot_heel_longest", "pivot_toe_longest", "jump", "land", "lift_heel", "lift_toe", "jump_heel",
@@ -200,7 +202,8 @@ constexpr int kAutoKindCount = 76;
 // "pivot_peak", "pivot_heel_peak", "pivot_toe_peak", "pivot_heel_longest_peak", "pivot_toe_longest_peak",
 // "hand_pivot_peak", "hand_pivot_any_peak" (10-9j), "arm_jump", "arm_land" (10-9k), "slap" (10-9l), "punch_peak" (10-9o; a saved "strike" block of
 // 10-9n is an unknown word: it stays inert), "crouch", "crouch_peak", "crouch_stop", "stand_up", "stand_up_peak",
-// "stand_up_stop", "bend", "bend_peak", "bend_stop", "rise", "rise_peak", "rise_stop" (10-12e)
+// "stand_up_stop", "bend", "bend_peak", "bend_stop", "rise", "rise_peak", "rise_stop" (10-12e), "dash",
+// "dash_peak", "dash_stop" (10-12e-2)
 const char* AutoKindWord(AutoKind k);
 bool AutoKindFromWord(const std::string& w, AutoKind* out);
 AutoType AutoTypeOfKind(AutoKind k);

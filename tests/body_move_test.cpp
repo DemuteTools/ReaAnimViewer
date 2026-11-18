@@ -6,7 +6,12 @@
 // its back bending a little, no Bend), a fold (Bend then Rise), idle, a push on one foot while the
 // other steps up (no Stand Up), the sensitivity, the missing parts, Peak / Start / Start & Stop
 // (the stop kinds, their words, markers and sound keys), the settings' round trip and an item
-// saved before. No REAPER.
+// saved before. Story 10-12e-2: Dash on a runner's rig whose travel speed follows a curve (in
+// place, the feet sliding back under still hips, or with root motion; the bursts with root
+// motion: a synthetic in-place belt that speeds up within a stance is no ground the analysis
+// follows): from rest, mid-run, steady strides, a flight's swing (and a stride's short flight),
+// the clip's edges, a dash from the first frames, its stop at a halt or at the plateau (and the
+// stop's gates), back-to-back dashes, a run that halts with no dash, the missing parts. No REAPER.
 //   cmake -S tests -B build-tests && cmake --build build-tests && ctest --test-dir build-tests
 
 #include "auto_detect.h"
@@ -496,6 +501,304 @@ void TestLoop()
     for (const Hit& x : h) CHECK(x.t >= 0.0 && x.t < 4.0);
 }
 
+// ---- Dash (story 10-12e-2) ----------------------------------------------------------------------
+
+constexpr double kLeg = kShin + kThigh;  // m
+
+// The integral of a curve from 0 to t (trapezoids at 1 / (4 kRate)).
+double Integral(const Curve& f, double t)
+{
+    const int    n = std::max(1, static_cast<int>(std::ceil(t * kRate * 4.0)));
+    const double h = t / n;
+    double       sum = 0.0;
+    for (int i = 0; i < n; ++i) sum += 0.5 * h * (f(i * h) + f((i + 1) * h));
+    return sum;
+}
+
+struct DashOpts {
+    bool  root_motion = false;  // everything travels (the feet still in stance); else in place
+    Curve flight = Zero();      // both feet up by this (m) at time t, travelling with the body: a flight
+    Curve hop = Zero();         // both feet up by this (m) in their own steps: a stride's short flight
+    bool  hips = true;
+    bool  feet = true;
+};
+
+// A runner: the hips still at 0.67 m (a run's bent legs), each foot stepping along z under them
+// as the ground moves by speed(t) (leg/s): its stance slides back from +0.3 m to -0.3 m with the
+// ground (60 % of a 1 m cycle), its swing comes forward lifted 0.1 m; the feet half a cycle apart.
+// In place, the ground is the feet's (hips_vh = speed); with root motion every bone also travels
+// forward by the distance (the stance feet still in the world). The knees keep the leg lengths.
+std::vector<BoneTrack> Runner(const Curve& speed, double dur, const DashOpts& o = {})
+{
+    std::vector<BoneTrack> t(static_cast<size_t>(Role::Count));
+    const int              n = static_cast<int>(std::floor(dur * kRate + 1e-9)) + 1;
+    auto put = [&](Role r, const Vec3d& p) {
+        BoneTrack& b = t[static_cast<size_t>(r)];
+        b.rate_hz = kRate;
+        b.pos.push_back(p);
+    };
+    const double a = 0.3, f = 0.6, cycle = 2.0 * a / f, H = 0.67;
+    double       dist = 0.0;      // m
+    double       held[2] = {};    // a foot's place under the body while in flight
+    bool         flying = false;
+    for (int i = 0; i < n; ++i) {
+        const double ti = i / kRate;
+        if (i > 0) dist += 0.5 * kLeg * (speed(ti - 1.0 / kRate) + speed(ti)) / kRate;
+        const double shift = o.root_motion ? dist : 0.0;
+        const bool   was_flying = flying;
+        flying = o.flight(ti) > 1e-3;
+        for (int s = 0; s < 2; ++s) {
+            const double x = s ? -0.1 : 0.1;
+            const char   side = s ? 'R' : 'L';
+            const double u = std::fmod(dist / cycle + (s ? 0.5 : 0.0), 1.0);
+            double       z, lift = o.flight(ti) + o.hop(ti);
+            if (u < f) {
+                z = a - u * cycle;
+            } else {
+                const double w = (u - f) / (1.0 - f);
+                z = -a + w * 2.0 * a;
+                lift += 0.1 * std::sin(kPi * w);
+            }
+            if (flying && !was_flying) held[s] = z;
+            if (flying) z = held[s];  // the foot goes with the body
+            z += shift;
+            const Vec3d heel{x, 0.08 + lift, z - 0.05}, ball{x, 0.02 + lift, z + 0.09}, tip{x, 0.0 + lift, z + 0.16};
+            if (o.feet) {
+                put(FootPartRole(side, 0), heel);
+                put(FootPartRole(side, 1), ball);
+                put(FootPartRole(side, 2), tip);
+            }
+            // The knee: the two-link solution between the up leg and the heel, bent forward.
+            const Vec3d  up{x, H, -0.05 + shift};
+            const double dy = up.y - heel.y, dz = up.z - heel.z, d = std::max(1e-6, std::hypot(dy, dz));
+            const double half = std::min(d / 2.0, kShin - 1e-6), h = std::sqrt(kShin * kShin - half * half);
+            put(s ? Role::RightKnee : Role::LeftKnee,
+                Vec3d{x, heel.y + dy / 2.0 - h * dz / d, heel.z + dz / 2.0 + h * dy / d});
+            put(s ? Role::RightUpLeg : Role::LeftUpLeg, up);
+        }
+        const Vec3d hips{0.0, H, -0.05 + shift};
+        if (o.hips) put(Role::Hips, hips);
+        put(Role::Spine, Vec3d{hips.x, hips.y + 0.1, hips.z});
+        put(Role::Chest, Vec3d{hips.x, hips.y + 0.3, hips.z});
+        put(Role::Neck, Vec3d{hips.x, hips.y + 0.5, hips.z});
+        put(Role::Head, Vec3d{hips.x, hips.y + 0.62, hips.z});
+    }
+    return t;
+}
+
+// The speed `from` until t0, eased to `to` over d (leg/s).
+Curve SpeedRamp(double from, double to, double t0, double d)
+{
+    return [=](double t) { return from + (to - from) * Ease((t - t0) / d); };
+}
+
+// Dash ticked alone, at `sens`, in mode 0 = Peak, 1 = Start, 2 = Start & Stop.
+AutoSettings DashSettings(int mode = 1, double sens = kAutoDefaultSens)
+{
+    AutoSettings s;
+    const int    ti = static_cast<int>(AutoType::Dash);
+    s.type[ti].on = true;
+    s.type[ti].sens = sens;
+    s.at_start[ti] = mode >= 1;
+    s.with_stop[ti] = mode == 2;
+    return s;
+}
+
+void TestDashWords()
+{
+    const char*    words[3] = {"dash", "dash_peak", "dash_stop"};
+    const AutoKind kinds[3] = {AutoKind::Dash, AutoKind::DashPeak, AutoKind::DashStop};
+    for (int i = 0; i < 3; ++i) {
+        AutoKind k;
+        CHECK(AutoKindFromWord(words[i], &k) && k == kinds[i] && std::string(AutoKindWord(kinds[i])) == words[i]);
+        CHECK(AutoKindSideless(kinds[i]) && AutoTypeOfKind(kinds[i]) == AutoType::Dash);
+        CHECK(AutoKindRow(kinds[i]).at_stop == (i == 2) && AutoKindRow(kinds[i]).at_start == (i == 0));
+    }
+    CHECK(AutoMarkerName(AutoKind::Dash, 'B') == "Dash" && AutoMarkerName(AutoKind::DashPeak, 'B') == "Dash" &&
+          AutoMarkerName(AutoKind::DashStop, 'B') == "Dash Stop");
+    CHECK(AutoSoundKey(AutoKind::DashPeak, 'B') == "dash:B" && AutoSoundKey(AutoKind::DashStop, 'B') == "dash_stop:B");
+    const AutoTypeInfo& r = AutoTypeRow(AutoType::Dash);
+    CHECK(r.category == AutoCategory::Body && r.sideless && r.start_option && r.stop_option && !r.part_split);
+    CHECK(AutoStartDefault(AutoType::Dash) && !AutoSettings().with_stop[static_cast<int>(AutoType::Dash)]);
+    using V = std::vector<std::string>;
+    CHECK(Words(AutoBlocks(DashSettings(0))) == V({"dash_peak:B"}) &&
+          Words(AutoBlocks(DashSettings(1))) == V({"dash:B"}) &&
+          Words(AutoBlocks(DashSettings(2))) == V({"dash:B", "dash_stop:B"}));
+    for (int mode = 0; mode < 3; ++mode) CHECK(ReadAutoSettings(AutoBlocks(DashSettings(mode))) == DashSettings(mode));
+    const PhysicsParams d;
+    CHECK(AutoPhysicsParams(AutoType::Dash, 100.0, false).dash_min_gain == d.dash_min_gain / 2.0);
+    CHECK(SameAutoAnalysis(AutoPhysicsParams(AutoType::Dash, kAutoDefaultSens, false), d));
+}
+
+DashOpts Root()
+{
+    DashOpts o;
+    o.root_motion = true;
+    return o;
+}
+
+// From rest: 0.1 -> 2.5 leg/s over 0.4 s from 1.0 s, feet down: one Dash at the onset, its Peak
+// at the fastest gain (1.2 s); Start & Stop: the speed holds, the Dash Stop where it plateaus
+// (~1.4 s).
+void TestDashFromRest()
+{
+    const std::vector<BoneTrack> rig = Runner(SpeedRamp(0.1, 2.5, 1.0, 0.4), 3.0, Root());
+    const std::vector<Hit>       h = Run(rig, DashSettings(2));
+    CHECK(Count(h, AutoKind::Dash) == 1 && Count(h, AutoKind::DashStop) == 1);
+    const Hit* d = First(h, AutoKind::Dash);
+    const Hit* s = First(h, AutoKind::DashStop);
+    if (d) CHECK(d->t >= 0.85 && d->t <= 1.15 && d->strength > 1.9 && d->strength < 2.6);
+    if (s) CHECK(s->t >= 1.3 && s->t <= 1.6);
+    const std::vector<Hit> peak = Run(rig, DashSettings(0));
+    const Hit*             p = First(peak, AutoKind::DashPeak);
+    CHECK(Count(peak, AutoKind::Dash) == 0 && p && p->t >= 1.12 && p->t <= 1.28);
+}
+
+// Mid-run: 4 -> 5.5 leg/s over 0.4 s: a Dash. Steady strides (5 leg/s in place and with root
+// motion, and a speed swinging 0.86 leg/s within 0.6 s, the bench's largest stride gain: Two
+// Cycle Sprint): none.
+void TestDashMidRun()
+{
+    const std::vector<Hit> h = Run(Runner(SpeedRamp(4.0, 5.5, 1.0, 0.4), 3.0, Root()), DashSettings(1));
+    CHECK(Count(h, AutoKind::Dash) == 1);
+    const Hit* d = First(h, AutoKind::Dash);
+    if (d) CHECK(d->t >= 0.85 && d->t <= 1.15);
+    CHECK(Run(Runner([](double) { return 5.0; }, 3.0), DashSettings(2)).empty());
+    CHECK(Run(Runner([](double) { return 5.0; }, 3.0, Root()), DashSettings(2)).empty());
+    const Curve stride = [](double t) { return 4.0 + 0.43 * std::sin(2.0 * kPi * t); };  // 0.86 within 0.6 s
+    CHECK(Run(Runner(stride, 4.0, Root()), DashSettings(2)).empty());
+    CHECK(Run(Runner(stride, 4.0, Root()), DashSettings(2), true).empty());  // looping too
+    // The sensitivity divides the gain: a 0.8 leg/s burst is none at 50 %, one at 100 %.
+    const std::vector<BoneTrack> small = Runner(SpeedRamp(1.0, 1.8, 1.0, 0.3), 3.0, Root());
+    CHECK(Count(Run(small, DashSettings(1)), AutoKind::Dash) == 0);
+    CHECK(Count(Run(small, DashSettings(1, 100.0)), AutoKind::Dash) == 1);
+}
+
+// A flight's swing: running at 4.5 leg/s, the hips' speed bursts by 1.5 leg/s while both feet are
+// up (root motion): no Dash. The same burst with the feet down is one.
+void TestDashFlight()
+{
+    const Curve burst = [](double t) { return 4.5 + 1.5 * Ease((t - 1.0) / 0.3) - 1.5 * Ease((t - 1.5) / 0.3); };
+    DashOpts    o;
+    o.root_motion = true;
+    CHECK(Count(Run(Runner(burst, 3.0, o), DashSettings(1)), AutoKind::Dash) == 1);
+    o.flight = Hill(0.85, 1.65, 0.05, 0.4);
+    CHECK(Count(Run(Runner(burst, 3.0, o), DashSettings(1)), AutoKind::Dash) == 0);
+}
+
+// A stride's short flight (both feet up ~0.1 s) right at a mid-run burst's peak acceleration
+// (1.2 s): a foot is down within dash_flight_tol_s of it, the Dash is kept.
+void TestDashStrideFlight()
+{
+    DashOpts o = Root();
+    o.hop = Hill(1.15, 1.22, 0.02, 0.06);
+    const std::vector<BoneTrack> rig = Runner(SpeedRamp(4.0, 5.5, 1.0, 0.4), 3.0, o);
+    const PhysicsAnalysis        a = AnalyseMotion(rig, PhysicsParams());
+    CHECK(a.ok && a.feet_down.size() > 288 && a.feet_down[288] == 0);  // airborne at the peak
+    CHECK(Count(Run(rig, DashSettings(1)), AutoKind::Dash) == 1);
+}
+
+// Two dashes 0.4 s apart (0.2 -> 1.6 leg/s, then -> 3.0), then a halt to 0.1: the first Dash Stop
+// stays at its own plateau, before the second Dash; the second's is at the halt.
+void TestDashBackToBack()
+{
+    const Curve two = [](double t) {
+        return 0.2 + 1.4 * Ease((t - 1.0) / 0.3) + 1.4 * Ease((t - 1.7) / 0.3) - 2.9 * Ease((t - 2.3) / 0.4);
+    };
+    std::vector<Hit> h = Run(Runner(two, 3.5, Root()), DashSettings(2));
+    CHECK(Count(h, AutoKind::Dash) == 2 && Count(h, AutoKind::DashStop) == 2);
+    std::vector<double> starts, stops;
+    for (const Hit& x : h) (x.kind == AutoKind::Dash ? starts : stops).push_back(x.t);
+    if (starts.size() == 2 && stops.size() == 2) {
+        std::sort(stops.begin(), stops.end());
+        CHECK(stops[0] < starts[1] && stops[0] >= 1.2 && stops[0] <= 1.5);
+        CHECK(stops[1] >= 2.6 && stops[1] <= 3.0);
+    }
+}
+
+// The clip's edges: a non-looping clip whose first and last samples are wrong (every bone jumps
+// 3 m on the first and on the last: ~800 leg/s for a sample, enough to leak a burst through the
+// kernel's 3 sigma if the edges were smoothed with the read samples): nothing from them. A clip
+// ramping from its first frames (0.1 -> 2.5 leg/s from 0.0 s): its Dash starts at the read edge.
+void TestDashEdges()
+{
+    std::vector<BoneTrack> rig = Runner([](double) { return 0.1; }, 2.0, Root());
+    for (BoneTrack& b : rig)
+        if (!b.pos.empty()) {
+            b.pos.front().z -= 3.0;
+            b.pos.back().z += 3.0;
+        }
+    CHECK(Run(rig, DashSettings(2)).empty());
+    const std::vector<Hit> first = Run(Runner(SpeedRamp(0.1, 2.5, 0.0, 0.5), 2.0, Root()), DashSettings(1));
+    CHECK(Count(first, AutoKind::Dash) == 1);
+    const Hit* d = First(first, AutoKind::Dash);
+    if (d) CHECK(d->t >= 0.15 && d->t <= 0.3);
+}
+
+// The stop's gates: a halt more than dash_stop_window_s after the burst, and a slowdown under
+// the minimum gain (2.5 -> 1.8 leg/s), leave the Dash Stop at the plateau (~1.4 s).
+void TestDashStopWindow()
+{
+    const Curve late = [](double t) { return 0.2 + 2.3 * Ease((t - 1.0) / 0.4) - 2.4 * Ease((t - 2.6) / 0.4); };
+    const Curve slow = [](double t) { return 0.2 + 2.3 * Ease((t - 1.0) / 0.4) - 0.7 * Ease((t - 1.8) / 0.4); };
+    for (const Curve& c : {late, slow}) {
+        const std::vector<Hit> h = Run(Runner(c, 4.0, Root()), DashSettings(2));
+        CHECK(Count(h, AutoKind::Dash) == 1 && Count(h, AutoKind::DashStop) == 1);
+        const Hit* s = First(h, AutoKind::DashStop);
+        if (s) CHECK(s->t >= 1.3 && s->t <= 1.6);
+    }
+}
+
+// Into a halt: 0.2 -> 2.3 leg/s over 0.4 s, then down to 0.1 within 1 s: the Dash Stop at the
+// halt (where the speed settles, ~2.0 s), not at the plateau. A run that halts with no burst
+// before it (steady 3 leg/s, then 0): nothing.
+void TestDashStop()
+{
+    const Curve halt = [](double t) { return 0.2 + 2.1 * Ease((t - 1.0) / 0.4) - 2.2 * Ease((t - 1.6) / 0.4); };
+    const std::vector<Hit> h = Run(Runner(halt, 3.0, Root()), DashSettings(2));
+    CHECK(Count(h, AutoKind::Dash) == 1 && Count(h, AutoKind::DashStop) == 1);
+    const Hit* s = First(h, AutoKind::DashStop);
+    if (s) CHECK(s->t >= 1.9 && s->t <= 2.3);
+    CHECK(Run(Runner(SpeedRamp(3.0, 0.0, 1.0, 0.4), 3.0, Root()), DashSettings(2)).empty());
+}
+
+// No hips, no feet: the missing parts named, no event.
+void TestDashMissing()
+{
+    for (int which = 0; which < 2; ++which) {
+        DashOpts o = Root();
+        (which ? o.feet : o.hips) = false;
+        const std::vector<BoneTrack> rig = Runner(SpeedRamp(0.1, 2.5, 1.0, 0.4), 3.0, o);
+        std::vector<int>             map(static_cast<size_t>(Role::Count), -1);
+        for (size_t r = 0; r < rig.size(); ++r)
+            if (!rig[r].pos.empty()) map[r] = static_cast<int>(r);
+        const std::vector<std::string> miss = AutoMissingParts(AutoType::Dash, false, map);
+        CHECK(std::find(miss.begin(), miss.end(), RoleName(which ? Role::LeftHeel : Role::Hips)) != miss.end());
+        CHECK(AutoBlockPartMissing(MakeAutoBlock(AutoKind::Dash, 'B', 50.0, 0.0), map));
+        CHECK(Count(Run(rig, DashSettings(1)), AutoKind::Dash) == 0);
+    }
+}
+
+// The lane: the hips' travel acceleration vs the start, shaded over the dash.
+void TestDashLane()
+{
+    const std::vector<BoneTrack> rig = Runner(SpeedRamp(0.1, 2.5, 1.0, 0.4), 3.0, Root());
+    std::vector<AutoAnalysis>    cache;
+    const std::vector<Block>     blocks = AutoBlocks(DashSettings(1));
+    DetectAutoEvents(blocks, rig, &cache, false);
+    CHECK(!cache.empty());
+    if (cache.empty()) return;
+    std::string                 why;
+    const std::vector<AutoLane> l = AutoBlockLanes(cache[0], blocks[0], &why);
+    CHECK(l.size() == 1);
+    if (l.size() == 1) {
+        CHECK(l[0].above && l[0].threshold == PhysicsParams().dash_start_acc);
+        int shaded = 0;
+        for (char c : l[0].contact) shaded += c ? 1 : 0;
+        CHECK(shaded > 40 && shaded < 240);
+    }
+}
+
 }  // namespace
 
 int main()
@@ -512,6 +815,17 @@ int main()
     TestTwoStep();
     TestLanes();
     TestLoop();
+    TestDashWords();
+    TestDashFromRest();
+    TestDashMidRun();
+    TestDashFlight();
+    TestDashStrideFlight();
+    TestDashBackToBack();
+    TestDashEdges();
+    TestDashStopWindow();
+    TestDashStop();
+    TestDashMissing();
+    TestDashLane();
     if (g_fails) {
         std::printf("body_move_test: %d failure(s)\n", g_fails);
         return 1;

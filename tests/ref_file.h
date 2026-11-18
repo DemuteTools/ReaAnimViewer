@@ -66,10 +66,11 @@ inline bool RefKnownPart(const std::string& p)
 
 // Story 10-12e: a body move's reference kind: crouch, stand_up, bend, rise (the move's start, the
 // types' default marker; a detection at the peak, "crouch_peak", scores on that row: FoundTarget)
-// and their stops, crouch_stop... (Start & Stop's second marker, a row of its own).
+// and their stops, crouch_stop... (Start & Stop's second marker, a row of its own). Story
+// 10-12e-2: dash and dash_stop alike.
 inline bool IsBodyMoveRef(const std::string& kind)
 {
-    for (const char* m : {"crouch", "stand_up", "bend", "rise"})
+    for (const char* m : {"crouch", "stand_up", "bend", "rise", "dash"})
         if (kind == m || kind == std::string(m) + "_stop") return true;
     return false;
 }

@@ -33,6 +33,23 @@
 // kept (its end the last sample); one already under way at the clip's first sample (its rate past
 // the start there: Lvl_TopDown's run starts mid-lean) is none, one starting there from rest is
 // kept; on a loop the middle cycle's.
+//
+// Story 10-12e-2: Dash, a burst of travel speed (a dash from standstill, a walk or mid-run), on
+// the hips' horizontal speed in the ground frame (hips_vh: an in-place and a root-motion clip read
+// alike), smoothed over dash_smooth_s on every sample and differentiated (the acceleration). A
+// burst starts where the acceleration passes dash_start_acc and runs back and forward while it
+// stays at dash_end_acc or more (CurveMoves, merged across dash_merge_s); it counts when the speed
+// gains dash_min_gain (the sensitivity divides it) within dash_gain_window_s and its peak
+// acceleration falls with a foot down (a flight swings the hips: Jump_WhileRunning). A clip that
+// does not loop is read dash_edge_sigmas sigmas away from its edges (its first and last raw
+// samples are wrong), a burst cut there starting at that edge (no under-way rule: a dash from the
+// first frames is real, Jump Attack). Its stop ("Dash Stop", Start & Stop) is the halt when the
+// character brakes hard after it (a braking starting within dash_stop_window_s that loses the
+// minimum gain, before the next dash: where it settles), else where the burst's speed plateaus
+// (its end). A hard stop with no dash before it gives nothing. Strength = the speed's largest gain
+// within dash_gain_window_s (leg/s, the gain that made it a dash). Parts, missing parts and roles:
+// Crouch's (the hips and a foot part per side). Sideless,
+// the kinds as the body moves': dash (Start, the default), dash_peak, dash_stop.
 
 #include <algorithm>
 #include <cmath>
@@ -123,9 +140,10 @@ MoveCurve CurveOf(const PhysicsAnalysis& a, const PhysicsParams& p, const std::v
 
 // The moves of one curve the way `sign` says (+1 up, -1 down): start / end rates, merged across a
 // pause of `merge` samples at most whose samples are all read (a flight between keeps them
-// apart), kept when the curve changes by `min_change` at least.
+// apart), kept when the curve changes by `min_change` at least. `drop_under_way`: the under-way
+// rule below (the body moves on a clip that does not loop).
 std::vector<BodyMove> CurveMoves(const MoveCurve& c, int sign, double start_rate, double end_rate, size_t merge,
-                                 double min_change, PhysicsKind kind, bool looping)
+                                 double min_change, PhysicsKind kind, bool drop_under_way)
 {
     std::vector<BodyMove> spans;
     const size_t          n = c.rate.size();
@@ -157,7 +175,7 @@ std::vector<BodyMove> CurveMoves(const MoveCurve& c, int sign, double start_rate
         // A move already under way at the clip's first read sample (its rate there at the end
         // rate or more its way) began before the clip: none (a loop has no first sample: its
         // track is unrolled).
-        if (!looping && m.start == first && first < n && sign * c.rate[first] >= end_rate) continue;
+        if (drop_under_way && m.start == first && first < n && sign * c.rate[first] >= end_rate) continue;
         m.change = c.curve[m.end] - c.curve[m.start];
         if (!(sign * m.change >= min_change)) continue;
         m.peak = m.start;
@@ -178,7 +196,7 @@ std::vector<BodyMove> HipsMoves(const PhysicsAnalysis& a, const PhysicsParams& p
     for (const int sign : {-1, 1})
         for (const BodyMove& m : CurveMoves(c, sign, p.body_move_start_speed, p.body_move_end_speed, merge,
                                             sign < 0 ? p.crouch_min_drop : p.stand_min_rise,
-                                            sign < 0 ? PhysicsKind::Crouch : PhysicsKind::StandUp, a.looping)) {
+                                            sign < 0 ? PhysicsKind::Crouch : PhysicsKind::StandUp, !a.looping)) {
             size_t both = 0;
             for (size_t j = m.start; j <= m.end; ++j) both += a.feet_down[j] >= 2 ? 1 : 0;
             if (static_cast<double>(both) >= p.body_move_min_support * static_cast<double>(m.end - m.start + 1) - 1e-9)
@@ -200,7 +218,7 @@ std::vector<BodyMove> BodyMoves(const PhysicsAnalysis& a, const PhysicsParams& p
         for (const int sign : {1, -1})
             for (const BodyMove& m : CurveMoves(t, sign, p.trunk_start_dps, p.trunk_end_dps, merge,
                                                 sign > 0 ? p.bend_min_deg : p.rise_min_deg,
-                                                sign > 0 ? PhysicsKind::Bend : PhysicsKind::Rise, a.looping)) {
+                                                sign > 0 ? PhysicsKind::Bend : PhysicsKind::Rise, !a.looping)) {
                 bool one = false;
                 for (const BodyMove& h : hips) {
                     const double lo = static_cast<double>(std::max(m.start, h.start));
@@ -239,6 +257,123 @@ std::vector<PhysicsEvent> BodyMoveEvents(const PhysicsAnalysis& a, const Physics
     return ev;
 }
 
+// ---- Dash (story 10-12e-2) ----------------------------------------------------------------------
+
+// The hips' travel speed (hips_vh smoothed over dash_smooth_s, every sample: a flight's are read
+// too, the flight gate is on the burst's peak) and its acceleration, read away from the edges of a
+// clip that does not loop (dash_edge_sigmas x the sigma at each end: the first and last raw
+// samples are wrong). Empty without the hips or the feet.
+MoveCurve DashCurve(const PhysicsAnalysis& a, const PhysicsParams& p)
+{
+    MoveCurve    c;
+    const size_t n = a.samples;
+    if (!a.ok || a.hips_vh.size() != n || a.feet_down.size() != n || n < 3 || !(a.rate_hz > 0.0)) return c;
+    const size_t edge =
+        a.looping ? 0 : static_cast<size_t>(std::max(0L, std::lround(p.dash_edge_sigmas * p.dash_smooth_s * a.rate_hz)));
+    // The outer half of the edge (a sigma at the defaults) is not smoothed at all (edges clamped
+    // inside it): a wrong edge sample never leaks into a read one through the kernel's 3 sigma.
+    // Clamping at the read edge itself would read a stride's swing there as a burst (Two Cycle
+    // Sprint): the read samples keep a sigma of real motion on each side.
+    const size_t      keep = edge / 2;
+    std::vector<char> smooth(n, 0);
+    for (size_t i = keep; i + keep < n; ++i) smooth[i] = 1;
+    c.curve = SmoothValid(a.hips_vh, smooth, p.dash_smooth_s * a.rate_hz);
+    c.rate = RateValid(c.curve, smooth, a.rate_hz);
+    c.valid.assign(n, 0);
+    for (size_t i = edge; i + edge < n; ++i) c.valid[i] = 1;
+    return c;
+}
+
+// One dash: its burst [start, end] (analysed samples), its fastest gain (the peak acceleration),
+// its stop (the halt or the plateau) and its speed gain (leg/s).
+struct DashMove {
+    size_t start = 0;
+    size_t end = 0;
+    size_t peak = 0;
+    size_t stop = 0;
+    double gain = 0.0;
+};
+
+// Every dash, by start: a burst (CurveMoves on the acceleration: no under-way rule, a burst cut by
+// the read edge starts there) whose speed gains dash_min_gain within dash_gain_window_s (its
+// strength), a foot down within dash_flight_tol_s of its peak; its stop at the end of a braking
+// that starts within dash_stop_window_s after it, before the next dash, and loses dash_min_gain,
+// else at its end.
+std::vector<DashMove> Dashes(const PhysicsAnalysis& a, const PhysicsParams& p)
+{
+    std::vector<DashMove> out;
+    const MoveCurve       c = DashCurve(a, p);
+    if (c.curve.empty()) return out;
+    const double rate = a.rate_hz;
+    const size_t merge = static_cast<size_t>(std::lround(p.dash_merge_s * rate));
+    const size_t window = static_cast<size_t>(std::max(1L, std::lround(p.dash_gain_window_s * rate)));
+    const size_t stop_window = static_cast<size_t>(std::lround(p.dash_stop_window_s * rate));
+    const size_t tol = static_cast<size_t>(std::max(0L, std::lround(p.dash_flight_tol_s * rate)));
+    const double any = -1e300;  // every span: the gain is read within its window below
+    const std::vector<BodyMove> bursts =
+        CurveMoves(c, 1, p.dash_start_acc, p.dash_end_acc, merge, any, PhysicsKind::Dash, false);
+    const std::vector<BodyMove> brakes =
+        CurveMoves(c, -1, p.dash_start_acc, p.dash_settle_acc, merge, any, PhysicsKind::Dash, false);
+    for (const BodyMove& b : bursts) {
+        // The speed's largest gain within the window inside the burst.
+        double gain = 0.0;
+        for (size_t i = b.start; i < b.end; ++i)
+            for (size_t j = i + 1; j <= b.end && j - i <= window; ++j) gain = std::max(gain, c.curve[j] - c.curve[i]);
+        if (!(gain >= p.dash_min_gain - 1e-12)) continue;
+        // A flight's hips swing: no foot down within the tolerance of the peak (a running
+        // stride's own flight, ~0.1 s, has one close by).
+        bool down = false;
+        for (size_t j = b.peak > tol ? b.peak - tol : 0; j <= b.peak + tol && j < a.feet_down.size(); ++j)
+            down = down || a.feet_down[j] > 0;
+        if (!down) continue;
+        DashMove d;
+        d.start = b.start;
+        d.end = b.end;
+        d.peak = b.peak;
+        d.stop = b.end;  // the plateau
+        d.gain = gain;
+        out.push_back(d);
+    }
+    for (size_t q = 0; q < out.size(); ++q) {
+        DashMove&    d = out[q];
+        const size_t next = q + 1 < out.size() ? out[q + 1].start : c.curve.size();  // a braking is the next dash's no more
+        for (const BodyMove& k : brakes) {
+            if (k.start < d.end) continue;
+            if (k.start - d.end > stop_window || k.start >= next) break;
+            double top = c.curve[d.end];
+            for (size_t j = d.end; j <= k.end; ++j) top = std::max(top, c.curve[j]);
+            if (top - c.curve[k.end] >= p.dash_min_gain - 1e-12) {
+                d.stop = k.end;  // the halt: the speed settled
+                break;
+            }
+        }
+    }
+    return out;
+}
+
+// The dashes as events in clip time, timed at `mark` (side B, start_s / end_s the burst).
+std::vector<PhysicsEvent> DashEvents(const PhysicsAnalysis& a, const PhysicsParams& p, MoveMark mark)
+{
+    std::vector<PhysicsEvent> ev;
+    if (!a.ok || !(a.rate_hz > 0.0)) return ev;
+    for (const DashMove& d : Dashes(a, p)) {
+        PhysicsEvent e;
+        e.kind = PhysicsKind::Dash;
+        e.side = 'B';
+        e.part = -1;
+        const size_t at = mark == MoveMark::Start ? d.start : mark == MoveMark::Peak ? d.peak : d.stop;
+        e.time_s = static_cast<double>(at) / a.rate_hz;
+        e.start_s = static_cast<double>(d.start) / a.rate_hz;
+        e.end_s = static_cast<double>(d.end) / a.rate_hz;
+        e.strength = d.gain;
+        ev.push_back(e);
+    }
+    PhysicsEventsToClipTime(a, ev);
+    std::stable_sort(ev.begin(), ev.end(),
+                     [](const PhysicsEvent& x, const PhysicsEvent& y) { return x.time_s < y.time_s; });
+    return ev;
+}
+
 bool HasTop(const std::vector<int>& role_to_bone)
 {
     return AutoHasRole(role_to_bone, Role::Neck) || AutoHasRole(role_to_bone, Role::Chest) ||
@@ -271,9 +406,25 @@ std::vector<PhysicsEvent> AutoSourceBodyMoveStop(const PhysicsAnalysis& a, const
     return BodyMoveEvents(a, p, MoveMark::Stop);
 }
 
+// Story 10-12e-2: every dash at its start, its fastest gain, its stop.
+std::vector<PhysicsEvent> AutoSourceDashStart(const PhysicsAnalysis& a, const PhysicsParams& p)
+{
+    return DashEvents(a, p, MoveMark::Start);
+}
+
+std::vector<PhysicsEvent> AutoSourceDashPeak(const PhysicsAnalysis& a, const PhysicsParams& p)
+{
+    return DashEvents(a, p, MoveMark::Peak);
+}
+
+std::vector<PhysicsEvent> AutoSourceDashStop(const PhysicsAnalysis& a, const PhysicsParams& p)
+{
+    return DashEvents(a, p, MoveMark::Stop);
+}
+
 // ---- Type parts (AutoMissingParts) -------------------------------------------------------------
 
-// Crouch, Stand Up: the hips and a foot part per side (the jumps' parts).
+// Crouch, Stand Up, Dash: the hips and a foot part per side (the jumps' parts).
 void AutoPartsBodyMoveHips(bool, const std::vector<int>& role_to_bone, std::vector<std::string>& out)
 {
     if (!AutoHasRole(role_to_bone, Role::Hips)) AutoPushOnce(out, RoleName(Role::Hips));
@@ -315,6 +466,11 @@ bool AutoMatchBend(const PhysicsEvent& e, const PhysicsAnalysis&, char)
 bool AutoMatchRise(const PhysicsEvent& e, const PhysicsAnalysis&, char)
 {
     return e.kind == PhysicsKind::Rise;
+}
+
+bool AutoMatchDash(const PhysicsEvent& e, const PhysicsAnalysis&, char)
+{
+    return e.kind == PhysicsKind::Dash;
 }
 
 // ---- Part missing (AutoBlockPartMissing) -------------------------------------------------------
@@ -398,10 +554,44 @@ void AutoLanesRise(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::st
     MoveLane(args, out, reason, true, -1, PhysicsKind::Rise);
 }
 
+// Story 10-12e-2: the hips' travel acceleration vs the burst's start, shaded over the dashes kept.
+void AutoLanesDash(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason)
+{
+    const PhysicsAnalysis& a = *args.a;
+    const PhysicsParams&   p = *args.p;
+    const MoveCurve        c = DashCurve(a, p);
+    if (c.curve.empty()) {
+        reason = !a.hips_missing.empty() ? a.hips_missing
+                 : !a.hips_feet_missing.empty() ? a.hips_feet_missing
+                                                : "no hips speed";
+        return;
+    }
+    std::vector<double> v(c.rate.size(), 0.0);
+    for (size_t i = 0; i < v.size(); ++i) v[i] = c.valid[i] ? std::max(0.0, c.rate[i]) : 0.0;
+    AutoLane l;
+    l.label = "Hips  travel acceleration";
+    l.unit = "leg/s2";
+    l.curve = AutoLaneWindow(v, args.first, args.n, false);
+    l.contact.assign(args.n, 0);
+    for (const DashMove& d : Dashes(a, p))
+        for (size_t j = d.start; j <= d.end; ++j)
+            if (j >= args.first && j - args.first < args.n) l.contact[j - args.first] = 1;
+    l.threshold = p.dash_start_acc;
+    l.above = true;
+    char buf[320];
+    std::snprintf(buf, sizeof(buf),
+                  "Shaded: a dash. It starts where the acceleration passes the line, runs while it\n"
+                  "stays above %.1f leg/s2, and counts when the travel speed gains %.2f leg/s or more\n"
+                  "within %.1f s, its fastest gain with a foot down (not a jump's flight).",
+                  p.dash_end_acc, p.dash_min_gain, p.dash_gain_window_s);
+    l.shade_note = buf;
+    out.push_back(std::move(l));
+}
+
 // ---- Roles -------------------------------------------------------------------------------------
 
-// Crouch / Stand Up show the hips and both feet's parts (what they read); Bend / Rise the hips,
-// the trunk and the up legs (the facing).
+// Crouch / Stand Up / Dash show the hips and both feet's parts (what they read); Bend / Rise the
+// hips, the trunk and the up legs (the facing).
 std::vector<Role> AutoRolesBodyMoveHips(char)
 {
     std::vector<Role> out = {Role::Hips};

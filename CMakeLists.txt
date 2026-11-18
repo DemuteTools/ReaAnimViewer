@@ -209,7 +209,7 @@ if(WIN32)
             src/scuff_peak.cpp  # 10-9j
             src/auto_types_slap.cpp  # 10-9l
             src/auto_types_punch.cpp  # 10-9o (10-9n Strike folded in)
-            src/auto_types_body_move.cpp  # 10-12e: Crouch, Stand Up, Bend, Rise
+            src/auto_types_body_move.cpp  # 10-12e: Crouch, Stand Up, Bend, Rise; 10-12e-2: Dash
             src/detection_measure.cpp
             src/rule_record.cpp
             src/preset_store.cpp

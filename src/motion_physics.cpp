@@ -2322,6 +2322,7 @@ constexpr PhysicsKindRow kPhysicsKindRows[] = {
     {PhysicsKind::StandUp, "stand up", PhyPart::None, false, true},
     {PhysicsKind::Bend, "bend", PhyPart::None, false, true},
     {PhysicsKind::Rise, "rise", PhyPart::None, false, true},
+    {PhysicsKind::Dash, "dash", PhyPart::None, false, true},  // story 10-12e-2
 };
 constexpr bool PhysicsKindRowsInOrder()
 {
@@ -2397,6 +2398,7 @@ std::string PhysicsSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEv
         case PhysicsKind::StandUp:
         case PhysicsKind::Bend:
         case PhysicsKind::Rise: break;  // story 10-12e: the body moves' (auto_types_body_move.cpp)
+        case PhysicsKind::Dash: break;  // story 10-12e-2: the dash's (auto_types_body_move.cpp)
         }
     }
     const std::string vertical = a.ground_velocity.y != 0.0 ? Format(", vertical %+.2f m/s", a.ground_velocity.y) : "";

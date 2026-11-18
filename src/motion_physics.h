@@ -811,6 +811,35 @@ struct PhysicsParams {
     double     bend_min_deg = 20.0;
     double     rise_min_deg = 20.0;
     double     trunk_overlap = 0.5;            // the overlap, in shares of the shorter span, that makes a fold and a hips move one
+    // Story 10-12e-2: the dash (auto_types_body_move.cpp), a burst of travel speed, on the hips'
+    // horizontal speed in the ground frame (hips_vh, so an in-place and a root-motion clip read
+    // alike) smoothed over dash_smooth_s (sigma, every sample, flights included) and its rate (the
+    // acceleration, leg/s^2). A burst starts where the acceleration passes dash_start_acc and runs
+    // back and forward while it stays at dash_end_acc or more; bursts with a pause of
+    // dash_merge_s at most between them are one; it counts when the speed gains dash_min_gain
+    // (leg/s; the sensitivity divides it) within dash_gain_window_s, unless no foot is down within
+    // dash_flight_tol_s of its peak acceleration (a jump's flight swings the hips 0.5-1.5 leg/s:
+    // Jump_WhileRunning, JumpingOverObstacle, flights of 0.4-0.6 s; a running stride's own flight
+    // is ~0.1 s, so a mid-run dash peaking in it still has a foot down close by). On a clip that does not loop, dash_edge_sigmas x dash_smooth_s at each
+    // end is not read (the first and last raw samples are wrong). Its stop (Dash Stop): when the
+    // speed falls by the burst's minimum gain or more in a braking that starts within
+    // dash_stop_window_s after the burst and before the next dash (a deceleration past
+    // dash_start_acc, running while it stays at dash_settle_acc or more), where that braking ends
+    // (the halt, the speed settled); otherwise where the burst ends (its speed plateaus).
+    // Measured 2026-11-18 on the 66 bench clips (sigma 100 ms, the detector's own gain within
+    // 0.6 s inside a burst): steady strides gain 0.86 leg/s at most (Two Cycle Sprint; read as a
+    // loop, 0.78, Running Crawl; Sword And Shield Run 0.65, walks under 0.5) at up to 4 leg/s^2;
+    // the real bursts gain 1.02-3.14 (Dance_Armada, Jump Away) at 3.4-10 leg/s^2.
+    double     dash_smooth_s = 0.10;
+    double     dash_start_acc = 1.5;           // leg/s^2
+    double     dash_end_acc = 1.0;             // leg/s^2
+    double     dash_min_gain = 1.0;            // leg/s
+    double     dash_gain_window_s = 0.6;
+    double     dash_merge_s = 0.15;
+    double     dash_edge_sigmas = 2.0;
+    double     dash_stop_window_s = 1.0;
+    double     dash_settle_acc = 0.3;          // leg/s^2
+    double     dash_flight_tol_s = 0.08;
 };
 
 // One contact of a part, in samples [start, end).
@@ -995,12 +1024,14 @@ PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& role_tracks, const P
 // (motion_whoosh.cpp).
 enum class PhysicsKind { Step, FootStep, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land, Jolt, Spin, SpinEnd, Tap, Drag,
                          Knee, Elbow, Sit, Fall, Clap, HandOnBody, Kick, Swing, Punch,
-                         Crouch, StandUp, Bend, Rise };
+                         Crouch, StandUp, Bend, Rise, Dash };
 // Story 10-9f: Spin / SpinEnd, a spin's start / end (side B, start_s / end_s its span, strength =
 // its sweep in degrees; auto_types_spin.cpp). Story 10-12e: Crouch, StandUp, Bend, Rise, the body
 // moves (side B, start_s / end_s the move's span, time_s its start, its fastest sample or its end
-// after the marker the kind asks for; strength its peak speed; auto_types_body_move.cpp).
-constexpr int kPhysicsKindCount = 28;  // story 10-9-0: PhysicsMarkerName's rows follow the enum
+// after the marker the kind asks for; strength its peak speed; auto_types_body_move.cpp). Story
+// 10-12e-2: Dash, a burst of travel speed (side B, start_s / end_s the burst, time_s its start, its
+// fastest gain or its stop; strength its speed gain, leg/s).
+constexpr int kPhysicsKindCount = 29;  // story 10-9-0: PhysicsMarkerName's rows follow the enum
 
 struct PhysicsEvent {
     PhysicsKind kind = PhysicsKind::Step;
